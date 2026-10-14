@@ -1,4 +1,4 @@
-//! Engine-owned goal-verifier settings (ADR-0044 follow-up): the optional
+//! Engine-owned goal-verifier settings (ADR-goal-mode-verified-loop-at-turn-settle follow-up): the optional
 //! model the goal loop's verification pass rides. `None` — the default —
 //! keeps the chat's own model: goal mode stays zero-config until the user
 //! opts into a separate judge.

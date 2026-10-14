@@ -4,7 +4,7 @@
 //! starts its own Turn — resolved from the live filesystem catalog at
 //! admission, with its model and reasoning captured at submission — while
 //! manual Compaction occupies the channel without becoming a Turn
-//! (ADR-0011): `Compacting` status, no transcript echo, no Turn baseline.
+//! (ADR-compaction-is-not-a-turn): `Compacting` status, no transcript echo, no Turn baseline.
 
 use crate::common;
 
@@ -100,7 +100,7 @@ async fn queue_run(engine: &holt_engine::LocalEngine, cwd: &str, message_id: &st
 }
 
 /// Queue an ordinary run whose prompt carries the inline skill mention —
-/// the composer's serialization since ADR-0035 (the dedicated invokeSkill
+/// the composer's serialization since ADR-skill-invocation-is-an-inline-mention (the dedicated invokeSkill
 /// command is retired).
 async fn invoke_skill(
     engine: &holt_engine::LocalEngine,
@@ -147,7 +147,7 @@ fn user_entry_count(snapshot: &serde_json::Value) -> usize {
 }
 
 /// Agent entries seeded with an invocation chip (`{"kind":"skill",…}`)
-/// — since ADR-0035 the chip rides the AGENT entry; user entries carry the
+/// — since ADR-skill-invocation-is-an-inline-mention the chip rides the AGENT entry; user entries carry the
 /// raw mention text.
 fn agent_skill_chip_count(snapshot: &serde_json::Value) -> usize {
     snapshot["reset"]
@@ -234,7 +234,7 @@ async fn mixed_items_serialize_through_one_channel_in_submission_order() {
     // One user entry per Turn-starting item; Compaction echoed nothing.
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;
     assert_eq!(user_entry_count(&transcript), 3);
-    // The invocation chip rides the AGENT entry (ADR-0035), never the user
+    // The invocation chip rides the AGENT entry (ADR-skill-invocation-is-an-inline-mention), never the user
     // entry — the bubble keeps the raw mention text.
     assert_eq!(agent_skill_chip_count(&transcript), 1);
     let transcript = transcript.to_string();
@@ -304,7 +304,7 @@ async fn a_deleted_skill_mention_runs_as_plain_text() {
 
     // The mention is enqueued, then the skill vanishes before admission.
     // An unresolved mention is ordinary text — no error, no retained item:
-    // the Turn runs with the literal message (ADR-0035).
+    // the Turn runs with the literal message (ADR-skill-invocation-is-an-inline-mention).
     invoke_skill(&engine, &fixture.cwd(), "grill", None, "m-skill").await;
     std::fs::remove_dir_all(fixture.personal_dir.path().join("grill")).unwrap();
     gate.notify_one();

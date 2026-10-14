@@ -1,4 +1,4 @@
-//! The Exa search backend adapter (ADR-0023) — the keyless default.
+//! The Exa search backend adapter (ADR-web-tools-full-text-ungated-pluggable-search) — the keyless default.
 //! Exa's hosted MCP endpoint answers a stateless JSON-RPC `tools/call`
 //! without an API key or an `initialize` handshake (checked 2026-09-30):
 //! `POST https://mcp.exa.ai/mcp` with `Accept: application/json,

@@ -10,7 +10,7 @@ a question's answer is arbitrary content, and a blocked tool call held in
 memory goes stale across restarts.
 
 Instead the question card reuses the pattern Provider Mode proved with
-`choose_provider` (ADR-0037): a **non-blocking tool that lands a card and
+`choose_provider` (ADR-provider-mode-is-a-chat-mode): a **non-blocking tool that lands a card and
 stops the Turn**, with the answers arriving as an ordinary user message.
 
 - The `ask_user` tool takes 1–4 questions, each with 2–6 distinct
@@ -24,7 +24,7 @@ stops the Turn**, with the answers arriving as an ordinary user message.
   questions stay in text. The system prompt only routes: enumerable
   choices go to `ask_user`.
 - While pending, the questions render in the composer's approval bar —
-  its third kind, beside the gate and the plan (ADR-0014/0025) — one
+  its third kind, beside the gate and the plan (ADR-permission-modes-gate-mutations-no-os-sandbox/0025) — one
   page per question: that question is the title, its enumerated options
   are keyboard-first rows (arrows, digits, Enter), the note row is the
   free-text answer, and a `1/N` pager shows the position. A blank note

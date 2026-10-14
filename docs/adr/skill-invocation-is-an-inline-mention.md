@@ -15,10 +15,10 @@ the run's transcript entry; unresolved mentions stay ordinary text — no
 error, no env-var blacklist, because a `$` that resolves to nothing is just
 the user's `$HOME` or `$100`.
 
-This amends ADR-0006's manual trigger (the `/skill` slash command) and keeps
+This amends ADR-metadata-only-skill-advertising's manual trigger (the `/skill` slash command) and keeps
 everything else it decided: metadata-only advertising, progressive
 disclosure through the read tool, `disable-model-invocation`, no host-side
-argument substitution, and the catalog budget. ADR-0005's nearest-root
+argument substitution, and the catalog budget. ADR-skills-referenced-in-place-from-standard-roots's nearest-root
 shadowing is untouched as catalog policy — but a linked mention bypasses it,
 because the path is authoritative: the link points at a concrete file, and
 invoking that file is what the user asked for. The dedicated
@@ -35,7 +35,7 @@ and last-message edit apply uniformly). Name-only invocation without the
 linked form was rejected: the path is what disambiguates same-name skills
 and makes the composer chip a stable pointer rather than a string that
 resolves differently tomorrow. Hand-rolled host-side injection of a
-dedicated skill tool (kimi's shape) remains rejected for the ADR-0006
+dedicated skill tool (kimi's shape) remains rejected for the ADR-metadata-only-skill-advertising
 reasons. The syntax and inline semantics follow Codex's `$` tool mentions;
 the composer chip mechanics follow ZCode's canonical-markdown-under-a-chip
 projection, which holt's raw-text composer projection already mirrored for

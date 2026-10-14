@@ -1,4 +1,4 @@
-//! Handle-seam tests for the Last-message edit (ADR-0033): submission
+//! Handle-seam tests for the Last-message edit (ADR-last-message-edit-restarts-a-turn): submission
 //! cancels the active Turn, prunes its later Transcript and History while
 //! keeping the message identity, and reruns the replacement on the
 //! repaired records.

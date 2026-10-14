@@ -1,4 +1,4 @@
-//! The Routine scheduler (ADR-0042): one long-lived task that sleeps until
+//! The Routine scheduler (ADR-routines-fire-in-process-and-coalesce-missed-fires): one long-lived task that sleeps until
 //! the earliest next fire among active Routines, fires whatever is due, and
 //! re-plans whenever the Routine list changes. Fires missed while Holt was
 //! quit or the device slept are found the same way — at startup, or when the

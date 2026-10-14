@@ -1,4 +1,4 @@
-//! OS banner notifications for background Turn completion (ADR-0019). One
+//! OS banner notifications for background Turn completion (ADR-turn-completion-is-an-engine-owned-event). One
 //! application-scoped [`TurnNotificationController`] consumes the engine's
 //! `WatchTurnTerminalEvents` stream for the life of the process — it is
 //! created during UI bootstrap and is never tied to a window or Shell
@@ -51,7 +51,7 @@ pub struct TurnNotificationController {
     pump: Option<Task<()>>,
     seen_event_ids: VecDeque<String>,
     seen_event_id_set: HashSet<String>,
-    /// Run Chats whose Routine run is waiting on the user (ADR-0042), as of
+    /// Run Chats whose Routine run is waiting on the user (ADR-routines-fire-in-process-and-coalesce-missed-fires), as of
     /// the last AppState change — a Chat entering this set posts a banner.
     waiting_runs: HashSet<String>,
     _state_observation: Subscription,

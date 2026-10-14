@@ -1,4 +1,4 @@
-//! Live Turn change-set delivery (ADR-0024, ticket 01): the
+//! Live Turn change-set delivery (ADR-turn-change-sets-and-review, ticket 01): the
 //! `WatchTurnChangeSet` subscription.
 //!
 //! One `notify` watcher per chat working directory — the working tree and

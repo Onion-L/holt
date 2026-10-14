@@ -1,4 +1,4 @@
-//! The MCP stdio test fixture (ADR-0034): a minimal in-repo MCP server
+//! The MCP stdio test fixture (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): a minimal in-repo MCP server
 //! speaking newline-delimited JSON-RPC over stdin/stdout — initialize,
 //! `tools/list`, and `tools/call` — exactly as production config would
 //! spawn one, exercising the real SDK transport end to end. Behavior knobs

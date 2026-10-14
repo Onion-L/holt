@@ -624,7 +624,7 @@ async fn first_space(engine: &LocalEngine) -> Space {
     };
     let value = spaces.next().await.expect("spaces snapshot");
     let spaces: Vec<Space> = serde_json::from_value(value).unwrap();
-    // The boot-ensured Home row (ADR-0039) sorts first; the fixture's
+    // The boot-ensured Home row (ADR-home-space-for-project-less-chats) sorts first; the fixture's
     // registered space is what these tests mean by "first".
     spaces
         .into_iter()
@@ -2149,7 +2149,7 @@ async fn turn_baseline_patch_rides_the_three_mib_cap() {
     assert!(diff.patch.len() <= 4 * 1024 * 1024);
 }
 
-// ---- live branch switching: Turn identity stamps (ADR-0007) ----
+// ---- live branch switching: Turn identity stamps (ADR-branch-is-live-working-tree-state) ----
 
 use holt_proto::Chat;
 

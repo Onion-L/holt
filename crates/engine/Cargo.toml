@@ -32,7 +32,7 @@ notify.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 chrono.workspace = true
-# Routines (ADR-0042): the local IANA zone a new Routine's cron is read
+# Routines (ADR-routines-fire-in-process-and-coalesce-missed-fires): the local IANA zone a new Routine's cron is read
 # in. Already in the lockfile through chrono's clock feature.
 iana-time-zone = "0.1"
 # Routines: cron parsing and the IANA zone database the schedule is read in.
@@ -41,7 +41,7 @@ chrono-tz = "0.10"
 tiktoken-rs = "0.7"
 reqwest.workspace = true
 htmd = "0.5"
-# The MCP client (ADR-0034): official SDK, client role only — stdio
+# The MCP client (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): official SDK, client role only — stdio
 # child transport plus Streamable HTTP. No server role, no macros, no
 # OAuth. rmcp 3.x speaks reqwest 0.13 while holt's own HTTP surface is
 # 0.12, so the renamed dep supplies rmcp's client (feature-unified with

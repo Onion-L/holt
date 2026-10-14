@@ -190,7 +190,7 @@ impl Pickers {
     }
 
     /// A read-only footer label (the session footer's display-only
-    /// checkout-kind chip; the branch beside it is interactive — ADR-0007).
+    /// checkout-kind chip; the branch beside it is interactive — ADR-branch-is-live-working-tree-state).
     pub(super) fn footer_label(
         icon_path: &'static str,
         label: SharedString,

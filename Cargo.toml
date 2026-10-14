@@ -74,7 +74,7 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.11"
 notify = "7"
-# The engine's git backend (ADR-0001). Engine-only dependency: all git2
+# The engine's git backend (ADR-git2-as-the-git-backend). Engine-only dependency: all git2
 # access lives in holt-engine's `git` module.
 git2 = "0.21"
 portable-pty = "0.8"
@@ -96,7 +96,7 @@ fontdb = "0.23"
 ttf-parser = "0.25.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 ignore = "0.4"
-# The content-search stack for the agent-facing `grep` API (ADR-0004), using
+# The content-search stack for the agent-facing `grep` API (ADR-in-process-ripgrep-for-content-search), using
 # ripgrep's own crates in process — no dependency on a system `rg` binary.
 aho-corasick = "1"
 grep-regex = "0.1"

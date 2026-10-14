@@ -67,7 +67,7 @@ pub struct ToolItem {
     /// text is the `detail`; the chip defaults collapsed, streaming or
     /// settled. `resolved == false` only marks the part as still streaming.
     pub is_thought: bool,
-    /// The permission gate's record (ADR-0014), when this call was gated.
+    /// The permission gate's record (ADR-permission-modes-gate-mutations-no-os-sandbox), when this call was gated.
     /// A `Pending` gate renders only in the composer's approval bar — the
     /// transcript skips the part — so a gate seen here is always settled,
     /// and the chip carries its verdict.
@@ -242,7 +242,7 @@ pub enum RowKind {
         header: SharedString,
         resolved: bool,
     },
-    /// A skill invocation / skill-file read, collapsed (ADR-0006): header
+    /// A skill invocation / skill-file read, collapsed (ADR-metadata-only-skill-advertising): header
     /// `[icon] Skill <name>` plus the source-file pointer. When `content`
     /// is present (an invocation) the chip expands thinking-style to show
     /// the exact `<skill>` block the model received; read-collapse chips
@@ -259,14 +259,14 @@ pub enum RowKind {
     ErrorChip {
         message: SharedString,
     },
-    /// A quiet full-width housekeeping row (ADR-0010): the legacy-chat and
+    /// A quiet full-width housekeeping row (ADR-history-is-a-separate-persisted-record): the legacy-chat and
     /// damaged-History notices — later the overflow and failed-compaction
     /// messages ride the same shape. Not an error: nothing went wrong with
     /// the Turn it sits in; it states where the model's memory begins.
     Notice {
         message: SharedString,
     },
-    /// The goal loop's terminal row (ADR-0044): the goal card's settled
+    /// The goal loop's terminal row (ADR-goal-mode-verified-loop-at-turn-settle): the goal card's settled
     /// form landed in the transcript — the same target glyph on a
     /// passive band, so it reads as the arc's conclusion, not housekeeping
     /// noise. Model-side it is a `Notice` the engine pushed under a
@@ -275,7 +275,7 @@ pub enum RowKind {
         message: SharedString,
         event: holt_proto::GoalEvent,
     },
-    /// A goal-loop continuation (ADR-0044): a User entry the loop queued,
+    /// A goal-loop continuation (ADR-goal-mode-verified-loop-at-turn-settle): a User entry the loop queued,
     /// not the user. Drawn as a light, foldable loop row — round label and
     /// the verifier's missing piece — instead of a user bubble; the fold
     /// shows the full prompt the model got.
@@ -289,13 +289,13 @@ pub enum RowKind {
         /// row's own `entry_id`, which anchors the Turn it opens.
         footer_owner: Option<SharedString>,
     },
-    /// The Compaction divider (ADR-0011): where the model's verbatim memory
+    /// The Compaction divider (ADR-compaction-is-not-a-turn): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
     /// carries, rendered as Markdown.
     CompactionDivider {
         summary: Arc<BlockTree>,
     },
-    /// The Plan Mode approval card (ADR-0025): one per plan submission,
+    /// The Plan Mode approval card (ADR-plan-mode-is-an-independent-approval-checkpoint): one per plan submission,
     /// carrying the document pointer and its resolution state. Pending
     /// cards show the three verdict affordances (approve / reject with
     /// feedback / stay in planning); settled cards show their verdict
@@ -307,7 +307,7 @@ pub enum RowKind {
         content: SharedString,
         state: holt_doc::parts::PlanApprovalState,
     },
-    /// A Provider Mode proposal card (ADR-0037): the stored proposal's
+    /// A Provider Mode proposal card (ADR-provider-mode-is-a-chat-mode): the stored proposal's
     /// summary and change lines. Write / Discard while pending; the
     /// buttons' busy/error state lives on the Transcript keyed by row id.
     ModelProposal {
@@ -319,7 +319,7 @@ pub enum RowKind {
         lines: Vec<SharedString>,
         state: holt_doc::ProposalCardState,
     },
-    /// A Provider Mode provider choice (ADR-0037): an organization's
+    /// A Provider Mode provider choice (ADR-provider-mode-is-a-chat-mode): an organization's
     /// candidate providers, filled by the engine from the catalog. A click
     /// settles it; `chosen` is the stamped pick.
     ProviderChoice {
@@ -328,7 +328,7 @@ pub enum RowKind {
         chosen: Option<SharedString>,
         state: holt_doc::ChoiceCardState,
     },
-    /// The agent's question card (ADR-0040): 1–4 questions the model
+    /// The agent's question card (ADR-ask-user-is-a-question-card): 1–4 questions the model
     /// asked through `ask_user`. A pending card renders only in the
     /// composer's approval bar (the gate's rule); the settled card is
     /// the marker row, one line per answered question.
@@ -337,7 +337,7 @@ pub enum RowKind {
         answers: Arc<Vec<SharedString>>,
         state: holt_doc::ChoiceCardState,
     },
-    /// A Provider Mode key request (ADR-0037): who the key unlocks and the
+    /// A Provider Mode key request (ADR-provider-mode-is-a-chat-mode): who the key unlocks and the
     /// one destination it goes to. The masked input is a Transcript-owned
     /// entity keyed by row id — the key never enters the row.
     KeyRequest {
@@ -345,7 +345,7 @@ pub enum RowKind {
         destination: SharedString,
         state: holt_doc::KeyCardState,
     },
-    /// The Turn's file-change card (ADR-0024 ticket 03): what one main-chat
+    /// The Turn's file-change card (ADR-turn-change-sets-and-review ticket 03): what one main-chat
     /// Turn changed so far — or, once it settled (success, failure, or
     /// interruption), what it froze as. Appended after the Turn's last row,
     /// never part of the entry rows themselves: it rides app state keyed by
@@ -598,7 +598,7 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        // A loop-queued continuation carries its round as a part (ADR-0044):
+        // A loop-queued continuation carries its round as a part (ADR-goal-mode-verified-loop-at-turn-settle):
         // it is the loop speaking, so it never draws as a user bubble.
         let goal_round = entry.parts.iter().find_map(|p| match p {
             MessagePart::GoalRound { round, reason, .. } => Some((*round, reason.clone())),
@@ -828,7 +828,7 @@ pub fn rows_for_entry(
                     is_thought: false,
                     gate: gate.clone(),
                 };
-                // A PENDING gate builds no transcript row (ADR-0014): the
+                // A PENDING gate builds no transcript row (ADR-permission-modes-gate-mutations-no-os-sandbox): the
                 // composer's approval bar carries the gated target and the
                 // verdict affordances, so the part never joins a foldable
                 // group. The settle replays the same part through the
@@ -1036,7 +1036,7 @@ pub fn rows_for_entry(
                         message,
                         goal,
                     } => {
-                        // The goal loop's lifecycle rows (ADR-0044) get the
+                        // The goal loop's lifecycle rows (ADR-goal-mode-verified-loop-at-turn-settle) get the
                         // band treatment, keyed on the part's transition
                         // tag; every other Notice stays a plain housekeeping
                         // row.
@@ -1321,7 +1321,7 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
     Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
 }
 
-/// The goal loop's band (ADR-0044) concludes the Turn it caps: lift the
+/// The goal loop's band (ADR-goal-mode-verified-loop-at-turn-settle) concludes the Turn it caps: lift the
 /// settled message's footer strip (timestamp + copy) down under the band, so
 /// the block reads message → verdict → footer as one unit. The band entry's
 /// own strip (its push time, nothing to copy) is replaced. The walk skips
@@ -1366,7 +1366,7 @@ pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
     }
 }
 
-/// A loop row (ADR-0044) opens its Turn right under the previous reply,
+/// A loop row (ADR-goal-mode-verified-loop-at-turn-settle) opens its Turn right under the previous reply,
 /// whose reserved footer lane would leave a hole above the light,
 /// flush-left row. The row takes that footer over instead: the reply drops
 /// its lane, the row draws its copy action inline at the right edge.
@@ -1404,7 +1404,7 @@ pub fn hand_footers_to_goal_rounds(rows: &mut [Row]) {
     }
 }
 
-/// The card row for one Turn's change set (ADR-0024 ticket 03). `entry_id`
+/// The card row for one Turn's change set (ADR-turn-change-sets-and-review ticket 03). `entry_id`
 /// is the last entry the Turn rendered — the row the card visually follows.
 /// The version keys the row diff and moves only when the change set's
 /// content does, so a live update resplices exactly the one card it moved.
@@ -2280,7 +2280,7 @@ mod tests {
         assert_eq!(rows[0].copy_text.as_deref(), Some("/skill ask-matt"));
     }
 
-    /// The History notice (ADR-0010) renders as one quiet full-width row —
+    /// The History notice (ADR-history-is-a-separate-persisted-record) renders as one quiet full-width row —
     /// not an error chip, not markdown — with the engine's prose intact.
     #[test]
     fn a_notice_part_renders_one_quiet_row() {
@@ -2304,7 +2304,7 @@ mod tests {
         assert!(rows[0].copy_text.is_none());
     }
 
-    /// The goal loop's lifecycle Notice (ADR-0044) carries its transition
+    /// The goal loop's lifecycle Notice (ADR-goal-mode-verified-loop-at-turn-settle) carries its transition
     /// tag and renders as the band row, not a plain housekeeping row.
     #[test]
     fn a_goal_notice_renders_the_goal_end_band() {
@@ -2393,7 +2393,7 @@ mod tests {
         rows_for_entry(&entry, false, &mut parse)
     }
 
-    /// A loop-queued continuation (ADR-0044) is the loop speaking: it draws
+    /// A loop-queued continuation (ADR-goal-mode-verified-loop-at-turn-settle) is the loop speaking: it draws
     /// as the loop row — round label plus the verifier's missing piece, the
     /// full prompt kept for the fold — never as a user bubble.
     #[test]
@@ -2535,7 +2535,7 @@ mod tests {
         assert_eq!(rows[3].entry_id.as_ref(), "goal-b");
     }
 
-    /// The Compaction divider (ADR-0011) renders as one quiet row carrying
+    /// The Compaction divider (ADR-compaction-is-not-a-turn) renders as one quiet row carrying
     /// the summary — the expansion state is the
     /// view's, not the model's (collapsed is only the default).
     #[test]

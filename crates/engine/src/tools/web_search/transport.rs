@@ -1,4 +1,4 @@
-//! Shared transport scaffolding for the backend adapters (ADR-0023):
+//! Shared transport scaffolding for the backend adapters (ADR-web-tools-full-text-ungated-pluggable-search):
 //! the whole-exchange budget, the response download cap, the trait-side
 //! cancellation race, and the common error-detail rendering. Each adapter
 //! owns its request shape, auth header, response decoding, and hit mapping

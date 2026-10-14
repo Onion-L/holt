@@ -4,7 +4,7 @@ The agent's content-search tool runs ripgrep's own crates in process
 (`ignore` for walking/gitignore, `grep-regex` + `grep-searcher` for
 matching, line numbers, binary detection, UTF-16 transcoding, and context
 lines) instead of shelling out to a system `rg` binary. A system binary was
-rejected for the same cause as system `git` in ADR-0001 — it requires the
+rejected for the same cause as system `git` in ADR-git2-as-the-git-backend — it requires the
 user to have `rg` installed (macOS ships without it) and drifts across
 versions — and hand-rolling the search on `regex` alone would re-implement
 what `grep-searcher` already provides.

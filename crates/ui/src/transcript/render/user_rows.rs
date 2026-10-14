@@ -116,7 +116,7 @@ impl Transcript {
                         .overflow_y_scroll()
                         // Nested reading viewport inside the transcript list:
                         // occlude so one wheel gesture cannot scroll both this
-                        // body and the outer list (ADR-0013); the wheel
+                        // body and the outer list (ADR-nested-scroll-containers-isolate-wheel-events); the wheel
                         // handler chains the unabsorbed remainder to the list
                         // at the body's scroll boundary.
                         .occlude()
@@ -171,7 +171,7 @@ impl Transcript {
         column.into_any_element()
     }
 
-    /// A goal-loop continuation (ADR-0044): the loop, not the user, opened
+    /// A goal-loop continuation (ADR-goal-mode-verified-loop-at-turn-settle): the loop, not the user, opened
     /// this Turn, so it reads as a flush-left process row in the
     /// skill-invocation language — target glyph, the round, the verifier's
     /// missing piece — never a bubble. Expanding shows the exact prompt the
@@ -290,7 +290,7 @@ impl Transcript {
                     .id(SharedString::from(format!("{row_id}#goal-round-body")))
                     .max_h(px(320.0))
                     .overflow_y_scroll()
-                    // Nested reading viewport (ADR-0013): occlude, then chain
+                    // Nested reading viewport (ADR-nested-scroll-containers-isolate-wheel-events): occlude, then chain
                     // the unabsorbed wheel remainder to the list.
                     .occlude()
                     .track_scroll(&scroll)
@@ -466,7 +466,7 @@ impl Transcript {
     /// A `/skill` invocation inside the user bubble (legacy transcripts):
     /// the skill title as an accent chip at the head of the text flow (the
     /// composer's treatment), with a click through to the source file. New
-    /// invocations keep the raw mention text inline instead (ADR-0035).
+    /// invocations keep the raw mention text inline instead (ADR-skill-invocation-is-an-inline-mention).
     /// The `<skill>` block itself rides the AGENT entry's opening chip —
     /// this bubble only records what the user did.
     #[allow(clippy::too_many_arguments)]
@@ -653,7 +653,7 @@ impl Transcript {
                 );
             }
             // Between goal-loop Turns the verifier judges the settled one
-            // (ADR-0044): say so, or the chat looks idle right before a
+            // (ADR-goal-mode-verified-loop-at-turn-settle): say so, or the chat looks idle right before a
             // Turn starts by itself.
             if self.state.read(cx).indicator_for(&chat_id, now) != crate::state::Indicator::Working
                 && crate::goal::loop_phase(self.state.read(cx))

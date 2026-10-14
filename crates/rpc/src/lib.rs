@@ -54,7 +54,7 @@ pub mod methods {
     /// The provider's hidden models — id and label rows the Settings page
     /// greys out; the model picker's `ListModels` never includes them.
     pub const LIST_HIDDEN_MODELS: &str = "ListHiddenModels";
-    /// Live catalog writes (ADR-0028's top layer). `SaveCustomProvider`
+    /// Live catalog writes (ADR-three-layer-provider-catalog's top layer). `SaveCustomProvider`
     /// params are `{id, name, baseUrl, defaultApi, headers?}` (upsert);
     /// `SaveModelRecord` params are `{providerId, record}` with `record` a
     /// `pi-core-rs` model record that replaces a same-id entry outright;
@@ -77,14 +77,14 @@ pub mod methods {
     /// Drops every user-written catalog entry for one provider — or for all
     /// providers when `providerId` is absent.
     pub const RESET_PROVIDER_CATALOG: &str = "ResetProviderCatalog";
-    /// The proposal card's Write (ADR-0037): params `{chatId, proposalId}`
+    /// The proposal card's Write (ADR-provider-mode-is-a-chat-mode): params `{chatId, proposalId}`
     /// execute a proposal the chat stored — re-validated against the
     /// current catalog. The agent never applies; this button does.
     pub const APPLY_MODEL_PROPOSAL: &str = "ApplyModelProposal";
     /// Drops one stored proposal (the proposal card's Discard):
     /// params `{chatId, proposalId}`. Nothing is written.
     pub const DISCARD_MODEL_PROPOSAL: &str = "DiscardModelProposal";
-    /// Settles the pending Key request (ADR-0031): params `{chatId, key?}`.
+    /// Settles the pending Key request (ADR-api-keys-collected-through-key-requests): params `{chatId, key?}`.
     /// With `key` the value is saved to the credential store (never the
     /// chat) and a fixed "API key saved for …" notice is queued as an
     /// ordinary user message; without it a dismissal notice is queued and
@@ -92,19 +92,19 @@ pub mod methods {
     /// reply is `{settled: "saved" | "dismissed", providerId,
     /// destination}`.
     pub const SETTLE_PROVIDER_KEY_REQUEST: &str = "SettleProviderKeyRequest";
-    /// Settles a provider-choice card (ADR-0037): params `{chatId, cardId,
+    /// Settles a provider-choice card (ADR-provider-mode-is-a-chat-mode): params `{chatId, cardId,
     /// providerId}`. The card must be pending and offer the id; the card
     /// is stamped chosen and the fixed "Use provider …" message is queued
     /// as an ordinary user message. Reply `{providerId}`.
     pub const SETTLE_PROVIDER_CHOICE: &str = "SettleProviderChoice";
-    /// Settles a question card (ADR-0040): params `{chatId, cardId,
+    /// Settles a question card (ADR-ask-user-is-a-question-card): params `{chatId, cardId,
     /// choices}` — one verbatim answer per question, a clicked option or
     /// the typed text. The card must be pending and the count must match;
     /// the card is stamped chosen and the answers are queued as an
     /// ordinary user message (each question restated with its answer).
     /// Reply `{answers}`.
     pub const SETTLE_QUESTION: &str = "SettleQuestion";
-    /// Dismisses a pending question card without answering (ADR-0040):
+    /// Dismisses a pending question card without answering (ADR-ask-user-is-a-question-card):
     /// params `{chatId, cardId}`. The card is stamped superseded — the
     /// model reads the unanswered card next Turn. Reply `{dismissed:
     /// true}`.
@@ -113,7 +113,7 @@ pub mod methods {
     /// `[String]`. The record form's dialect dropdown reads it — the set
     /// is the engine's, never the UI's.
     pub const LIST_API_DIALECTS: &str = "ListApiDialects";
-    /// Engine-owned title-task settings (ADR-0012). Read takes no params;
+    /// Engine-owned title-task settings (ADR-automatic-titles-run-outside-pi-hooks). Read takes no params;
     /// save params are `holt_proto::TitleSettings`; both reply with
     /// `holt_proto::TitleSettingsState` (settings + live validation warning).
     /// An empty model id disables automatic titles.
@@ -121,7 +121,7 @@ pub mod methods {
     pub const SAVE_TITLE_SETTINGS: &str = "SaveTitleSettings";
     pub const GET_GOAL_SETTINGS: &str = "GetGoalSettings";
     pub const SAVE_GOAL_SETTINGS: &str = "SaveGoalSettings";
-    /// Engine-owned web-search settings (ADR-0023): the configured search
+    /// Engine-owned web-search settings (ADR-web-tools-full-text-ungated-pluggable-search): the configured search
     /// backends, with at most one active (keyless Exa on a fresh install).
     /// Get takes no params; get, save, set-active, and remove all reply
     /// the masked state `{active, entries, backends, customFile,
@@ -148,7 +148,7 @@ pub mod methods {
     pub const REMOVE_MCP_SERVER: &str = "RemoveMcpServer";
     pub const TEST_MCP_SERVER: &str = "TestMcpServer";
     pub const LIST_COMMANDS: &str = "ListCommands";
-    /// The skills catalog (ADR-0005): one fresh scan of the chat's three
+    /// The skills catalog (ADR-skills-referenced-in-place-from-standard-roots): one fresh scan of the chat's three
     /// skill roots. Params `{cwd?}` — the project root derives from it;
     /// reply `SkillListing` (invocable entries with source root, shadowed
     /// entries, load diagnostics).
@@ -173,7 +173,7 @@ pub mod methods {
     /// `days`. Strictly read-only and best-effort: a damaged ledger is
     /// skipped, never quarantined.
     pub const USAGE_STATS: &str = "UsageStats";
-    /// Live Turn terminal events (ADR-0019): one typed
+    /// Live Turn terminal events (ADR-turn-completion-is-an-engine-owned-event): one typed
     /// `holt_rpc::turns::TurnTerminalEvent` per real main-chat Turn,
     /// published only after its Transcript, History, and queue completion
     /// are durably settled. No params, no synthetic initial event, no
@@ -206,19 +206,19 @@ pub mod methods {
     /// snapshot. Remaining items keep their order; a started item fails
     /// instead of touching the active Turn.
     pub const DELETE_QUEUED_MESSAGE: &str = "DeleteQueuedMessage";
-    /// Resolve a pending confirm-changes Approval (ADR-0014): params
+    /// Resolve a pending confirm-changes Approval (ADR-permission-modes-gate-mutations-no-os-sandbox): params
     /// `{approvalId, verdict}` where verdict is
     /// `holt_proto::ApprovalVerdict` (`{"kind":"allow"}`,
     /// `{"kind":"alwaysAllow"}`, or `{"kind":"deny","note?":"…"}`). The
     /// verdict releases the gate the run is blocked in; unknown ids fail —
     /// an approval resolves once.
     pub const RESOLVE_APPROVAL: &str = "ResolveApproval";
-    /// The engine's sticky permission-mode default for NEW chats (ADR-0014):
+    /// The engine's sticky permission-mode default for NEW chats (ADR-permission-modes-gate-mutations-no-os-sandbox):
     /// `{}` → `{ "mode": <kebab tier> }`. Read-only — the default moves only
     /// through `Mutate setChatPermissionMode`. Lets the new-chat canvas chip
     /// advertise the mode a first send would actually run under.
     pub const GET_PERMISSION_MODE_DEFAULT: &str = "GetPermissionModeDefault";
-    /// Plan Mode (ADR-0025). `EnterPlanMode` / `ExitPlanMode` take
+    /// Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint). `EnterPlanMode` / `ExitPlanMode` take
     /// `{chatId}` and reply the chat's `holt_proto::PlanModeState`; both are
     /// idempotent (entering an already-planning chat replies its state).
     /// Entering records the chat's current permission mode for restoration
@@ -228,7 +228,7 @@ pub mod methods {
     pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
     pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
     pub const GET_PLAN_MODE: &str = "GetPlanMode";
-    /// Goal mode (ADR-0044). `SetGoal` takes `{chatId, text}` — a
+    /// Goal mode (ADR-goal-mode-verified-loop-at-turn-settle). `SetGoal` takes `{chatId, text}` — a
     /// non-empty objective of at most 4000 chars — and (re)arms the chat's
     /// goal loop; it rejects a planning, provider-mode, or routine-run
     /// chat. `ClearGoal` (`{chatId}`) drops the objective and sweeps queued
@@ -239,7 +239,7 @@ pub mod methods {
     pub const SET_GOAL: &str = "SetGoal";
     pub const CLEAR_GOAL: &str = "ClearGoal";
     pub const SET_GOAL_PAUSED: &str = "SetGoalPaused";
-    /// Provider Mode (ADR-0037). `EnterProviderMode` / `ExitProviderMode`
+    /// Provider Mode (ADR-provider-mode-is-a-chat-mode). `EnterProviderMode` / `ExitProviderMode`
     /// take `{chatId}` and reply the chat's `holt_proto::ProviderModeState`;
     /// both are idempotent. Entering exits Plan Mode first (and
     /// `EnterPlanMode` exits Provider Mode first). Exiting keeps pending
@@ -247,7 +247,7 @@ pub mod methods {
     pub const ENTER_PROVIDER_MODE: &str = "EnterProviderMode";
     pub const EXIT_PROVIDER_MODE: &str = "ExitProviderMode";
     pub const GET_PROVIDER_MODE: &str = "GetProviderMode";
-    /// Resolve a submitted plan (ADR-0025): params `{chatId, verdict,
+    /// Resolve a submitted plan (ADR-plan-mode-is-an-independent-approval-checkpoint): params `{chatId, verdict,
     /// feedback?}` where verdict is `"approve" | "reject" | "remain"`, and
     /// requires a planning chat with a pending approval card (a
     /// `submit_plan` result, or a folded legacy `<proposed_plan>` block).
@@ -276,7 +276,7 @@ pub mod methods {
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
     pub const WATCH_SPACES: &str = "WatchSpaces";
-    /// Routines (ADR-0042) → `Vec<RoutineView>`, the current list.
+    /// Routines (ADR-routines-fire-in-process-and-coalesce-missed-fires) → `Vec<RoutineView>`, the current list.
     pub const LIST_ROUTINES: &str = "ListRoutines";
     /// Pushed `Vec<RoutineView>`: current value first, then every change.
     pub const WATCH_ROUTINES: &str = "WatchRoutines";
@@ -304,7 +304,7 @@ pub mod methods {
     /// Params are tagged `{op: createChat|createSpace|renameSpace|deleteSpace|
     /// renameChat|setChatArchived|setChatPinned|deleteChat|renameDevice|markChatSeen|
     /// setChatConfig|setChatPermissionMode, …}`. `setChatPermissionMode`
-    /// takes `{chatId, mode}` with the ADR-0014 kebab-case tiers.
+    /// takes `{chatId, mode}` with the ADR-permission-modes-gate-mutations-no-os-sandbox kebab-case tiers.
     pub const MUTATE: &str = "Mutate";
     /// This engine's identity → `{deviceId}`.
     pub const LOCAL_DEVICE: &str = "LocalDevice";
@@ -444,14 +444,14 @@ pub mod methods {
     pub const WATCH_CHECKOUT_CHANGE_REQUEST: &str = "WatchCheckoutChangeRequest";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
-    /// The current main-chat Turn's change set (ADR-0024): the net Git
+    /// The current main-chat Turn's change set (ADR-turn-change-sets-and-review): the net Git
     /// change between the Turn's admission baseline and its live or final
     /// working tree. Params `{chatId}`; replies `holt_proto::TurnChangeSetReply`
     /// — an explicit `unsupported` for a non-Git working directory, otherwise
     /// the change set with its `live` / `final` phase. No Turn recorded yet is
     /// an error, exactly like the turn diff scope.
     pub const GET_TURN_CHANGE_SET: &str = "GetTurnChangeSet";
-    /// Live Turn change-set stream (ADR-0024): params `{chatId}`; the first
+    /// Live Turn change-set stream (ADR-turn-change-sets-and-review): params `{chatId}`; the first
     /// frame is the current set, then one frame per debounced working-tree
     /// change and one when the Turn settles (`final`). Stays open across
     /// Turns until the UI drops it. A non-Git root streams a single
@@ -533,7 +533,7 @@ pub enum RpcErrorCode {
     /// (never ran, engine restarted).
     NoTurnRecorded,
     /// A stored model proposal whose touched providers moved before the
-    /// Write button executed (ADR-0029's staleness gate).
+    /// Write button executed (ADR-model-setup-applies-stored-proposals's staleness gate).
     ProposalStale,
 }
 

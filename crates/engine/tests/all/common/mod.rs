@@ -564,7 +564,7 @@ impl Fixture {
     }
 
     /// The scripted engine plus an injected search-backend resolver
-    /// (ADR-0023): the injected table stands in for the built-in one when
+    /// (ADR-web-tools-full-text-ungated-pluggable-search): the injected table stands in for the built-in one when
     /// the engine resolves the configured backend at Turn admission.
     pub fn engine_with_search_backend(
         &self,
@@ -656,7 +656,7 @@ pub async fn watched_permission_mode(engine: &LocalEngine, chat_id: &str) -> ser
 
 /// `setup_chat` plus a full-access switch — for tests whose scripted Turns
 /// run mutating tools (bash/write/edit) while testing something other than
-/// the permission gate (ADR-0014): a confirm-changes chat would pause
+/// the permission gate (ADR-permission-modes-gate-mutations-no-os-sandbox): a confirm-changes chat would pause
 /// those calls behind an approval nothing resolves.
 pub async fn setup_ungated_chat(engine: &LocalEngine, chat_id: &str) {
     setup_chat(engine, chat_id).await;
@@ -804,7 +804,7 @@ pub async fn transcript_snapshot(engine: &LocalEngine, chat_id: &str) -> serde_j
 }
 
 // ---------------------------------------------------------------------------
-// Permission-gate helpers (ADR-0014): polling over the transcript watch.
+// Permission-gate helpers (ADR-permission-modes-gate-mutations-no-os-sandbox): polling over the transcript watch.
 // A verdict's settle stamp lands shortly AFTER the resolve RPC replies, so
 // polling keys on the tool-call id, never on "any pending gate".
 // ---------------------------------------------------------------------------

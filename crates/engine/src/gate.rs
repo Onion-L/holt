@@ -1,4 +1,4 @@
-//! The permission gate (ADR-0014): the confirm-changes gatekeeper wired
+//! The permission gate (ADR-permission-modes-gate-mutations-no-os-sandbox): the confirm-changes gatekeeper wired
 //! through the agent loop's before-tool-call hook. Every mutating tool
 //! call (write, edit, bash) pauses the Turn behind a pending Approval the
 //! UI resolves over the `ResolveApproval` RPC; denials settle as error
@@ -19,10 +19,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::ChatRuntime;
 
-/// The gate predicate (ADR-0014): tool identity only — no command parsing,
+/// The gate predicate (ADR-permission-modes-gate-mutations-no-os-sandbox): tool identity only — no command parsing,
 /// no path confinement, no read-only tier. Every mutating call meets the
 /// chat's gatekeeper regardless of its target. MCP tools invert the
-/// predicate (ADR-0034): foreign code carries unknown risk, so every
+/// predicate (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): foreign code carries unknown risk, so every
 /// `mcp__`-prefixed call is presumed mutating — never trusting a server's
 /// own hints about itself.
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
@@ -30,7 +30,7 @@ pub(crate) fn is_mutating_tool(name: &str) -> bool {
 }
 
 /// Tools whose calls always meet the HUMAN gatekeeper, whatever the chat's
-/// permission mode (ADR-0029): a catalog write steers where the API key is
+/// permission mode (ADR-model-setup-applies-stored-proposals): a catalog write steers where the API key is
 /// sent — full-access means "don't audit my files", not "don't audit my
 /// key's destination". Grants never exempt them (always-allow records
 /// nothing for these tools), and auto-review's model pass never substitutes
@@ -43,12 +43,12 @@ pub(crate) fn forces_approval(name: &str) -> bool {
 /// denial uses the note verbatim — it is addressed to the model.
 pub(crate) const STANDARD_DENIAL: &str = "The user denied this operation.";
 
-/// One chat's always-allow grants (ADR-0014): in-memory, session-scoped,
+/// One chat's always-allow grants (ADR-permission-modes-gate-mutations-no-os-sandbox): in-memory, session-scoped,
 /// never persisted — cleared on restart. Bash grants match by word prefix
 /// on the command (extension by plain arguments only), write/edit grants by
 /// exact resolved file path, and MCP grants
 /// by the exact two-level `mcp__server__tool` name — nothing broader
-/// (ADR-0034: no server-wide grants). Checked BEFORE the gatekeeper, so
+/// (ADR-mcp-servers-join-as-engine-clients-behind-the-gate: no server-wide grants). Checked BEFORE the gatekeeper, so
 /// they hold across mode switches.
 #[derive(Default)]
 pub(crate) struct GateGrants {
@@ -92,7 +92,7 @@ impl GateGrants {
     pub(crate) fn passes(&self, tool: &str, arguments: &serde_json::Value, cwd: &str) -> bool {
         if tool.starts_with("mcp__") {
             // Exact two-level name — a sibling tool of the same server
-            // still asks (ADR-0034).
+            // still asks (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
             return self.mcp_tools.iter().any(|name| name == tool);
         }
         match tool {
@@ -194,7 +194,7 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
     Some(words)
 }
 
-/// Pure: bash grants match by word prefix (ADR-0014): allowing `cargo
+/// Pure: bash grants match by word prefix (ADR-permission-modes-gate-mutations-no-os-sandbox): allowing `cargo
 /// test` covers `cargo test -- --nocapture` — extension by plain
 /// arguments. A suffix the shell would read as more commands,
 /// redirections, or substitution never rides a grant: such lines fail
@@ -255,14 +255,14 @@ pub(crate) fn stamp_gate(
     }
     drop(transcript);
     // A gate stamp is a pause point that can outlive any stream tick
-    // (ADR-0032): the pending chip must be on disk while the Turn waits
+    // (ADR-transcript-append-only-log-per-chat-lock): the pending chip must be on disk while the Turn waits
     // on the user, or a crash while paused loses the whole run entry.
     for entry_id in changed {
         chat.persist_entry(&entry_id);
     }
 }
 
-/// What the run needs to make one review pass (ADR-0014): the chat's own
+/// What the run needs to make one review pass (ADR-permission-modes-gate-mutations-no-os-sandbox): the chat's own
 /// model through the same provider transport the run uses — no
 /// separately-configured reviewer.
 #[derive(Clone)]
@@ -432,7 +432,7 @@ async fn run_review_pass(
     }
 }
 
-/// Everything the run hands the gate hook (ADR-0014): the Turn's
+/// Everything the run hands the gate hook (ADR-permission-modes-gate-mutations-no-os-sandbox): the Turn's
 /// snapshotted mode, the chat it gates, the reviewer model for
 /// auto-review, and the approval registry confirm-changes waits on.
 pub(crate) struct GateWiring {
@@ -444,12 +444,12 @@ pub(crate) struct GateWiring {
     pub(crate) review: ReviewTransport,
     pub(crate) cancel: CancellationToken,
     /// The Routine store: a run Chat's record shows waiting while its
-    /// Approval is open (ADR-0042).
+    /// Approval is open (ADR-routines-fire-in-process-and-coalesce-missed-fires).
     pub(crate) routines: Option<Arc<crate::routines::Routines>>,
 }
 
 /// Build the gate's before-tool-call hook for one run. The mode is the
-/// Turn's snapshot (ADR-0014): switches mid-Turn leave the running Turn
+/// Turn's snapshot (ADR-permission-modes-gate-mutations-no-os-sandbox): switches mid-Turn leave the running Turn
 /// under its original mode. The hook blocks in the verdict wait and races
 /// the run's cancellation token, so no approval can outlive its Turn.
 pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
@@ -479,10 +479,10 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                 if !is_mutating_tool(&ctx.tool_call.name) && !forced {
                     return None;
                 }
-                // Grants are checked BEFORE the gatekeeper (ADR-0014), so
+                // Grants are checked BEFORE the gatekeeper (ADR-permission-modes-gate-mutations-no-os-sandbox), so
                 // they hold across mode switches; only a mode with no
                 // gatekeeper (full-access) records no artifacts at all.
-                // Forced tools (ADR-0029) skip grants entirely — every
+                // Forced tools (ADR-model-setup-applies-stored-proposals) skip grants entirely — every
                 // apply asks the user, no session exemption exists.
                 let arguments = ctx
                     .args
@@ -582,7 +582,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                         origin: None,
                         id: approval_id.clone(),
                         // A forced approval carries what the user is
-                        // judging — the stored proposal's summary (ADR-0029).
+                        // judging — the stored proposal's summary (ADR-model-setup-applies-stored-proposals).
                         state: ToolGateState::Pending {
                             note: forced
                                 .then(|| {
@@ -685,7 +685,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
     )
 }
 
-/// Settle any gate still pending on load (ADR-0014): an engine restart
+/// Settle any gate still pending on load (ADR-permission-modes-gate-mutations-no-os-sandbox): an engine restart
 /// ends the Turn that opened it, so the call settles as aborted — the
 /// persisted chip replays settled, never eternally pending.
 pub(crate) fn settle_pending_gates_on_load(transcript: &mut [holt_doc::SessionMessageEntry]) {
@@ -930,7 +930,7 @@ mod tests {
         assert!(is_mutating_tool("bash"));
         assert!(!is_mutating_tool("read"));
         assert!(!is_mutating_tool("grep"));
-        // The web tools are read-tier (ADR-0023): fetch reads a page and
+        // The web tools are read-tier (ADR-web-tools-full-text-ungated-pluggable-search): fetch reads a page and
         // search queries one, so neither ever meets the gate.
         assert!(!is_mutating_tool("web_fetch"));
         assert!(!is_mutating_tool("web_search"));
@@ -938,7 +938,7 @@ mod tests {
         assert!(!is_mutating_tool("Bash"));
         assert!(!is_mutating_tool("bash_safe"));
         assert!(!is_mutating_tool("writefile"));
-        // MCP tools are presumed mutating by prefix (ADR-0034) — foreign
+        // MCP tools are presumed mutating by prefix (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) — foreign
         // code always meets the gatekeeper in the gating modes.
         assert!(is_mutating_tool("mcp__fixture__echo"));
         assert!(is_mutating_tool("mcp__anything"));

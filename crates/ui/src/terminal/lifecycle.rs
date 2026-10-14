@@ -1,6 +1,6 @@
 //! One confirmation path for window chrome, Cmd+Q, and native Dock quit.
 //! The file sidebar's unsaved drafts gate the SAME decision, ahead of the
-//! running-terminal check (ADR-0020; decision 11): a failed save refuses the
+//! running-terminal check (ADR-file-editing-state-belongs-to-spaces; decision 11): a failed save refuses the
 //! exit, and cancelling either keeps the app — and the terminals — alive.
 
 use crate::shell::Shell;

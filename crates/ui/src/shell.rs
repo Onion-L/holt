@@ -340,7 +340,7 @@ pub struct Shell {
     /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
     subagent_seq: u64,
-    /// The Turn review surfaces by id (ADR-0024 ticket 04) — read-only
+    /// The Turn review surfaces by id (ADR-turn-change-sets-and-review ticket 04) — read-only
     /// per-file diffs over one Turn's change set.
     turn_reviews: std::collections::HashMap<u64, Entity<crate::turn_review::TurnReview>>,
     turn_review_seq: u64,
@@ -363,7 +363,7 @@ pub struct Shell {
     file_tree_visible: bool,
     /// The File tree column's width tween.
     file_tree_tween: Option<WidthTween>,
-    /// Space-owned file tabs (ADR-0020): open tabs, their viewers, and the
+    /// Space-owned file tabs (ADR-file-editing-state-belongs-to-spaces): open tabs, their viewers, and the
     /// strip's selected tab, keyed by space.
     file_state: FileStateMap,
     /// Event hookups for open file viewers (resolved-path bookkeeping).
@@ -1811,7 +1811,7 @@ impl Shell {
             overlays.push(popover::top_alert("provider-error-alert", viewport, card));
         }
 
-        // The chat-state card (ADR-0044's goal card, now also carrying the
+        // The chat-state card (ADR-goal-mode-verified-loop-at-turn-settle's goal card, now also carrying the
         // Plan/Provider Mode forms): the chat's live state pinned at the
         // column's head, notices flowing beneath it. Chat route only — the
         // card answers to the conversation on screen. An expanded (takeover)
@@ -1914,7 +1914,7 @@ impl Shell {
         // composer sits below (new-chat mode mints the chat id on first
         // send). The Home space guarantees a working directory from the
         // first boot, so there is no blocking onboarding step anymore —
-        // a first-project hint rides the canvas instead (ADR-0039).
+        // a first-project hint rides the canvas instead (ADR-home-space-for-project-less-chats).
         let outlet: AnyElement = if has_selection {
             // Re-roll the new-chat mark while the canvas is hidden, so the
             // next bare-canvas visit shows a fresh random shape.
@@ -1935,7 +1935,7 @@ impl Shell {
                 None => "What should we build?".into(),
             };
             // First-project hint: only while the Home space is the whole
-            // world (ADR-0039) — the canvas works without a project, the
+            // world (ADR-home-space-for-project-less-chats) — the canvas works without a project, the
             // hint just keeps the folder onboarding one click away.
             let show_hint = !self.settings.home_hint_dismissed
                 && self.state.read(cx).spaces.len() == 1
@@ -2526,7 +2526,7 @@ impl Render for Shell {
                 },
             ));
         }
-        // The quit lifecycle needs the shell's file-draft census (ADR-0020);
+        // The quit lifecycle needs the shell's file-draft census (ADR-file-editing-state-belongs-to-spaces);
         // it is a global created before any window, so attach on first
         // render.
         if !self.lifecycle_attached {
@@ -3062,7 +3062,7 @@ mod tests {
         }
     }
 
-    /// The Turn review companion (ADR-0024 ticket 04): a card's Review opens
+    /// The Turn review companion (ADR-turn-change-sets-and-review ticket 04): a card's Review opens
     /// ONE read-only surface in the right pane and aims it at the Turn's
     /// file; a second selection re-aims that same surface rather than
     /// stacking tabs; a closed review is recreated by the next selection.

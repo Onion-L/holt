@@ -1,7 +1,7 @@
 //! The approval bar: one composer-takeover panel for every user verdict.
 //! While something pends, the composer's pill is replaced by a flat
 //! keyboard-first option list whose trailing row is a free-text input.
-//! Two producers feed it (ADR-0014 / ADR-0025, prototype 4's variant 1):
+//! Two producers feed it (ADR-permission-modes-gate-mutations-no-os-sandbox / ADR-plan-mode-is-an-independent-approval-checkpoint, prototype 4's variant 1):
 //!
 //! - **Gate** — a confirm-changes gate: the gated target as a bare mono
 //!   lead line, then Allow once / Always allow · this session / Deny, the
@@ -13,7 +13,7 @@
 //!   feedback (its Enter sends the `reject` verdict with the note, which
 //!   keeps planning). No target line (the plan document is the transcript
 //!   card above); Escape is inert (no Turn is blocked on a plan).
-//! - **Question** — the agent's ask_user card (ADR-0040): the question
+//! - **Question** — the agent's ask_user card (ADR-ask-user-is-a-question-card): the question
 //!   as the title, its options as keyboard-first rows (a multi-question
 //!   card pages with left/right and a 1/N pager), the note row as the
 //!   free-text answer. Escape dismisses the card unanswered — nothing is
@@ -53,11 +53,11 @@ use crate::transcript::{
 /// Which approval subsystem the open bar answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BarKind {
-    /// ADR-0014 confirm-changes gate.
+    /// ADR-permission-modes-gate-mutations-no-os-sandbox confirm-changes gate.
     Gate,
-    /// ADR-0025 plan approval.
+    /// ADR-plan-mode-is-an-independent-approval-checkpoint plan approval.
     Plan,
-    /// The agent's `ask_user` question (ADR-0040): the options are the
+    /// The agent's `ask_user` question (ADR-ask-user-is-a-question-card): the options are the
     /// card's enumerated answers, the note row is the free-text answer.
     Question,
 }
@@ -97,7 +97,7 @@ pub(crate) struct ApprovalPrompt {
     pub pager: Option<(usize, usize)>,
 }
 
-/// The gate's prompt (ADR-0014): the kind-specific title, the mono target
+/// The gate's prompt (ADR-permission-modes-gate-mutations-no-os-sandbox): the kind-specific title, the mono target
 /// line, and the three verdict options. The trailing note row is NOT an
 /// option — it is the free-text input.
 pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
@@ -134,7 +134,7 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
     }
 }
 
-/// The plan's prompt (ADR-0025): no target line (the submitted plan is
+/// The plan's prompt (ADR-plan-mode-is-an-independent-approval-checkpoint): no target line (the submitted plan is
 /// the transcript card above) — title, the Approve option, and the note
 /// row carrying the revision feedback.
 pub(crate) fn plan_prompt() -> ApprovalPrompt {
@@ -152,7 +152,7 @@ pub(crate) fn plan_prompt() -> ApprovalPrompt {
     }
 }
 
-/// The question's prompt for one page (ADR-0040): that question is the
+/// The question's prompt for one page (ADR-ask-user-is-a-question-card): that question is the
 /// title, its enumerated options are the rows, and the note row is the
 /// free-text answer. Multi-question cards carry a pager.
 pub(crate) fn question_prompt(questions: &[holt_doc::CardQuestion], page: usize) -> ApprovalPrompt {
@@ -185,11 +185,11 @@ pub(crate) enum PendingApproval {
         call: ToolCall,
         id: String,
         /// The pending gate's note — a forced approval's stored-proposal
-        /// summary (ADR-0029); `None` on ordinary approvals.
+        /// summary (ADR-model-setup-applies-stored-proposals); `None` on ordinary approvals.
         note: Option<String>,
     },
     Plan(String),
-    /// A pending question card (ADR-0040): the card id answers the RPC,
+    /// A pending question card (ADR-ask-user-is-a-question-card): the card id answers the RPC,
     /// the questions build the bar one page per question.
     Question {
         card_id: String,
@@ -197,7 +197,7 @@ pub(crate) enum PendingApproval {
     },
 }
 
-/// The model-setup apply tool (ADR-0029): the one gated call that is not
+/// The model-setup apply tool (ADR-model-setup-applies-stored-proposals): the one gated call that is not
 /// the write/edit/bash trio.
 fn is_model_apply(call: &ToolCall) -> bool {
     matches!(call, ToolCall::Unknown { name, .. } if name == "model_apply")

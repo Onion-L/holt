@@ -1,4 +1,4 @@
-//! Engine-owned title-task settings (ADR-0012): one JSON record in the data
+//! Engine-owned title-task settings (ADR-automatic-titles-run-outside-pi-hooks): one JSON record in the data
 //! dir, separate from UI settings, mutated only through the typed RPC
 //! surface. An empty model id means automatic titles are disabled.
 

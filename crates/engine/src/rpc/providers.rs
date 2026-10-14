@@ -1,4 +1,4 @@
-//! The provider/model catalog surface (ADR-0028/0031/0037): keys, probes,
+//! The provider/model catalog surface (ADR-three-layer-provider-catalog/0031/0037): keys, probes,
 //! records, logos, proposals, and the settle cards.
 
 use holt_proto::RunOutcome;
@@ -189,7 +189,7 @@ impl EngineService {
         RpcReply::value(&rows)
     }
 
-    // The proposal card's Write (ADR-0037): the write path the agent
+    // The proposal card's Write (ADR-provider-mode-is-a-chat-mode): the write path the agent
     // never holds. Revalidation rides `apply_changes`; the button is
     // the human approval. A gone proposal (superseded, evicted,
     // settled) stamps its card so no stale Write lingers; any other
@@ -258,7 +258,7 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({ "discarded": true }))
     }
 
-    // The settle (ADR-0031): one engine-owned operation — save the
+    // The settle (ADR-api-keys-collected-through-key-requests): one engine-owned operation — save the
     // key (never the chat), queue the fixed notice, clear the card.
     pub(super) async fn settle_provider_key_request(
         &self,
@@ -308,7 +308,7 @@ impl EngineService {
                 return Err(RpcError::Failed(error.to_string()));
             }
             // The entry approves the destination the card showed
-            // (ADR-0031): this chat's planned-target probes may
+            // (ADR-api-keys-collected-through-key-requests): this chat's planned-target probes may
             // now carry the key against the exact same baseUrl.
             chat.approved_key_destinations
                 .lock()
@@ -630,7 +630,7 @@ impl EngineService {
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
             }
             // Global reset: back to the compiled catalog under the
-            // hand-edited overlay for every provider (ADR-0028).
+            // hand-edited overlay for every provider (ADR-three-layer-provider-catalog).
             None => {
                 self.providers
                     .settings

@@ -1,4 +1,4 @@
-//! The workspace file surface (ADR-0020): roots, listing, reads, writes,
+//! The workspace file surface (ADR-file-editing-state-belongs-to-spaces): roots, listing, reads, writes,
 //! entries, and the workspace watches.
 
 use holt_proto::WorkspaceGitStatus;
@@ -88,7 +88,7 @@ impl EngineService {
         RpcReply::value(&matches)
     }
 
-    // File sidebar (ADR-0020 groundwork): one directory level and
+    // File sidebar (ADR-file-editing-state-belongs-to-spaces groundwork): one directory level and
     // bounded text reads, fenced behind the owning space's root. The
     // blocking FS work runs off the async workers like SearchFiles.
     pub(super) async fn list_workspace_entries(

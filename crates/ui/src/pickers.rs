@@ -1,7 +1,7 @@
 //! Composer pickers (feature-inventory §1.7): RepoPicker (recents + search +
 //! in-app folder browser + clone/create), BranchPicker (search + create row +
 //! immediate safe switches of the target working directory — live in
-//! sessions too, ADR-0007), ProviderModelPicker (provider rail + model list,
+//! sessions too, ADR-branch-is-live-working-tree-state), ProviderModelPicker (provider rail + model list,
 //! provider locked once the chat exists), TraitsPicker (reasoning ladder +
 //! advertised model options; trigger shows the non-default summary
 //! "High · 1M · Fast").
@@ -120,7 +120,7 @@ pub enum PickerKind {
     /// (reasoning ladder + model options) at the bottom — one trigger, one
     /// card (the separate Traits popover folded in here).
     ProviderModel,
-    /// The permission-mode tier menu (ADR-0014): the footer's persistent
+    /// The permission-mode tier menu (ADR-permission-modes-gate-mutations-no-os-sandbox): the footer's persistent
     /// shield control — same chip, same menu, in empty and populated chats.
     Mode,
     /// New-session canvas only: which project the session mints into. A pick
@@ -140,12 +140,12 @@ pub struct Pickers {
     /// Selection the draft picks belong to — switching chats drops them so a
     /// pick made in one chat never leaks into another.
     draft_owner: Option<String>,
-    /// The engine's sticky permission-mode default for new chats (ADR-0014),
+    /// The engine's sticky permission-mode default for new chats (ADR-permission-modes-gate-mutations-no-os-sandbox),
     /// fetched once via `GetPermissionModeDefault`: the canvas chip's
     /// fallback when no chat row and no draft pick applies.
     sticky_mode: PermissionMode,
     sticky_mode_loaded: bool,
-    /// The new-chat canvas's Provider Mode draft (ADR-0037): the first send
+    /// The new-chat canvas's Provider Mode draft (ADR-provider-mode-is-a-chat-mode): the first send
     /// enters Provider Mode. Only read while no chat is selected.
     pub(crate) provider_mode_draft: bool,
     /// Space the branch draft/cache belong to (see the state observer).
@@ -194,10 +194,10 @@ pub struct Pickers {
     /// provider/model loads — sharing `load_task` would abort one mid-flight.
     refs_task: Option<Task<()>>,
     /// In-flight branch switch (the ref being switched to): one at a time,
-    /// draft or session alike (ADR-0007).
+    /// draft or session alike (ADR-branch-is-live-working-tree-state).
     switching: Option<String>,
     switch_task: Option<Task<()>>,
-    /// The raised switch-failure dialog (ADR-0007): inform-only, dismissed
+    /// The raised switch-failure dialog (ADR-branch-is-live-working-tree-state): inform-only, dismissed
     /// explicitly. Set by the pick/create failure paths; `None` = quiet.
     switch_dialog: Option<SwitchDialogContent>,
     mutate_task: Option<Task<()>>,
@@ -386,7 +386,7 @@ impl Pickers {
         &self.config
     }
 
-    /// The engine's sticky permission-mode default for new chats (ADR-0014):
+    /// The engine's sticky permission-mode default for new chats (ADR-permission-modes-gate-mutations-no-os-sandbox):
     /// what an untouched canvas send would actually run under.
     pub(crate) fn sticky_mode(&self) -> PermissionMode {
         self.sticky_mode
@@ -839,7 +839,7 @@ impl Pickers {
 
     // ---- render ----
 
-    /// The switch-failure modal (ADR-0007): inform-only — explanation, the
+    /// The switch-failure modal (ADR-branch-is-live-working-tree-state): inform-only — explanation, the
     /// blocking file list when the refusal carried one, and a single
     /// dismiss. No force, stash, or discard action exists anywhere.
     fn render_switch_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -963,9 +963,9 @@ impl Pickers {
     }
 
     /// The composer footer row: the persistent permission-mode shield
-    /// (ADR-0014) first, then the checkout-kind + branch chip when the picked
+    /// (ADR-permission-modes-gate-mutations-no-os-sandbox) first, then the checkout-kind + branch chip when the picked
     /// (or session's) project has git. In a session the branch chip is live
-    /// (ADR-0007): it renders the working directory's current branch and its
+    /// (ADR-branch-is-live-working-tree-state): it renders the working directory's current branch and its
     /// picker switches the chat's own folder. The project picker lives in the
     /// row above the pill ([`Self::render_target_selectors`]); sessions name
     /// their target in the titlebar. The mode control renders in BOTH empty
@@ -1012,7 +1012,7 @@ impl Pickers {
 
         if let Some(chat) = &session {
             // A live session: the branch chip is the same interactive pick
-            // the draft renders (ADR-0007) — it shows the working
+            // the draft renders (ADR-branch-is-live-working-tree-state) — it shows the working
             // directory's live current branch, and a pick safe-switches the
             // chat's own folder immediately (mid-Turn included). The
             // checkout-kind label stays display-only here; its "New
@@ -1065,7 +1065,7 @@ impl Pickers {
             // nothing rather than an empty ring.
             let usage = self.state.read(cx).chat_usage.clone();
             if let Some(space) = space.as_ref().filter(|s| s.git_detected) {
-                // One rule for the kind icon and its label (ADR-0007).
+                // One rule for the kind icon and its label (ADR-branch-is-live-working-tree-state).
                 let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());
                 let icon_path = if is_worktree {
                     crate::icons::FOLDER_WITH_FILES
@@ -1223,7 +1223,7 @@ impl Render for Pickers {
         self.ensure_providers(false, cx);
         self.prefetch_models(false, cx);
         // The canvas mode chip's fallback: the engine's sticky new-chat
-        // default (ADR-0014) — idempotent, one fetch per engine attach.
+        // default (ADR-permission-modes-gate-mutations-no-os-sandbox) — idempotent, one fetch per engine attach.
         self.ensure_mode_default(cx);
         // A popover opened data-side (HOLT_OPEN_PICKER) never went through
         // `toggle`, so kick its loads here (all ensure_* are idempotent).

@@ -1,7 +1,7 @@
 //! Live provider-catalog writes through the RPC surface (model setup, P1):
 //! `SaveModelRecord` / `SetHiddenModels` / `SaveCustomProvider` /
 //! `ResetProviderCatalog` operate on the settings layer only — every change
-//! is visible immediately (ADR-0028: the boot catalog answers underneath,
+//! is visible immediately (ADR-three-layer-provider-catalog: the boot catalog answers underneath,
 //! the live layer on top, no restart).
 
 use crate::common;
@@ -198,7 +198,7 @@ async fn a_custom_provider_flows_from_definition_to_key_to_models() {
             .is_some_and(|row| row["custom"] == false)
     );
 
-    // The key path opens for it (Settings is the only key path — ADR-0029).
+    // The key path opens for it (Settings is the only key path — ADR-model-setup-applies-stored-proposals).
     engine
         .handle(
             methods::SAVE_PROVIDER_KEY,

@@ -141,7 +141,7 @@ pub struct GeneralPage {
     custom_instruction_enabled: bool,
     instruction: Entity<ComposerInput>,
     save_error: Option<String>,
-    /// The goal-verifier record (ADR-0044 follow-up): its own read/save
+    /// The goal-verifier record (ADR-goal-mode-verified-loop-at-turn-settle follow-up): its own read/save
     /// lifecycle, warning strip included, independent of the title group.
     goal_settings: Loadable<GoalSettingsState>,
     verifier_model: Option<String>,

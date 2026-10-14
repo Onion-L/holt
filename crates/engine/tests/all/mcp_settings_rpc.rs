@@ -1,4 +1,4 @@
-//! The MCP Settings quartet at the RPC seam (ADR-0034, ticket 07):
+//! The MCP Settings quartet at the RPC seam (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 07):
 //! `GetMcpSettings` returns every definition plus any file-level
 //! validation error, `SaveMcpServer` strictly validates and upserts (the
 //! `[A-Za-z0-9_-]` name rule, atomic 0600 write, next-Turn effect),

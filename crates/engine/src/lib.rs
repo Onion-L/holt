@@ -9,10 +9,10 @@
 //! - [`InstanceLock`] — single-instance guard on the data dir.
 //! - module map: `agent` (run loop + runtime state), `rpc` (dispatch +
 //!   handlers), `store` (JSON persistence), `history` (the per-chat
-//!   model-facing History record, ADR-0010), `local_fs` (folder browsing),
+//!   model-facing History record, ADR-history-is-a-separate-persisted-record), `local_fs` (folder browsing),
 //!   `path_search` (fuzzy workspace path search behind `SearchFiles`),
 //!   `git` (the git2-backed branch/diff capability — the only git2 user),
-//!   `skills` (the ADR-0005/0006 skill-root catalog), plus provider
+//!   `skills` (the ADR-skills-referenced-in-place-from-standard-roots/0006 skill-root catalog), plus provider
 //!   discovery and Holt-owned credential storage behind the RPC seam.
 
 use std::{
@@ -169,25 +169,25 @@ struct EngineService {
     /// The `WatchCheckoutDiffs` hub — live checkout-diff awareness over the
     /// git-detected spaces.
     watch: Arc<git_watch::WatchHub>,
-    /// Latest Turn baseline per chat (ADR-0024): in-memory, dropped on
+    /// Latest Turn baseline per chat (ADR-turn-change-sets-and-review): in-memory, dropped on
     /// restart. Also carries each Turn's frozen final change set; settled
     /// Turns persist through `turn_change_store`.
     turn_changes: Arc<turn_changes::TurnChanges>,
-    /// The skills capability (ADR-0005/0006): root resolution and catalog
+    /// The skills capability (ADR-skills-referenced-in-place-from-standard-roots/0006): root resolution and catalog
     /// assembly over the upstream loader.
     skills: skills::Skills,
     /// Managed images (pasted screenshots) plus the bounded preview-read and
     /// cleanup surface behind `ReadImage`/`StageImage`/`ReleaseImage`.
     images: Arc<images::ImageStore>,
-    /// Engine-owned title-task settings (ADR-0012).
+    /// Engine-owned title-task settings (ADR-automatic-titles-run-outside-pi-hooks).
     title_settings: title_settings::TitleSettingsStore,
-    /// Engine-owned goal-verifier settings (ADR-0044 follow-up): the
+    /// Engine-owned goal-verifier settings (ADR-goal-mode-verified-loop-at-turn-settle follow-up): the
     /// optional model the goal loop's verification pass rides.
     goal_settings: goal_settings::GoalSettingsStore,
-    /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
+    /// Engine-owned sticky permission-mode default (ADR-permission-modes-gate-mutations-no-os-sandbox): the mode new
     /// chats inherit; first launch defaults to confirm-changes.
     mode_default: mode_default::ModeDefaultStore,
-    /// Engine-owned web-search settings (ADR-0023): the user-chosen search
+    /// Engine-owned web-search settings (ADR-web-tools-full-text-ungated-pluggable-search): the user-chosen search
     /// backend record behind the `web_search` tool's mounting.
     web_search: web_search_settings::WebSearchStore,
     /// Test-injected backend resolver (`EngineConfig`); production resolves
@@ -196,12 +196,12 @@ struct EngineService {
     search_backend_resolver: Option<SearchBackendResolver>,
     /// The engine wall clock (`EngineConfig::clock`, else the system time).
     clock: Clock,
-    /// Persisted Routines (ADR-0042) and their pushed watch value.
+    /// Persisted Routines (ADR-routines-fire-in-process-and-coalesce-missed-fires) and their pushed watch value.
     routines: Arc<routines::Routines>,
     /// Stops the Routine scheduler task on shutdown.
     scheduler: tokio_util::sync::CancellationToken,
     terminals: Arc<terminals::Terminals>,
-    /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
+    /// The Turn terminal event dispatcher (ADR-turn-completion-is-an-engine-owned-event): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
     turn_events: turn_events::TurnEvents,
     updater: Arc<update::Updater>,
@@ -215,10 +215,10 @@ impl LocalEngine {
         let lock = InstanceLock::acquire(&config.data_dir)?;
         let device_id = load_or_create_device_id(&config.data_dir)?;
         let mut spaces = load_spaces(&config.data_dir)?;
-        // Lazy checkout-identity backfill (ADR-0002): git-detected spaces
+        // Lazy checkout-identity backfill (ADR-git-hangs-off-spaces-no-repo-registry): git-detected spaces
         // persisted before this feature gain their canonical identity now.
         let backfilled = backfill_checkout_ids(&device_id, &mut spaces);
-        // The Home space (ADR-0039) is engine-owned and always present.
+        // The Home space (ADR-home-space-for-project-less-chats) is engine-owned and always present.
         let home_ensured = ensure_home_space(&device_id, &config.data_dir, &mut spaces)?;
         if backfilled || home_ensured {
             store::persist_spaces(&config.data_dir, &spaces)?;
@@ -231,10 +231,10 @@ impl LocalEngine {
             serde_json::to_value(&*spaces).map_err(|error| EngineError::Other(error.to_string()))?
         };
         let (spaces_tx, _) = watch::channel(spaces_value);
-        // ADR-0037 retired the Settings setup chat (ADR-0030): rows older
+        // ADR-provider-mode-is-a-chat-mode retired the Settings setup chat (ADR-model-setup-scoped-chat-agent-never-applies): rows older
         // builds left behind are deleted with their records on startup.
         let mut chats = load_chats(&config.data_dir)?;
-        // ADR-0039 one-time adoption: chats minted before the Home space
+        // ADR-home-space-for-project-less-chats one-time adoption: chats minted before the Home space
         // (when the canvas allowed project-less `~`-cwd sessions) join it
         // now. A `~`/unset cwd moves into the Home folder; any other cwd
         // was an explicit pick and stays. Afterwards `space_id: None` is
@@ -268,7 +268,7 @@ impl LocalEngine {
             chats.retain(|chat| !retired.contains(&chat.id));
             store::persist_chats(&config.data_dir, &chats)?;
         }
-        // Goal-mode reconciliation (ADR-0044): an active goal whose queue
+        // Goal-mode reconciliation (ADR-goal-mode-verified-loop-at-turn-settle): an active goal whose queue
         // holds no continuation can never run again — continuations are
         // born only at a Turn settle — so it opens paused.
         if crate::goal::reconcile_on_boot(&config.data_dir, &mut chats) {
@@ -369,7 +369,7 @@ impl Drop for LocalEngine {
     }
 }
 
-/// The Home space folder (ADR-0039): `<data_dir>/workspace/default`.
+/// The Home space folder (ADR-home-space-for-project-less-chats): `<data_dir>/workspace/default`.
 pub(crate) fn home_space_path(data_dir: &Path) -> PathBuf {
     data_dir.join("workspace").join("default")
 }
@@ -421,7 +421,7 @@ fn ensure_home_space(
 }
 
 /// Stamp git-detected spaces that predate checkout identities with their
-/// canonical id (ADR-0002). Returns whether anything changed.
+/// canonical id (ADR-git-hangs-off-spaces-no-repo-registry). Returns whether anything changed.
 fn backfill_checkout_ids(device_id: &str, spaces: &mut [Space]) -> bool {
     let mut changed = false;
     for space in spaces {
@@ -477,7 +477,7 @@ mod tests {
         }
     }
 
-    /// The Home space (ADR-0039): registered and on disk at every boot,
+    /// The Home space (ADR-home-space-for-project-less-chats): registered and on disk at every boot,
     /// idempotently — a re-assemble neither duplicates the row nor touches
     /// the folder.
     #[test]
@@ -511,7 +511,7 @@ mod tests {
         );
     }
 
-    /// ADR-0039 adoption: legacy spaceless chats join the Home space at
+    /// ADR-home-space-for-project-less-chats adoption: legacy spaceless chats join the Home space at
     /// boot; a `~`/unset cwd moves into the Home folder while an explicit
     /// cwd is preserved.
     #[test]
@@ -1482,7 +1482,7 @@ mod tests {
         .unwrap();
     }
 
-    /// The retired invokeSkill command is refused outright (ADR-0035):
+    /// The retired invokeSkill command is refused outright (ADR-skill-invocation-is-an-inline-mention):
     /// skills ride ordinary messages as inline `$` mentions, so nothing
     /// parks at the queue head through this path.
     #[tokio::test]
@@ -1525,7 +1525,7 @@ mod tests {
             })
         };
 
-        // The dedicated command is retired (ADR-0035): skills ride ordinary
+        // The dedicated command is retired (ADR-skill-invocation-is-an-inline-mention): skills ride ordinary
         // messages as inline `$` mentions, so ANY invokeSkill payload —
         // known name included — is refused. The queue watch is the
         // observable state: nothing pending, not paused.

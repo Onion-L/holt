@@ -1,5 +1,5 @@
 //! Directory listing for the agent-facing `ls` API — the model's only way
-//! to see a directory's structure without a shell (ADR-0025's read-only
+//! to see a directory's structure without a shell (ADR-plan-mode-is-an-independent-approval-checkpoint's read-only
 //! planning surface has no `bash`). One `read_dir` per call is a small
 //! blocking call, inline like [`super`]'s `LocalExecutionEnv` methods; the
 //! entry cap only keeps huge directories (node_modules) from flooding the

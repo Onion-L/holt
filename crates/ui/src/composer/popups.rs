@@ -722,7 +722,7 @@ impl Composer {
             return;
         };
         // The title is the fill: `/compact` for a command, the linked
-        // skill mention for a skill (ADR-0035) — ready for instructions
+        // skill mention for a skill (ADR-skill-invocation-is-an-inline-mention) — ready for instructions
         // and submit.
         let title = candidate.title();
         // `/compact` and `/init` take no arguments, so a selection sends

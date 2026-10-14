@@ -1,4 +1,4 @@
-//! The Turn file-change card (ADR-0024): one Turn's totals with Undo and
+//! The Turn file-change card (ADR-turn-change-sets-and-review): one Turn's totals with Undo and
 //! Review over a foldable file list. Separate from the generic row renderers —
 //! the card is a Turn result with its own fold geometry (see `row_outer_pads`).
 
@@ -8,7 +8,7 @@ use super::*;
 const TURN_CARD_VISIBLE_FILES: usize = 8;
 
 impl Transcript {
-    /// The Turn file-change card (ADR-0024 tickets 03+04): what one Turn
+    /// The Turn file-change card (ADR-turn-change-sets-and-review tickets 03+04): what one Turn
     /// changed, at the end of the Turn's reply. The card is a Turn RESULT:
     /// it only exists once the engine's Final frame settles the Turn — live
     /// frames never draw (user request), and a failed or interrupted settle

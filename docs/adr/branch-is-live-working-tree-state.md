@@ -38,7 +38,7 @@ truth, and the chip renders the working directory's current branch.
   `ReuseWorktree` checkout plan is deleted everywhere, new chats included).
   Worktrees join holt as their own Spaces; picking their ref anywhere shows
   a dialog saying the branch is checked out in that worktree.
-- A turn-diff baseline (ADR-0003) can span a mid-Turn branch switch; the
+- A turn-diff baseline (ADR-turn-diff-net-change-baseline) can span a mid-Turn branch switch; the
   turn diff then shows the branch delta as net changes. Accepted quirk.
 - The conversation is never reset on a target change — moot now that cwd
   never moves, but recorded as a deliberate divergence from the proto

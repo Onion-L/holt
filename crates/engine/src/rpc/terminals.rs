@@ -1,4 +1,4 @@
-//! Chat-owned terminals over the RPC contract (ADR-0017).
+//! Chat-owned terminals over the RPC contract (ADR-terminals-belong-to-chats-and-end-with-the-app).
 
 use holt_rpc::{RpcError, RpcReply, methods};
 

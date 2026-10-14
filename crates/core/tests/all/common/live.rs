@@ -534,7 +534,7 @@ pub fn empty_object_schema() -> serde_json::Value {
 /// `readFileSync(imagePath).toString("base64")`. The fixture is the
 /// upstream `pi-core/ai/test/data/red-circle.png`, committed at
 /// `tests/all/common/data/red-circle.png` when the oracle checkout left the
-/// repository (ADR-0043).
+/// repository (ADR-agent-core-is-a-holt-owned-workspace-crate).
 pub fn red_circle_base64() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/all/common/data/red-circle.png");

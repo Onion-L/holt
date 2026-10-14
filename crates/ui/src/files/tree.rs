@@ -1,7 +1,7 @@
 //! The far-right File tree: one `FileTreePanel` entity browsing the current
 //! Chat's working directory (the selected Space's folder before a Chat
 //! exists). Directories load one level per expansion through the engine's
-//! `ListWorkspaceEntries`; expansion and selection are per Space (ADR-0020)
+//! `ListWorkspaceEntries`; expansion and selection are per Space (ADR-file-editing-state-belongs-to-spaces)
 //! and survive Chat switches within the Space. Rows are virtualized through
 //! gpui's `list` — expanding a huge directory adds one request, never a
 //! recursive scan.
@@ -121,7 +121,7 @@ pub(crate) fn marker_color(kind: WorkspaceGitStatusKind, theme: &Theme) -> gpui:
     }
 }
 
-/// Per-Space browsing state — kept alive across Chat switches (ADR-0020).
+/// Per-Space browsing state — kept alive across Chat switches (ADR-file-editing-state-belongs-to-spaces).
 struct SpaceTree {
     dirs: HashMap<String, DirState>,
     /// Request sequence per directory — a newer request for the same dir
@@ -154,7 +154,7 @@ impl SpaceTree {
 /// The root the panel is currently browsing, derived from the app state.
 #[derive(Clone)]
 struct ActiveRoot {
-    /// The Space key file state is keyed by (ADR-0020).
+    /// The Space key file state is keyed by (ADR-file-editing-state-belongs-to-spaces).
     space_key: String,
     /// RPC selector — the selected Chat when one exists (the tree follows
     /// its working directory), the Space on the new-chat canvas.
@@ -1923,7 +1923,7 @@ mod restore_tests {
             "the canvas restores too"
         );
 
-        // A spaceless chat (pre-ADR-0039 relic the boot adoption missed)
+        // A spaceless chat (pre-ADR-home-space-for-project-less-chats relic the boot adoption missed)
         // has no root at all — no `cwd:`-keyed browsing, and a stale record
         // stored under such a key stays unread.
         cx.update(|cx| {

@@ -1,6 +1,6 @@
 //! The File-sidebar workspace RPCs over the handle seam: root resolution,
 //! boundary enforcement (root containment, `.git`, symlinks), the listing
-//! contract, and bounded strict-UTF-8 reads (ADR-0020 groundwork).
+//! contract, and bounded strict-UTF-8 reads (ADR-file-editing-state-belongs-to-spaces groundwork).
 
 use crate::common;
 

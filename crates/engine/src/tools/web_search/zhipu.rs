@@ -1,4 +1,4 @@
-//! The Zhipu search backend adapter (ADR-0023) — the first built-in
+//! The Zhipu search backend adapter (ADR-web-tools-full-text-ungated-pluggable-search) — the first built-in
 //! [`SearchBackend`]. Endpoint and shapes are pinned to the BigModel Web
 //! Search API reference (docs.bigmodel.cn → API 参考 → 工具 API → 网络搜索,
 //! checked 2026-09-10): `POST https://open.bigmodel.cn/api/paas/v4/web_search`

@@ -16,7 +16,7 @@ impl Pickers {
     // ---- the space picker (new-session canvas) ----
 
     /// The picker's project rows: every synced project, sorted — Home
-    /// excluded (ADR-0039): its seat is the "Work outside a project" row,
+    /// excluded (ADR-home-space-for-project-less-chats): its seat is the "Work outside a project" row,
     /// never a listing among real folders.
     fn scoped_space_rows(&self, cx: &App) -> Vec<Space> {
         let state = self.state.read(cx);
@@ -70,7 +70,7 @@ impl Pickers {
     }
 
     /// Re-home the canvas onto the Home space — the "Work outside a
-    /// project" pick (ADR-0039). Persisted like any other pick.
+    /// project" pick (ADR-home-space-for-project-less-chats). Persisted like any other pick.
     pub(super) fn pick_home(&mut self, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| {
             s.select_space(holt_proto::HOME_SPACE_ID.to_string(), cx)
@@ -141,7 +141,7 @@ impl Pickers {
                 }))
                 .into_any_element()
         };
-        // Action rows under a hairline: the Home target (ADR-0039) and
+        // Action rows under a hairline: the Home target (ADR-home-space-for-project-less-chats) and
         // minting a project.
         let home_selected = self
             .state
@@ -230,7 +230,7 @@ mod tests {
         }
     }
 
-    /// Home never lists among the project rows (ADR-0039): its seat is the
+    /// Home never lists among the project rows (ADR-home-space-for-project-less-chats): its seat is the
     /// "Work outside a project" action, which selects it and persists the
     /// pick like any project.
     #[gpui::test]

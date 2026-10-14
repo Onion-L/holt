@@ -1,5 +1,5 @@
 //! Content search for the agent-facing `grep` API, built on ripgrep's own
-//! crates in process (ADR-0004). Unlike the env-backed
+//! crates in process (ADR-in-process-ripgrep-for-content-search). Unlike the env-backed
 //! built-ins — small blocking calls by design, see [`super`]'s `LocalExecutionEnv`] —
 //! a search can walk a whole tree, so the walk runs on `spawn_blocking` and
 //! checks the run's cancellation token between files.

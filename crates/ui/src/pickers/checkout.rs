@@ -21,7 +21,7 @@ use super::{MAX_REF_ROWS, PickerKind};
 impl Pickers {
     // ---- selections ----
 
-    /// One ref-pick, routed the same way on every surface (ADR-0007): the
+    /// One ref-pick, routed the same way on every surface (ADR-branch-is-live-working-tree-state): the
     /// already-current ref closes, a worktree-hosted ref explains itself,
     /// and a plain ref safe-switches the target working directory right
     /// away — mid-Turn included; the running Turn is never interrupted.
@@ -65,7 +65,7 @@ impl Pickers {
         }
     }
 
-    /// The working directory branch operations address (ADR-0007): the
+    /// The working directory branch operations address (ADR-branch-is-live-working-tree-state): the
     /// chat's own folder in a session — a legacy worktree chat switches
     /// inside its own worktree — and the space's folder in the draft.
     pub(super) fn switch_target_path(&self, cx: &App) -> Option<String> {
@@ -78,7 +78,7 @@ impl Pickers {
 
     /// Safe-switch the target working directory to a plain ref. Success
     /// closes the popover and refreshes the rows' `current` tags; failure
-    /// closes it too and raises the switch dialog (ADR-0007 — dirty-tree
+    /// closes it too and raises the switch dialog (ADR-branch-is-live-working-tree-state — dirty-tree
     /// refusals with their blocking files, and every other failure).
     fn safe_switch_ref(&mut self, row: RepoRef, surface: PickSurface, cx: &mut Context<Self>) {
         if self.switching.is_some() {
@@ -248,7 +248,7 @@ impl Pickers {
 
     /// The target working directory's live current branch, as the loaded
     /// rows tag it (the rows are listed against the chat's own folder in a
-    /// session — ADR-0007).
+    /// session — ADR-branch-is-live-working-tree-state).
     pub(super) fn live_current_branch(&self) -> Option<String> {
         self.refs
             .ready()?
@@ -275,7 +275,7 @@ impl Pickers {
     }
 
     /// The resolved on-send checkout action for a new session. Two arms
-    /// only (ADR-0007): the space folder, or a fresh worktree — the picked
+    /// only (ADR-branch-is-live-working-tree-state): the space folder, or a fresh worktree — the picked
     /// ref's existing worktree is never a target.
     pub fn checkout_plan(&self) -> CheckoutPlan {
         match self.config.checkout {
@@ -424,7 +424,7 @@ impl Pickers {
 
     /// The branch picker's create row: a collapsed affordance that expands
     /// into an inline name input — mid-chat too, where a create lands on
-    /// the fresh branch in the chat's own working directory (ADR-0007).
+    /// the fresh branch in the chat's own working directory (ADR-branch-is-live-working-tree-state).
     fn branch_create_row(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         if !self.branch_create_engaged {
             return popover::menu_row_nav(theme, false, false, "branch-create-row".to_string())

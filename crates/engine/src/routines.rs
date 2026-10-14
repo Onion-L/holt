@@ -1,4 +1,4 @@
-//! The Routine store (ADR-0042): every Routine and its run records in one
+//! The Routine store (ADR-routines-fire-in-process-and-coalesce-missed-fires): every Routine and its run records in one
 //! JSON file under the data dir, written atomically. Mutations go through
 //! `update`, which persists before the in-memory list moves and then
 //! publishes the Routines watch.

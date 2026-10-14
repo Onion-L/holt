@@ -1,6 +1,6 @@
 //! The provider-retry notice dispatcher: fire-and-forget fan-out of live
 //! provider-retry backoff signals to `WatchTurnRetry` subscribers. The same
-//! contract as `turn_events` (ADR-0019) one level down: publishing never
+//! contract as `turn_events` (ADR-turn-completion-is-an-engine-owned-event) one level down: publishing never
 //! awaits consumer work and never fails the run — a closed or lagging
 //! consumer is the consumer's failure. Notices are live-only: nothing is
 //! persisted or replayed across restart.

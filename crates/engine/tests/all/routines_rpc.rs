@@ -1,4 +1,4 @@
-//! Routines (ADR-0042) over the RPC surface: create, list, delete, pause,
+//! Routines (ADR-routines-fire-in-process-and-coalesce-missed-fires) over the RPC surface: create, list, delete, pause,
 //! the Routines watch, and Run now — the run Chat's shape (the Routine's name as
 //! a user-owned title, its model and Permission mode, the run marker, the
 //! prompt verbatim as the first message), and persistence across restart.

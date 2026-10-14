@@ -1,4 +1,4 @@
-//! Provider Mode (ADR-0037): the chat-level catalog-setup mode. The mode
+//! Provider Mode (ADR-provider-mode-is-a-chat-mode): the chat-level catalog-setup mode. The mode
 //! flag rides the chat row (`Chat::provider_mode`); this module owns the
 //! chat's persisted setup state — stored proposals, the pending Key
 //! request, and the approved key destinations — so a restart keeps every
@@ -139,7 +139,7 @@ pub(crate) fn delete(data_dir: &Path, chat_id: &str) {
     }
 }
 
-/// The Provider Mode toolset (ADR-0037): web research plus the read-only
+/// The Provider Mode toolset (ADR-provider-mode-is-a-chat-mode): web research plus the read-only
 /// proposal tool, the Key request, and the provider choice. No file
 /// access, no delegation, no MCP, and no apply — the card's Write button
 /// is the only write path.
@@ -196,7 +196,7 @@ pub(crate) fn provider_mode_block(web_search: bool) -> String {
 }
 
 /// The card a settled catalog tool call leaves in the transcript
-/// (ADR-0037), built from its result details: a proposal card for a stored
+/// (ADR-provider-mode-is-a-chat-mode), built from its result details: a proposal card for a stored
 /// proposal, a key card for a shown Key request. Inquiries, no-ops, and
 /// errors leave none.
 pub(crate) fn tool_card(
@@ -250,10 +250,10 @@ pub(crate) fn tool_card(
 }
 
 /// Apply `stamp` to every part in the transcript; each entry it changed
-/// re-appends itself to the log (ADR-0032), like `settle_plan_cards`. Card
+/// re-appends itself to the log (ADR-transcript-append-only-log-per-chat-lock), like `settle_plan_cards`. Card
 /// states are display state — the lifecycle already moved in the store or
 /// through the RPC. Also the generic pass behind the question card's
-/// lifecycle stamps (ADR-0040).
+/// lifecycle stamps (ADR-ask-user-is-a-question-card).
 pub(crate) fn stamp_cards(chat: &ChatRuntime, mut stamp: impl FnMut(&mut MessagePart) -> bool) {
     let mut transcript = chat
         .transcript

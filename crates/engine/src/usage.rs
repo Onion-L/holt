@@ -96,7 +96,7 @@ pub(crate) enum TurnOutcome {
 }
 
 impl TurnOutcome {
-    /// The ledger's stamp for a run's terminal `TurnEnd` (ADR-0019) — the
+    /// The ledger's stamp for a run's terminal `TurnEnd` (ADR-turn-completion-is-an-engine-owned-event) — the
     /// failure reason stays on the terminal event; the record keeps only
     /// the outcome.
     pub(crate) fn of(end: &crate::agent::TurnEnd) -> Self {
@@ -735,13 +735,13 @@ pub(crate) fn record_compaction(chat: &ChatRuntime, response: &AssistantMessage)
 }
 
 /// Book the Title task's response immediately at completion — the task is
-/// outside the Turn lifecycle (ADR-0012), and its chat attribution stands
+/// outside the Turn lifecycle (ADR-automatic-titles-run-outside-pi-hooks), and its chat attribution stands
 /// even when the reply normalizes to no title at all.
 pub(crate) fn record_title(chat: &ChatRuntime, response: &AssistantMessage) {
     record_immediate(chat, UsageRecord::from_message(UsageKind::Title, response));
 }
 
-/// Book one goal-verifier pass immediately (ADR-0044): the check runs after
+/// Book one goal-verifier pass immediately (ADR-goal-mode-verified-loop-at-turn-settle): the check runs after
 /// the Turn's batch settled, so the capture buffer would strand the record
 /// until a next Turn that may never come.
 pub(crate) fn record_goal_check(chat: &ChatRuntime, response: &AssistantMessage) {

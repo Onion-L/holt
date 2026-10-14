@@ -107,13 +107,13 @@
 
 ## 4. 对 Holt 的落地建议
 
-结合五家做法与 Holt 现状(agent loop 来自 pi-core-rs;工具组装在 `crates/engine/src/tools.rs:615` 的 `execution_tools_for_model`;自研 `grep` 工具是现成的 holt 原生 `AgentTool` 模板;ADR-0014 权限门已覆盖 write/edit/bash;workspace 已有 reqwest 0.12):
+结合五家做法与 Holt 现状(agent loop 来自 pi-core-rs;工具组装在 `crates/engine/src/tools.rs:615` 的 `execution_tools_for_model`;自研 `grep` 工具是现成的 holt 原生 `AgentTool` 模板;ADR-permission-modes-gate-mutations-no-os-sandbox 权限门已覆盖 write/edit/bash;workspace 已有 reqwest 0.12):
 
 1. **实现层次:holt 原生 `AgentTool`,pi-core-rs 零改动。** 仿照 `tools/grep.rs`(DESCRIPTION 写明限制、`Deserialize` 输入 struct、50KB 输出封顶、取消 token 贯穿),新增 `tools/web_fetch.rs` 与 `tools/web_search.rs`,在 `execution_tools_for_model` 追加即可。pi-core-rs 的 `AgentTool` 就是数据+闭包,不需要 ExecutionEnv。
 2. **fetch 走"全文返回"路线(opencode/Kimi),第一版不做小模型提炼。** 参数 `url`(+ 可选 `format: text|markdown`,默认 markdown);理由:提炼要多一次 provider 往返且有损,Holt 的 grep/read 风格一直是"把限制写清楚、模型自己读";UI 渲染 `MessagePart` 时全文截断也更可预期。HTML→markdown 在 Rust 侧需新引库(htmd、readability 类候选,**未验证,需 PoC**);纯文本回退可学 opencode 的 html5ever 手写遍历思路。
 3. **fetch 的硬限制对齐现有惯例**:输出 50KB 封顶(与 `grep.rs` 的 `OUTPUT_BYTE_CAP` 一致)、下载上限约 5MB(opencode)、超时 30s 默认/上限可调、全程走 run 的取消 token(grep 已示范 spawn_blocking + select 的写法,fetch 是纯异步更简单)。UA 自报家门(`holt/<version>`),只允许 http(s);**建议补上业界普遍缺失的 SSRF 防护**(拒绝环回/内网/链路本地地址),这是低成本的差异化。robots.txt 各家都不执行,不建议第一版做。
 4. **search 做成可插拔后端,未配置时工具不出现。** 定义一个内部搜索后端 trait(Brave/Exa/Tavily 之类的 REST API,或学 opencode 直接打 hosted MCP——薄客户端即可);参照 Kimi 的 `SkipThisTool` 语义:无后端配置 → 不注册工具,而不是注册后报错。**不要**绑死某个模型 provider 的 server-side search(holt 是多 provider 的,Claude Code "后端不可配"是被验证过的反面模式)。输出 title/url/snippet 列表,读页面交给 fetch——search 与 fetch 职责分离是 Claude Code/opencode 的共同分工。
-5. **权限挂 ADR-0014 门。** fetch 是读取型但外发网络,search 同理;建议默认不拦(与 grep 同级)、提供 settings 级域名 deny 规则的接口(学 Claude 的 `domain:` 语法、opencode 的通配符匹配),PermissionMode 收敛行为可以后置迭代。**先想清楚默认档再上线**:四家里三家默认放行,只有 Claude Code 默认逐次 ask。
+5. **权限挂 ADR-permission-modes-gate-mutations-no-os-sandbox 门。** fetch 是读取型但外发网络,search 同理;建议默认不拦(与 grep 同级)、提供 settings 级域名 deny 规则的接口(学 Claude 的 `domain:` 语法、opencode 的通配符匹配),PermissionMode 收敛行为可以后置迭代。**先想清楚默认档再上线**:四家里三家默认放行,只有 Claude Code 默认逐次 ask。
 6. **无 search 后端时的兜底可选**:学 opencode 在系统提示里教模型"用 webfetch 抓搜索引擎 URL";另外 pi 的提醒仍然成立——bash+curl 本来就是万能兜底,专用工具的增量价值在结构化输出、权限可控、不依赖用户机器有 curl,工具描述里应把这三点价值写清楚。
 
 ## 5. 引用来源
@@ -169,5 +169,5 @@
 
 - crates/engine/src/tools.rs:615(`execution_tools_for_model` 工具组装)、:590-605(`with_execution_context`)
 - crates/engine/src/tools/grep.rs(holt 原生 AgentTool 模板:DESCRIPTION/输出 50KB/取消)
-- crates/engine/src/gate.rs(ADR-0014 权限门:pending Approval、PermissionMode)
+- crates/engine/src/gate.rs(ADR-permission-modes-gate-mutations-no-os-sandbox 权限门:pending Approval、PermissionMode)
 - 根 Cargo.toml:84(reqwest 0.12,rustls)

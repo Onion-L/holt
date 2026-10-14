@@ -1,4 +1,4 @@
-//! Handle-seam tests for the manual `/compact` slash command (ADR-0011,
+//! Handle-seam tests for the manual `/compact` slash command (ADR-compaction-is-not-a-turn,
 //! message-queue ticket 04): a typed queue item on the same execution
 //! channel as ordinary messages — never prompt text, never a Turn — with a
 //! `Compacting` session status (interruptible like a run) when the queue
@@ -187,7 +187,7 @@ async fn compact_queues_while_a_turn_runs_and_executes_after_it() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "a long conversation").await;
     common::wait_for_requests(&provider, 1).await;
 
-    // No more "already running" refusal (ADR-0011 as amended): the typed
+    // No more "already running" refusal (ADR-compaction-is-not-a-turn as amended): the typed
     // command joins the queue in submission order while the Turn runs.
     compact(&engine, &fixture.cwd()).await.unwrap();
     let state = queue_state(&engine).await;

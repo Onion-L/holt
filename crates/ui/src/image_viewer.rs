@@ -6,7 +6,7 @@
 //!
 //! Geometry (fit/zoom/pan math) lives in pure functions at the bottom so the
 //! state machine is testable without a window. Event isolation is the
-//! modal's own `occlude()` (ADR-0013): wheel and pinch inside the viewer
+//! modal's own `occlude()` (ADR-nested-scroll-containers-isolate-wheel-events): wheel and pinch inside the viewer
 //! never reach the Transcript list beneath. Clicking the image does nothing;
 //! the close control, the empty backdrop, and Escape dismiss it, and the
 //! owner restores focus on the `Closed` event.

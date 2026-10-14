@@ -18,7 +18,7 @@ const QUEUE_DISCLOSURE_TWEEN_GRACE: Duration = Duration::from_millis(120);
 
 /// The header's Resume control: automatic execution is paused with work
 /// waiting. A queue-level error is not an unreadable queue and must not
-/// hide the control (ADR-0021).
+/// hide the control (ADR-attended-sends-run-through-a-paused-queue).
 pub(super) fn queue_resume_visible(queue: &holt_proto::MessageQueue) -> bool {
     queue.paused && !queue.pending.is_empty()
 }
@@ -176,7 +176,7 @@ impl Composer {
     }
 
     /// Start editing a pending item's one editable field: the message body
-    /// (skill mentions ride it verbatim since ADR-0035). The appended path
+    /// (skill mentions ride it verbatim since ADR-skill-invocation-is-an-inline-mention). The appended path
     /// list lifts out of the editing text into the removable chip strip —
     /// Save re-appends what remains. The captured model, the kind, and the
     /// position belong to the queue and are not offered here.
@@ -380,7 +380,7 @@ impl Composer {
         }));
     }
 
-    /// Resume the queue's automatic execution (ADR-0021): lifts the pause
+    /// Resume the queue's automatic execution (ADR-attended-sends-run-through-a-paused-queue): lifts the pause
     /// and the single-run scope of an attended send, so parked work drains.
     pub(super) fn resume_queue(&mut self, cx: &mut Context<Self>) {
         if self.queue_busy {
@@ -586,7 +586,7 @@ impl Composer {
                                 // Typed rows (ticket 04): the command kind
                                 // leads, never a raw slash directive. The
                                 // prompt text rides verbatim — inline skill
-                                // mentions included (ADR-0035) — but the
+                                // mentions included (ADR-skill-invocation-is-an-inline-mention) — but the
                                 // appended path list leaves the title: it
                                 // collapses to a paperclip + basenames, the
                                 // same projection the transcript applies to
@@ -597,7 +597,7 @@ impl Composer {
                                 // plus the marker line: the row shows the
                                 // objective only, like its sent bubble.
                                 let title = crate::goal::strip_block(&title).unwrap_or(title);
-                                // A goal continuation (ADR-0044) reads as the
+                                // A goal continuation (ADR-goal-mode-verified-loop-at-turn-settle) reads as the
                                 // loop's round, never its machine prompt — the
                                 // transcript's loop-row projection.
                                 let goal_round = item.goal_round;
@@ -1051,7 +1051,7 @@ fn queue_row_action(
 }
 
 /// The editable prompt pieces of a pending item: the lifted body and
-/// references for ordinary/skill items (ADR-0035); `None` for a pending
+/// references for ordinary/skill items (ADR-skill-invocation-is-an-inline-mention); `None` for a pending
 /// Compaction, which has no editable field — its row shows the fixed
 /// directive title instead.
 fn split_pending_prompt(
@@ -1059,7 +1059,7 @@ fn split_pending_prompt(
 ) -> Option<(String, Vec<crate::path_refs::SentReference>)> {
     match item.kind {
         // Pending Skill items no longer exist (load-time migration,
-        // ADR-0035); the arm stays for the enum.
+        // ADR-skill-invocation-is-an-inline-mention); the arm stays for the enum.
         holt_proto::PendingKind::Ordinary | holt_proto::PendingKind::Skill => Some(
             crate::path_refs::split_sent_references(&item.request.prompt),
         ),

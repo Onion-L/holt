@@ -4,7 +4,7 @@
 //! re-emits [`GitPanelEvent::OpenCommit`] for the surface strip to route
 //! into the same pinned-commit diff tab the Changes pane opens. (Formerly
 //! a Status/History pair with staging and commit writes — the status view
-//! and the write trio are gone; ADR-0022 is historical.)
+//! and the write trio are gone; ADR-ui-driven-git-writes-agent-surface-stays-read-only is historical.)
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, Subscription, div};

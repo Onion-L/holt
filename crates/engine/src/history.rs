@@ -1,4 +1,4 @@
-//! The History record (ADR-0010): a chat's model-facing message sequence
+//! The History record (ADR-history-is-a-separate-persisted-record): a chat's model-facing message sequence
 //! persisted as its own append-only JSONL file next to the Transcript — a
 //! version header line, then one entry per line. The only entry kind today
 //! is `message` (an [`AgentMessage`] in its upstream serde shape,
@@ -40,7 +40,7 @@ pub(crate) enum HistoryEntry {
     Compaction(CompactionRecord),
 }
 
-/// A Compaction of the History (ADR-0011): everything before this entry is
+/// A Compaction of the History (ADR-compaction-is-not-a-turn): everything before this entry is
 /// replaced on replay by the summary, with the last `retained_tail`
 /// messages kept verbatim (they are the file's own preceding message
 /// entries — the count is the replay rule, the messages are not
@@ -250,7 +250,7 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                         .unwrap_or(serde_json::Value::Null),
                 ) {
                     Ok(record) => {
-                        // Linear replay (ADR-0011): the compaction replaces
+                        // Linear replay (ADR-compaction-is-not-a-turn): the compaction replaces
                         // everything before it with the upstream
                         // `compactionSummary` custom message followed by the
                         // retained tail — the file's own preceding message
@@ -322,7 +322,7 @@ pub(crate) fn delete_history(data_dir: &Path, chat_id: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// The repair invariant (ADR-0010): the History must always be a valid
+// The repair invariant (ADR-history-is-a-separate-persisted-record): the History must always be a valid
 // provider request payload — every tool call has a matching tool result,
 // and the record never ends on a half-streamed assistant message.
 // ---------------------------------------------------------------------------

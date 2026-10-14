@@ -1,5 +1,5 @@
 //! The agent's `web_search` tool plus the [`SearchBackend`] contract it
-//! sits on (ADR-0023). One query in, a result list out — the
+//! sits on (ADR-web-tools-full-text-ungated-pluggable-search). One query in, a result list out — the
 //! tool finds pages and never reads them (that is `web_fetch`'s job), and
 //! it exists only while a backend is active: with none, the
 //! tool is absent from the model's toolset, never registered-and-erroring.
@@ -32,7 +32,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-/// One launch backend (ADR-0023) as the Settings picker offers it.
+/// One launch backend (ADR-web-tools-full-text-ungated-pluggable-search) as the Settings picker offers it.
 pub(crate) struct Backend {
     /// The record and save-RPC id.
     pub(crate) id: &'static str,
@@ -42,7 +42,7 @@ pub(crate) struct Backend {
     pub(crate) needs_key: bool,
 }
 
-/// The built-in backends (ADR-0023) — the save RPC's validation set and
+/// The built-in backends (ADR-web-tools-full-text-ungated-pluggable-search) — the save RPC's validation set and
 /// the Settings picker's option list, in picker order. Every id here
 /// mounts its adapter through [`adapter`].
 pub(crate) const BACKENDS: [Backend; 4] = [

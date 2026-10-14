@@ -1,4 +1,4 @@
-//! Device-level MCP server definitions (ADR-0034): the strict,
+//! Device-level MCP server definitions (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the strict,
 //! hand-editable `mcp.json` under the data directory — one `mcpServers`
 //! map, credentials-pattern file (0600, repaired on load), and a malformed
 //! file (bad JSON, unknown keys, an impossible transport mix) fails
@@ -15,10 +15,10 @@ use crate::EngineError;
 
 pub(crate) const FILE_NAME: &str = "mcp.json";
 
-/// Default server startup timeout (ADR-0034): a server that cannot
+/// Default server startup timeout (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): a server that cannot
 /// initialize within this window is skipped for the Turn.
 pub(crate) const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 10_000;
-/// Default per-call timeout (ADR-0034): one `tools/call`'s hard wall.
+/// Default per-call timeout (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): one `tools/call`'s hard wall.
 pub(crate) const DEFAULT_TOOL_TIMEOUT_MS: u64 = 60_000;
 
 /// One server's transport: a stdio child or a Streamable HTTP endpoint.
@@ -64,7 +64,7 @@ fn default_tool_timeout_ms() -> u64 {
     DEFAULT_TOOL_TIMEOUT_MS
 }
 
-/// Does this server's filter set mount `tool` (ADR-0034)? An empty
+/// Does this server's filter set mount `tool` (ADR-mcp-servers-join-as-engine-clients-behind-the-gate)? An empty
 /// `enabledTools` mounts everything; a non-empty one mounts only its
 /// entries; `disabledTools` always wins — the safer reading when both
 /// mention a tool.
@@ -303,7 +303,7 @@ pub(crate) fn parse_file(bytes: &[u8]) -> Result<BTreeMap<String, McpServer>, St
     let mut servers = BTreeMap::new();
     for (name, value) in file.servers {
         // A name outside `[A-Za-z0-9_-]` would make the two-level tool name
-        // ambiguous — rejected here and at save time (ADR-0034).
+        // ambiguous — rejected here and at save time (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
         if name.is_empty()
             || !name
                 .chars()
@@ -468,7 +468,7 @@ fn ensure_private_permissions(
 }
 
 /// Expand `${VAR}` and `${VAR:-default}` against the live environment
-/// (ADR-0034): config values are stored unexpanded and resolved at run
+/// (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): config values are stored unexpanded and resolved at run
 /// time — connect time for the pool. An unset variable with a default
 /// uses the default; an unset variable without one keeps the literal
 /// (and joins the returned missing list, which the caller logs as a
@@ -507,7 +507,7 @@ pub(crate) fn expand_env(value: &str) -> (String, Vec<String>) {
 }
 
 /// The credential-shaped name fragments stripped from a stdio child's
-/// inherited environment (ADR-0034): an arbitrary server binary must not
+/// inherited environment (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): an arbitrary server binary must not
 /// read host credentials by default. Matched case-insensitively anywhere
 /// in the variable name.
 const CREDENTIAL_SHAPES: [&str; 5] = ["TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH"];
@@ -519,7 +519,7 @@ pub(crate) fn is_credential_shaped(name: &str) -> bool {
 
 /// The stdio child's environment: Holt's own, minus credential-shaped
 /// variables, plus the server's `env` block verbatim — explicitly setting
-/// one is the opt-in that passes a credential through (ADR-0034).
+/// one is the opt-in that passes a credential through (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
 pub(crate) fn sanitize_child_env(
     explicit: &BTreeMap<String, String>,
 ) -> std::collections::HashMap<String, String> {

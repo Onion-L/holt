@@ -1,4 +1,4 @@
-//! The engine's git capability on the `git2` backend (ADR-0001).
+//! The engine's git capability on the `git2` backend (ADR-git2-as-the-git-backend).
 //!
 //! This module is the only place in the workspace that touches git2. Every
 //! git2 call runs on the blocking pool — never on the async runtime's thread —
@@ -297,7 +297,7 @@ impl Git {
         }
     }
 
-    /// Capture a turn baseline (ADR-0003): `(HEAD sha, uncommitted patch)`
+    /// Capture a turn baseline (ADR-turn-diff-net-change-baseline): `(HEAD sha, uncommitted patch)`
     /// for a checkout, the patch under the shared 3 MiB cap.
     pub(crate) async fn turn_baseline(&self, repo_path: &str) -> Result<TurnBaseline, String> {
         self.with_repo(repo_path, |repo| {
@@ -330,7 +330,7 @@ impl Git {
         .await
     }
 
-    /// The Turn identity stamp (ADR-0007): the working directory's live HEAD
+    /// The Turn identity stamp (ADR-branch-is-live-working-tree-state): the working directory's live HEAD
     /// — branch, head sha, repo root, and the canonical checkout identity —
     /// captured at Run acceptance. `None` when the folder is not a git work
     /// tree or HEAD carries no branch: nothing is stamped, nothing fails.
@@ -395,7 +395,7 @@ impl Git {
         .await
     }
 
-    /// The Turn change set (ADR-0024): the net change from a Turn's
+    /// The Turn change set (ADR-turn-change-sets-and-review): the net change from a Turn's
     /// baseline to the live working tree, as the typed vocabulary the Turn
     /// card and its Review render. Reuses the turn capture's Git path —
     /// dirty-start net-change filtering, rename detection, and the patch
@@ -472,7 +472,7 @@ impl Git {
     }
 
     /// The immutable per-file before/after content of a frozen change set
-    /// (ADR-0024 ticket 02), captured once at Turn settlement: the old side
+    /// (ADR-turn-change-sets-and-review ticket 02), captured once at Turn settlement: the old side
     /// is each file's turn-start content — read at its turn-start path for a
     /// rename — and the new side the working-tree file at settle time. This
     /// is the pair that persists, so later workspace edits and restarts
@@ -549,7 +549,7 @@ impl Git {
             .unwrap_or(false)
     }
 
-    /// Materialize (or reuse) a chat's session worktree (ADR-0038): a linked
+    /// Materialize (or reuse) a chat's session worktree (ADR-session-worktrees-are-chat-owned-isolation): a linked
     /// worktree of `repo_path` at `<worktrees_root>/<chat_id>` on the
     /// `holt/<chat_id>` branch. The base ref applies only when the branch must
     /// be created; an existing, correctly-registered worktree is reused as-is —
@@ -911,7 +911,7 @@ fn delta_path(delta: git2::DiffDelta) -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
-/// The refusal the UI's switch dialog parses (ADR-0007 — inform-only, never
+/// The refusal the UI's switch dialog parses (ADR-branch-is-live-working-tree-state — inform-only, never
 /// a force/stash escape hatch): the shared [`SWITCH_REFUSAL_MARKER`] line,
 /// then one blocking path per line.
 pub(crate) fn switch_refusal_message(files: &[String]) -> String {
@@ -963,7 +963,7 @@ fn git_message(error: git2::Error) -> String {
 
 /// One status entry's concise classification for the File sidebar's
 /// markers (ticket 10). `None` for entries that carry no working-tree
-/// signal (clean files). Conflicted paths report `Conflicted` (ADR-0022):
+/// signal (clean files). Conflicted paths report `Conflicted` (ADR-ui-driven-git-writes-agent-surface-stays-read-only):
 /// both the sidebar and the Git panel need honest conflict state without
 /// deriving it, so the collapsed kind no longer folds it into `Modified`.
 fn classify_status(status: git2::Status) -> Option<holt_proto::WorkspaceGitStatusKind> {
@@ -992,7 +992,7 @@ fn classify_status(status: git2::Status) -> Option<holt_proto::WorkspaceGitStatu
     }
 }
 
-/// The porcelain sides of one status entry (ADR-0022): the index side is
+/// The porcelain sides of one status entry (ADR-ui-driven-git-writes-agent-surface-stays-read-only): the index side is
 /// what staging captured (`git status --porcelain`'s X column), the
 /// worktree side the unstaged state (the Y column, untracked included).
 /// Each side collapses its own bits independently, so a file modified
@@ -1050,7 +1050,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
 
 // ---- checkout identity ----
 
-/// Canonical checkout identity (ADR-0002): `sha256(deviceId ‖ NUL ‖ git_dir)`,
+/// Canonical checkout identity (ADR-git-hangs-off-spaces-no-repo-registry): `sha256(deviceId ‖ NUL ‖ git_dir)`,
 /// hex-encoded. `git_dir` is the checkout's OWN git dir — a linked worktree's
 /// `.git/worktrees/<name>`, not the common dir — so two worktrees of one
 /// repository never collide.
@@ -1463,7 +1463,7 @@ fn diff_patch_text(diff: &mut git2::Diff) -> String {
     patch
 }
 
-// ---- turn baseline (ADR-0003) ----
+// ---- turn baseline (ADR-turn-diff-net-change-baseline) ----
 
 /// The net-change starting point of a chat's latest Turn, captured
 /// synchronously when a queued command is accepted: the HEAD sha and the
@@ -1475,7 +1475,7 @@ pub(crate) struct TurnBaseline {
     pub patch: String,
 }
 
-/// One Turn's captured net change (ADR-0024): the typed files plus their
+/// One Turn's captured net change (ADR-turn-change-sets-and-review): the typed files plus their
 /// totals, ready for the `TurnChangeSet` wire shape.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TurnChangeCapture {
@@ -1485,7 +1485,7 @@ pub(crate) struct TurnChangeCapture {
     pub truncated: bool,
 }
 
-/// The settle-time freeze of one Turn's change set (ADR-0024 ticket 02):
+/// The settle-time freeze of one Turn's change set (ADR-turn-change-sets-and-review ticket 02):
 /// the summary and its immutable per-file content, captured from one
 /// working-tree snapshot in one locked Git pass.
 #[derive(Debug, Clone)]
@@ -1495,7 +1495,7 @@ pub(crate) struct TurnChangeFreeze {
 }
 
 /// One file's immutable before/after pair inside a settled Turn's persisted
-/// change-set record (ADR-0024 ticket 02): the turn-start content on the old
+/// change-set record (ADR-turn-change-sets-and-review ticket 02): the turn-start content on the old
 /// side, the settle-time working-tree file on the new side. Binary entries
 /// keep their hashes and carry no text; each side is capped at
 /// [`MAX_FILE_SIDE_BYTES`].
@@ -1594,7 +1594,7 @@ fn section_of(lines: &[&str]) -> PatchSection {
     PatchSection { path, text }
 }
 
-/// The net-change filter (ADR-0003): keep only files whose CURRENT
+/// The net-change filter (ADR-turn-diff-net-change-baseline): keep only files whose CURRENT
 /// uncommitted section differs from the turn-start baseline section —
 /// pre-existing dirty files the Turn never touched drop out, and edits
 /// that return a file to its turn-start state (net zero) drop out too.
@@ -1739,7 +1739,7 @@ fn file_side(bytes: Option<Vec<u8>>) -> FileSide {
     }
 }
 
-/// The "Latest turn" capture (ADR-0003): diff `HEAD@start → workdir with
+/// The "Latest turn" capture (ADR-turn-diff-net-change-baseline): diff `HEAD@start → workdir with
 /// index`, then keep only the files whose current section differs from the
 /// baseline section — the net change since the Turn began.
 /// The uncommitted change set as section texts: path → patch section,

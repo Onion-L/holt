@@ -1,4 +1,4 @@
-//! Handle-seam tests for automatic Compaction before a Turn (ADR-0011,
+//! Handle-seam tests for automatic Compaction before a Turn (ADR-compaction-is-not-a-turn,
 //! spec ticket 05): when the History nears the model's context window the
 //! next Turn's first request is the summary request (upstream system
 //! prompt, no tools, no reasoning), the run after it carries the templated
@@ -448,7 +448,7 @@ async fn a_failed_summary_lets_the_turn_proceed_with_a_notice() {
 async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
     // A real repo, so the Turn's baseline and turn diff are live: the
     // compacting Turn edits a tracked file mid-run, and the turn diff must
-    // still see it — proof compaction reset nothing Turn-scoped (ADR-0011).
+    // still see it — proof compaction reset nothing Turn-scoped (ADR-compaction-is-not-a-turn).
     let fixture = common::Fixture::new();
     let repo = git2::Repository::init(fixture.project_dir.path()).unwrap();
     repo.set_head("refs/heads/main").unwrap();

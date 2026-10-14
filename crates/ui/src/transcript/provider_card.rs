@@ -1,4 +1,4 @@
-//! The Provider Mode cards (ADR-0037): a catalog proposal and an API-key
+//! The Provider Mode cards (ADR-provider-mode-is-a-chat-mode): a catalog proposal and an API-key
 //! request, rendered in the transcript flow where the assistant raised
 //! them. Only these buttons write — Write applies the stored proposal
 //! exactly as reviewed, Save sends the typed key straight to the
@@ -727,7 +727,7 @@ impl Transcript {
     }
 
     /// Save (with the typed key) or Dismiss the chat's pending key request
-    /// (ADR-0031). The key goes from the input straight into the RPC.
+    /// (ADR-api-keys-collected-through-key-requests). The key goes from the input straight into the RPC.
     fn settle_key(&mut self, row_id: SharedString, save: bool, cx: &mut Context<Self>) {
         let (Some(chat_id), Some(engine)) =
             (self.chat_id.clone(), self.state.read(cx).engine().cloned())

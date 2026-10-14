@@ -1,4 +1,4 @@
-//! MCP config field completeness at the RPC seam (ADR-0034, ticket 06):
+//! MCP config field completeness at the RPC seam (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 06):
 //! `enabledTools`/`disabledTools` filter the mounted set (deny wins), a
 //! stdio child runs in its own `cwd` — never the chat's — config values
 //! expand `${VAR}`/`${VAR:-default}` at run time with unset-without-default

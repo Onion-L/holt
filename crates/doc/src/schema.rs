@@ -79,10 +79,10 @@ struct DocPartJson {
     resolved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
-    /// Goal lifecycle tag on `kind: "notice"` rows (additive, ADR-0044).
+    /// Goal lifecycle tag on `kind: "notice"` rows (additive, ADR-goal-mode-verified-loop-at-turn-settle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal_event: Option<crate::parts::GoalEvent>,
-    /// `kind: "goalRound"` payload (additive, ADR-0044): the round and the
+    /// `kind: "goalRound"` payload (additive, ADR-goal-mode-verified-loop-at-turn-settle): the round and the
     /// verifier's reason. Never `text`, so old readers' fallback stays empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal_round: Option<crate::parts::GoalRoundKind>,
@@ -118,7 +118,7 @@ struct DocPartJson {
     subagent_tail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_usage: Option<u64>,
-    /// The permission gate's record on a tool chip (ADR-0014, additive):
+    /// The permission gate's record on a tool chip (ADR-permission-modes-gate-mutations-no-os-sandbox, additive):
     /// pending → settled verdicts. Absent on ungated chips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gate: Option<serde_json::Value>,
@@ -135,7 +135,7 @@ struct DocPartJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     skill_content: Option<String>,
     /// Compaction summary for `kind: "compactionDivider"` rows (additive,
-    /// ADR-0011).
+    /// ADR-compaction-is-not-a-turn).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
     /// Token counts flanking the compaction (additive).
@@ -157,7 +157,7 @@ struct DocPartJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_content: Option<String>,
     /// The whole card for `kind: "modelProposal"` / `"keyRequest"`
-    /// (additive, ADR-0037). Never `text`: old readers must degrade these
+    /// (additive, ADR-provider-mode-is-a-chat-mode). Never `text`: old readers must degrade these
     /// to an invisible empty part, not prose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     card: Option<serde_json::Value>,

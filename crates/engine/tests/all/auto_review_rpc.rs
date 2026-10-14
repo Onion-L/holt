@@ -1,4 +1,4 @@
-//! Auto-review at the RPC seam (ADR-0014, issue 05): in auto-review every
+//! Auto-review at the RPC seam (ADR-permission-modes-gate-mutations-no-os-sandbox, issue 05): in auto-review every
 //! mutating call is first judged by one extra model pass through the same
 //! transport the run uses — recorded as a bare request (no tools) between
 //! the run's own requests. A pass executes; a rejection blocks with the

@@ -2732,7 +2732,7 @@ mod tests {
             state.local_device_id = Some("test-device".into());
             state.spaces.push(home_space());
             // "recent" was touched last; "older" was created last. Both
-            // live in the Home space (ADR-0039: no spaceless rows).
+            // live in the Home space (ADR-home-space-for-project-less-chats: no spaceless rows).
             let mut recent = chat_at("recent", 10, 1);
             recent.space_id = Some(holt_proto::HOME_SPACE_ID.into());
             let mut older = chat_at("older", 5, 9);

@@ -1,6 +1,6 @@
 //! Durable typed-command admission and per-chat serial execution: ordinary
 //! messages, skill invocations (each its own Turn), and manual Compaction
-//! (the same execution channel, never a Turn — ADR-0011).
+//! (the same execution channel, never a Turn — ADR-compaction-is-not-a-turn).
 
 use std::{
     collections::HashSet,
@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// What one driver iteration produced: a real main-chat Turn's terminal
-/// outcome (terminal-event eligible, ADR-0019), or work outside the Turn
+/// outcome (terminal-event eligible, ADR-turn-completion-is-an-engine-owned-event), or work outside the Turn
 /// model — a manual Compaction or a pre-Turn admission failure — as its
 /// plain settle pair.
 enum DriverOutcome {
@@ -57,7 +57,7 @@ struct Record {
     paused: bool,
     started: Option<StartedMessage>,
     accepted: HashSet<String>,
-    /// ADR-0021: the one attended send granted admission through a pause —
+    /// ADR-attended-sends-run-through-a-paused-queue: the one attended send granted admission through a pause —
     /// a message id bound at first acceptance, served by `head` ahead of
     /// priority, consumed by `start`, and never set for a redelivered id.
     #[serde(default)]
@@ -105,7 +105,7 @@ impl Queue {
             ),
         };
         // Legacy `/skill` items ride the ordinary flow since inline mentions
-        // (ADR-0035): migrate at load so nothing downstream — the queue
+        // (ADR-skill-invocation-is-an-inline-mention): migrate at load so nothing downstream — the queue
         // panel, the driver, the edit surface — ever sees a fresh Skill
         // item. The prompt becomes the mention text the admission path
         // resolves (`$name`, extra instructions after); a skill deleted in
@@ -154,7 +154,7 @@ impl Queue {
         record.paused |= !record.pending.is_empty() || record.started.is_some() || error.is_some();
         if record.started.is_none() && error.is_none() {
             // A saved file's stale pause must not resurrect on an empty,
-            // error-free queue (ADR-0021).
+            // error-free queue (ADR-attended-sends-run-through-a-paused-queue).
             record.clear_pause_when_empty();
         }
         let (tx, _) = watch::channel(serde_json::Value::Null);
@@ -296,7 +296,7 @@ impl Queue {
         )
     }
 
-    /// The goal loop's continuation (ADR-0044): an ordinary queued run the
+    /// The goal loop's continuation (ADR-goal-mode-verified-loop-at-turn-settle): an ordinary queued run the
     /// verifier enqueued, flagged so deleting it pauses the goal and
     /// `ClearGoal`/pausing sweeps it. Never attended — the loop does not
     /// grant itself a pass through a paused queue.
@@ -454,7 +454,7 @@ impl Queue {
         };
         match item.kind {
             // Pending Skill items no longer exist (load-time migration,
-            // ADR-0035); the arm edits the body like an ordinary message.
+            // ADR-skill-invocation-is-an-inline-mention); the arm edits the body like an ordinary message.
             PendingKind::Ordinary | PendingKind::Skill => {
                 if prompt.trim().is_empty() {
                     return Err(RpcError::BadParams("prompt must not be empty".into()));
@@ -492,7 +492,7 @@ impl Queue {
         self.commit(next)
     }
 
-    /// Whether a pending row is the goal loop's continuation (ADR-0044) —
+    /// Whether a pending row is the goal loop's continuation (ADR-goal-mode-verified-loop-at-turn-settle) —
     /// the RPC layer checks before `delete`, since deleting one pauses the
     /// goal.
     pub fn is_goal_continuation(&self, message_id: &str) -> bool {
@@ -614,7 +614,7 @@ impl Queue {
         let mut next = self.record.clone();
         // A Run now on a paused queue keeps the rest parked; a promotion
         // landing mid-attended-run must not downgrade the outstanding solo
-        // scope either (ADR-0021).
+        // scope either (ADR-attended-sends-run-through-a-paused-queue).
         next.priority_only = next.paused || next.priority_only;
         next.priority.retain(|id| id != message_id);
         next.priority.push(message_id.to_string());
@@ -701,7 +701,7 @@ impl Queue {
     /// Settle the active work. The returned Result reports whether the
     /// completion was durably recorded: the queue/session error behavior on
     /// a persistence failure is unchanged, but callers publishing downstream
-    /// signals (the Turn terminal event, ADR-0019) must only fire after a
+    /// signals (the Turn terminal event, ADR-turn-completion-is-an-engine-owned-event) must only fire after a
     /// successful commit.
     fn finish(&mut self, success: bool, error: Option<String>) -> Result<(), RpcError> {
         let mut next = self.record.clone();
@@ -715,7 +715,7 @@ impl Queue {
         }
         // The clean-state invariant outranks the failure pause: with no
         // work left and no queue-level error (this settle must not be one),
-        // there is nothing for a pause to protect (ADR-0021).
+        // there is nothing for a pause to protect (ADR-attended-sends-run-through-a-paused-queue).
         if self.error.is_none() && error.is_none() {
             next.clear_pause_when_empty();
         }
@@ -736,7 +736,7 @@ impl Queue {
 }
 
 impl EngineService {
-    /// The queued manual Compaction (ADR-0011): never a Turn. Model and
+    /// The queued manual Compaction (ADR-compaction-is-not-a-turn): never a Turn. Model and
     /// credential failures retain the head before admission. Nothing to
     /// compact settles as a notice without a model request or queue pause.
     /// The checkpoint guarantees a restart never retries a Compaction that
@@ -878,7 +878,7 @@ impl EngineService {
         }
     }
 
-    /// Freeze one settled Turn's change set, in memory and durably (ADR-0024
+    /// Freeze one settled Turn's change set, in memory and durably (ADR-turn-change-sets-and-review
     /// ticket 02): capture the summary and its immutable per-file
     /// before/after content in ONE Git pass, freeze it, and atomically write
     /// the record under the data dir before anything may publish it. Returns
@@ -986,7 +986,7 @@ impl EngineService {
                         ),
                         PendingKind::Ordinary | PendingKind::Skill => {
                             // Pending Skill items no longer exist (load-time
-                            // migration, ADR-0035); the arm stays for the
+                            // migration, ADR-skill-invocation-is-an-inline-mention); the arm stays for the
                             // enum. The prompt's inline mentions resolve at
                             // admission inside `start_turn`.
                             let prompt = message.request.prompt.clone();
@@ -995,7 +995,7 @@ impl EngineService {
                                 text: prompt.clone(),
                             }];
                             // A goal continuation's entry carries its round
-                            // as data (ADR-0044): the transcript draws the
+                            // as data (ADR-goal-mode-verified-loop-at-turn-settle): the transcript draws the
                             // loop row from it, never from the prompt text.
                             if let Some(round) = message.goal_round {
                                 parts.push(MessagePart::GoalRound {
@@ -1038,7 +1038,7 @@ impl EngineService {
                         ),
                         DriverOutcome::Settled((success, error)) => (success, error, None),
                     };
-                    // The goal loop's view of this settle (ADR-0044),
+                    // The goal loop's view of this settle (ADR-goal-mode-verified-loop-at-turn-settle),
                     // captured before the terminal-event block moves
                     // `turn_end`: a real Turn's outcome, or a Message item's
                     // admission failure (the model or credential is gone) —
@@ -1086,7 +1086,7 @@ impl EngineService {
                                 .all(|m| m.message_id != picked_id);
                         if !vanished && !worker_chat.is_removed() && !queue.unreadable {
                             // The real Turn is over before its settled queue
-                            // becomes observable (ADR-0024): freeze the change
+                            // becomes observable (ADR-turn-change-sets-and-review): freeze the change
                             // set's phase first, so no reader sees an idle queue
                             // beside a live change set. The captured content
                             // follows in `finish`.
@@ -1129,7 +1129,7 @@ impl EngineService {
                     // passes. A capture failure never fails the Turn.
                     let final_change_set = if turn_end.is_some() && settled.is_some() {
                         // The frozen set persists before anything publishes it
-                        // (ADR-0024 ticket 02): the terminal event carries a
+                        // (ADR-turn-change-sets-and-review ticket 02): the terminal event carries a
                         // change set only once its record is durable, so
                         // history survives restarts and later edits. Also
                         // best-effort — a failed write costs the payload, never
@@ -1140,7 +1140,7 @@ impl EngineService {
                     } else {
                         None
                     };
-                    // The goal verifier reads the same frozen set (ADR-0044)
+                    // The goal verifier reads the same frozen set (ADR-goal-mode-verified-loop-at-turn-settle)
                     // — cloned before the terminal event takes the original.
                     let goal_change_set = final_change_set.clone();
                     // The usage ledger settles with the Turn: the round-trips
@@ -1155,7 +1155,7 @@ impl EngineService {
                             crate::usage::TurnOutcome::of(end),
                         );
                     }
-                    // The Turn terminal event (ADR-0019): exactly one per real
+                    // The Turn terminal event (ADR-turn-completion-is-an-engine-owned-event): exactly one per real
                     // main-chat Turn, only AFTER Transcript and History settled
                     // and queue completion was durably recorded. A completion
                     // that could not be persisted keeps the queue/session error
@@ -1228,7 +1228,7 @@ impl EngineService {
                             .turn_changes
                             .clear_final_signal(&worker_chat.chat_id, &message_id);
                     }
-                    // The goal loop (ADR-0044): after the settled card's frame
+                    // The goal loop (ADR-goal-mode-verified-loop-at-turn-settle): after the settled card's frame
                     // grace, still inside the iteration, so a continuation can
                     // never race the next admission and the verdict's Notice
                     // never overtakes the Turn's own card. Bounded and not
@@ -1291,7 +1291,7 @@ impl EngineService {
                         );
                     }
                     // A panicked iteration is a failed Turn for the goal loop
-                    // (ADR-0044): pause the goal rather than leave it active
+                    // (ADR-goal-mode-verified-loop-at-turn-settle): pause the goal rather than leave it active
                     // with nothing queued. Last, so a goal-hook panic of its
                     // own cannot preempt the queue settle above.
                     crate::goal::after_turn_settled(
@@ -1454,7 +1454,7 @@ mod tests {
         queue.finish(true, None).unwrap();
         // The delete itself must not lift the pause while m-b executes, but
         // once it settles with no work left and no queue-level error, the
-        // clean-state invariant clears the pause (ADR-0021).
+        // clean-state invariant clears the pause (ADR-attended-sends-run-through-a-paused-queue).
         assert!(!queue.snapshot().paused);
     }
 
@@ -1477,7 +1477,7 @@ mod tests {
 
         // The user's fresh send is granted admission even though the queue
         // is paused: it runs ahead of the promoted m-b, and the queue
-        // returns to its pause when it settles (ADR-0021).
+        // returns to its pause when it settles (ADR-attended-sends-run-through-a-paused-queue).
         queue
             .enqueue(
                 request("fresh", "openai/gpt-5.4"),
@@ -1662,7 +1662,7 @@ mod tests {
 
         // A Run now / Steer landing mid-attended-run must not downgrade the
         // single-run scope: when the interrupted-or-promoted work settles,
-        // the queue still returns to its pause (ADR-0021).
+        // the queue still returns to its pause (ADR-attended-sends-run-through-a-paused-queue).
         queue.promote("m-b").expect("promote during the run");
         queue.finish(true, None).expect("settle");
         assert!(
@@ -1758,7 +1758,7 @@ mod tests {
         let (queue, dir) = queue_with_typed();
         // The in-memory record still holds the legacy shape; loading
         // migrates it — the prompt becomes the mention text the new
-        // admission path resolves (ADR-0035).
+        // admission path resolves (ADR-skill-invocation-is-an-inline-mention).
         let reloaded = Queue::load(dir.path(), "chat-1");
         assert_eq!(reloaded.record.pending.len(), 2);
         let skill = &reloaded.record.pending[0];

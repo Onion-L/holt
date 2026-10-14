@@ -1,6 +1,6 @@
 //! JSON persistence for spaces/chats and the stable device id. Spaces and
 //! the chat registry are written atomically (tmp + rename) under the data
-//! dir; per-chat transcripts are append-only JSONL (ADR-0032).
+//! dir; per-chat transcripts are append-only JSONL (ADR-transcript-append-only-log-per-chat-lock).
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -73,7 +73,7 @@ pub(crate) fn id_is_path_safe(id: &str) -> bool {
 }
 
 /// Per-chat transcript snapshot — the legacy whole-file format
-/// (`transcripts/<chatId>.json`), written before ADR-0032. Never written
+/// (`transcripts/<chatId>.json`), written before ADR-transcript-append-only-log-per-chat-lock. Never written
 /// anymore; read only as the replay base for chats that predate the log.
 pub(crate) fn transcript_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     if !id_is_path_safe(chat_id) {
@@ -82,7 +82,7 @@ pub(crate) fn transcript_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf>
     Some(data_dir.join("transcripts").join(format!("{chat_id}.json")))
 }
 
-/// Per-chat transcript file (append-only JSONL, ADR-0032): a version
+/// Per-chat transcript file (append-only JSONL, ADR-transcript-append-only-log-per-chat-lock): a version
 /// header line, then one record per line. A record is either a full
 /// `SessionMessageEntry` (an entry line whose id matches an earlier line
 /// replaces it, otherwise it appends) or one of the incremental settle
@@ -131,7 +131,7 @@ struct TranscriptParts {
 
 /// The `Part` line's body: one part's current shape, addressed by its
 /// index. Indices are stable because an entry's parts grow, never shrink
-/// (ADR-0011).
+/// (ADR-compaction-is-not-a-turn).
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TranscriptPart {
@@ -142,7 +142,7 @@ struct TranscriptPart {
 
 /// Append one entry line, creating the file (header first) when the chat
 /// has no transcript log yet. Append-only by construction — same shape and
-/// crash semantics as the History record (ADR-0010): a crash between
+/// crash semantics as the History record (ADR-history-is-a-separate-persisted-record): a crash between
 /// create and the header write leaves a zero-byte file that must not
 /// collect headerless lines, and a partial trailing record is isolated
 /// from every later append.
@@ -206,7 +206,7 @@ pub(crate) fn append_transcript_part(
 
 /// Open the log for appending, creating it header-first when the chat has
 /// no transcript log yet. Same shape and crash semantics as the History
-/// record (ADR-0010): a crash between create and the header write leaves a
+/// record (ADR-history-is-a-separate-persisted-record): a crash between create and the header write leaves a
 /// zero-byte file that must not collect headerless lines, and a partial
 /// trailing record is isolated from every later append.
 fn open_transcript_log(path: &Path) -> std::io::Result<std::fs::File> {
@@ -340,7 +340,7 @@ pub(crate) fn load_transcript(
 }
 
 /// The pre-log whole-file snapshot (`transcripts/<chatId>.json`), kept for
-/// chats saved before ADR-0032. It is never written again; it stops being
+/// chats saved before ADR-transcript-append-only-log-per-chat-lock. It is never written again; it stops being
 /// read once the log carries the chat.
 fn load_legacy_snapshot(
     data_dir: &Path,

@@ -14,7 +14,7 @@
 //!   messages rebuild (the anti-"streaming stutter" trick);
 //! - row-set changes diff by (id, version) into one minimal `splice`.
 //!
-//! The list anchors at the TOP (ADR-0008): rows lay out document-style and a
+//! The list anchors at the TOP (ADR-main-transcript-is-top-anchored): rows lay out document-style and a
 //! short transcript leaves empty space below rather than rising from the
 //! pane's bottom. Tail-following is still ours, not the list's.
 //!
@@ -211,11 +211,11 @@ pub struct Transcript {
     tree_cache: HashMap<String, (usize, Arc<BlockTree>)>,
     folds: HashMap<SharedString, FoldState>,
     /// Tracked scroll handles for the nested reading viewports (skill
-    /// invocation bodies, compaction summaries), keyed by row id: ADR-0013
+    /// invocation bodies, compaction summaries), keyed by row id: ADR-nested-scroll-containers-isolate-wheel-events
     /// chaining reads offset/max to forward the wheel remainder the body
     /// could not absorb to the transcript list. Render-local like `folds`.
     nested_scrolls: HashMap<SharedString, ScrollHandle>,
-    /// Provider Mode card state (ADR-0037) keyed by row id: in-flight and
+    /// Provider Mode card state (ADR-provider-mode-is-a-chat-mode) keyed by row id: in-flight and
     /// error flags, and a key card's masked input. Render-local like
     /// `folds`.
     provider_cards: HashMap<SharedString, provider_card::ProviderCardUi>,
@@ -285,7 +285,7 @@ pub struct Transcript {
     selection_scroll_task: Option<Task<()>>,
     /// MessageRail width gate (set by the shell from the container width).
     rail_enabled: bool,
-    /// Whether the last row carried the goal-check trailer (ADR-0044) at the
+    /// Whether the last row carried the goal-check trailer (ADR-goal-mode-verified-loop-at-turn-settle) at the
     /// previous sync: the verifier's pass changes no row, so its flip has to
     /// remeasure the last row itself.
     goal_checking: bool,
@@ -377,7 +377,7 @@ pub enum TranscriptEvent {
         title: String,
         frozen: bool,
     },
-    /// A Turn change card's Review affordance (ADR-0024 ticket 04): open —
+    /// A Turn change card's Review affordance (ADR-turn-change-sets-and-review ticket 04): open —
     /// or re-aim — the read-only review surface for that Turn. `path`
     /// targets one file when a specific row was clicked; `None` (the card
     /// header's Review) selects the Turn's first file.
@@ -452,7 +452,7 @@ impl Transcript {
         // FollowMode stays Normal: the tail pin is ours (a per-frame spring),
         // not the list's per-layout hard snap.
         //
-        // Every transcript aligns TOP (ADR-0008): entries lay out
+        // Every transcript aligns TOP (ADR-main-transcript-is-top-anchored): entries lay out
         // document-style from the pane's top, streaming grows into the empty
         // space below, and a short list rests at the top instead of rising
         // from the bottom. The PIN machinery still runs on top of it for
@@ -773,7 +773,7 @@ impl Transcript {
     }
 
     /// Get-or-create the tracked scroll handle for a row's nested reading
-    /// viewport (skill body, compaction summary) — ADR-0013 chaining.
+    /// viewport (skill body, compaction summary) — ADR-nested-scroll-containers-isolate-wheel-events chaining.
     fn nested_scroll_handle(&mut self, row_id: &SharedString) -> ScrollHandle {
         self.nested_scrolls
             .entry(row_id.clone())
@@ -996,7 +996,7 @@ impl Transcript {
         self.spring_kick = false;
         self.scroll_anim = None;
         // A glued offset re-snaps to the end on EVERY layout (a gpui
-        // Bottom-alignment behavior — inert under Top, kept per ADR-0008) —
+        // Bottom-alignment behavior — inert under Top, kept per ADR-main-transcript-is-top-anchored) —
         // the pad would land and the viewport hard-track its bottom in the
         // same frame, skipping the glide entirely (rig-traced). Pin the
         // offset to a CONCRETE visible item first; the pad then reads as
@@ -1122,7 +1122,7 @@ impl Transcript {
         // at the screen bottom": the same visual position, concrete. All of
         // this is gpui Bottom-alignment behavior: under Top the anchor is
         // concrete by the time this post-layout step runs, so the branch is
-        // inert (kept per ADR-0008).
+        // inert (kept per ADR-main-transcript-is-top-anchored).
         if self.is_glued() {
             self.list.scroll_by(px(-viewport_height));
         }
@@ -1487,7 +1487,7 @@ impl Transcript {
     /// holding a pixel position. Under the now-universal Top alignment layout
     /// materializes such an anchor to a concrete offset, so this is only
     /// transiently true between a `scroll_to_end` and the next layout (kept
-    /// machinery, ADR-0008).
+    /// machinery, ADR-main-transcript-is-top-anchored).
     pub(crate) fn is_glued(&self) -> bool {
         self.list.logical_scroll_top().item_ix >= self.rows.len()
     }
@@ -1664,7 +1664,7 @@ impl Transcript {
         }
 
         let mut new_rows: Vec<Row> = Vec::new();
-        // The change-set card (ADR-0024 ticket 03) closes its Turn: it lands
+        // The change-set card (ADR-turn-change-sets-and-review ticket 03) closes its Turn: it lands
         // after the last row of the entries a User message opened — the next
         // User entry (or the transcript's end) ends the Turn. `turn_id`
         // tracks the most recent User entry; the state map guarantees any
@@ -1866,7 +1866,7 @@ impl Transcript {
                     // post-layout, so this only fires in the same effect
                     // cycle as a just-planted `scroll_to_end`, where it
                     // converts the past-end anchor to the equivalent
-                    // concrete offset (kept machinery, ADR-0008).
+                    // concrete offset (kept machinery, ADR-main-transcript-is-top-anchored).
                     self.list.scroll_by(px(-0.75));
                 }
                 self.spring_kick = true;
@@ -2265,7 +2265,7 @@ impl Transcript {
 mod tests {
     use super::*;
 
-    /// The change card closes its Turn (ADR-0024 ticket 03): a row lands
+    /// The change card closes its Turn (ADR-turn-change-sets-and-review ticket 03): a row lands
     /// after the Turn's last entry — before the NEXT user entry — whenever
     /// the store holds a non-empty set for that Turn's user message, and a
     /// live update resplices only the card row.

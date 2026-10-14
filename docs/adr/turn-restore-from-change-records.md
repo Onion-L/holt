@@ -2,7 +2,7 @@
 
 ## Context
 
-ADR-0024 persists an immutable before/after snapshot per settled Turn and
+ADR-turn-change-sets-and-review persists an immutable before/after snapshot per settled Turn and
 leaves undo as future work.
 
 ## Decision

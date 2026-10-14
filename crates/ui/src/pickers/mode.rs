@@ -1,4 +1,4 @@
-//! The permission-mode control (ADR-0014, prototype 1-B): the composer
+//! The permission-mode control (ADR-permission-modes-gate-mutations-no-os-sandbox, prototype 1-B): the composer
 //! footer's persistent shield chip + tier menu — one control, identical in
 //! empty and populated chats. The menu rows carry fixed per-tier tints
 //! (Auto-review blue, Full access orange — semantic
@@ -136,7 +136,7 @@ impl Pickers {
         )
     }
 
-    /// Fetch the engine's sticky new-chat default (ADR-0014), once per
+    /// Fetch the engine's sticky new-chat default (ADR-permission-modes-gate-mutations-no-os-sandbox), once per
     /// engine attach. Best-effort: a failure keeps the built-in default —
     /// the engine stays authoritative either way.
     pub(super) fn ensure_mode_default(&mut self, cx: &mut Context<Self>) {

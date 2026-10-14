@@ -1,4 +1,4 @@
-//! The permission Approval surface (ADR-0014). A pending confirm-changes
+//! The permission Approval surface (ADR-permission-modes-gate-mutations-no-os-sandbox). A pending confirm-changes
 //! gate has one interactive view: the composer's approval bar
 //! (`composer::approval_bar`), where the gated target and the verdict
 //! options render in place of the pill — the transcript builds no row for

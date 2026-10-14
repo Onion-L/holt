@@ -210,7 +210,7 @@ impl Pickers {
         // The branch rows list against the TARGET working directory — the
         // chat's own folder in a session (a legacy worktree chat lists and
         // tags `current` inside its own worktree), the space's folder in
-        // the draft (ADR-0007).
+        // the draft (ADR-branch-is-live-working-tree-state).
         let Some(repo_path) = self.switch_target_path(cx) else {
             return;
         };

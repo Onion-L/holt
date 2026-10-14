@@ -1,4 +1,4 @@
-//! Web-search settings RPCs (ADR-0023): the `web-search.json` record's
+//! Web-search settings RPCs (ADR-web-tools-full-text-ungated-pluggable-search): the `web-search.json` record's
 //! get/save/reveal/remove surface, masked-get semantics, validation — and
 //! the admission-time backend resolution that mounts the `web_search`
 //! tool, driven end to end through `RpcService::handle` with a scripted
@@ -533,7 +533,7 @@ async fn an_explorer_child_mounts_the_configured_backend() {
     let requests = provider.requests();
     // The parent Turns and the Explorer child all carry the tool: the
     // admission-time resolution threads through the Delegation, and the
-    // Explorer's read-only whitelist keeps it (ADR-0023).
+    // Explorer's read-only whitelist keeps it (ADR-web-tools-full-text-ungated-pluggable-search).
     for index in [0, 1, 2] {
         assert!(
             requests[index].tool_names.contains(&"web_search".into()),

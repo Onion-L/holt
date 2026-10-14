@@ -1,8 +1,8 @@
-//! The File sidebar: the Space-owned file editing state (ADR-0020), the
+//! The File sidebar: the Space-owned file editing state (ADR-file-editing-state-belongs-to-spaces), the
 //! far-right directory tree, and the file contents tabs that share the right
 //! pane's surface strip with Diff/Terminal/Subagent views.
 //!
-//! Ownership split (ADR-0020): file tabs, their contents, and tree expansion
+//! Ownership split (ADR-file-editing-state-belongs-to-spaces): file tabs, their contents, and tree expansion
 //! belong to a **Space** and are shared by its Chats; Terminal/Diff/Subagent
 //! views stay Chat-owned. The strip in `shell::right_pane` renders the
 //! Space's file tabs ahead of the selected Chat's private views.
@@ -23,7 +23,7 @@ use viewer::FileViewer;
 actions!(files, [SaveFile, FindInFile, TogglePreview]);
 
 /// One open file tab. Lives in [`FileTabs`] keyed by the owning Space —
-/// never per Chat (ADR-0020).
+/// never per Chat (ADR-file-editing-state-belongs-to-spaces).
 pub struct FileTab {
     pub id: u64,
     /// The path the tree opened — the entry's own path, possibly a symlink.
@@ -93,7 +93,7 @@ impl FileTabs {
     }
 }
 
-/// Per-Space file state on the shell, keyed by space id (ADR-0020).
+/// Per-Space file state on the shell, keyed by space id (ADR-file-editing-state-belongs-to-spaces).
 #[derive(Default)]
 pub struct FileStateMap {
     map: HashMap<String, FileTabs>,
@@ -157,7 +157,7 @@ impl FileStateMap {
     /// The space key for the shell's current selection: the selected chat's
     /// space, else the selected space on the new-chat canvas, `None` when
     /// there is nothing to browse. Every chat carries a space since the
-    /// Home space adopted the stragglers (ADR-0039).
+    /// Home space adopted the stragglers (ADR-home-space-for-project-less-chats).
     pub fn space_key(state: &AppState) -> Option<String> {
         if let Some(chat) = state.selected_chat_row() {
             chat.space_id.clone()
@@ -255,12 +255,12 @@ mod tests {
                 state.selected_chat = Some("chat-1".into());
                 assert_eq!(FileStateMap::space_key(state).as_deref(), Some("space-1"));
 
-                // Two chats in one space share the key (ADR-0020).
+                // Two chats in one space share the key (ADR-file-editing-state-belongs-to-spaces).
                 state.chats.push(chat("chat-2", Some("space-1"), None));
                 state.selected_chat = Some("chat-2".into());
                 assert_eq!(FileStateMap::space_key(state).as_deref(), Some("space-1"));
 
-                // A spaceless row (pre-ADR-0039 relic the boot adoption
+                // A spaceless row (pre-ADR-home-space-for-project-less-chats relic the boot adoption
                 // missed) has nothing to browse — no cwd-keyed fallback.
                 state.chats.push(chat("chat-3", None, Some("/tmp/solo")));
                 state.selected_chat = Some("chat-3".into());

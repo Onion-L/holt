@@ -1,4 +1,4 @@
-//! The Routines surface (ADR-0042): list, create, update, schedule preview,
+//! The Routines surface (ADR-routines-fire-in-process-and-coalesce-missed-fires): list, create, update, schedule preview,
 //! delete, pause, Run now, and the Routines watch. Every fire goes through `start_routine_run`.
 
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -371,7 +371,7 @@ impl EngineService {
                 compact_before_next_turn: false,
                 plan_mode: None,
                 provider_mode: false,
-                // The session worktree (ADR-0038) is cut from the repo's
+                // The session worktree (ADR-session-worktrees-are-chat-owned-isolation) is cut from the repo's
                 // current checkout, like a composer send with no picked
                 // base.
                 worktree: (routine.checkout == RoutineCheckout::NewWorktree).then(|| {

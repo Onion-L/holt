@@ -1,4 +1,4 @@
-//! Whole-Turn MCP tests (ADR-0034, ticket 01 — the stdio tracer bullet):
+//! Whole-Turn MCP tests (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 01 — the stdio tracer bullet):
 //! a real engine assembled on a temp data dir whose `mcp.json` points at
 //! the in-repo stdio fixture binary, driven through the `RpcService`
 //! trait exactly as the UI drives it. The scripted provider's recorded

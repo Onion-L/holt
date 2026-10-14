@@ -1,4 +1,4 @@
-//! The question card (ADR-0040): 1–4 questions the agent asked through
+//! The question card (ADR-ask-user-is-a-question-card): 1–4 questions the agent asked through
 //! `ask_user`, answered in the composer's approval bar (its third kind —
 //! the transcript builds no interactive counterpart, the gate's rule).
 //! While pending the card scans out of the transcript into the bar, one

@@ -294,7 +294,7 @@ impl ProviderAdapter {
             return Vec::new();
         }
         let mut models = self.catalog.models(provider_id).to_vec();
-        // The top catalog layer (ADR-0028): a record replaces the same-id
+        // The top catalog layer (ADR-three-layer-provider-catalog): a record replaces the same-id
         // entry outright — complete records, so per-field merging is not
         // expressible — and a new id appends.
         for record in self.settings.model_records_for(provider_id) {

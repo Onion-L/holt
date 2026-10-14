@@ -1,4 +1,4 @@
-//! The Web search group on the General page (web-tools ticket 07, ADR-0023):
+//! The Web search group on the General page (web-tools ticket 07, ADR-web-tools-full-text-ungated-pluggable-search):
 //! one service dropdown — Off, then the built-in backends in engine order
 //! (keyless Exa first). A keyless or already-configured service switches on
 //! pick; a keyed one without a key asks for it first, and saving the key

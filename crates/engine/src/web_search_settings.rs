@@ -1,4 +1,4 @@
-//! Engine-owned web-search settings (ADR-0023): the device-wide list of
+//! Engine-owned web-search settings (ADR-web-tools-full-text-ungated-pluggable-search): the device-wide list of
 //! configured search backends plus which one is active,
 //! persisted as `web-search.json` under the credentials pattern — 0600
 //! permissions, atomic replace + sync, and a malformed file fails startup

@@ -195,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Subscribe before queueing: terminal events are live-only (ADR-0019).
+    // Subscribe before queueing: terminal events are live-only (ADR-turn-completion-is-an-engine-owned-event).
     let mut turn_events = watch(&engine, methods::WATCH_TURN_TERMINAL_EVENTS, json!({})).await?;
     let mut queue = watch(
         &engine,

@@ -1,5 +1,5 @@
-//! The provider-catalog tools (ADR-0029, now mounted by Provider Mode,
-//! ADR-0037): the read-only `model_proposal` tool validates an exact
+//! The provider-catalog tools (ADR-model-setup-applies-stored-proposals, now mounted by Provider Mode,
+//! ADR-provider-mode-is-a-chat-mode): the read-only `model_proposal` tool validates an exact
 //! provider-catalog change and stores it engine-side; the only apply path
 //! is the proposal card's `ApplyModelProposal` RPC, which executes a stored
 //! proposal by id under the same revalidation — the agent never holds an
@@ -39,7 +39,7 @@ const STALE_PROPOSAL: &str = "provider settings changed since this proposal was 
 ask the assistant to propose again";
 
 /// Why executing catalog changes refused, typed at the source so the RPC
-/// boundary codes staleness (ADR-0029's gate) instead of matching message
+/// boundary codes staleness (ADR-model-setup-applies-stored-proposals's gate) instead of matching message
 /// text.
 #[derive(Debug, PartialEq)]
 pub(crate) enum ApplyError {
@@ -92,8 +92,8 @@ never wait for an in-chat approval.";
 // ---------------------------------------------------------------------------
 
 /// One exact catalog change. Stored verbatim in proposals and executed
-/// verbatim on apply — this is the "as stored" of ADR-0029. Serialized in
-/// the tool's own `action` vocabulary so a persisted proposal (ADR-0037)
+/// verbatim on apply — this is the "as stored" of ADR-model-setup-applies-stored-proposals. Serialized in
+/// the tool's own `action` vocabulary so a persisted proposal (ADR-provider-mode-is-a-chat-mode)
 /// reads like the call that made it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -226,7 +226,7 @@ pub(crate) struct StoredProposal {
     pub(crate) changes: Vec<CatalogChange>,
     /// [`baseline_fingerprint`] of the providers the batch touches, taken
     /// when the proposal was built. A hash, not the slice: stored record
-    /// headers are secrets and the proposal is persisted (ADR-0037).
+    /// headers are secrets and the proposal is persisted (ADR-provider-mode-is-a-chat-mode).
     pub(crate) baseline: String,
     /// Creation time (unix ms).
     pub(crate) created_at: i64,
@@ -271,7 +271,7 @@ pub(crate) fn touched_providers(changes: &[CatalogChange]) -> BTreeSet<String> {
         .collect()
 }
 
-/// The staleness gate's key (ADR-0037): a hash of every settings entry
+/// The staleness gate's key (ADR-provider-mode-is-a-chat-mode): a hash of every settings entry
 /// under the touched providers. A write to any other provider leaves it —
 /// and so the proposal — intact; any change under a touched one stales it.
 /// Hashed over canonical (key-sorted) JSON so it is stable across restarts.
@@ -727,7 +727,7 @@ pub(crate) fn apply_changes(
     baseline: &ProviderSettingsSnapshot,
     changes: &[CatalogChange],
 ) -> Result<Vec<String>, ApplyError> {
-    // The staleness gate (ADR-0029): the catalog must still accept the
+    // The staleness gate (ADR-model-setup-applies-stored-proposals): the catalog must still accept the
     // batch as a real change — anything else means state moved between the
     // proposal and the approval, and the model must propose again.
     match build_proposal(providers, changes).map_err(ApplyError::Other)? {
@@ -1197,7 +1197,7 @@ pub(crate) fn discard_stored(chat: &ChatRuntime, proposal_id: &str) -> bool {
     discarded
 }
 
-/// The proposal card's Write button (ADR-0037): executes a stored
+/// The proposal card's Write button (ADR-provider-mode-is-a-chat-mode): executes a stored
 /// proposal under the same revalidation the tool path used. The human
 /// approval is the button itself — no agent is involved. A successful
 /// apply CONSUMES the proposal (same path as discard): an already-written
@@ -1650,7 +1650,7 @@ pub(crate) fn create_model_proposal_tool(
 }
 
 // ---------------------------------------------------------------------------
-// The Key request (ADR-0031)
+// The Key request (ADR-api-keys-collected-through-key-requests)
 // ---------------------------------------------------------------------------
 
 /// The chat's pending Key request: what the key card stands for and the
@@ -1754,7 +1754,7 @@ async fn known_key_target(
     })
 }
 
-/// May a planned-target probe carry the stored key (ADR-0031)? The user
+/// May a planned-target probe carry the stored key (ADR-api-keys-collected-through-key-requests)? The user
 /// approved exactly the (provider, baseUrl) the card showed, on this chat,
 /// in this session — a changed baseUrl re-arms, and nothing else ever
 /// matches. Pure so the triple rules are unit-testable.
@@ -1872,7 +1872,7 @@ pub(crate) fn create_request_provider_key_tool(
     }
 }
 
-/// The fixed message a provider-choice click queues (ADR-0037) — the
+/// The fixed message a provider-choice click queues (ADR-provider-mode-is-a-chat-mode) — the
 /// same words a typed answer would carry.
 pub(crate) fn provider_chosen_notice(provider_id: &str, provider_name: &str) -> String {
     format!("Use provider {provider_id} ({provider_name}).")
@@ -2664,7 +2664,7 @@ mod tests {
             "other",
             "https://ghost.example/v1"
         ));
-        // No approvals: keyless, exactly as before ADR-0031.
+        // No approvals: keyless, exactly as before ADR-api-keys-collected-through-key-requests.
         let empty = HashSet::new();
         assert!(!planned_probe_key_allowed(
             &empty,

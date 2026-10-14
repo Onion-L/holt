@@ -1,8 +1,8 @@
 //! Settings → Providers: the provider list and the Add Provider dialog.
 //!
 //! `panels` — provider rows: keys, model list, hidden models, resets
-//! (ADR-0028's catalog layers).
-//! `record_form` — the manual model-record dialog (ADR-0029).
+//! (ADR-three-layer-provider-catalog's catalog layers).
+//! `record_form` — the manual model-record dialog (ADR-model-setup-applies-stored-proposals).
 //! `add_dialog` — the Add Provider dialog and the manual definition
 //! form.
 //! `logo_dialog` — a custom provider's logo: upload a file or paste SVG.
@@ -121,7 +121,7 @@ pub struct ProvidersPage {
     /// after the definition saves.
     new_provider_logo: Option<std::path::PathBuf>,
     /// The mounted model-record form, targeting the expanded panel's active
-    /// variant (ADR-0029's manual half of the write path).
+    /// variant (ADR-model-setup-applies-stored-proposals's manual half of the write path).
     record_form: Option<RecordForm>,
     /// ProbeProvider results per variant (the Test button's status line;
     /// the fetch dialog opens from a fresh probe's `ok`).

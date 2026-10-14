@@ -1,4 +1,4 @@
-//! Session-worktree isolation (ADR-0038): a chat with a persisted isolation
+//! Session-worktree isolation (ADR-session-worktrees-are-chat-owned-isolation): a chat with a persisted isolation
 //! intent materializes a dedicated linked worktree at admission and runs
 //! every Turn there — including messages queued behind the creating one and
 //! sends that carry no WorktreeSpec of their own. A failed materialization is

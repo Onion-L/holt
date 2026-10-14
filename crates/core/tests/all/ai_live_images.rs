@@ -13,7 +13,7 @@
 //! Deviation: the TS suite never passes an `apiKey` in the options, so its
 //! live run fails with "No API key for provider: openrouter" even though the
 //! gate checks `OPENROUTER_API_KEY`. With upstream no longer tracked
-//! (ADR-0043), the port threads the gated env key into `ImagesOptions`
+//! (ADR-agent-core-is-a-holt-owned-workspace-crate), the port threads the gated env key into `ImagesOptions`
 //! instead of reproducing the broken call.
 //!
 //! Deviation: vitest `{ retry: 3 }` has no Rust equivalent.

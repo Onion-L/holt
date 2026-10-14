@@ -1,4 +1,4 @@
-//! Handle-seam tests for the skills capability (ADR-0005): a real engine
+//! Handle-seam tests for the skills capability (ADR-skills-referenced-in-place-from-standard-roots): a real engine
 //! assembled on a temp data dir with temp directories standing in for the
 //! three skill roots — project (via the `cwd` param), personal (pinned
 //! through `EngineConfig`), holt (`<data_dir>/skills`) — driven through the

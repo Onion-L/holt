@@ -500,7 +500,7 @@ async fn branch_switches_move_decorations() {
 
 #[tokio::test]
 async fn linked_worktrees_carry_their_own_status() {
-    // ADR-0002: no parallel registry — a worktree Space discovers its own
+    // ADR-git-hangs-off-spaces-no-repo-registry: no parallel registry — a worktree Space discovers its own
     // checkout, and its status sees only its own folder.
     let fixture = GitFixture::new();
     let worktree_dir = TempDir::new().unwrap();

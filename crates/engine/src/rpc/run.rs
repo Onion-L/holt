@@ -41,7 +41,7 @@ impl EngineService {
         }
     }
 
-    /// An attended send (ADR-0021): a first acceptance arriving while the
+    /// An attended send (ADR-attended-sends-run-through-a-paused-queue): a first acceptance arriving while the
     /// chat's execution channel is settled and the queue is paused. Prep
     /// that has not reached the admission checkpoint still occupies the
     /// channel through the driver, so `driver_running` must be quiet too.
@@ -63,7 +63,7 @@ impl EngineService {
                 "messageId and prompt must not be empty".into(),
             ));
         }
-        // Session worktrees (ADR-0038): the isolation intent persists at
+        // Session worktrees (ADR-session-worktrees-are-chat-owned-isolation): the isolation intent persists at
         // command acceptance, before the run becomes durable queue work — a
         // crash between the ledger write and admission must not drop it
         // (recovery clears `started` without re-reading the spec).
@@ -93,7 +93,7 @@ impl EngineService {
     /// intent fills, an equal one is idempotent, a different one is rejected —
     /// the intent is chat-owned and never overwritten. A registry row is
     /// minted when `createChat` never arrived (the mutate is best-effort), so
-    /// the run cannot land on a rowless chat (ADR-0038).
+    /// the run cannot land on a rowless chat (ADR-session-worktrees-are-chat-owned-isolation).
     fn absorb_worktree_intent(
         &self,
         chat: &Arc<ChatRuntime>,
@@ -174,7 +174,7 @@ impl EngineService {
             .and_then(|row| row.worktree.clone())
     }
 
-    /// The chat's dedicated worktree Space (ADR-0038): an ensure-style lookup
+    /// The chat's dedicated worktree Space (ADR-session-worktrees-are-chat-owned-isolation): an ensure-style lookup
     /// over the same registry `createSpace` serves. The same id at the same
     /// path, or the same (device, path) under any id, reuses the existing row;
     /// the same id at a DIFFERENT path is registration damage and fails the
@@ -259,7 +259,7 @@ impl EngineService {
     }
 
     /// Persist the visible record of a pre-execution preparation failure
-    /// (ADR-0038): the user entry exactly as admission would have written it,
+    /// (ADR-session-worktrees-are-chat-owned-isolation): the user entry exactly as admission would have written it,
     /// plus one system Error entry carrying the reason. No Turn runs, so no
     /// History entry exists for the user message — the edit path treats such
     /// entries as transcript-only.
@@ -338,7 +338,7 @@ impl EngineService {
             } => {
                 self.enqueue_run(chat, request, message_id)?;
             }
-            // The dedicated skill invocation command is retired (ADR-0035):
+            // The dedicated skill invocation command is retired (ADR-skill-invocation-is-an-inline-mention):
             // skills ride ordinary messages as inline `$` mentions. The
             // payload stays deserializable for old command ledgers.
             SessionCommandPayload::InvokeSkill { .. } => {
@@ -389,7 +389,7 @@ impl EngineService {
                 request,
                 message_id,
             } => {
-                // A manual Compaction joins the same ordered queue (ADR-0011
+                // A manual Compaction joins the same ordered queue (ADR-compaction-is-not-a-turn
                 // as amended by message-queue ticket 04): the driver admits
                 // it in submission order and runs it outside the Turn model.
                 // A pre-queue peer sends no id — mint one (no dedup possible
@@ -408,7 +408,7 @@ impl EngineService {
                         return Err(RpcError::Failed("chat was deleted".into()));
                     }
                     // Manual Compaction keeps its strict submission order
-                    // (ADR-0011): an attended /compact parks like any
+                    // (ADR-compaction-is-not-a-turn): an attended /compact parks like any
                     // queued item, and Continue is its way forward.
                     queue.enqueue(request, message_id, PendingKind::Compact, None, None, false)?;
                 }
@@ -423,7 +423,7 @@ impl EngineService {
     /// `preview` the sidebar/title text, `prompt` the model-visible text —
     /// rebuilt at the admission checkpoint from the item the queue holds
     /// NOW, so an edit that landed mid-pick wins. Inline `$` skill mentions
-    /// resolve here too (ADR-0035): every resolved mention's `<skill>` block
+    /// resolve here too (ADR-skill-invocation-is-an-inline-mention): every resolved mention's `<skill>` block
     /// is prepended to the prompt and seeded as the head of the run's own
     /// entry.
     #[allow(clippy::too_many_arguments)]
@@ -486,7 +486,7 @@ impl EngineService {
             match admitted.message.kind {
                 PendingKind::Ordinary | PendingKind::Skill => {
                     // Pending Skill items no longer exist (load-time
-                    // migration, ADR-0035); the arm stays for the enum.
+                    // migration, ADR-skill-invocation-is-an-inline-mention); the arm stays for the enum.
                     let current = admitted.message.request.prompt;
                     if current != prompt {
                         prompt = current.clone();
@@ -506,12 +506,12 @@ impl EngineService {
                     mentions = true;
                 }
                 // Manual Compaction is admitted by the driver itself — it
-                // never becomes a Turn (ADR-0011).
+                // never becomes a Turn (ADR-compaction-is-not-a-turn).
                 PendingKind::Compact => unreachable!("Compaction never enters start_turn"),
             }
         }
 
-        // Session worktrees (ADR-0038): the chat's persisted isolation intent
+        // Session worktrees (ADR-session-worktrees-are-chat-owned-isolation): the chat's persisted isolation intent
         // — not the request's cwd — decides where this run executes. The
         // request carries no spec on later sends, so a message queued behind
         // the creating one, or sent after a failed materialization, still
@@ -581,7 +581,7 @@ impl EngineService {
             .git
             .turn_source_context(&request.cwd, &self.engine_info.device_id)
             .await;
-        // Title task (ADR-0012): resolve its inputs only when the row could
+        // Title task (ADR-automatic-titles-run-outside-pi-hooks): resolve its inputs only when the row could
         // still be eligible, so later prompts never touch title settings.
         // Every failure here is silent — a missing or invalid title model
         // must never fail the Turn.
@@ -593,21 +593,21 @@ impl EngineService {
             None
         };
 
-        // No runtime-wide lock spans admission (ADR-0032): the registry
+        // No runtime-wide lock spans admission (ADR-transcript-append-only-log-per-chat-lock): the registry
         // write serializes on `chats_store`, the user entry on the chat's
         // own persistence lock, and the driver's per-chat execution mutex
         // already orders this chat's runs.
         let mut title_spawn = None;
-        // The Turn's mode snapshot (ADR-0014): the stored mode, or the
+        // The Turn's mode snapshot (ADR-permission-modes-gate-mutations-no-os-sandbox): the stored mode, or the
         // sticky default for a row without a config yet. Taken at
         // acceptance — a switch after this point affects only the next
         // Turn.
         let mut mode = self.mode_default.get();
-        // The Turn's Plan Mode snapshot (ADR-0025): planning at admission
+        // The Turn's Plan Mode snapshot (ADR-plan-mode-is-an-independent-approval-checkpoint): planning at admission
         // makes this a planning Turn; a mid-Turn switch lands from the
         // next Turn exactly like the mode beside it.
         let mut planning = false;
-        // The Turn's Provider Mode snapshot (ADR-0037), taken at
+        // The Turn's Provider Mode snapshot (ADR-provider-mode-is-a-chat-mode), taken at
         // acceptance like the permission mode and Plan Mode.
         let mut provider_mode = false;
         {
@@ -625,7 +625,7 @@ impl EngineService {
                     row.branch = None;
                     row.source_context = None;
                 }
-                // Session worktree (ADR-0038): re-parent to the worktree
+                // Session worktree (ADR-session-worktrees-are-chat-owned-isolation): re-parent to the worktree
                 // Space and stamp the worktree's own checkout identity —
                 // Changes matches diffs by checkout_id first, so a stale id
                 // would keep matching the main checkout.
@@ -636,7 +636,7 @@ impl EngineService {
                 planning = row.plan_mode.is_some();
                 provider_mode = row.provider_mode;
                 // The permission mode is NOT the
-                // request's to move (ADR-0014): the stored mode is
+                // request's to move (ADR-permission-modes-gate-mutations-no-os-sandbox): the stored mode is
                 // authoritative — switches land through the mode RPC and
                 // take effect from the next Turn — and a row without a
                 // config yet inherits the sticky default, exactly like a
@@ -740,7 +740,7 @@ impl EngineService {
             ));
         }
         // The admitted user entry lands in the log now, complete at
-        // creation (ADR-0032) — not on the next run event.
+        // creation (ADR-transcript-append-only-log-per-chat-lock) — not on the next run event.
         chat.persist_entry(&message_id);
         // That write is the storage fence (issue #16): if the user entry
         // could not be saved, the Turn never launches — no model call on
@@ -782,7 +782,7 @@ impl EngineService {
             permission_mode: mode,
             plan_mode: planning,
             provider_mode,
-            // The admission-time backend snapshot (ADR-0023): resolved
+            // The admission-time backend snapshot (ADR-web-tools-full-text-ungated-pluggable-search): resolved
             // once here, so a settings change mid-Turn lands from the
             // next Turn — the same snapshot semantics as the mode.
             search_backend: self.search_backend(),
@@ -830,7 +830,7 @@ impl EngineService {
         };
 
         // Edits are ordinary messages now — skill mentions in the new text
-        // resolve at admission like any send (ADR-0035). A legacy Skill-part
+        // resolve at admission like any send (ADR-skill-invocation-is-an-inline-mention). A legacy Skill-part
         // entry edits the same way; its replacement is the typed text.
         let (request, attended) = {
             let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
@@ -931,12 +931,12 @@ impl EngineService {
         };
 
         // Persistence first, then the records — the same nesting the run
-        // path settles under (ADR-0032), so repair cannot interleave with
+        // path settles under (ADR-transcript-append-only-log-per-chat-lock), so repair cannot interleave with
         // a settle.
         let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let mut history = chat.history.write().unwrap_or_else(|e| e.into_inner());
         // A user entry with no History counterpart never ran (pre-execution
-        // preparation failure, ADR-0038): the edit is transcript-only —
+        // preparation failure, ADR-session-worktrees-are-chat-owned-isolation): the edit is transcript-only —
         // History has no tail for this message to truncate.
         let history_index = history
             .iter()
@@ -967,7 +967,7 @@ impl EngineService {
         // gone, so every entry's next persist is a full line again.
         chat.clear_persisted_parts();
         // The pruned Turn's change set dies with it: the card attaches to a
-        // Turn the transcript no longer holds (ADR-0024), so retract the
+        // Turn the transcript no longer holds (ADR-turn-change-sets-and-review), so retract the
         // persisted record and the in-memory baselines BEFORE the publish —
         // a consumer restoring cards off the reset frame must never revive
         // the stale set. The working tree keeps its edits regardless.
@@ -1160,7 +1160,7 @@ impl EngineService {
                 return Err(RpcError::Failed("chat was deleted".into()));
             }
             // Continue lifts the single-run scope of an attended
-            // send along with the pause (ADR-0021); a later failure
+            // send along with the pause (ADR-attended-sends-run-through-a-paused-queue); a later failure
             // pauses again.
             queue.resume()?;
             queue.snapshot()
@@ -1211,7 +1211,7 @@ impl EngineService {
             let snapshot = queue.snapshot();
             drop(queue);
             if was_goal_continuation {
-                // Deleting the loop's next step is a stop request (ADR-0044).
+                // Deleting the loop's next step is a stop request (ADR-goal-mode-verified-loop-at-turn-settle).
                 crate::goal::pause_for_deleted_continuation(self, &chat);
             }
             snapshot

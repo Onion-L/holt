@@ -1,4 +1,4 @@
-//! Handle-seam tests for overflow recovery (ADR-0011, spec ticket 08):
+//! Handle-seam tests for overflow recovery (ADR-compaction-is-not-a-turn, spec ticket 08):
 //! when estimation misses and the provider rejects the request for size,
 //! the Turn compacts (trigger `after overflow`) and continues in place,
 //! once. When that cannot absorb it — a second overflow, a failed summary,

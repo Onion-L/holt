@@ -1,4 +1,4 @@
-//! Engine-owned sticky permission-mode default (ADR-0014): one JSON record
+//! Engine-owned sticky permission-mode default (ADR-permission-modes-gate-mutations-no-os-sandbox): one JSON record
 //! in the data dir, mutated only through the mode RPC. New chats inherit
 //! the last mode chosen on the device; the very first launch defaults to
 //! confirm-changes. Same pattern as the title-settings record: a missing,

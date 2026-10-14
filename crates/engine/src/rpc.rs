@@ -241,7 +241,7 @@ impl RpcService for EngineService {
             methods::SET_ACTIVE_WEB_SEARCH_BACKEND => self.set_active_web_search_backend(params),
             methods::REVEAL_WEB_SEARCH_KEY => self.reveal_web_search_key(params),
             methods::REMOVE_WEB_SEARCH_BACKEND => self.remove_web_search_backend(params),
-            // MCP servers (ADR-0034): the Settings quartet — get with
+            // MCP servers (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the Settings quartet — get with
             // validation feedback, strict upsert, remove, and the
             // on-demand probe. No standing watch: probing on demand is
             // what keeps startup lazy.
@@ -252,7 +252,7 @@ impl RpcService for EngineService {
                 let name = required_string(&params, "name")?;
                 RpcReply::value(&self.mcp_probe_reply(name).await)
             }
-            // The composer's slash menu (ADR-0011/0025/0037): the commands this
+            // The composer's slash menu (ADR-compaction-is-not-a-turn/0025/0037): the commands this
             // backend intercepts itself.
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([
                 { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" },
@@ -261,7 +261,7 @@ impl RpcService for EngineService {
                 { "name": "provider", "description": "Provider Mode: add or update providers and models by conversation", "inputHint": "[task | off]" },
                 { "name": "goal", "description": "Goal Mode: loop on an objective until a verifier says it holds", "inputHint": "[objective | off | pause | resume]" }
             ])),
-            // The skills catalog (ADR-0005): fresh per call — the
+            // The skills catalog (ADR-skills-referenced-in-place-from-standard-roots): fresh per call — the
             // filesystem is the registry, so there is nothing to cache.
             // Absent roots are skipped silently inside the scan.
             methods::LIST_SKILLS => {
@@ -422,11 +422,11 @@ impl RpcService for EngineService {
                 self.rename_chat(params)
             }
             methods::QUEUE_COMMAND => self.queue_command(params).await,
-            // Confirm-changes verdicts (ADR-0014): params
+            // Confirm-changes verdicts (ADR-permission-modes-gate-mutations-no-os-sandbox): params
             // `{approvalId, verdict}` with `holt_proto::ApprovalVerdict`
             // as the verdict.
             methods::RESOLVE_APPROVAL => self.resolve_approval(params),
-            // The sticky default new chats inherit (ADR-0014) — the
+            // The sticky default new chats inherit (ADR-permission-modes-gate-mutations-no-os-sandbox) — the
             // new-chat canvas chip reads it so it can advertise the mode a
             // first send would actually run under.
             methods::GET_PERMISSION_MODE_DEFAULT => {

@@ -53,7 +53,7 @@ impl Composer {
 
     /// New-chat sends need a space row: transiently absent only before the
     /// first spaces frame lands (the engine's Home space guarantees one
-    /// afterwards — ADR-0039). Existing chats carry their own space, so
+    /// afterwards — ADR-home-space-for-project-less-chats). Existing chats carry their own space, so
     /// they always send.
     fn send_blocked(&self, cx: &App) -> bool {
         if self.pasting.get(&self.current_key).copied().unwrap_or(0) > 0 {
@@ -125,9 +125,9 @@ impl Composer {
             self.retry_submission(cx);
             return;
         }
-        // Slash commands are handled by the composer itself (ADR-0006):
-        // `/compact` with arguments never reaches the prompt path (ADR-0011
-        // — it takes none). Skills are not a directive anymore (ADR-0035):
+        // Slash commands are handled by the composer itself (ADR-metadata-only-skill-advertising):
+        // `/compact` with arguments never reaches the prompt path (ADR-compaction-is-not-a-turn
+        // — it takes none). Skills are not a directive anymore (ADR-skill-invocation-is-an-inline-mention):
         // inline `$` mentions ride ordinary sends.
         // A skill switched off in Settings → Skills is refused even when
         // typed out in full — disabled means unusable, not just hidden.
@@ -157,14 +157,14 @@ impl Composer {
                 return;
             }
             // `/init` bootstraps a repository's AGENTS.md; the Home space
-            // has no repository to bootstrap (ADR-0039).
+            // has no repository to bootstrap (ADR-home-space-for-project-less-chats).
             super::slash::Parsed::Init if self.state.read(cx).target_in_home_space() => {
                 self.failure = Some("/init needs a project — pick a project first".into());
                 self.failure_key = None;
                 cx.notify();
                 return;
             }
-            // The /plan mode-only forms dispatch themselves (ADR-0025).
+            // The /plan mode-only forms dispatch themselves (ADR-plan-mode-is-an-independent-approval-checkpoint).
             // They send no message, so they never reach the send path —
             // a draft chat has nothing to enter or query yet.
             super::slash::Parsed::Plan { action } => match action {
@@ -208,7 +208,7 @@ impl Composer {
                 cx.notify();
                 return;
             }
-            // `/goal off|pause|resume` dispatch themselves (ADR-0044);
+            // `/goal off|pause|resume` dispatch themselves (ADR-goal-mode-verified-loop-at-turn-settle);
             // `/goal <objective>` falls through to the send path, which
             // arms the goal and sends the objective as the first Turn —
             // the raw directive never becomes prompt text.
@@ -238,7 +238,7 @@ impl Composer {
         }
     }
     /// The control-only `/goal` forms (`off` / `pause` / `resume`,
-    /// ADR-0044) — `/goal <objective>` rides the send path instead. These
+    /// ADR-goal-mode-verified-loop-at-turn-settle) — `/goal <objective>` rides the send path instead. These
     /// need an existing chat: there is no loop to drive on the canvas.
     pub(crate) fn goal_command(
         &mut self,
@@ -317,7 +317,7 @@ impl Composer {
             .read(cx)
             .selected_chat_row()
             .and_then(|c| c.cwd.clone());
-        // The chat's permission mode rides the Run request (ADR-0014): an
+        // The chat's permission mode rides the Run request (ADR-permission-modes-gate-mutations-no-os-sandbox): an
         // existing chat carries its stored mode; a fresh row takes the draft
         // pick when one was made, else the engine's sticky default. (The
         // field is advisory — the engine preserves the STORED mode; the
@@ -352,14 +352,14 @@ impl Composer {
         };
         let space_id = space.as_ref().map(|s| s.id.clone());
         let space_path = space.as_ref().map(|s| s.path.clone());
-        // Slash interception (ADR-0006): `/compact` and `/init` rewrite the
+        // Slash interception (ADR-metadata-only-skill-advertising): `/compact` and `/init` rewrite the
         // queued payload directly; a skill mention in the text stays and
-        // resolves at engine admission (ADR-0035). Staged image attachments
+        // resolves at engine admission (ADR-skill-invocation-is-an-inline-mention). Staged image attachments
         // and diff-comment folding stay put for the next ordinary message;
         // path references do NOT travel alone — an ordinary send consumes
         // them into the prompt (spec: skills receive both reference forms).
         let mut slash = super::slash::parse(&text);
-        // `/plan <task>` (ADR-0025): the task IS the outgoing planning
+        // `/plan <task>` (ADR-plan-mode-is-an-independent-approval-checkpoint): the task IS the outgoing planning
         // input — an ordinary message — so the content is rewritten here
         // and the directive itself never reaches the model. The enter RPC
         // rides the async block below (after createChat, before the queue);
@@ -371,7 +371,7 @@ impl Composer {
             plan_enter = true;
             self.plan_mode_draft = false;
         }
-        // Provider Mode (ADR-0037) rides the same way: a canvas draft or
+        // Provider Mode (ADR-provider-mode-is-a-chat-mode) rides the same way: a canvas draft or
         // `/provider <task>` enters before the run is queued. The draft
         // lives on the pickers alone — its chip's close button clears it.
         let mut provider_enter = false;
@@ -382,7 +382,7 @@ impl Composer {
                 cx.notify();
             });
         }
-        // `/goal <objective>` arms after createChat (ADR-0044).
+        // `/goal <objective>` arms after createChat (ADR-goal-mode-verified-loop-at-turn-settle).
         let mut goal_set: Option<String> = None;
         let restore_text;
         if let super::slash::Parsed::Plan {
@@ -407,7 +407,7 @@ impl Composer {
             action: super::slash::GoalAction::Set(objective),
         } = &slash
         {
-            // `/goal <objective>` (ADR-0044): the objective IS the first
+            // `/goal <objective>` (ADR-goal-mode-verified-loop-at-turn-settle): the objective IS the first
             // Turn's message; the SetGoal RPC rides the async block below
             // (after createChat, before the queue) so the Turn settles into
             // an armed loop. A failed SetGoal restores the ORIGINAL
@@ -431,7 +431,7 @@ impl Composer {
         } else {
             restore_text = None;
         }
-        // Both intercepted commands travel alone (ADR-0006/0011): staged
+        // Both intercepted commands travel alone (ADR-metadata-only-skill-advertising/0011): staged
         // attachments and diff-comment folding stay put for the next
         // ordinary message.
         let travels_alone = matches!(slash, super::slash::Parsed::Compact);
@@ -501,7 +501,7 @@ impl Composer {
         // the Transcript only when the engine admits it, in the engine's own
         // frame. `/compact` likewise has no user entry to echo — the
         // Compacting status is the whole UI story until the divider lands
-        // (ADR-0011).
+        // (ADR-compaction-is-not-a-turn).
         self.state.update(cx, |s, cx| {
             if is_new {
                 s.select_chat(Some(chat_id.clone()), cx);
@@ -537,9 +537,9 @@ impl Composer {
                 let content = text.clone();
 
                 // Resolve the working directory: existing chats keep theirs;
-                // a new chat always runs in its SPACE's folder (ADR-0007 —
+                // a new chat always runs in its SPACE's folder (ADR-branch-is-live-working-tree-state —
                 // the reuse-worktree arm is gone) — the Home space when the
-                // canvas has no project picked (ADR-0039) — unless a fresh
+                // canvas has no project picked (ADR-home-space-for-project-less-chats) — unless a fresh
                 // isolated worktree is minted off the picked base ref on
                 // send (a WorktreeSpec riding the Run command).
                 let cwd = if is_new {
@@ -624,7 +624,7 @@ impl Composer {
                         }
                         // Best-effort pre-stamp of the isolation intent: the
                         // engine's durable carrier is the queued Run's
-                        // WorktreeSpec (ADR-0038) — this only makes the footer
+                        // WorktreeSpec (ADR-session-worktrees-are-chat-owned-isolation) — this only makes the footer
                         // and sidebar correct before the first admission.
                         if let Some(spec) = &run_worktree
                             && let Ok(value) = serde_json::to_value(spec)
@@ -653,7 +653,7 @@ impl Composer {
                 // A permission mode picked on the canvas applies NOW — after
                 // createChat, before the first Run is queued — so the first
                 // Turn snapshots the chosen mode (the engine reads the mode at
-                // run acceptance) and the sticky default is saved (ADR-0014).
+                // run acceptance) and the sticky default is saved (ADR-permission-modes-gate-mutations-no-os-sandbox).
                 // Best-effort like createChat: a failure just means the chat
                 // keeps the inherited default.
                 if is_new && let Some(mode) = draft_mode {
@@ -665,7 +665,7 @@ impl Composer {
                     )
                     .await;
                 }
-                // `/plan <task>` (ADR-0025): Plan Mode is ON before the run
+                // `/plan <task>` (ADR-plan-mode-is-an-independent-approval-checkpoint): Plan Mode is ON before the run
                 // is queued, so the task's Turn admits as a planning Turn
                 // (read-only tools + the plan document). Idempotent —
                 // entering an already-planning chat is a no-op. FATAL on a
@@ -697,7 +697,7 @@ impl Composer {
                 {
                     return Err(format!("/provider failed: {err}"));
                 }
-                // `/goal <objective>` (ADR-0044): armed after createChat,
+                // `/goal <objective>` (ADR-goal-mode-verified-loop-at-turn-settle): armed after createChat,
                 // before the run is queued, so the first Turn settles into
                 // the loop. Fatal like the plan enter — a failed SetGoal
                 // restores the directive instead of sending the objective
@@ -717,11 +717,11 @@ impl Composer {
 
                 let command = match &slash {
                     // `/compact` rides the same queue as a typed command
-                    // (ADR-0011); the engine needs only the provider/model
+                    // (ADR-compaction-is-not-a-turn); the engine needs only the provider/model
                     // resolution — its prompt is unused and the raw
                     // directive never reaches the model. Every other parse
                     // result is an ordinary run: inline `$` mentions ride
-                    // the prompt text and resolve at admission (ADR-0035).
+                    // the prompt text and resolve at admission (ADR-skill-invocation-is-an-inline-mention).
                     super::slash::Parsed::Compact => SessionCommandPayload::Compact {
                         request: RunRequest {
                             prompt: String::new(),
@@ -935,7 +935,7 @@ impl Composer {
         .detach();
     }
 
-    /// The mode-only `/plan` forms (ADR-0025): Enter / Off / Status over
+    /// The mode-only `/plan` forms (ADR-plan-mode-is-an-independent-approval-checkpoint): Enter / Off / Status over
     /// the current chat. They carry no message, so the composer surfaces
     /// the outcome on its notice line and never reaches the send path.
     /// On the new-chat canvas there is nothing to enter or query yet —
@@ -998,7 +998,7 @@ impl Composer {
         .detach();
     }
 
-    /// The mode-only `/provider` forms (ADR-0037). On the new-chat canvas
+    /// The mode-only `/provider` forms (ADR-provider-mode-is-a-chat-mode). On the new-chat canvas
     /// they only flip the draft the first send enters with; on a chat they
     /// call the engine and the notice line confirms the switch.
     pub(crate) fn provider_command(&mut self, enter: bool, cx: &mut Context<Self>) {

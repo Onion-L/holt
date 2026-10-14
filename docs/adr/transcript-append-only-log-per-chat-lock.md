@@ -1,4 +1,4 @@
-# ADR-0032: The transcript is an append-only log; each chat persists behind its own lock
+# ADR-transcript-append-only-log-per-chat-lock: The transcript is an append-only log; each chat persists behind its own lock
 
 - Status: Accepted
 - Date: 2026-09-12
@@ -22,7 +22,7 @@ with a full line.
 
 ## Context
 
-Through ADR-0031 the transcript persisted as a whole-file snapshot:
+Through ADR-api-keys-collected-through-key-requests the transcript persisted as a whole-file snapshot:
 `publish()` deep-copied the entire `Vec<SessionMessageEntry>`, serialized it
 pretty, and rewrote `transcripts/<chatId>.json` (tmp + rename) — on a 120 ms
 tick while a run streamed, unthrottled on message/tool boundaries, and on
@@ -33,7 +33,7 @@ one streaming chat serialized every other chat's `start_turn`, history
 appends, and queue settlement — the lock protected files those chats never
 touch.
 
-The History had already solved the same problem (ADR-0010): an append-only
+The History had already solved the same problem (ADR-history-is-a-separate-persisted-record): an append-only
 JSONL file with a version header, one record per completed message, and a
 tolerant reader that treats a truncated trailing line as absent.
 
@@ -50,7 +50,7 @@ tolerant reader that treats a truncated trailing line as absent.
    can outlive any tick — the pending chip must be durable), the run
    settles terminally, and when a post-run settle mutates an already-logged
    entry (plan cards, unresolved-tool sweeps, a subagent's first live-child
-   stamp). Stream deltas update the watch only. This mirrors ADR-0010's
+   stamp). Stream deltas update the watch only. This mirrors ADR-history-is-a-separate-persisted-record's
    "a crash mid-Turn loses nothing that had completed": the loss window is
    the in-flight message, exactly what the old 120 ms tick also failed to
    capture.

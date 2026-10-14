@@ -29,7 +29,7 @@ pub fn strip_block(text: &str) -> Option<String> {
     Some(text[..at].to_string())
 }
 
-/// A goal-loop continuation's leading label (ADR-0044): the transcript's
+/// A goal-loop continuation's leading label (ADR-goal-mode-verified-loop-at-turn-settle): the transcript's
 /// loop row and the queue's pending row both lead with it.
 pub fn round_label(kind: &holt_proto::GoalRoundKind) -> String {
     match kind {
@@ -39,7 +39,7 @@ pub fn round_label(kind: &holt_proto::GoalRoundKind) -> String {
     }
 }
 
-/// Where a goal loop stands right now, as the UI can see it (ADR-0044).
+/// Where a goal loop stands right now, as the UI can see it (ADR-goal-mode-verified-loop-at-turn-settle).
 /// The engine stores only `active`/`paused`/`blocked`; the moving parts —
 /// a Turn running, the verifier judging, queued work, an open question —
 /// are read off the queue and the transcript the UI already watches, so

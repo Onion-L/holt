@@ -268,7 +268,7 @@ pub struct AppState {
     message_queue_task: Option<Task<()>>,
     pub(crate) chat_usage: Option<holt_proto::ChatUsage>,
     chat_usage_task: Option<Task<()>>,
-    /// The selected chat's Turn change sets (ADR-0024), keyed by each Turn's
+    /// The selected chat's Turn change sets (ADR-turn-change-sets-and-review), keyed by each Turn's
     /// user-message id: the live current Turn's moving set from
     /// `WatchTurnChangeSet`, its frozen final at settle, and history restored
     /// by id after a restart. Empty sets never enter — an empty card is not a
@@ -415,7 +415,7 @@ impl AppState {
 
     pub fn apply_chats(&mut self, mut chats: Vec<Chat>) {
         // The selected chat's previous Space, captured before this frame
-        // replaces the rows: a session-worktree migration (ADR-0038) re-parents
+        // replaces the rows: a session-worktree migration (ADR-session-worktrees-are-chat-owned-isolation) re-parents
         // the chat mid-life and the selection follows that CHANGE — and only
         // that change, so ordinary watch frames never move the project pick.
         let selected_previous_space = self
@@ -454,7 +454,7 @@ impl AppState {
             && chat.space_id != selected_previous_space
         {
             // A chat implies its space; the Home space covers project-less
-            // rows (ADR-0039), so a dangling `None` just leaves the pick.
+            // rows (ADR-home-space-for-project-less-chats), so a dangling `None` just leaves the pick.
             if let Some(space_id) = chat.space_id.clone() {
                 self.selected_space = Some(space_id);
             }
@@ -596,7 +596,7 @@ impl AppState {
         self.ack_pending_send_from_transcript();
     }
 
-    /// One `WatchTurnChangeSet` frame for the selected chat (ADR-0024): the
+    /// One `WatchTurnChangeSet` frame for the selected chat (ADR-turn-change-sets-and-review): the
     /// live current Turn's moving set, or a settled Turn's frozen final —
     /// success, failure, and interruption all settle to a final set. A final
     /// set is immutable: later frames for the same Turn never move it. An
@@ -604,7 +604,7 @@ impl AppState {
     /// nothing, and a final one that emptied out (net zero at settle)
     /// retires the live card it replaces. Empty retires even a frozen
     /// final: the engine emits one only when the Turn's set is void — a
-    /// net-zero settle, or an edit retracting its pruned Turn (ADR-0033),
+    /// net-zero settle, or an edit retracting its pruned Turn (ADR-last-message-edit-restarts-a-turn),
     /// whose replacement reruns under the same message id.
     pub fn apply_turn_change_set(&mut self, change_set: holt_proto::TurnChangeSet) {
         if change_set.files.is_empty() {
@@ -894,7 +894,7 @@ impl AppState {
 
     /// Whether the send target (the selected chat, else the canvas pick)
     /// is the Home space — where `/init` has no repository to bootstrap
-    /// (ADR-0039).
+    /// (ADR-home-space-for-project-less-chats).
     pub fn target_in_home_space(&self) -> bool {
         match self.selected_chat_row() {
             Some(chat) => chat.space_id.as_deref() == Some(HOME_SPACE_ID),
@@ -954,7 +954,7 @@ impl AppState {
     pub fn overview_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
         let mut rows: Vec<(ChatIndicator, &Chat)> = self
             .visible_chats()
-            // A live space row is guaranteed (ADR-0039: the Home space backs
+            // A live space row is guaranteed (ADR-home-space-for-project-less-chats: the Home space backs
             // project-less chats); a dangling id hides the row.
             .filter(|c| {
                 c.space_id
@@ -1414,7 +1414,7 @@ impl AppState {
         cx.notify();
     }
 
-    /// Select a project (the Home space included — ADR-0039's "Work
+    /// Select a project (the Home space included — ADR-home-space-for-project-less-chats's "Work
     /// outside a project"); the caller (shell) decides which chat to land on.
     pub fn select_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         if self.selected_space.as_deref() == Some(space_id.as_str()) {
@@ -1449,7 +1449,7 @@ impl AppState {
             return;
         };
         // Opening and reading a notified Chat retracts its outstanding
-        // completion banner (ADR-0019). Best-effort: platforms that cannot
+        // completion banner (ADR-turn-completion-is-an-engine-owned-event). Best-effort: platforms that cannot
         // retract a delivered notification no-op here and let it age out —
         // nothing surfaces in Holt either way.
         cx.dismiss_system_notification(chat_id);
@@ -1846,7 +1846,7 @@ fn spawn_transcript_watch(
                         }
                         if is_reset {
                             // The replayed transcript names the Turns whose
-                            // persisted cards must come back (ADR-0024).
+                            // persisted cards must come back (ADR-turn-change-sets-and-review).
                             state.restore_turn_change_sets(cx);
                         }
                         cx.notify();
@@ -2163,7 +2163,7 @@ mod tests {
         }
     }
 
-    /// The card store's lifecycle (ADR-0024 ticket 03): a live set updates in
+    /// The card store's lifecycle (ADR-turn-change-sets-and-review ticket 03): a live set updates in
     /// place, the final freezes it (nothing moves it afterwards — not even a
     /// stale live frame), an empty set never shows a card, and a final that
     /// emptied out (net zero at settle) retires the live card it replaces.
@@ -2203,7 +2203,7 @@ mod tests {
         s.apply_turn_change_set(turn_change_set("m-3", Final, Vec::new()));
         assert!(!s.turn_change_sets.contains_key("m-3"));
 
-        // An edit retracts its pruned Turn (ADR-0033): the engine's empty
+        // An edit retracts its pruned Turn (ADR-last-message-edit-restarts-a-turn): the engine's empty
         // retraction retires even a frozen final, and the replacement
         // Turn's frames — live or final — land under the same message id.
         s.apply_turn_change_set(turn_change_set("m-4", Final, vec![turn_file("c.rs", 5)]));
@@ -2452,7 +2452,7 @@ mod tests {
         assert_eq!(state.selected_space, None);
     }
 
-    /// `/init` availability reads the send target's space (ADR-0039): the
+    /// `/init` availability reads the send target's space (ADR-home-space-for-project-less-chats): the
     /// selected chat's, else the canvas pick. Home → unavailable.
     #[test]
     fn target_in_home_space_follows_chat_then_canvas() {
@@ -2503,7 +2503,7 @@ mod tests {
             .collect();
         assert_eq!(ids, ["old", "new"]);
         // The overview shows every live-space chat (idle included); chats
-        // of unknown or missing spaces stay hidden (ADR-0039 made a missing
+        // of unknown or missing spaces stay hidden (ADR-home-space-for-project-less-chats made a missing
         // space unreachable). Completed ("old") outranks idle ("new").
         let now = Utc::now();
         let overview: Vec<&str> = state

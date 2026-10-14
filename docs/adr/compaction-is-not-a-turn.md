@@ -30,7 +30,7 @@ itself: a manual `/compact` puts the session in a `Compacting` status
   compacted History, and the divider's `after overflow` trigger replaces
   the error in the Transcript, so the estimation miss stays visible.
 - **Model a compaction as a Turn**: rejected. A Turn is an agent run, and
-  Turn-scoped state (the turn-diff baseline of ADR-0003, source-context
+  Turn-scoped state (the turn-diff baseline of ADR-turn-diff-net-change-baseline, source-context
   stamping) would be reset by something that touches no files.
 
 ## Consequences

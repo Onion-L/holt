@@ -1,4 +1,4 @@
-//! Handle-seam tests for the Turn terminal event watch (ADR-0019, spec
+//! Handle-seam tests for the Turn terminal event watch (ADR-turn-completion-is-an-engine-owned-event, spec
 //! ticket 02): the engine publishes exactly one typed `TurnTerminalEvent`
 //! per real main-chat Turn over `WatchTurnTerminalEvents`, only after the
 //! Turn's Transcript, History, and queue completion are durably settled.
@@ -142,7 +142,7 @@ async fn an_ordinary_turn_publishes_one_succeeded_event_after_settlement() {
     assert!(finished_at >= submitted_at && finished_at <= now_millis());
     assert!(event.get("internalReason").is_none());
     // The fixture's working directory is not a Git work tree: no change set
-    // is available, so none rides the event (ADR-0024) — absence means
+    // is available, so none rides the event (ADR-turn-change-sets-and-review) — absence means
     // "unavailable", never "no changes".
     assert!(event.get("changeSet").is_none());
 
@@ -231,7 +231,7 @@ async fn a_provider_failure_publishes_a_failed_event() {
 
     // Existing failure behavior is unchanged: the session errors. The queue
     // settles with no work left and no queue-level error, so the clean-state
-    // invariant leaves it unpaused (ADR-0021).
+    // invariant leaves it unpaused (ADR-attended-sends-run-through-a-paused-queue).
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
     let queue = queue_snapshot(&engine, "chat-1").await;
     assert_eq!(queue["paused"], json!(false));
@@ -331,7 +331,7 @@ async fn a_steered_turn_publishes_interrupted_then_the_new_turns_event() {
     queue_run(&engine, "chat-1", &fixture.cwd(), "m-1", "A").await;
     common::wait_for_requests(&provider, 1).await;
     // Steer interrupts the active Turn and starts its own message as a new
-    // Turn ahead of ordinary pending work (ADR-0015).
+    // Turn ahead of ordinary pending work (ADR-steer-starts-a-new-turn).
     engine
         .handle(
             methods::QUEUE_COMMAND,

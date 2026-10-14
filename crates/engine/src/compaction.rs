@@ -1,4 +1,4 @@
-//! Compaction (ADR-0011): shrink a chat's History into a model-written
+//! Compaction (ADR-compaction-is-not-a-turn): shrink a chat's History into a model-written
 //! summary plus a verbatim recent tail, using pi-core's compaction
 //! primitives with their defaults — `should_compact` against the model's
 //! context window minus the reserve (16384), a tail of roughly the
@@ -280,7 +280,7 @@ async fn complete_summary(
             },
             ..Default::default()
         },
-        // No extended reasoning, no custom instructions (ADR-0011).
+        // No extended reasoning, no custom instructions (ADR-compaction-is-not-a-turn).
         reasoning: None,
         ..Default::default()
     };
@@ -303,7 +303,7 @@ async fn complete_summary(
         tools: None,
     };
     let stream = stream_fn(model, &context, Some(&options))?;
-    // A manual compaction is interruptible (ADR-0011): race the stream
+    // A manual compaction is interruptible (ADR-compaction-is-not-a-turn): race the stream
     // against the token — the scripted seam's never-ending streams can
     // only be cancelled this way, and a real transport sees the signal in
     // the options too.

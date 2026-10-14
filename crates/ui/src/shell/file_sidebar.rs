@@ -1,4 +1,4 @@
-//! Shell wiring for the File sidebar (ADR-0020): the far-right tree column,
+//! Shell wiring for the File sidebar (ADR-file-editing-state-belongs-to-spaces): the far-right tree column,
 //! the Space-owned file tabs' open/select/close flow, and the pane's width
 //! chrome. Child of `shell` so it renders straight off `Shell`'s state.
 
@@ -10,7 +10,7 @@ pub(super) struct FileTreeResize;
 
 impl Shell {
     /// The space key file state is keyed by for the current selection
-    /// (ADR-0020): the selected chat's space, else the selected space.
+    /// (ADR-file-editing-state-belongs-to-spaces): the selected chat's space, else the selected space.
     pub(super) fn file_space_key(&self, cx: &App) -> Option<String> {
         crate::files::FileStateMap::space_key(self.state.read(cx))
     }
@@ -1136,7 +1136,7 @@ pub(super) struct FileTrashConfirm {
     pub space: String,
     pub path: String,
     /// The affected modified tabs whose drafts must resolve before the
-    /// entry may leave — including another Chat's shared drafts (ADR-0020),
+    /// entry may leave — including another Chat's shared drafts (ADR-file-editing-state-belongs-to-spaces),
     /// hidden or not.
     pub dirty: Vec<u64>,
     pub scope: FileScope,
@@ -2354,7 +2354,7 @@ mod cut_paste_trash_tests {
 
     /// Ticket 07's draft gate at the Shell seam: trashing a directory that
     /// carries a modified buffer (a descendant — another Chat's shared
-    /// draft counts the same, ADR-0020) holds for the Save/Discard/Cancel
+    /// draft counts the same, ADR-file-editing-state-belongs-to-spaces) holds for the Save/Discard/Cancel
     /// decision, Cancel deletes nothing, and a clean tree raises no dialog.
     #[gpui::test]
     fn trash_holds_for_dirty_descendants_and_cancel_deletes_nothing(cx: &mut gpui::TestAppContext) {

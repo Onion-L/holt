@@ -1,5 +1,5 @@
 //! File-sidebar workspace operations: single-level directory listings and
-//! bounded text reads, both fenced behind the owning Space's root (ADR-0020
+//! bounded text reads, both fenced behind the owning Space's root (ADR-file-editing-state-belongs-to-spaces
 //! groundwork). The UI never reads workspace contents itself; every boundary
 //! rule — root containment, `.git` exclusion, symlink traversal — is enforced
 //! here, engine-side, before any filesystem work.

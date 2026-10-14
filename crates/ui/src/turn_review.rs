@@ -1,4 +1,4 @@
-//! The Turn review surface (ADR-0024, ticket 04): the right pane's
+//! The Turn review surface (ADR-turn-change-sets-and-review, ticket 04): the right pane's
 //! read-only per-file unified diff over one Turn's change set. The data is
 //! `GetCheckoutFileDiffText` in `turn` mode addressed by the Turn's message
 //! id — a settled Turn serves its immutable persisted before/after pair, the

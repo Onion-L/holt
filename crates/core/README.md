@@ -19,7 +19,7 @@ Rust library, plus a small `pi-ai` command-line binary for OAuth credentials.
 > **Project status — Holt-owned, actively maintained**
 >
 > Originally a standalone port developed against the upstream TypeScript
-> sources as a behavioral oracle; now a Holt workspace crate (ADR-0043).
+> sources as a behavioral oracle; now a Holt workspace crate (ADR-agent-core-is-a-holt-owned-workspace-crate).
 > Upstream pi is no longer tracked — compatibility tests and
 > serialized-output goldens keep the v0.84.4 behavior pinned.
 

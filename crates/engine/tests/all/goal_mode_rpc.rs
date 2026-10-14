@@ -1,4 +1,4 @@
-//! Goal mode end-to-end (ADR-0044): a real engine on a temp data dir with
+//! Goal mode end-to-end (ADR-goal-mode-verified-loop-at-turn-settle): a real engine on a temp data dir with
 //! the scripted provider as the model, driven through the `RpcService`
 //! trait. Continuations are ordinary queue rows; the verifier is one more
 //! scripted request per settled Turn (the chat's own transport), judged

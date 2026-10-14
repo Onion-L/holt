@@ -1,4 +1,4 @@
-//! The gate's MCP inversion at the RPC seam (ADR-0034, ticket 02): every
+//! The gate's MCP inversion at the RPC seam (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 02): every
 //! `mcp__`-prefixed call is presumed mutating, so confirm-changes pauses
 //! it behind the ordinary Approval, auto-review's model pass judges it,
 //! and full-access passes it through. Always-allow records the exact

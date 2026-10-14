@@ -1,4 +1,4 @@
-//! Always-allow grants at the RPC seam (ADR-0014, issue 04): an
+//! Always-allow grants at the RPC seam (ADR-permission-modes-gate-mutations-no-os-sandbox, issue 04): an
 //! always-allow verdict executes the call and records a session grant —
 //! bash by command prefix, write/edit by exact resolved path — that passes
 //! matching calls through the gate without asking, holds across mode

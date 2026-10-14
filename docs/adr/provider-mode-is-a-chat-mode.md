@@ -1,6 +1,6 @@
 # Provider Mode: catalog setup is a chat mode, not a dialog
 
-ADR-0030 put catalog setup in a hidden, session-scoped `model-setup` chat
+ADR-model-setup-scoped-chat-agent-never-applies put catalog setup in a hidden, session-scoped `model-setup` chat
 rendered inside a Settings dialog. In use it read as a chat squeezed into a
 modal: a mini transcript, a separate review panel, and a key card stacked in
 one dialog; a history deleted on close; and a key flow that needed a stored
@@ -20,7 +20,7 @@ Provider Mode block (research → resolve → propose → stop); its toolset is
 exactly `web_fetch`/`web_search`, `model_proposal`, `request_provider_key`,
 and `choose_provider` — no file tools, no delegation, no MCP. Turns outside
 the mode mount none of the catalog tools, so the catalog-write capability stays
-nil everywhere else; ADR-0030's reason for scoping it holds, with the scope
+nil everywhere else; ADR-model-setup-scoped-chat-agent-never-applies's reason for scoping it holds, with the scope
 moved from a hidden chat to a mode.
 
 A stored proposal renders as a `ModelProposal` transcript part — the change
@@ -70,11 +70,11 @@ typed answer works too, and any new Turn retires a still-pending choice.
 A written card reads "Written to <provider>" with a link to that provider
 in Settings.
 
-Carried over unchanged: ADR-0029's invariant (only a human action writes,
-and it writes the change exactly as stored) and ADR-0031's key rules (the
+Carried over unchanged: ADR-model-setup-applies-stored-proposals's invariant (only a human action writes,
+and it writes the change exactly as stored) and ADR-api-keys-collected-through-key-requests's key rules (the
 value never enters History, a tool argument, or the Transcript; saving
-approves the destination shown). This supersedes ADR-0030 and amends
-ADR-0031: the card moves into the transcript, approvals persist with the
+approves the destination shown). This supersedes ADR-model-setup-scoped-chat-agent-never-applies and amends
+ADR-api-keys-collected-through-key-requests: the card moves into the transcript, approvals persist with the
 chat instead of the session, and a draft provider can be addressed.
 `ChatScope::ModelSetup`, `StartModelSetupChat`, `ListModelProposals`,
 `GetProviderKeyRequest`, and the dialog's AI tab are removed; the scope
@@ -84,7 +84,7 @@ Rejected: a form-first flow with AI autofill — it solves the dialog's
 problems by bringing back the form this feature exists to avoid; keeping the
 dialog and fixing its layout — the history, key-order, and modal-in-modal
 problems are structural; mounting the catalog tools in every chat —
-ADR-0030's prompt-injection reason; and keeping proposals in memory — cards
+ADR-model-setup-scoped-chat-agent-never-applies's prompt-injection reason; and keeping proposals in memory — cards
 in a persisted history would dead-end after a restart.
 
 Amendment (2026-10-11): the composer's Plan and Provider footer chips are

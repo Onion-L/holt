@@ -1,4 +1,4 @@
-//! Routines (ADR-0042): a saved prompt the engine runs on a cron schedule,
+//! Routines (ADR-routines-fire-in-process-and-coalesce-missed-fires): a saved prompt the engine runs on a cron schedule,
 //! or once at a set time, in a fresh Chat. The engine owns the schedule; these are the shapes the
 //! Routines watch and mutations carry.
 
@@ -45,7 +45,7 @@ pub struct Routine {
 pub enum RoutineCheckout {
     #[default]
     MainCheckout,
-    /// Each run gets its own session worktree (ADR-0038).
+    /// Each run gets its own session worktree (ADR-session-worktrees-are-chat-owned-isolation).
     NewWorktree,
 }
 

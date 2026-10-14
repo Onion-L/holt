@@ -1,4 +1,4 @@
-//! MCP lifecycle and failure semantics at the RPC seam (ADR-0034, ticket
+//! MCP lifecycle and failure semantics at the RPC seam (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket
 //! 03): a server that cannot start or connect within its startup timeout
 //! is skipped while the Turn proceeds; a dead connection's calls settle as
 //! error tool results the model reads; the next Turn retries lazily and a

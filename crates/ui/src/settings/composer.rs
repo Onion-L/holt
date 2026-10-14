@@ -43,7 +43,7 @@ pub struct ComposerDefaults {
     /// would otherwise flash the raw id on switch.
     pub model_labels: HashMap<String, String>,
     /// Last project picked for new sessions (the Home space included —
-    /// ADR-0039's "Work outside a project").
+    /// ADR-home-space-for-project-less-chats's "Work outside a project").
     pub project: Option<String>,
 }
 

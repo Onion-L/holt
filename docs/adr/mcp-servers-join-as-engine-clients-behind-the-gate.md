@@ -8,7 +8,7 @@ every `tools/list` entry is wrapped as a plain `AgentTool` named
 learns MCP exists; prompts, resources, elicitation, roots, and a reverse
 server mode are out of scope by design.
 
-The load-bearing decision inverts the gate's predicate. ADR-0014 makes
+The load-bearing decision inverts the gate's predicate. ADR-permission-modes-gate-mutations-no-os-sandbox makes
 mutating a whitelist (`write|edit|bash`); MCP tools are instead presumed
 mutating by prefix: in confirm-changes every `mcp__` call pauses behind
 the ordinary Approval, auto-review's model pass judges them like any

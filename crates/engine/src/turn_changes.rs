@@ -1,4 +1,4 @@
-//! Turn change sets (ADR-0024, ticket 01): the net Git change between a
+//! Turn change sets (ADR-turn-change-sets-and-review, ticket 01): the net Git change between a
 //! main-chat Turn's admission baseline and its live or final working tree.
 //!
 //! This module is the in-memory handoff: a chat's record is replaced when
@@ -94,7 +94,7 @@ pub(crate) struct TurnChanges {
     final_emitted: Mutex<HashMap<(String, String), Arc<Notify>>>,
     /// Per chat, how many WatchTurnChangeSet subscriptions are live.
     watchers: Mutex<HashMap<String, usize>>,
-    /// Retraction fan-out (ADR-0033): an edit prunes its Turn from the
+    /// Retraction fan-out (ADR-last-message-edit-restarts-a-turn): an edit prunes its Turn from the
     /// transcript, and the Turn's change set dies with it — live watchers
     /// learn the (chat, message) id here so a stale card cannot outlive
     /// the Turn. Live-only, like the terminal events.
@@ -112,7 +112,7 @@ impl TurnChanges {
         }
     }
 
-    /// Record the Turn baseline at admission (ADR-0024), before execution
+    /// Record the Turn baseline at admission (ADR-turn-change-sets-and-review), before execution
     /// begins. A settled predecessor stays addressable by its message id
     /// until the next Turn replaces it.
     pub(crate) fn begin(&self, chat_id: &str, message_id: &str, cwd: &str, baseline: TurnBaseline) {
@@ -246,7 +246,7 @@ impl TurnChanges {
         self.read_snapshot(git, device_id, chat_id, &snapshot).await
     }
 
-    /// Mark the chat's current Turn settled (ADR-0024) the instant its
+    /// Mark the chat's current Turn settled (ADR-turn-change-sets-and-review) the instant its
     /// durable records do, so a reader can never see a settled queue beside
     /// a still-live change set. The frozen capture lands with
     /// [`TurnChanges::freeze`] or the first read.
@@ -305,7 +305,7 @@ impl TurnChanges {
             .remove(&(chat_id.to_string(), message_id.to_string()));
     }
 
-    /// Freeze the settled Turn's final change set (ADR-0024): store an
+    /// Freeze the settled Turn's final change set (ADR-turn-change-sets-and-review): store an
     /// already-captured change set immutably, only while the record still
     /// belongs to `message_id`. The caller captures once — summary and
     /// content in one Git pass (`Git::turn_change_freeze`) — then freezes

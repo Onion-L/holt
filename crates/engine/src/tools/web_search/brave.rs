@@ -1,4 +1,4 @@
-//! The Brave search backend adapter (ADR-0023) — the third built-in
+//! The Brave search backend adapter (ADR-web-tools-full-text-ungated-pluggable-search) — the third built-in
 //! [`SearchBackend`], the international/pi-ecosystem option (the picker
 //! notes it needs international access). Endpoint and shapes are pinned
 //! to Brave's Search API reference (api-dashboard.search.brave.com,

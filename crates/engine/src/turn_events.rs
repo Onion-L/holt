@@ -1,4 +1,4 @@
-//! The Turn terminal event dispatcher (ADR-0019): fire-and-forget fan-out of
+//! The Turn terminal event dispatcher (ADR-turn-completion-is-an-engine-owned-event): fire-and-forget fan-out of
 //! durably settled main-chat Turn outcomes to `WatchTurnTerminalEvents`
 //! subscribers. Publishing never awaits consumer work and never fails the
 //! Turn — a closed or lagging consumer is the consumer's failure. Events are

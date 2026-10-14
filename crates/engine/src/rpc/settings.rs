@@ -1,5 +1,5 @@
 //! The settings quartets: title, web search, MCP
-//! (ADR-0012/0023/0034).
+//! (ADR-automatic-titles-run-outside-pi-hooks/0023/0034).
 
 use holt_doc::MessageRole;
 use holt_proto::{
@@ -40,7 +40,7 @@ impl EngineService {
         ))
     }
 
-    /// The web-search settings view (ADR-0023) — the reply shape of every
+    /// The web-search settings view (ADR-web-tools-full-text-ungated-pluggable-search) — the reply shape of every
     /// web-search RPC but reveal. Raw keys never ride this view. Entries
     /// whose kind is no longer offered (a custom definition since removed
     /// or broken) stay on disk, key included, but are left out here — and
@@ -87,7 +87,7 @@ impl EngineService {
         crate::tools::web_search::custom::load(&self.data_dir)
     }
 
-    /// The MCP settings view (ADR-0034): every definition — flat,
+    /// The MCP settings view (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): every definition — flat,
     /// camelCase, exactly the hand-editable `mcpServers` entry shape —
     /// plus any file-level validation error from a hand edit that landed
     /// since startup (a broken file keeps the last-good set).
@@ -242,7 +242,7 @@ impl EngineService {
         RpcReply::value(&self.web_search_state())
     }
 
-    /// The Turn's web-search backend (ADR-0023), resolved once per Turn
+    /// The Turn's web-search backend (ADR-web-tools-full-text-ungated-pluggable-search), resolved once per Turn
     /// admission — a mid-Turn settings change lands from the next Turn,
     /// like the permission mode. No active entry — or one whose adapter
     /// cannot mount — resolves to no backend, so `web_search` stays out of
@@ -322,7 +322,7 @@ impl EngineService {
         })
     }
 
-    /// The goal-verifier settings view (ADR-0044 follow-up): the optional
+    /// The goal-verifier settings view (ADR-goal-mode-verified-loop-at-turn-settle follow-up): the optional
     /// separate judge plus the same missing-credentials warning shape the
     /// title settings carry. A warning never blocks the loop — the
     /// verifier falls back to the chat's own model.
@@ -464,7 +464,7 @@ impl EngineService {
     }
 }
 
-/// The Settings picker's options (ADR-0023): the built-ins in picker
+/// The Settings picker's options (ADR-web-tools-full-text-ungated-pluggable-search): the built-ins in picker
 /// order, then the user's definitions in file order.
 fn web_search_options(
     custom: &[crate::tools::web_search::custom::CustomBackend],

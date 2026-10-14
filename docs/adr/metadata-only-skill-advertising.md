@@ -36,7 +36,7 @@ as a guard against pathological catalogs.
   extra instructions are appended verbatim. It can be layered into the
   invocation path later without touching the advertisement.
 
-Amendment (ADR-0035): the manual trigger is no longer the `/skill` slash
+Amendment (ADR-skill-invocation-is-an-inline-mention): the manual trigger is no longer the `/skill` slash
 command — the user forces a skill with an inline `$` mention in an ordinary
 message (bare `$name`, or the linked `[$name](SKILL.md path)` the `/` menu
 inserts), resolved path-first at admission. The transcript chip for what

@@ -26,8 +26,8 @@ pub struct Device {
     pub version: Option<String>,
 }
 
-/// The Home space (ADR-0039): the engine-owned default every project-less
-/// chat belongs to. Deterministic id — the `wt-`-style convention (ADR-0038)
+/// The Home space (ADR-home-space-for-project-less-chats): the engine-owned default every project-less
+/// chat belongs to. Deterministic id — the `wt-`-style convention (ADR-session-worktrees-are-chat-owned-isolation)
 /// applied to a singleton — so both ends recognize the row without a schema
 /// field. Undeletable and unrenameable; the project picker hides it behind
 /// its "Work outside a project" row instead of listing it.
@@ -81,8 +81,8 @@ impl Space {
 }
 
 /// The chat's execution surface. Every chat is `normal`; `model-setup`
-/// marks the retired Settings setup chat (ADR-0030), kept only so old rows
-/// decode — the engine deletes them on startup (ADR-0037).
+/// marks the retired Settings setup chat (ADR-model-setup-scoped-chat-agent-never-applies), kept only so old rows
+/// decode — the engine deletes them on startup (ADR-provider-mode-is-a-chat-mode).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChatScope {
@@ -99,7 +99,7 @@ pub struct ChatConfig {
     pub reasoning: Option<ReasoningLevel>,
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
-    /// The chat's permission mode (ADR-0014). Configs stored by the sandbox
+    /// The chat's permission mode (ADR-permission-modes-gate-mutations-no-os-sandbox). Configs stored by the sandbox
     /// era carry this under the `sandbox` key — the alias keeps them
     /// readable — and a config without the field defaults to confirm-changes.
     #[serde(default, alias = "sandbox")]
@@ -116,7 +116,7 @@ pub struct ChatConfig {
 /// enforcement, and this file's naming material quote one number.
 pub const TITLE_CHAR_LIMIT: usize = 60;
 
-/// The built-in Title-task style notes (ADR-0012) — the single source the
+/// The built-in Title-task style notes (ADR-automatic-titles-run-outside-pi-hooks) — the single source the
 /// engine's defaulting and the settings UI's restore-default button share.
 /// Style notes only: the engine wraps every title request in a fixed
 /// framing (see `title_system_prompt` in `crates/engine`), and the stored
@@ -128,7 +128,7 @@ fn default_title_instruction() -> String {
     DEFAULT_TITLE_INSTRUCTION.to_string()
 }
 
-/// Engine-owned title-task configuration (ADR-0012), persisted per device
+/// Engine-owned title-task configuration (ADR-automatic-titles-run-outside-pi-hooks), persisted per device
 /// and read/written only through typed RPC.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,7 +163,7 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
-/// Engine-owned goal-verifier configuration (ADR-0044 follow-up): the
+/// Engine-owned goal-verifier configuration (ADR-goal-mode-verified-loop-at-turn-settle follow-up): the
 /// optional provider-qualified model the goal loop's verification pass
 /// rides instead of the chat's own. `None` — the default — keeps the
 /// zero-config behavior: every chat's verifier runs on its own model.
@@ -187,7 +187,7 @@ pub struct GoalSettingsState {
     pub warning: Option<String>,
 }
 
-/// One search backend the Settings picker offers (ADR-0023), built-in or
+/// One search backend the Settings picker offers (ADR-web-tools-full-text-ungated-pluggable-search), built-in or
 /// user-defined:
 /// `id` is both the backend kind and its entry id, `name` is its label,
 /// and `needs_key` says whether it runs on the user's own API key (a
@@ -201,7 +201,7 @@ pub struct WebSearchBackendOption {
     pub needs_key: bool,
 }
 
-/// One configured search backend (ADR-0023); `id` equals `kind`. The raw
+/// One configured search backend (ADR-web-tools-full-text-ungated-pluggable-search); `id` equals `kind`. The raw
 /// key never rides this view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -217,7 +217,7 @@ pub struct WebSearchEntryView {
     pub api_key_masked: Option<String>,
 }
 
-/// The web-search settings view (ADR-0023) — the reply shape of every
+/// The web-search settings view (ADR-web-tools-full-text-ungated-pluggable-search) — the reply shape of every
 /// web-search RPC except reveal: the configured entries, which one the
 /// next Turn mounts, the backends the picker offers, and where the user
 /// defines their own.
@@ -260,7 +260,7 @@ pub struct ConversationSourceContext {
     pub observed_at: DateTime<Utc>,
 }
 
-/// Who owns a chat's title (ADR-0012). `Automatic` titles (the first-line
+/// Who owns a chat's title (ADR-automatic-titles-run-outside-pi-hooks). `Automatic` titles (the first-line
 /// fallback or the one-shot Title task's result) may still be replaced;
 /// `UserManual` titles are locked — any rename mutation switches to this
 /// state, even when the text is unchanged. Rows that predate this field
@@ -308,7 +308,7 @@ pub struct Chat {
     pub last_message_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// The space this chat belongs to. Invariant: `Some` for every chat —
-    /// project-less chats belong to the Home space (ADR-0039), and boot
+    /// project-less chats belong to the Home space (ADR-home-space-for-project-less-chats), and boot
     /// adopts any legacy `None` rows into it. Rows whose space id no longer
     /// resolves are not rendered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,17 +324,17 @@ pub struct Chat {
     /// dials the room the registry names. Per-chat and instantly revertible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_gen: Option<u32>,
-    /// The overflow fallback (ADR-0011): the last Turn ended on a context
+    /// The overflow fallback (ADR-compaction-is-not-a-turn): the last Turn ended on a context
     /// overflow, so the next Turn compacts unconditionally before its
     /// first request. Consumed by that Turn.
     #[serde(default)]
     pub compact_before_next_turn: bool,
-    /// Plan Mode (ADR-0025): the chat's planning checkpoint, orthogonal to
+    /// Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint): the chat's planning checkpoint, orthogonal to
     /// the permission mode. `None` — the chat is not planning. Restored by
     /// restart; recovery never starts a Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_mode: Option<ChatPlanState>,
-    /// Session-worktree isolation intent (ADR-0038): `Some` pins every run
+    /// Session-worktree isolation intent (ADR-session-worktrees-are-chat-owned-isolation): `Some` pins every run
     /// of this chat to a dedicated linked worktree of `repo_path`, materialized
     /// at admission from `base` on first use. Absorbed at command acceptance
     /// and never cleared — the request's cwd is only a fallback for chats
@@ -342,16 +342,16 @@ pub struct Chat {
     /// checkout. Shares the run-carried `WorktreeSpec` shape on purpose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeSpec>,
-    /// Provider Mode (ADR-0037): the chat's Turns may propose provider and
+    /// Provider Mode (ADR-provider-mode-is-a-chat-mode): the chat's Turns may propose provider and
     /// model catalog changes and request keys. Mutually exclusive with Plan
     /// Mode; exiting keeps pending cards writable.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub provider_mode: bool,
-    /// Set on Chats a Routine run created (ADR-0042); `None` for every
+    /// Set on Chats a Routine run created (ADR-routines-fire-in-process-and-coalesce-missed-fires); `None` for every
     /// other chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine_run: Option<crate::RoutineRunMarker>,
-    /// Goal mode (ADR-0044): the chat's durable objective and its loop
+    /// Goal mode (ADR-goal-mode-verified-loop-at-turn-settle): the chat's durable objective and its loop
     /// state. `None` — no goal was ever set, or the verifier judged the
     /// last one complete. Restored by restart; reconciliation at boot
     /// pauses an `Active` goal whose queue holds no continuation.
@@ -359,7 +359,7 @@ pub struct Chat {
     pub goal: Option<ChatGoalState>,
 }
 
-/// A chat's Plan Mode state (ADR-0025): the permission mode captured on
+/// A chat's Plan Mode state (ADR-plan-mode-is-an-independent-approval-checkpoint): the permission mode captured on
 /// entry — restored on plan approval, never on explicit exit. The plan
 /// itself lives in the conversation (a `<proposed_plan>` block in the
 /// assistant's text); there is no per-revision state to track.
@@ -369,7 +369,7 @@ pub struct ChatPlanState {
     pub entry_permission_mode: PermissionMode,
 }
 
-/// Where a chat's goal loop stands (ADR-0044).
+/// Where a chat's goal loop stands (ADR-goal-mode-verified-loop-at-turn-settle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GoalStatus {
@@ -385,7 +385,7 @@ pub enum GoalStatus {
     Blocked,
 }
 
-/// A chat's Goal Mode state (ADR-0044): the durable objective plus the
+/// A chat's Goal Mode state (ADR-goal-mode-verified-loop-at-turn-settle): the durable objective plus the
 /// loop's counters. There is no verdict history — terminal transitions land
 /// as Transcript Notice rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -422,7 +422,7 @@ pub struct ChatGoalState {
     pub objective_stated_at: Option<i64>,
 }
 
-/// One step of the goal's verifier-maintained plan (ADR-0044).
+/// One step of the goal's verifier-maintained plan (ADR-goal-mode-verified-loop-at-turn-settle).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalStep {
@@ -431,7 +431,7 @@ pub struct GoalStep {
     pub done: bool,
 }
 
-/// Which goal-loop transition a lifecycle notice records (ADR-0044).
+/// Which goal-loop transition a lifecycle notice records (ADR-goal-mode-verified-loop-at-turn-settle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GoalEvent {
@@ -441,7 +441,7 @@ pub enum GoalEvent {
     Cleared,
 }
 
-/// What queued one goal-loop continuation (ADR-0044).
+/// What queued one goal-loop continuation (ADR-goal-mode-verified-loop-at-turn-settle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "n")]
 pub enum GoalRoundKind {
@@ -519,7 +519,7 @@ pub enum SessionStatus {
     Working,
     AwaitingInput,
     Errored,
-    /// A manual `/compact` is running (ADR-0011): the summary request is
+    /// A manual `/compact` is running (ADR-compaction-is-not-a-turn): the summary request is
     /// in flight. Displayed like `Working` with the same interrupt
     /// affordance; never set by the automatic in-Turn compaction.
     Compacting,
@@ -563,7 +563,7 @@ pub struct RepoRef {
 }
 
 /// The first line of a `SwitchRef`/`CreateBranch` refusal error whose dirty
-/// tree would be overwritten (ADR-0007): the engine formats it followed by
+/// tree would be overwritten (ADR-branch-is-live-working-tree-state): the engine formats it followed by
 /// one blocking file path per line, and the UI parses it back to raise the
 /// inform-only switch dialog. The error channel is stringly by design; this
 /// shared constant is its one definition, with tests pinning the shape on
@@ -870,7 +870,7 @@ pub struct WorkspaceFileRead {
     pub unsupported_reason: Option<String>,
 }
 
-/// Which standard skill root an entry was discovered in (ADR-0005): the
+/// Which standard skill root an entry was discovered in (ADR-skills-referenced-in-place-from-standard-roots): the
 /// project root at the chat's cwd wins over the personal home root, which
 /// wins over holt's own data-dir root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -895,7 +895,7 @@ pub struct SkillEntry {
     pub file: String,
     pub root: SkillRoot,
     /// The skill opted out of model-visible listings; it stays invocable
-    /// through `/skill` only (ADR-0006).
+    /// through `/skill` only (ADR-metadata-only-skill-advertising).
     #[serde(default)]
     pub disable_model_invocation: bool,
 }
@@ -929,7 +929,7 @@ pub struct InvalidSkillEntry {
 }
 
 /// The `ListSkills` reply: everything the `/` menu, the Settings page, and
-/// the run loop consume, from one fresh catalog scan (ADR-0005 — no cache).
+/// the run loop consume, from one fresh catalog scan (ADR-skills-referenced-in-place-from-standard-roots — no cache).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillListing {
@@ -1031,7 +1031,7 @@ pub struct GetCheckoutFileDiffTextRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
     /// The Turn whose immutable change set answers a `turn`-mode read
-    /// (ADR-0024): a settled Turn serves its persisted before/after pair;
+    /// (ADR-turn-change-sets-and-review): a settled Turn serves its persisted before/after pair;
     /// the live current Turn reads the working tree against its baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
@@ -1056,7 +1056,7 @@ pub struct CheckoutFileDiffText {
     pub stale: bool,
 }
 
-/// How one path changed inside a Turn change set (ADR-0024). `Renamed`
+/// How one path changed inside a Turn change set (ADR-turn-change-sets-and-review). `Renamed`
 /// carries the previous path; a move Git could not pair arrives as separate
 /// `Added` and `Deleted` entries instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1096,7 +1096,7 @@ pub enum TurnChangeSetPhase {
 }
 
 /// The net file changes between one main-chat Turn's baseline and its live
-/// or final working tree (ADR-0024). Empty files mean a zero net change —
+/// or final working tree (ADR-turn-change-sets-and-review). Empty files mean a zero net change —
 /// never a non-Git workspace, which is [`TurnChangeSetReply::Unsupported`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1316,7 +1316,7 @@ mod tests {
     use chrono::TimeZone;
     use serde_json::json;
 
-    // Session worktrees (ADR-0038): rows stored before the field existed
+    // Session worktrees (ADR-session-worktrees-are-chat-owned-isolation): rows stored before the field existed
     // decode with `worktree: None`; new rows round-trip the intent.
     #[test]
     fn chat_worktree_intent_is_additive_and_round_trips() {

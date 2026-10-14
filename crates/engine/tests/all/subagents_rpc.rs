@@ -99,7 +99,7 @@ async fn explorer_is_independent_and_returns_a_summary_with_durable_records() {
             .unwrap()
             .contains("Project instruction sentinel")
     );
-    // The grown Explorer whitelist (ADR-0023): both web tools are in it —
+    // The grown Explorer whitelist (ADR-web-tools-full-text-ungated-pluggable-search): both web tools are in it —
     // web_search on the keyless default backend.
     assert_eq!(
         child.tool_names,

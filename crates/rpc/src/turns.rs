@@ -1,4 +1,4 @@
-//! The Turn terminal event contract (ADR-0019): the typed, engine-owned end
+//! The Turn terminal event contract (ADR-turn-completion-is-an-engine-owned-event): the typed, engine-owned end
 //! of one real main-chat Turn, published over `WatchTurnTerminalEvents` only
 //! after the Turn's Transcript, History, and queue completion are durably
 //! settled. Live-only: events are never persisted or replayed across restart.
@@ -35,7 +35,7 @@ pub struct TurnTerminalEvent {
     /// and hook consumers must not display it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal_reason: Option<String>,
-    /// The Turn's final change set (ADR-0024), carried only after its
+    /// The Turn's final change set (ADR-turn-change-sets-and-review), carried only after its
     /// persisted record — summary plus immutable per-file content — is
     /// durable. `None` means no change set is available (a non-Git working
     /// directory, no recorded baseline, or a persistence failure); it never

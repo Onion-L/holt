@@ -2,7 +2,7 @@
 //! `pi-ai` bin entry. There is no TypeScript test suite for cli.ts, so the
 //! expected bytes come from goldens the TypeScript oracle produced by
 //! driving the real cli.ts (with a scripted `fetch` for the network-free
-//! GitHub Copilot login); the goldens are frozen (ADR-0043).
+//! GitHub Copilot login); the goldens are frozen (ADR-agent-core-is-a-holt-owned-workspace-crate).
 //!
 //! TS case → Rust test mapping:
 //! - `main()` no args / `help` / `--help` / `-h` usage →

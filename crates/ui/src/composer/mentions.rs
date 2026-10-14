@@ -153,7 +153,7 @@ pub(super) fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
 
 /// A linked skill mention in the composer buffer: `[$name](SKILL.md path)`.
 /// The underlying prompt always contains this canonical Markdown form (the
-/// engine resolves it at admission, ADR-0035); the editor projects it to a
+/// engine resolves it at admission, ADR-skill-invocation-is-an-inline-mention); the editor projects it to a
 /// chip for display. The bare `$name` form stays plain text here — it
 /// resolves silently at send — so only the menu-inserted / hand-written
 /// links get the chip treatment.
@@ -583,7 +583,7 @@ pub struct SentMentionSpan {
     /// A skill mention chip (accent styling, click opens the `SKILL.md`).
     pub is_skill: bool,
     /// The chip token's byte range in the RAW message text — the canonical
-    /// Markdown a selection copy yields (ADR-0035). Plain text outside
+    /// Markdown a selection copy yields (ADR-skill-invocation-is-an-inline-mention). Plain text outside
     /// chips is identical in display and raw.
     pub raw_range: Range<usize>,
 }

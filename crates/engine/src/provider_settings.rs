@@ -17,7 +17,7 @@ const FILE_NAME: &str = "provider-settings.json";
 pub(crate) struct StoredSettings {
     #[serde(default)]
     pub(crate) custom_models: BTreeMap<String, BTreeSet<String>>,
-    /// Live, complete model records — the top catalog layer (ADR-0028). A
+    /// Live, complete model records — the top catalog layer (ADR-three-layer-provider-catalog). A
     /// same-id record replaces the catalog entry outright; ids new to the
     /// provider append.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -384,7 +384,7 @@ impl ProviderSettingsStore {
 
     /// Drops every user-written catalog entry for every provider. The
     /// compiled catalog under the hand-edited overlay is what remains
-    /// (ADR-0028); credentials are not catalog entries and survive.
+    /// (ADR-three-layer-provider-catalog); credentials are not catalog entries and survive.
     pub fn reset_all(&self) -> Result<(), EngineError> {
         let mut settings = self
             .settings

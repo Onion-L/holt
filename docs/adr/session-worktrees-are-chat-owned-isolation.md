@@ -44,7 +44,7 @@ onward, and resolves the run's working directory at admission.**
 - **A preparation failure is a visible, transcript-resident failure.** The
   user entry lands as admission would have written it, plus one system
   `Error` entry carrying the reason; the queue settles failed. No Turn ran,
-  so there is no Turn frame and no terminal event (ADR-0019 stays
+  so there is no Turn frame and no terminal event (ADR-turn-completion-is-an-engine-owned-event stays
   execution-scoped), and the user entry has no History counterpart —
   `EditLastMessage` treats such entries as transcript-only edits.
 
@@ -55,7 +55,7 @@ onward, and resolves the run's working directory at admission.**
   later slice. A deleted chat leaves its worktree and Space behind until
   then.
 - Subagent runs are unaffected: isolation is a main-chat admission property
-  (ADR-0016 still denies subagents automatic worktrees).
+  (ADR-subagents-use-independent-history-and-foreground-results still denies subagents automatic worktrees).
 - Legacy `WorktreeSpec`-carrying runs from older UIs degrade to the intent
   model on first absorption — the spec's `repoPath`/`base` become the chat's
   binding, and later spec-less sends resolve identically.

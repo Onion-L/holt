@@ -1,4 +1,4 @@
-//! Planning turns and the `<proposed_plan>` flow (ADR-0025): a Turn
+//! Planning turns and the `<proposed_plan>` flow (ADR-plan-mode-is-an-independent-approval-checkpoint): a Turn
 //! admitted under Plan Mode runs with the read-only exploration tools and
 //! a prompt that makes a complete `<proposed_plan>` Markdown block the
 //! only submission channel. Blocks fold into pending approval cards the
@@ -541,7 +541,7 @@ async fn exiting_settles_pending_cards_as_dismissed() {
 
 #[tokio::test]
 async fn the_full_planning_cycle_end_to_end() {
-    // The whole ADR-0025 loop in one flow: enter → propose → reject with
+    // The whole ADR-plan-mode-is-an-independent-approval-checkpoint loop in one flow: enter → propose → reject with
     // feedback → revise → approve → the approval's follow-up prompt starts
     // the implementation turn, which reads the revised plan from History.
     let fixture = Fixture::new();

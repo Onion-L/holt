@@ -1,6 +1,6 @@
 # Model setup changes apply only through a stored, human-approved proposal
 
-**Status:** the apply tool this ADR introduced is superseded by ADR-0030
+**Status:** the apply tool this ADR introduced is superseded by ADR-model-setup-scoped-chat-agent-never-applies
 (the review panel's RPC applies; the agent never holds an apply tool). The
 proposal/apply separation and the gate invariant it established carry over.
 

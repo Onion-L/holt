@@ -1,4 +1,4 @@
-//! The engine's MCP client layer (ADR-0034): an app-scoped, lazily-started
+//! The engine's MCP client layer (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): an app-scoped, lazily-started
 //! pool of MCP connections owned by the engine. Every tool a server lists
 //! is wrapped as an ordinary agent tool named `mcp__<server>__<tool>` —
 //! from the model's and the transcript's perspective an MCP tool is just a
@@ -10,7 +10,7 @@
 //! skipped for that Turn with a log line and retried the same lazy way on
 //! the next one — no background restart loop.
 //!
-//! The model-facing surface defers the schemas (ADR-0036): main-chat
+//! The model-facing surface defers the schemas (ADR-mcp-tool-schemas-defer-through-a-loader): main-chat
 //! Turns also mount a small `mcp_tools` loader and append a synthetic
 //! call/result pair of it to every LLM request, whose `added_tool_names`
 //! marks every mounted MCP tool — providers with deferred-tool support
@@ -52,7 +52,7 @@ use crate::EngineError;
 use config::{McpServer, McpStore, ServerTransport};
 
 /// Expand one config value at run time, logging any variable that stayed
-/// literal (ADR-0034: a missing variable is visible, never silently
+/// literal (ADR-mcp-servers-join-as-engine-clients-behind-the-gate: a missing variable is visible, never silently
 /// empty).
 fn expand(value: &str) -> String {
     let (expanded, missing) = config::expand_env(value);
@@ -83,7 +83,7 @@ impl McpPool {
         })
     }
 
-    /// The Turn-start snapshot (ADR-0034): every enabled server's listed
+    /// The Turn-start snapshot (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): every enabled server's listed
     /// tools, wrapped as standard agent tools. Called once per Turn
     /// admission by main-chat runs. The file is refreshed first — a hand
     /// edit while holt runs lands from the next Turn; a broken one keeps
@@ -111,7 +111,7 @@ impl McpPool {
             // A cached connection whose list has gone stale (a child that
             // died since the last Turn) is dropped and reconnected in the
             // same pass — a server restarted between Turns works again on
-            // the very next one, no app restart (ADR-0034).
+            // the very next one, no app restart (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
             let mut fresh: Option<(Arc<LiveServer>, Vec<Tool>)> = None;
             if let Some(connection) = connections.get(&name).cloned() {
                 match connection.list_tools().await {
@@ -145,7 +145,7 @@ impl McpPool {
 
     /// One on-demand probe (the Settings Test action): connect, list
     /// tools, disconnect — never touching the pool's live connections,
-    /// never standing watch (ADR-0034).
+    /// never standing watch (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
     pub(crate) async fn probe(&self, name: &str) -> ProbeReport {
         // Fresh definitions: a hand edit since the last Turn is testable
         // immediately, and a broken file reports its own error.
@@ -250,7 +250,7 @@ async fn connect_fresh(
             };
             // A server listing an illegal or overlong tool name is
             // rejected here — truncating would make an approval rule
-            // point at the wrong tool (ADR-0034).
+            // point at the wrong tool (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
             if let Some(bad) = list.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
                 tracing::warn!(
                     target: "holt::mcp",
@@ -289,7 +289,7 @@ pub(crate) struct LiveServer {
 
 impl LiveServer {
     /// `tools/list`, following pagination to completion with a 100-page
-    /// cap (ADR-0034) — a server that pages past the ceiling is refused,
+    /// cap (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) — a server that pages past the ceiling is refused,
     /// never silently truncated.
     async fn list_tools(&self) -> Result<Vec<Tool>, String> {
         let mut tools = Vec::new();
@@ -387,7 +387,7 @@ fn service_error(error: &ServiceError) -> String {
 /// Connect one server per its definition. Config values expand here —
 /// run time, never stored — and a stdio child inherits a sanitized
 /// environment (credential-shaped variables stripped unless the server's
-/// own `env` sets them, ADR-0034). The startup timeout bounds the
+/// own `env` sets them, ADR-mcp-servers-join-as-engine-clients-behind-the-gate). The startup timeout bounds the
 /// initialize handshake.
 pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
     let timeout = Duration::from_millis(server.startup_timeout_ms);
@@ -407,13 +407,13 @@ pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
                 .collect::<BTreeMap<_, _>>();
             // The child's working directory is the server's own `cwd` or
             // Holt's process cwd — never the chat's working directory
-            // (ADR-0034): server behavior must not change with whichever
+            // (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): server behavior must not change with whichever
             // chat runs first.
             let cwd = cwd.as_deref().map(expand);
             let mut sanitized = config::sanitize_child_env(&env);
             // A Dock launch has a minimal PATH. Use the login shell's PATH
             // unless this server explicitly chose one, including for bare
-            // command lookup and the child's own subprocesses (ADR-0034).
+            // command lookup and the child's own subprocesses (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
             if !env.contains_key("PATH")
                 && let Some(path) = crate::shell_env::login_path().await
             {
@@ -457,7 +457,7 @@ pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
             if let Some(var) = bearer_token_env_var {
                 // Read from the named environment variable here — the value
                 // never lands in the config file, a log line, or an error
-                // string (ADR-0034).
+                // string (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
                 let token = std::env::var(var)
                     .map_err(|_| format!("bearer token environment variable {var:?} is not set"))?;
                 config.auth_header = Some(token);
@@ -476,7 +476,7 @@ pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
     }
 }
 
-/// Resource ceilings (ADR-0034): what an MCP server may push into the
+/// Resource ceilings (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): what an MCP server may push into the
 /// model's context before the engine caps it.
 /// Tool descriptions truncate at 2 KB.
 const MAX_DESCRIPTION_BYTES: usize = 2 * 1024;
@@ -528,7 +528,7 @@ fn truncate_result(text: &str) -> String {
     out
 }
 
-/// Wrap one listed server tool as a standard agent tool (ADR-0034): the
+/// Wrap one listed server tool as a standard agent tool (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the
 /// two-level name, the description (capped at 2 KB) and input schema as
 /// received, execute forwarding to [`LiveServer::call_text`].
 fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> AgentTool {
@@ -573,7 +573,7 @@ fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> A
 
 /// Split a result's content: text blocks joined with newlines, plus
 /// whether any non-text block (images, audio, embedded resources) was
-/// dropped. `structuredContent` is ignored (ADR-0034).
+/// dropped. `structuredContent` is ignored (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
 fn split_text_content(result: &CallToolResult) -> (String, bool) {
     let mut parts = Vec::new();
     let mut dropped_non_text = false;
@@ -586,7 +586,7 @@ fn split_text_content(result: &CallToolResult) -> (String, bool) {
     (parts.join("\n"), dropped_non_text)
 }
 
-/// The discovery surface for deferred MCP tools (ADR-0036): one small
+/// The discovery surface for deferred MCP tools (ADR-mcp-tool-schemas-defer-through-a-loader): one small
 /// always-immediate tool. It reads only the Turn's own snapshot — never
 /// the gate's mutating predicate (`mcp__` prefix misses `mcp_tools`), so
 /// calls pass straight through.
@@ -765,7 +765,7 @@ pub(crate) fn loader_tool(tools: &[AgentTool]) -> AgentTool {
 }
 
 /// The synthetic pair every request of the Turn appends to the LLM view
-/// (ADR-0036): a loader call plus its catalog result, whose
+/// (ADR-mcp-tool-schemas-defer-through-a-loader): a loader call plus its catalog result, whose
 /// `added_tool_names` marks every mounted MCP tool deferred from the very
 /// first request. LLM-view only — never persisted to the transcript, so a
 /// Turn restart simply re-appends it.

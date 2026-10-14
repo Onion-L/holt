@@ -1,9 +1,9 @@
 //! The Skills settings page: every catalog entry across the three skill
 //! roots with its status — the diagnostics surface the `/` menu
-//! deliberately is not (ADR-0005). Placement is still the only way IN (a
+//! deliberately is not (ADR-skills-referenced-in-place-from-standard-roots). Placement is still the only way IN (a
 //! skill becomes available by being placed in a root), but each invocable
 //! row carries an enable switch: a disabled skill hides from the `/` menu
-//! and a `$` mention naming it is refused at submit (ADR-0035). The disabled set persists
+//! and a `$` mention naming it is refused at submit (ADR-skill-invocation-is-an-inline-mention). The disabled set persists
 //! by catalog-unique name in `ui-settings.json` (`disabledSkills`).
 
 use gpui::{Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px};
@@ -164,7 +164,7 @@ impl Render for SkillsPage {
                 let rows = skill_rows(listing);
                 if rows.is_empty() {
                     // The fresh-machine case: an empty catalog is normal, not
-                    // an error (ADR-0005).
+                    // an error (ADR-skills-referenced-in-place-from-standard-roots).
                     div()
                         .mt(px(24.0))
                         .text_size(crate::typography::ui_rems(12.5))

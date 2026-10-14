@@ -1,4 +1,4 @@
-//! The planning Turn's structured submission channel (ADR-0025): the
+//! The planning Turn's structured submission channel (ADR-plan-mode-is-an-independent-approval-checkpoint): the
 //! `submit_plan` tool hands a complete plan to the approval card as typed
 //! data, so submission never depends on parsing protocol tags back out of
 //! assistant text. The `<proposed_plan>` text convention stays as the

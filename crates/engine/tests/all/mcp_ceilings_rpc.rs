@@ -1,4 +1,4 @@
-//! MCP resource ceilings at the RPC seam (ADR-0034, ticket 05): a verbose
+//! MCP resource ceilings at the RPC seam (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 05): a verbose
 //! or hostile server cannot flood the model's context — descriptions
 //! truncate at 2 KB, results cap at 100k characters with in-band markers,
 //! non-text content drops with a notice, `tools/list` pagination is

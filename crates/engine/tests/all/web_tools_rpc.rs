@@ -1,4 +1,4 @@
-//! The web tools' whole-Turn path (ADR-0023, ticket 08): a scripted model
+//! The web tools' whole-Turn path (ADR-web-tools-full-text-ungated-pluggable-search, ticket 08): a scripted model
 //! calling `web_fetch` (against the in-process loopback server) and
 //! `web_search` (against an injected backend) folds onto the sync-era
 //! WebFetch/WebSearch chips with `prompt` never populated, travels the
@@ -100,7 +100,7 @@ async fn run_turn(
 /// A `web_fetch` Turn in every Permission mode: the call reaches the
 /// loopback page, its text rides back into the model's continuation
 /// request, the chip folds onto `ToolCall::WebFetch` with no `prompt`, and
-/// no mode produces a gate — the call is read-tier (ADR-0023).
+/// no mode produces a gate — the call is read-tier (ADR-web-tools-full-text-ungated-pluggable-search).
 #[tokio::test]
 async fn a_scripted_web_fetch_call_folds_a_chip_gate_free_in_every_mode() {
     let fixture = Fixture::new();

@@ -1,4 +1,4 @@
-//! User-defined search backends (ADR-0023): `search-backends.json` under
+//! User-defined search backends (ADR-web-tools-full-text-ungated-pluggable-search): `search-backends.json` under
 //! the data directory, hand-written, holding no secrets. Each definition
 //! names a `type` — `http` (a JSON REST API: a request template plus JSON
 //! Pointer paths into the reply) or `mcp` (one tool on an MCP server,

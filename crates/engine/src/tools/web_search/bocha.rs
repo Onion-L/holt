@@ -1,4 +1,4 @@
-//! The Bocha search backend adapter (ADR-0023) — the second built-in
+//! The Bocha search backend adapter (ADR-web-tools-full-text-ungated-pluggable-search) — the second built-in
 //! [`SearchBackend`]. Endpoint and shapes are pinned to Bocha's own
 //! example request/response (open.bochaai.com, the Bing-compatible Web
 //! Search API; full reference on their Feishu wiki, checked 2026-09-10):

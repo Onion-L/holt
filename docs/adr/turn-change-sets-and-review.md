@@ -22,7 +22,7 @@ chat Turns; subagent edits belong to the parent set. Failed and interrupted
 Turns retain changes already made. Net-zero files are omitted; binary files
 show status without a content diff.
 
-Amendment (2026-10-03): a last-message edit (ADR-0033) prunes its Turn, so
+Amendment (2026-10-03): a last-message edit (ADR-last-message-edit-restarts-a-turn) prunes its Turn, so
 the Turn's change set is retracted with it — persisted record, in-memory
 baseline, and a live-watch notification — since the card attaches to a Turn
 the transcript no longer holds. The working tree keeps its edits, but the
@@ -35,4 +35,4 @@ replacement reports its own set only.
 The engine owns the baseline and durable change record. The UI renders a
 change card on the Turn, opens a read-only per-file review in the right
 sidebar, and opens the post-Turn file for the Open action. Accept and
-non-Git snapshot support remain future work; undo is ADR-0041.
+non-Git snapshot support remain future work; undo is ADR-turn-restore-from-change-records.

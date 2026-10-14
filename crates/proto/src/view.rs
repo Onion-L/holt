@@ -49,7 +49,7 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
         SessionStatus::Idle => Indicator::None,
         SessionStatus::Errored => Indicator::Errored,
         // Compacting shows like Working — the interrupt affordance is the
-        // same Stop control (ADR-0011).
+        // same Stop control (ADR-compaction-is-not-a-turn).
         SessionStatus::Working | SessionStatus::AwaitingInput | SessionStatus::Compacting => {
             let age_ms = now
                 .signed_duration_since(session.updated_at)

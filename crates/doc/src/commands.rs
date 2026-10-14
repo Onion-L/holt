@@ -58,7 +58,7 @@ pub enum SessionCommandPayload {
         request_id: String,
         answers: Vec<UserInputAnswer>,
     },
-    /// A `/skill` invocation (ADR-0006): an ordinary Turn whose
+    /// A `/skill` invocation (ADR-metadata-only-skill-advertising): an ordinary Turn whose
     /// model-visible prompt the ENGINE builds from the skill's full
     /// content — the raw `/skill …` directive is never sent anywhere.
     #[serde(rename_all = "camelCase")]
@@ -75,7 +75,7 @@ pub enum SessionCommandPayload {
         /// Client-minted message id for the transcript's chip entry.
         message_id: String,
     },
-    /// A manual `/compact` (ADR-0011): compaction on demand. NOT a Turn —
+    /// A manual `/compact` (ADR-compaction-is-not-a-turn): compaction on demand. NOT a Turn —
     /// it joins the chat's message queue and the session enters
     /// `Compacting` when the queue admits it; nothing Turn-scoped is
     /// stamped or reset. The raw `/compact` directive never reaches the

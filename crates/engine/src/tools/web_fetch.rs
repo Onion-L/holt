@@ -1,5 +1,5 @@
 //! The agent's `web_fetch` tool: retrieve one http(s) URL and hand back its
-//! readable content (ADR-0023). HTML becomes Markdown via htmd, other text
+//! readable content (ADR-web-tools-full-text-ungated-pluggable-search). HTML becomes Markdown via htmd, other text
 //! content types pass through raw, and PDFs, images, and other binary
 //! responses are reported as typed errors. Full text only — the content is
 //! never summarized.

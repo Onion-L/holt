@@ -1,4 +1,4 @@
-//! Handle-seam tests for History persistence (ADR-0010, spec tickets 02
+//! Handle-seam tests for History persistence (ADR-history-is-a-separate-persisted-record, spec tickets 02
 //! and 03): the model-facing record survives a restart (a fresh engine
 //! assembled on the same data dir), each message lands on disk as it
 //! completes (a crash mid-Turn keeps completed tool calls), the record
@@ -81,7 +81,7 @@ async fn the_history_survives_a_restart_and_feeds_the_next_turn() {
     assert_eq!(restarted[6], "user:third prompt");
 }
 
-/// The transcript log's write granularity (ADR-0032): one line per
+/// The transcript log's write granularity (ADR-transcript-append-only-log-per-chat-lock): one line per
 /// completed unit — never per stream tick. A turn of [tool_call, text]
 /// persists the run entry exactly at its completion boundaries (message
 /// end, tool resolution, message end, settle) plus the admitted user

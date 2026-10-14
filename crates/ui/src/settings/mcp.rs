@@ -1,4 +1,4 @@
-//! The MCP Servers settings page (ADR-0034, ticket 08): device-level MCP
+//! The MCP Servers settings page (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 08): device-level MCP
 //! server definitions managed over the four settings RPCs — the list with
 //! each server's transport and enabled state, add/edit and JSON-import
 //! dialogs, the enabled toggle (effective from the next Turn), removal
@@ -178,7 +178,7 @@ impl McpServerView {
     }
 }
 
-/// Parse pasted JSON into importable entries (ADR-0034 ticket 08): the
+/// Parse pasted JSON into importable entries (ADR-mcp-servers-join-as-engine-clients-behind-the-gate ticket 08): the
 /// Claude-style `{"mcpServers": {…}}` wrapper maps names from its keys; a
 /// bare single-server object takes its name from a `"name"` field. Only
 /// the essentials pre-validate here — the engine's strict parse is the

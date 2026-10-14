@@ -1,7 +1,7 @@
 //! The agent-event → transcript translation: pi-core tool calls and
 //! assistant messages decode into `MessagePart`s, completed results stamp
 //! onto their chips wherever they sit, and every completed unit lands its
-//! incremental line in the log (ADR-0032).
+//! incremental line in the log (ADR-transcript-append-only-log-per-chat-lock).
 
 use std::{
     collections::HashMap,
@@ -73,7 +73,7 @@ fn decode_tool_call(
             path: arg("path"),
         },
         "ls" => TranscriptToolCall::ListDir { path: arg("path") },
-        // ADR-0023: the web tools decode onto the sync-era chips. `prompt`
+        // ADR-web-tools-full-text-ungated-pluggable-search: the web tools decode onto the sync-era chips. `prompt`
         // is never populated — full-text fetch has no summarizer — and the
         // search chip carries only its query.
         "web_fetch" => TranscriptToolCall::WebFetch {
@@ -83,7 +83,7 @@ fn decode_tool_call(
         "web_search" => TranscriptToolCall::WebSearch {
             query: arg("query").unwrap_or_default(),
         },
-        // MCP tools (ADR-0034) decode onto the structured Mcp chip: the
+        // MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) decode onto the structured Mcp chip: the
         // two-level name splits at the first `__` after the prefix, the
         // input rides verbatim. A server name containing `__` would
         // mis-split the DISPLAY only — the full name stays authoritative
@@ -191,8 +191,8 @@ pub(crate) fn resolve_tool_part(
         }
     }
     drop(transcript);
-    // A completed tool call is a completed unit (ADR-0032 mirrors
-    // ADR-0010's per-message granularity): the round's new parts and the
+    // A completed tool call is a completed unit (ADR-transcript-append-only-log-per-chat-lock mirrors
+    // ADR-history-is-a-separate-persisted-record's per-message granularity): the round's new parts and the
     // result line land now, so a crash mid-Turn keeps every finished round
     // on disk — incrementally, not as a whole-entry re-append.
     if let Some((entry_id, tool_index)) = changed {
@@ -202,7 +202,7 @@ pub(crate) fn resolve_tool_part(
 
 /// Append one housekeeping part (a compaction divider, a notice) as its
 /// own System entry at the transcript's tail and publish — the record
-/// grows, never shrinks (ADR-0011).
+/// grows, never shrinks (ADR-compaction-is-not-a-turn).
 pub(crate) fn push_system_part(
     chat: &ChatRuntime,
     device_id: &str,
@@ -222,7 +222,7 @@ pub(crate) fn push_system_part(
             continuation_of: None,
         });
     // A housekeeping entry is complete the moment it is built — it lands
-    // in the log now, not on a later publish (ADR-0032).
+    // in the log now, not on a later publish (ADR-transcript-append-only-log-per-chat-lock).
     chat.persist_entry(&entry_id);
 }
 
@@ -265,7 +265,7 @@ pub(crate) fn record_turn_start_compaction(
     );
 }
 
-/// Record a mid-Turn compaction (ADR-0011): the entry into the History
+/// Record a mid-Turn compaction (ADR-compaction-is-not-a-turn): the entry into the History
 /// file — its position in the append-only record IS the ordering, it
 /// summarizes exactly the messages before it — and the divider INTO the
 /// run's live entry base, so it renders between the tool rows that
@@ -325,7 +325,7 @@ pub(crate) fn settle_unresolved_tools(chat: &ChatRuntime) {
     drop(transcript);
     // The run's entry may already have landed in the log (the settle pass
     // runs first); re-append it so the settled chips persist too
-    // (ADR-0032).
+    // (ADR-transcript-append-only-log-per-chat-lock).
     for entry_id in changed {
         chat.persist_entry(&entry_id);
     }
@@ -353,10 +353,10 @@ pub(crate) fn part_char_len(part: &MessagePart) -> usize {
 ///
 /// `skill_files` maps this run's catalog `SKILL.md` paths (normalized
 /// absolute) to skill names: a read of one collapses to the same skill chip
-/// an invocation uses (ADR-0006) — the file's content reached the model
+/// an invocation uses (ADR-metadata-only-skill-advertising) — the file's content reached the model
 /// context through the tool result, and never enters the transcript.
 ///
-/// `plan_mode` is the Turn's Plan Mode snapshot (ADR-0025): only a planning
+/// `plan_mode` is the Turn's Plan Mode snapshot (ADR-plan-mode-is-an-independent-approval-checkpoint): only a planning
 /// Turn folds `<proposed_plan>` blocks into approval cards — it is the only
 /// Turn taught the convention. Anywhere else the tags are ordinary text, so
 /// a reply that merely quotes them (say, explaining plan mode) renders
@@ -497,7 +497,7 @@ pub(crate) fn update_assistant_entry(
         });
     }
     drop(transcript);
-    // A terminal write is the entry's one landing in the log (ADR-0032);
+    // A terminal write is the entry's one landing in the log (ADR-transcript-append-only-log-per-chat-lock);
     // while it streams, the entry lives in memory and the watch only.
     if status == MessageStatus::Streaming {
         if publish {
@@ -758,7 +758,7 @@ mod tests {
                 new_string: None,
             }
         );
-        // ADR-0023: the two web tools fold onto the sync-era chips. A
+        // ADR-web-tools-full-text-ungated-pluggable-search: the two web tools fold onto the sync-era chips. A
         // `prompt` argument is dropped — full-text fetch never summarizes,
         // and the field stays `None` forever.
         assert_eq!(

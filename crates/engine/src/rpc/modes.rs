@@ -1,5 +1,5 @@
 //! Permission modes and the Plan/Provider mode checkpoints
-//! (ADR-0014/0025/0037).
+//! (ADR-permission-modes-gate-mutations-no-os-sandbox/0025/0037).
 
 use holt_rpc::{RpcError, RpcReply};
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use crate::EngineService;
 use crate::store::persist_chats;
 
 impl EngineService {
-    /// Switch a chat's permission mode (ADR-0014): the stored mode is the
+    /// Switch a chat's permission mode (ADR-permission-modes-gate-mutations-no-os-sandbox): the stored mode is the
     /// single source of truth a Turn snapshots at start, so the switch
     /// takes effect from the next Turn. The choice also becomes the
     /// device's sticky default for new chats. A chat without a config yet
@@ -65,7 +65,7 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({ "mode": mode }))
     }
 
-    /// Resolve a pending confirm-changes Approval (ADR-0014): the verdict
+    /// Resolve a pending confirm-changes Approval (ADR-permission-modes-gate-mutations-no-os-sandbox): the verdict
     /// releases the gate the run is blocked in — allow executes the call,
     /// always-allow executes it and records the session grant, deny blocks
     /// it with the note (or the standard denial) as the reason the model
@@ -99,7 +99,7 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
-    /// Enter Plan Mode (ADR-0025): record the chat's CURRENT permission
+    /// Enter Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint): record the chat's CURRENT permission
     /// mode as the entry mode — restored on plan approval, never moved by
     /// the entry itself — and mark the chat planning. Idempotent: an
     /// already-planning chat replies its state unchanged. A chat without a
@@ -118,7 +118,7 @@ impl EngineService {
                 .iter_mut()
                 .find(|chat| chat.id == chat_id)
                 .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
-            // ADR-0044: Plan Mode and a goal never overlap (read-only turns
+            // ADR-goal-mode-verified-loop-at-turn-settle: Plan Mode and a goal never overlap (read-only turns
             // could never satisfy the verifier).
             if chat.goal.is_some() {
                 return Err(RpcError::BadParams(
@@ -142,7 +142,7 @@ impl EngineService {
         RpcReply::value(&self.plan_mode_state(chat_id)?)
     }
 
-    /// Leave Plan Mode (ADR-0025). Idempotent. The current permission mode
+    /// Leave Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint). Idempotent. The current permission mode
     /// stands — only plan approval restores the entry mode — and pending
     /// approval cards settle as dismissed, never answerable for a chat
     /// that stopped planning.
@@ -175,14 +175,14 @@ impl EngineService {
         RpcReply::value(&self.plan_mode_state(chat_id)?)
     }
 
-    /// Enter Provider Mode (ADR-0037). Idempotent; a planning chat leaves
+    /// Enter Provider Mode (ADR-provider-mode-is-a-chat-mode). Idempotent; a planning chat leaves
     /// Plan Mode first — the two modes never overlap.
     pub(super) fn enter_provider_mode(
         &self,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
-        // ADR-0044: a goal is durable state with a queue footprint — reject
+        // ADR-goal-mode-verified-loop-at-turn-settle: a goal is durable state with a queue footprint — reject
         // rather than silently clear it (the Plan/Provider swap precedent
         // does not extend here).
         {
@@ -206,7 +206,7 @@ impl EngineService {
         RpcReply::value(&self.provider_mode_state(chat_id)?)
     }
 
-    /// Leave Provider Mode (ADR-0037). Idempotent. Pending proposal and key
+    /// Leave Provider Mode (ADR-provider-mode-is-a-chat-mode). Idempotent. Pending proposal and key
     /// cards stay writable: they are the user's to settle, not the mode's.
     pub(super) fn exit_provider_mode(
         &self,
@@ -262,7 +262,7 @@ impl EngineService {
         })
     }
 
-    /// Resolve a proposed plan (ADR-0025): the verdict applies to the
+    /// Resolve a proposed plan (ADR-plan-mode-is-an-independent-approval-checkpoint): the verdict applies to the
     /// chat's Plan Mode. Approve exits Plan Mode restoring the entry
     /// permission mode and enqueues the approval follow-up prompt as an
     /// ordinary run — the plan is already in the conversation History, so
@@ -306,7 +306,7 @@ impl EngineService {
                 return Err(RpcError::Failed("no plan is awaiting approval".into()));
             }
             match decision {
-                // Restore the entry permission mode (ADR-0025): the stored
+                // Restore the entry permission mode (ADR-plan-mode-is-an-independent-approval-checkpoint): the stored
                 // mode moves back, the sticky default is untouched — this
                 // is a restore, not a choice. The plan is already in the
                 // conversation History; there is nothing to inject.
@@ -414,7 +414,7 @@ impl EngineService {
         })
     }
 
-    /// Set or replace the chat's goal (ADR-0044). Planning, provider-mode,
+    /// Set or replace the chat's goal (ADR-goal-mode-verified-loop-at-turn-settle). Planning, provider-mode,
     /// and routine-run chats are rejected (mutual exclusion is rejection,
     /// never a silent clear). The loop starts with the chat's next Turn —
     /// a fresh chat has no captured model settings to build a run from, and
@@ -486,7 +486,7 @@ impl EngineService {
         RpcReply::value(&self.goal_state(chat_id)?)
     }
 
-    /// Drop the chat's goal (ADR-0044): the row forgets the objective, an
+    /// Drop the chat's goal (ADR-goal-mode-verified-loop-at-turn-settle): the row forgets the objective, an
     /// in-flight check is cancelled, and queued continuations are swept —
     /// "off" never leaves a last Turn to run. Idempotent.
     pub(super) fn clear_goal(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -496,7 +496,7 @@ impl EngineService {
         RpcReply::value(&self.goal_state(chat_id)?)
     }
 
-    /// Stop or resume the loop while keeping the objective (ADR-0044).
+    /// Stop or resume the loop while keeping the objective (ADR-goal-mode-verified-loop-at-turn-settle).
     /// Pausing cancels an in-flight check and sweeps queued continuations.
     /// Resuming grants a fresh budget (the counters reset) and enqueues a
     /// continuation when the chat is idle, so the loop visibly restarts.

@@ -126,7 +126,7 @@ pub struct Composer {
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
     /// The confirm-changes approval bar that takes over the composer
-    /// while a gate pends (ADR-0014) — the wizard's takeover pattern over
+    /// while a gate pends (ADR-permission-modes-gate-mutations-no-os-sandbox) — the wizard's takeover pattern over
     /// the same shared input.
     approval_bar: Option<ApprovalBar>,
     approval_bar_focus: FocusHandle,
@@ -523,7 +523,7 @@ impl Composer {
 
         // Approval bar lifecycle (the wizard's takeover pattern, keyed per
         // approval id): a pending approval — a confirm-changes gate
-        // (ADR-0014) or a submitted plan (ADR-0025) — takes over the
+        // (ADR-permission-modes-gate-mutations-no-os-sandbox) or a submitted plan (ADR-plan-mode-is-an-independent-approval-checkpoint) — takes over the
         // composer; the wizard, when also live, wins the surface.
         let pending = {
             let s = self.state.read(cx);
@@ -564,7 +564,7 @@ impl Composer {
             }
         }
         // The idle prompt says what typing does while a goal loop runs
-        // (ADR-0044): a message steers it — the loop judges again once the
+        // (ADR-goal-mode-verified-loop-at-turn-settle): a message steers it — the loop judges again once the
         // reply settles — and the stop is one directive away. The wizard and
         // the approval bar own the input while they are up.
         if self.wizard.is_none() && self.approval_bar.is_none() {
@@ -767,7 +767,7 @@ impl Render for Composer {
             // swallows them itself when its content is scrollable.
             .block_mouse_except_scroll()
             // Raw Escape (no popup/dialog consumed it) = interrupt the
-            // running Turn while an Approval gates it (ADR-0014).
+            // running Turn while an Approval gates it (ADR-permission-modes-gate-mutations-no-os-sandbox).
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 this.on_escape(event, cx);
             }))
@@ -894,7 +894,7 @@ impl Render for Composer {
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
         // A pending confirm-changes gate takes over the composer next
-        // (ADR-0014): the approval bar answers it in the composer's place.
+        // (ADR-permission-modes-gate-mutations-no-os-sandbox): the approval bar answers it in the composer's place.
         if let Some(bar) = self.render_approval_bar(&theme, window, cx) {
             // The bar's own focus handle owns the keyboard by default —
             // with the shared input focused, its caret bindings would eat

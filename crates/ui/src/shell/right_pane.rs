@@ -31,13 +31,13 @@ pub enum RightSurface {
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
     /// keys [`Shell::subagent_tabs`].
     Subagent(u64),
-    /// A Space-owned file contents tab (ADR-0020) — the handle keys
+    /// A Space-owned file contents tab (ADR-file-editing-state-belongs-to-spaces) — the handle keys
     /// [`Shell::file_state`]'s tabs for the CURRENT space, not any chat.
     File(u64),
     /// The Git panel (ticket 03): the chat's live working-tree status,
     /// read-only for now — the handle keys [`Shell::git_panels`].
     Git(u64),
-    /// A Turn's read-only change review (ADR-0024 ticket 04): the per-file
+    /// A Turn's read-only change review (ADR-turn-change-sets-and-review ticket 04): the per-file
     /// unified diff from the Turn's immutable (or live) before/after pair —
     /// the handle keys [`Shell::turn_reviews`]. One companion surface: a new
     /// file selection re-aims it, never stacks.
@@ -182,7 +182,7 @@ impl Shell {
 
     /// The right pane's surface tabs in the STORED (drag-reorderable) order —
     /// `(surface, title)`; entries whose backing tab/entity is gone are
-    /// skipped. The Space's FILE tabs lead the strip (ADR-0020): they stay
+    /// skipped. The Space's FILE tabs lead the strip (ADR-file-editing-state-belongs-to-spaces): they stay
     /// put across Chat switches while the Chat-owned views swap.
     pub(super) fn right_surface_rows(&self, cx: &App) -> Vec<(RightSurface, SharedString)> {
         let mut rows: Vec<(RightSurface, SharedString)> = self
@@ -513,7 +513,7 @@ impl Shell {
                     cx,
                 );
             }
-            // The Turn change card's Review affordance (ADR-0024 ticket 04):
+            // The Turn change card's Review affordance (ADR-turn-change-sets-and-review ticket 04):
             // open (or re-aim) the read-only review surface for that Turn.
             TranscriptEvent::ReviewTurnChanges {
                 chat_id,
@@ -570,7 +570,7 @@ impl Shell {
         }
     }
 
-    /// The Turn review companion (ADR-0024 ticket 04): ONE review surface,
+    /// The Turn review companion (ADR-turn-change-sets-and-review ticket 04): ONE review surface,
     /// focused when alive and recreated when closed, then aimed at the
     /// Turn's file — a new selection replaces the active view.
     pub(super) fn restore_turn_changes(

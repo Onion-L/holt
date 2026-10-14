@@ -1,5 +1,5 @@
-//! The chat-state card: the goal loop (ADR-0044) and the Plan/Provider
-//! Mode states (ADR-0025/0037) as a pinned top-right overlay — one card,
+//! The chat-state card: the goal loop (ADR-goal-mode-verified-loop-at-turn-settle) and the Plan/Provider
+//! Mode states (ADR-plan-mode-is-an-independent-approval-checkpoint/0037) as a pinned top-right overlay — one card,
 //! since the three states are mutually exclusive. The goal form shows the
 //! objective, the loop's status and round, the last verdict's reason, and
 //! the pause/resume + clear controls (it replaced the composer footer's

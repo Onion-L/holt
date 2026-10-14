@@ -1,4 +1,4 @@
-//! The confirm-changes gate at the RPC seam (ADR-0014, issue 03): mutating
+//! The confirm-changes gate at the RPC seam (ADR-permission-modes-gate-mutations-no-os-sandbox, issue 03): mutating
 //! calls pause the Turn on a pending Approval the transcript watch
 //! delivers; verdicts arrive through `ResolveApproval`; denials reach the
 //! model as error tool results while the Turn continues; interrupt cancels

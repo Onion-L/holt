@@ -1,4 +1,4 @@
-//! The manual model-record form (ADR-0029's manual half): field
+//! The manual model-record form (ADR-model-setup-applies-stored-proposals's manual half): field
 //! construction, validation, the API-dialect dropdown, and the dialog.
 
 use super::*;

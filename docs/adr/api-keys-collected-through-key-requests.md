@@ -1,6 +1,6 @@
 # API keys are collected through key requests, never as chat text
 
-**Status:** amended by ADR-0037. The card moved from the Settings dialog
+**Status:** amended by ADR-provider-mode-is-a-chat-mode. The card moved from the Settings dialog
 into the Provider Mode transcript, destination approvals persist with the
 chat instead of the session, and a draft provider can be addressed. The
 key rules below are unchanged.
@@ -14,7 +14,7 @@ that atomically saves the key, records the destination approval, queues
 a fixed notice ("API key saved for X — re-probe"), and clears the
 request; dismissal queues the counterpart notice. The key never enters
 History, a tool argument, or the Transcript — so a fetched page cannot
-read it back. This deliberately relaxes ADR-0029's "apply before a probe
+read it back. This deliberately relaxes ADR-model-setup-applies-stored-proposals's "apply before a probe
 may carry a key": entering a key now itself approves the destination the
 card showed, bound to the exact (chat, provider, baseUrl) triple — a
 changed baseUrl re-arms the request — and the planned-probe SSRF

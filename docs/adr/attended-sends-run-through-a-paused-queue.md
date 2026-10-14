@@ -27,10 +27,10 @@ flag in a saved queue file cannot resurrect.
 
 Scope: the rule lives in the engine's queue, not the composer — every
 client path benefits and there is no second send path. Manual Compaction
-keeps its strict submission order (ADR-0011): an attended /compact parks
+keeps its strict submission order (ADR-compaction-is-not-a-turn): an attended /compact parks
 like any queued item, and Continue is its way forward. An unreadable queue
 file is never bypassed — the admission checkpoint itself is unusable.
-Failures of any kind still pause remaining work; ADR-0015's "interrupted
+Failures of any kind still pause remaining work; ADR-steer-starts-a-new-turn's "interrupted
 Turns are never automatically requeued" stands. Error classification and
 automatic retries remain out of scope.
 

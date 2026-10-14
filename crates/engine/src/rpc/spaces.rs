@@ -65,7 +65,7 @@ impl EngineService {
                 "spaceId, deviceId, and path must not be empty".into(),
             ));
         }
-        // The Home row is engine-owned (ADR-0039); it is ensured at boot,
+        // The Home row is engine-owned (ADR-home-space-for-project-less-chats); it is ensured at boot,
         // never minted through the registry mutate.
         if params.space_id == holt_proto::HOME_SPACE_ID {
             return Err(RpcError::BadParams("the Home space id is reserved".into()));
@@ -81,7 +81,7 @@ impl EngineService {
         }) {
             return RpcReply::value(&serde_json::json!({}));
         }
-        // Mint the canonical checkout identity at create time (ADR-0002):
+        // Mint the canonical checkout identity at create time (ADR-git-hangs-off-spaces-no-repo-registry):
         // sha256(deviceId ‖ NUL ‖ git_dir) for folders that are git work
         // trees. A git_detected path that discovers no repo stays untagged.
         let space = Space {
@@ -237,7 +237,7 @@ impl EngineService {
         if chats.iter().any(|chat| chat.id == params.chat_id) {
             return RpcReply::value(&serde_json::json!({}));
         }
-        // New chats inherit the last mode used on the device (ADR-0014):
+        // New chats inherit the last mode used on the device (ADR-permission-modes-gate-mutations-no-os-sandbox):
         // the sticky default overrides whatever mode the creating client
         // sent — inheritance is engine-owned, read here at creation.
         let config = params.config.map(|mut config| {
@@ -446,7 +446,7 @@ impl EngineService {
             .find(|chat| chat.id == chat_id)
             .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
         // Same rule as the run-acceptance write: the permission mode is not
-        // this payload's to move (ADR-0014) — the stored mode survives
+        // this payload's to move (ADR-permission-modes-gate-mutations-no-os-sandbox) — the stored mode survives
         // whole-config rewrites, and a config-less row inherits the sticky
         // default instead of whatever tier the writer defaulted.
         config.permission_mode = chat
@@ -503,7 +503,7 @@ struct CreateChatParams {
     branch: Option<String>,
     #[serde(default)]
     config: Option<ChatConfig>,
-    /// Session-worktree isolation intent (ADR-0038). Best-effort pre-stamp —
+    /// Session-worktree isolation intent (ADR-session-worktrees-are-chat-owned-isolation). Best-effort pre-stamp —
     /// the durable carrier is the queued Run's `WorktreeSpec` absorbed in
     /// `enqueue_run`.
     #[serde(default)]

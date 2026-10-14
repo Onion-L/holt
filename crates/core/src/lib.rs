@@ -1,7 +1,7 @@
 //! Rust port of the `@earendil-works/pi-*` v0.84.4 TypeScript packages:
 //! [`pi-telemetry`], [`pi-ai`], and [`pi-agent-core`].
 //!
-//! Holt-owned since it merged into the Holt workspace (ADR-0043): the
+//! Holt-owned since it merged into the Holt workspace (ADR-agent-core-is-a-holt-owned-workspace-crate): the
 //! upstream TypeScript sources, which were the port's behavioral
 //! specification and test oracle, are no longer tracked. This crate
 //! reproduces their observable behavior while exposing an idiomatic Rust

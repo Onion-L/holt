@@ -24,12 +24,12 @@ contract; another backend can slot in behind the same trait.
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `apps/holt-runner` | Headless Turn runner (used by the local eval harness): assembles `LocalEngine` in a fresh data dir seeded with the user's provider catalog and keys, runs one full-access Turn through the RPC contract (`Mutate`, `QueueCommand`, `WatchTurnTerminalEvents`, `WatchMessageQueue`, `WatchChatUsage`), prints a JSON summary stamped with the build commit. Not packaged. |
 | `crates/ui` | The whole gpui viewport (~97k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot) topped by the live settings layer in `provider-settings.json` (model records, custom providers, hidden ids — ADR-0028, read per call), owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module and the device-level usage aggregate behind `UsageStats` in its `usage_stats` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot) topped by the live settings layer in `provider-settings.json` (model records, custom providers, hidden ids — ADR-three-layer-provider-catalog, read per call), owns credential persistence and the title-task settings record (ADR-automatic-titles-run-outside-pi-hooks) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-skills-referenced-in-place-from-standard-roots/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-history-is-a-separate-persisted-record/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module and the device-level usage aggregate behind `UsageStats` in its `usage_stats` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-turn-change-sets-and-review) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, the per-chat usage frame (`ChatUsage`: ledger totals plus occupancy), and the device-level usage aggregate (`UsageStatsReply`). |
 | `crates/doc` | The wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame`, the typed part payloads — plus transcript-frame diffing. Persistence is plain JSON/JSONL owned by `crates/engine` (see "Data on disk" below); the crate's Loro session/workspace schemas and its HLC registry port are dormant — nothing outside `crates/doc` links them. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
-| `crates/core` | The agent core (package `pi-core-rs`, lib `pi_core`): Holt's Rust port of pi v0.84.4 (`pi-agent-core`, `pi-ai`, `pi-telemetry`) — provider adapters and streaming, the agent loop, and the harness (sessions, tools, compaction, skill/template loaders). Merged into the workspace with its history (ADR-0043); upstream pi is no longer tracked. Free of Holt domain concepts — `crates/engine` is the only adapter. MIT-licensed, not the workspace's GPL-3.0. |
+| `crates/core` | The agent core (package `pi-core-rs`, lib `pi_core`): Holt's Rust port of pi v0.84.4 (`pi-agent-core`, `pi-ai`, `pi-telemetry`) — provider adapters and streaming, the agent loop, and the harness (sessions, tools, compaction, skill/template loaders). Merged into the workspace with its history (ADR-agent-core-is-a-holt-owned-workspace-crate); upstream pi is no longer tracked. Free of Holt domain concepts — `crates/engine` is the only adapter. MIT-licensed, not the workspace's GPL-3.0. |
 
 ## The RPC contract (what a real backend must serve)
 
@@ -46,7 +46,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   transports).
 - Provider configuration: `ListProviders`, `SaveProviderKey`,
   `RevealProviderKey`, `RemoveProviderKey`, plus the live catalog writes
-  (ADR-0028): `SaveModelRecord` /
+  (ADR-three-layer-provider-catalog): `SaveModelRecord` /
   `RemoveModelRecord` (a complete record replaces a same-id entry outright),
   `SaveCustomProvider` / `RemoveCustomProvider` (user-defined providers),
   `SetProviderLogo` / `RemoveProviderLogo` (a custom provider's logo,
@@ -56,22 +56,22 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `ResetProviderCatalog` (per-provider, or global when `providerId` is
   absent). `ListApiDialects` serves the record form's dialect dropdown
   (pi-core's compat registry). Every write takes effect without a restart. Provider Mode
-  (ADR-0037) rides the same store: `EnterProviderMode` /
+  (ADR-provider-mode-is-a-chat-mode) rides the same store: `EnterProviderMode` /
   `ExitProviderMode` / `GetProviderMode` flip and read `Chat::provider_mode`;
   `ApplyModelProposal` and `DiscardModelProposal` are a proposal card's
   Write and Discard buttons. `SettleProviderKeyRequest` is the Key request
-  card's Save/Dismiss (ADR-0031): it saves the key to the credential store —
+  card's Save/Dismiss (ADR-api-keys-collected-through-key-requests): it saves the key to the credential store —
   never the chat — and queues the fixed notice that continues the chat; a
   Save also approves the exact (provider, baseUrl) destination shown, so
   the chat's probes of that target carry the key — the SSRF public-host
   gate for planned and draft targets stays.
-- Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
+- Title settings (ADR-automatic-titles-run-outside-pi-hooks): `GetTitleSettings` / `SaveTitleSettings` — the
   engine-owned title-task record (`TitleSettings` in `title-settings.json`),
   both replying `TitleSettingsState` (settings + validation warning).
   Saving rejects unresolvable provider-qualified models and empty or
   out-of-bounds instructions; missing credentials are a warning, never an
   error.
-- Goal verifier settings (ADR-0044 follow-up): `GetGoalSettings` /
+- Goal verifier settings (ADR-goal-mode-verified-loop-at-turn-settle follow-up): `GetGoalSettings` /
   `SaveGoalSettings` — the engine-owned verifier record (`GoalSettings` in
   `goal-settings.json`), both replying `GoalSettingsState` (settings +
   validation warning). A set `modelId` makes every goal loop's verification
@@ -81,7 +81,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   model. Saving rejects unresolvable models; missing credentials are a
   warning and the pass silently falls back to the chat's model, never an
   error.
-- Web search settings (ADR-0023): `GetWebSearchSettings`,
+- Web search settings (ADR-web-tools-full-text-ungated-pluggable-search): `GetWebSearchSettings`,
   `SaveWebSearchBackend` (`{kind, apiKey?}`), `SetActiveWebSearchBackend`
   (`{id}`; `null` turns web search off, entries kept), and
   `RemoveWebSearchBackend` (`{id}`), all replying the masked
@@ -115,7 +115,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   change lands from the next
   Turn, and no active entry leaves the `web_search` agent tool unmounted:
   absent, never erroring.
-- MCP servers (ADR-0034): `GetMcpSettings` (every definition in the flat
+- MCP servers (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): `GetMcpSettings` (every definition in the flat
   hand-editable `mcpServers` entry shape — name, transport fields, enabled,
   timeouts, filters — plus any file-level `validationError` from a hand
   edit that landed since startup; a broken file keeps the last-good set),
@@ -128,7 +128,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   reason}`, and disconnects, for both transports). No standing status
   watch: on-demand probing is what keeps startup lazy. The pool behind
   the quartet is described with the run loop below.
-- Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
+- Permission modes (ADR-permission-modes-gate-mutations-no-os-sandbox): a chat's mode rides its `ChatConfig`
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
   read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —
   the stored mode is authoritative; a Turn snapshots it at start, so a
@@ -152,14 +152,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   separately-configured reviewer): a pass executes, a rejection blocks
   with the reviewer's reason, an unclear or failed review rejects
   closed, and no Approval is created. Reads, grep, the web tools, and
-  full-access never gate. One invariant carries from ADR-0029/0030: should
+  full-access never gate. One invariant carries from ADR-model-setup-applies-stored-proposals/0030: should
   an apply-shaped tool ever be mounted again, `model_apply`'s name always
   meets the human gatekeeper — full-access included, no session grant
   passes it, and auto-review never substitutes — because a catalog write
   steers where the API key is sent. The gate rides the agent loop's
   `before_tool_call` hook (no `crates/core` changes); the Title task and
   Compaction mount no tools and never see it.
-- Plan Mode (ADR-0025): a chat-level planning checkpoint orthogonal to the
+- Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint): a chat-level planning checkpoint orthogonal to the
   permission mode, carried on the chat row (`planMode`: just the
   permission mode recorded on entry — restored on plan approval, never
   moved by the entry itself). `EnterPlanMode` / `ExitPlanMode`
@@ -186,7 +186,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   toolset and the approval cards stay. 2026-10-13: submission became
   structured again — the `submit_plan` tool is the primary channel, the
   text block the fallback.)
-- Goal Mode (ADR-0044): a chat-scoped durable objective on the chat row
+- Goal Mode (ADR-goal-mode-verified-loop-at-turn-settle): a chat-scoped durable objective on the chat row
   (`goal`: text, `active|paused|blocked` status, iteration / no-progress
   / evaluation-failure counters, plus the verifier-maintained `name` and
   `steps` the card renders). `SetGoal` (`{chatId, text}` — rejects a
@@ -194,7 +194,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   and `SetGoalPaused` (`{chatId, paused}`) are the whole surface; the
   state rides `WatchChats`. After a settled Turn's card frame is on its
   way (inside the same queue-driver iteration), one verifier pass on the
-  chat's own model — or the configured verifier model (ADR-0044 follow-up,
+  chat's own model — or the configured verifier model (ADR-goal-mode-verified-loop-at-turn-settle follow-up,
   `GetGoalSettings`/`SaveGoalSettings`; lowest reasoning level pinned, the
   verdict line's budget sized for it) — judges the goal from evidence only
   (the History tail's
@@ -233,7 +233,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   composer renders an accepted `/goal` `/plan` `/provider` directive as a
   chip (the mode's icon + command name). Restart
   opens an orphaned active goal as paused.
-- Questions (ADR-0040): the `ask_user` tool lands a `QuestionCard`
+- Questions (ADR-ask-user-is-a-question-card): the `ask_user` tool lands a `QuestionCard`
   transcript part — 1–4 questions, each with 2–6 enumerated options —
   and returns: the model stops its Turn; it never blocks a tool result.
   The pending card renders in the composer's approval bar as its third
@@ -251,12 +251,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   mount no `ask_user` (their whitelists keep their own asking
   conventions).
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
-  (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
+  (the skills catalog, ADR-skills-referenced-in-place-from-standard-roots/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
   entries with source root and absolute file, shadowed entries, and load
   diagnostics; the composer's `/` menu inserts a skill as the linked
-  mention `[$name](SKILL.md path)`, ADR-0035).
+  mention `[$name](SKILL.md path)`, ADR-skill-invocation-is-an-inline-mention).
   `ListModels` rows carry `contextWindow`: builtin rows and live model
   records report the catalog's real window, bare custom-id rows null (the
   only window the engine holds for them is the cloned template's guess),
@@ -272,7 +272,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   or inline quoted absolute paths for `@`) through the ordinary queue —
   existing sources are not copied or snapshotted. Image previews may read
   pixels locally; submitting the reference still sends only a path.
-- File sidebar (ADR-0020): `ListWorkspaceEntries`
+- File sidebar (ADR-file-editing-state-belongs-to-spaces): `ListWorkspaceEntries`
   (`{chatId|spaceId, path?}`, one directory level — dirs first, hidden
   entries in, `.git` out, symlink kinds resolved against the root,
   `truncated` at the per-directory cap), `WatchWorkspaceGitStatus` (the Git
@@ -329,7 +329,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat or
   Subagent document). `FetchToolBlob` serves completed Subagent transcripts
   as JSON text for a `{parentChatId}/{subagentDocId}` reference.
-- Terminals (ADR-0017): `OpenTerminal`, `WriteTerminal`, `ResizeTerminal`,
+- Terminals (ADR-terminals-belong-to-chats-and-end-with-the-app): `OpenTerminal`, `WriteTerminal`, `ResizeTerminal`,
   `SubscribeTerminal`, and `CloseTerminal` serve user-operated PTYs in
   `engine::terminals`, rooted at the owning Chat's working directory.
   Chat-less terminals (the new-chat canvas) carry an explicit `cwd` —
@@ -352,8 +352,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   by `messageId`; the same identity is deduplicated across pending, started,
   and completed work, including after restart. Pending items are typed
   (`PendingKind`): an ordinary message starts its own Turn (inline `$` skill
-  mentions resolve at admission, ADR-0035), a manual Compaction shares the
-  channel without one (ADR-0011); the retired `invokeSkill` command and
+  mentions resolve at admission, ADR-skill-invocation-is-an-inline-mention), a manual Compaction shares the
+  channel without one (ADR-compaction-is-not-a-turn); the retired `invokeSkill` command and
   `Skill` pending kind survive only as deserializable legacy — the UI sends
   mentions inside ordinary prompts, and `Queue::load` migrates persisted
   Skill items into mention text.
@@ -407,11 +407,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   independent of `days`. The read is strictly read-only and best-effort:
   a damaged ledger is skipped for the aggregate, never quarantined from
   here.
-- Turn terminal events (ADR-0019): `WatchTurnTerminalEvents` emits one typed
+- Turn terminal events (ADR-turn-completion-is-an-engine-owned-event): `WatchTurnTerminalEvents` emits one typed
   `TurnTerminalEvent` (`holt_rpc::turns` — `eventId`, `chatId`, `messageId`,
   `outcome` of `succeeded` / `failed` / `interrupted`, `finishedAt`, plus an
   internal-only failure reason consumers never display, and — once the
-  Turn's change-set record is durable — its final `changeSet`, ADR-0024,
+  Turn's change-set record is durable — its final `changeSet`, ADR-turn-change-sets-and-review,
   where absence means unavailable, never "no changes") per real main-chat
   Turn, published only after the Turn's Transcript, History, and queue
   completion are durably settled; a completion that cannot be persisted
@@ -452,7 +452,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `setChatPinned`, `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
   `deleteSpace`, `renameDevice`, …) falls through to `UnknownMethod`, which
   the UI surfaces as an error notice — and `QueueCommand`.
-- Routines (ADR-0042): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
+- Routines (ADR-routines-fire-in-process-and-coalesce-missed-fires): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
   — the Routine plus its computed next fire), `CreateRoutine` (a cron, or
   `at` for a one-time Routine that fires once and then has no next fire;
   the time zone defaults to the device's), `UpdateRoutine` (`{routineId, …}` with the
@@ -490,22 +490,22 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   unless its Chat is the one in view. Records
   still running or waiting at launch become interrupted, and deleting a run
   Chat clears the record's `chatId` (note "chat deleted").
-- Git capability (ADR-0001/0002, all served on the git2 backend inside
+- Git capability (ADR-git2-as-the-git-backend/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
   branches), `SwitchRef` / `CreateBranch` (safe checkouts), the checkout
   diff family — `WatchCheckoutDiffs` (live, debounced fs-notify frames
   keyed by the space's canonical checkout identity
   `sha256(deviceId ‖ NUL ‖ git_dir)`), `GetCheckoutDiff` /
   `GetCheckoutFileDiffText` in working-tree / branch (merge-base) / commit
-  / turn (net-change baseline, ADR-0003) modes — plus `ListGitHistory`
+  / turn (net-change baseline, ADR-turn-diff-net-change-baseline) modes — plus `ListGitHistory`
   (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
   30 s timeout). Beyond the safe checkouts above and `FetchAll`'s
   remote-tracking ref updates, the surface is read-only: the write trio
   `StagePaths` / `UnstagePaths` / `CommitStaged`, the Git panel's
-  staging/commit UI, and its status view are gone (ADR-0022, partially
+  staging/commit UI, and its status view are gone (ADR-ui-driven-git-writes-agent-surface-stays-read-only, partially
   superseded; the panel hosts only the commit graph), and the
   agent tool surface stays read-only.
-- Turn change sets (ADR-0024): `GetTurnChangeSet` (`{chatId}`, plus
+- Turn change sets (ADR-turn-change-sets-and-review): `GetTurnChangeSet` (`{chatId}`, plus
   `messageId` to address one specific Turn) and the `WatchTurnChangeSet`
   stream (`{chatId}`) serve the current main-chat Turn's net Git change from
   its admission baseline to the live or final working tree. Both reply
@@ -515,7 +515,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   the parent Turn's set (a child shares the parent's working directory). The
   engine owns the in-memory baseline and frozen result
   (`engine::turn_changes`); `engine::turn_change_watch` is the debounced
-  live stream whose settled frame is driven by the ADR-0019 Turn terminal
+  live stream whose settled frame is driven by the ADR-turn-completion-is-an-engine-owned-event Turn terminal
   event. Settled Turns persist durably (`engine::turn_change_store`): at
   settlement — after queue completion, before the terminal event publishes —
   the frozen summary plus the immutable per-file before/after content
@@ -550,7 +550,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `messageId` (a settled Turn therefore reviews its immutable stored pair,
   a live one the working tree), while Open opens the post-Turn file in the
   Space's pinned file tab. A deleted file stays reviewable but offers no
-  Open. The one write is Restore (ADR-0041, `RestoreTurnChanges`): the
+  Open. The one write is Restore (ADR-turn-restore-from-change-records, `RestoreTurnChanges`): the
   card's whole-set and the review's per-file buttons confirm inline, then the
   engine writes each file's stored `old_text` back (or deletes an added file)
   by plain file I/O under the repository work tree — no Git — and only while
@@ -561,7 +561,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
   worktree lifecycle RPCs (`CreateWorktree` / `DeleteWorktree` — the
   run-carried `WorktreeSpec` IS served: a chat's persisted isolation intent
-  materializes a dedicated worktree Space at admission, ADR-0038), change
+  materializes a dedicated worktree Space at admission, ADR-session-worktrees-are-chat-owned-isolation), change
   requests
   (`WatchCheckoutChangeRequest` — a stream that never emits), uploads
   (`UploadChunk` / `UploadCommit` / `ReadAttachmentChunk`), and the
@@ -622,7 +622,7 @@ key, model-list, and run RPCs address. User-defined providers stand alone —
 one row each after the built-ins, `custom`-flagged in the reply, api_key-
 shaped by definition, and with a reserved-id check against the boot catalog.
 
-The catalog answers from three layers (ADR-0028): the compiled base under
+The catalog answers from three layers (ADR-three-layer-provider-catalog): the compiled base under
 the hand-edited `provider-store.json` overlay under live user entries in
 `provider-settings.json`. The live layer holds bare custom model IDs added
 from Settings (metadata borrowed from a template — window withheld, image
@@ -636,7 +636,7 @@ with a log line while an unparsable file still fails startup. The live
 layer is also what `ResetProviderCatalog` deletes: reset means the compiled
 catalog under the hand-edited overlay, and credentials survive it.
 
-Skills (ADR-0005/0006) ride the catalog above: every run whose catalog is
+Skills (ADR-skills-referenced-in-place-from-standard-roots/0006) ride the catalog above: every run whose catalog is
 non-empty appends a metadata-only `<available_skills>` block to the system
 prompt from a fresh three-root scan (the `pi_core` loader and formatters;
 budget-capped; an empty or fully `disable-model-invocation` catalog adds
@@ -656,9 +656,9 @@ unserved is the collaboration and account surface listed above. The run loop
 mounts pi-core's built-in read/write/edit/bash tools (via `engine::tools`, a
 local `ExecutionEnv` rooted at the chat's cwd) plus holt's own `ls` tool and
 content-search tool, the latter named `grep` (ripgrep's crates in process,
-ADR-0004), the Workspace-aware
-`read_chat` tool for another Chat's user-visible Transcript (ADR-0018), and the
-two web tools (ADR-0023): `web_fetch` retrieves one http(s) URL and returns its
+ADR-in-process-ripgrep-for-content-search), the Workspace-aware
+`read_chat` tool for another Chat's user-visible Transcript (ADR-agents-read-chats-through-validated-chat-links), and the
+two web tools (ADR-web-tools-full-text-ungated-pluggable-search): `web_fetch` retrieves one http(s) URL and returns its
 full converted text, bounded but never summarized, while `web_search` queries
 the user-chosen backend (keyless Exa by default) — resolved once per Turn
 admission, absent from the toolset (not erroring) when search is off. Both
@@ -666,9 +666,9 @@ bound what a remote endpoint can push into the run the same way: a download
 caps at 5 MB (declared or streamed), the text handed to the model at 50 KB
 with an in-band truncation notice, and backend-authored error text is
 clamped. Neither enters the
-ADR-0014 gate: fetching reads a page the way `read` reads a file. The
+ADR-permission-modes-gate-mutations-no-os-sandbox gate: fetching reads a page the way `read` reads a file. The
 transcript folds their calls and results into `MessagePart::Tool` chips.
-Main-chat runs also mount the MCP tools (ADR-0034): the engine owns an
+Main-chat runs also mount the MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the engine owns an
 app-scoped, lazily-started pool of MCP connections (stdio children and
 Streamable HTTP endpoints) over the device-level `mcp.json` definition
 set, and at Turn start every enabled server's `tools/list` entries join
@@ -684,7 +684,7 @@ settles its calls as error results the model reads. Every `mcp__` call
 is presumed mutating by prefix: confirm-changes pauses it behind the
 ordinary Approval, auto-review's model pass judges it, full-access passes
 it, and an always-allow records the exact two-level name as a session
-grant. The schemas defer (ADR-0036): a small `mcp_tools` loader joins the
+grant. The schemas defer (ADR-mcp-tool-schemas-defer-through-a-loader): a small `mcp_tools` loader joins the
 toolset, and the Turn's `convert_to_llm` hook appends a synthetic
 call/result pair to the LLM view of every request whose `added_tool_names`
 marks the whole snapshot — providers with deferred-tool support keep the
@@ -696,9 +696,9 @@ Provider Mode Turns mount no MCP tools; MCP calls render on the existing
 unknown-tool transcript part. The child environment is sanitized (credential-shaped variables
 stripped unless the server's `env` sets them) and config values expand
 `${VAR}`/`${VAR:-default}` at run time.
-Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —
+Parent runs also mount the foreground `Agent` delegation tool (ADR-subagents-use-independent-history-and-foreground-results) —
 planning Turns excepted, since they run the read-only toolset. Catalog setup
-is Provider Mode (ADR-0037), not this toolset: Turns outside the mode mount
+is Provider Mode (ADR-provider-mode-is-a-chat-mode), not this toolset: Turns outside the mode mount
 no catalog tool at all — their catalog-write capability is nil. A Turn
 admitted with `Chat::provider_mode` set keeps the workspace prompt, appends
 the Provider Mode block (research → resolve → propose → stop), and mounts
@@ -718,7 +718,7 @@ stamped into the transcript. Key requests land as `KeyRequest` parts the
 same way. Pending proposals, the pending Key request, and approved key
 destinations persist in `provider-mode/<chatId>.json` and go with the chat.
 Keys never enter History, a tool argument, or the Transcript. Legacy
-`model-setup` chat rows (ADR-0030) are deleted on startup.
+`model-setup` chat rows (ADR-model-setup-scoped-chat-agent-never-applies) are deleted on startup.
 
 ## Data on disk
 
@@ -733,7 +733,7 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
 - `chats.json`, `spaces.json` — the chat and space lists, whole-file atomic
   replace under the runtime's registry lock.
 - `transcripts/<chatId>.jsonl` — one chat document's rendered transcript as
-  an append-only log (ADR-0032): a version header, then self-describing
+  an append-only log (ADR-transcript-append-only-log-per-chat-lock): a version header, then self-describing
   records. A full `SessionMessageEntry` line is an entry's first landing,
   its terminal settle, and every post-run chip re-append (a later full line
   with the same id replaces its earlier one); a run's streaming completions
@@ -747,7 +747,7 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   same layout; finished child summaries go to
   `subagents/<parentChatId>/results/`.
 - `history/<chatId>.jsonl` — the model-facing History, append-only, one record
-  per line (ADR-0010). The transcript log and the History share the chat's
+  per line (ADR-history-is-a-separate-persisted-record). The transcript log and the History share the chat's
   own persistence lock; one chat's disk writes never serialize against
   another chat's.
 - `queues/<chatId>.json` — accepted queue items, rewritten whole (with an
@@ -757,9 +757,9 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   holds the grow-only device-level archive of deleted chats.
 - `provider-mode/<chatId>.json` — a Provider Mode chat's pending
   proposals, pending Key request, and approved key destinations
-  (ADR-0037); never a key value.
+  (ADR-provider-mode-is-a-chat-mode); never a key value.
 - `turn-changes/<chatId>/<messageId>.json` — one settled Turn's frozen change
-  set (ADR-0024).
+  set (ADR-turn-change-sets-and-review).
 - `images/` — Holt-managed pasted pixels.
 - `provider-logos/<providerId>.{png,svg}` — custom provider logos, normalized
   on upload (rasters → PNG ≤ 128px, SVG verbatim); removed with the
@@ -769,7 +769,7 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   `web-search.json`, `search-backends.json` (user-written custom search
   backends, read-only to the engine), `permission-mode-default.json`,
   `mcp.json` (the MCP
-  server definitions, ADR-0034: strict `mcpServers` map, credentials
+  server definitions, ADR-mcp-servers-join-as-engine-clients-behind-the-gate: strict `mcpServers` map, credentials
   pattern — 0600, atomic replace, malformed or unknown-key files fail
   startup loudly) — each with its own atomic-write and failure policy as
   described above.
@@ -871,7 +871,7 @@ persisted by this feature.
 
 ## Conversation lifecycle
 
-Conversation memory (ADR-0010/0011): a chat's **History** — the model-facing
+Conversation memory (ADR-history-is-a-separate-persisted-record/0011): a chat's **History** — the model-facing
 `AgentMessage` sequence — persists as its own append-only JSONL record next to
 the Transcript (`engine::history`), appended per message as a Turn runs and
 replayed on load, so the model remembers exactly what the Transcript shows
@@ -891,7 +891,7 @@ and continues the same Turn, once; when that cannot absorb it (a second
 overflow, a failed summary, a silent overflow in the usage) the chat is
 flagged and the next Turn compacts unconditionally first. The Transcript never shrinks — a
 Last-message edit is the one exception, replacing the latest user message
-and the conversation after it (ADR-0033) — and dividers (expandable, with
+and the conversation after it (ADR-last-message-edit-restarts-a-turn) — and dividers (expandable, with
 before/after token counts and the trigger) and notices
 mark what happened. Queue items — ordinary messages, skill invocations,
 and manual Compaction commands — persist in `queues/<chatId>.json`,
@@ -905,7 +905,7 @@ Compaction included. Execution failures pause remaining work; admission
 failures (missing credentials or an unresolved skill) retain the head with
 an error without creating a Turn. Nothing to compact completes the command
 with a Transcript notice and advances the queue without a model request.
-New submissions preserve pause state, with one exception (ADR-0021): an
+New submissions preserve pause state, with one exception (ADR-attended-sends-run-through-a-paused-queue): an
 attended send — a first acceptance arriving while the execution channel is
 settled and the queue is paused — is admitted at once through a one-shot,
 persisted grant bound to its message id; it runs alone ahead of parked
@@ -977,7 +977,7 @@ different item. After the checkpoint the item is execution's property:
 mutations fail with an already-executing error and the run proceeds exactly
 once.
 
-Steer (ADR-0015) is the explicit priority action: it interrupts active
+Steer (ADR-steer-starts-a-new-turn) is the explicit priority action: it interrupts active
 work, waits for its cleanup, and starts the selected message as a new Turn
 ahead of ordinary pending work — pending Steer requests keep their
 submission order, and Run now on a paused queue authorizes only the
@@ -1005,7 +1005,7 @@ compaction, and overflow behavior are asserted without a real provider
   packages, pinned by `Cargo.lock` checksums.
 - `LICENSE` is GPL-3.0; upstream attribution for the vendored sources rides
   that license and the README credits. The exception is `crates/core`, which
-  keeps the MIT license of the pi packages it was ported from (ADR-0043).
+  keeps the MIT license of the pi packages it was ported from (ADR-agent-core-is-a-holt-owned-workspace-crate).
 - Historical design docs for removed subsystems (sync, agent drivers, edge)
   were deleted with them; `docs/adr` keeps the decision records and
   `docs/research` keeps the UI/gpui and domain research notes.

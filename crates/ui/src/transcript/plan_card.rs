@@ -1,8 +1,8 @@
-//! The Plan Mode approval card (ADR-0025): the plan DOCUMENT in the
+//! The Plan Mode approval card (ADR-plan-mode-is-an-independent-approval-checkpoint): the plan DOCUMENT in the
 //! transcript flow — the submitted plan as a bounded scrollable block
 //! (snapshotted at submission, so it shows what was reviewed). The verdict
 //! itself moved to the composer's approval bar (`composer::approval_bar`,
-//! the same surface the ADR-0014 gate uses): a pending card renders the
+//! the same surface the ADR-permission-modes-gate-mutations-no-os-sandbox gate uses): a pending card renders the
 //! document only, settled cards render their marker. The document path
 //! stays in the part's data — the card does not show it.
 //!
@@ -21,7 +21,7 @@ use crate::theme::Theme;
 
 /// The latest still-pending plan approval in a transcript, keyed
 /// `{entry}#{part}` like its card row — the composer approval bar's
-/// ADR-0025 producer (one plan awaits a verdict at a time, and the engine
+/// ADR-plan-mode-is-an-independent-approval-checkpoint producer (one plan awaits a verdict at a time, and the engine
 /// resolves whatever is pending in the chat).
 pub fn pending_plan_approval(transcript: &[SessionMessageEntry]) -> Option<String> {
     transcript
@@ -78,7 +78,7 @@ pub fn resolve_plan_approval(
 /// bounded, scrollable mono block under the header — max width for
 /// readable line lengths, max height so a long plan never stretches the
 /// transcript. `.occlude()` keeps one wheel gesture from scrolling both
-/// this block and the outer transcript list (ADR-0013).
+/// this block and the outer transcript list (ADR-nested-scroll-containers-isolate-wheel-events).
 fn render_plan_content(text: &str, row_id: &SharedString, theme: &Theme) -> gpui::AnyElement {
     div()
         .id(SharedString::from(format!("plan-content-{row_id}")))
@@ -104,7 +104,7 @@ fn render_plan_content(text: &str, row_id: &SharedString, theme: &Theme) -> gpui
 }
 
 impl Transcript {
-    /// The Plan Mode approval card (ADR-0025): a pending card renders the
+    /// The Plan Mode approval card (ADR-plan-mode-is-an-independent-approval-checkpoint): a pending card renders the
     /// submitted plan's document flat in the transcript flow (no frame —
     /// the verdict affordances live in the composer's approval bar);
     /// settled cards render their verdict marker only.

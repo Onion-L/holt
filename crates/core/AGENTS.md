@@ -3,7 +3,7 @@
 Holt's agent core (package `pi-core-rs`, lib `pi_core`): a Rust port of
 `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-telemetry` v0.84.4,
 originally developed as the standalone `pi-core-rs` repository and merged
-into this workspace (ADR-0043). MIT-licensed: keep `LICENSE` and the explicit
+into this workspace (ADR-agent-core-is-a-holt-owned-workspace-crate). MIT-licensed: keep `LICENSE` and the explicit
 `license = "MIT"` in `Cargo.toml` — never inherit the workspace's GPL-3.0.
 
 Holt owns this crate. Upstream pi is no longer tracked: the v0.84.4

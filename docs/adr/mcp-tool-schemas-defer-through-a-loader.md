@@ -1,13 +1,13 @@
 # MCP tool schemas defer through a loader tool
 
-ADR-0034 mounts every enabled server's tools as ordinary agent tools with
+ADR-mcp-servers-join-as-engine-clients-behind-the-gate mounts every enabled server's tools as ordinary agent tools with
 their full description and input schema in the static context of every
 request — the shape Cursor's harness postmortem and pi-core's
 deferred-tools machinery both identify as the top avoidable token cost
 once MCP servers multiply. Holt adopts the deferred shape: the schemas
 leave the static context and load on demand, while tool names, approval
 rules, the gate predicate, and the transcript surface stay exactly as
-ADR-0034 defined them.
+ADR-mcp-servers-join-as-engine-clients-behind-the-gate defined them.
 
 The mechanism is pi-core's, not ours. A tool result may carry
 `added_tool_names`; at every request build `split_deferred_tools` keeps a
@@ -24,7 +24,7 @@ arguments it returns the catalog (name plus a one-line description per
 mounted tool); called with `names` it returns full definitions — capped
 at eight per call, unknown names reported against the mounted set — and
 marks them via `added_tool_names`. And the Turn's `convert_to_llm` hook
-(ADR-0011) appends a synthetic pair to the LLM view of every request: a
+(ADR-compaction-is-not-a-turn) appends a synthetic pair to the LLM view of every request: a
 loader call plus its catalog result whose `added_tool_names` marks the
 whole snapshot, deferring every MCP schema from the first request. The
 pair always sits after the conversation, so anything already called
@@ -33,7 +33,7 @@ transcript, so a Turn restart simply re-appends it and a mid-Turn
 compaction returns uncalled tools to the deferred baseline.
 
 The loader is not `mcp__`-prefixed, so the gate's presumed-mutating
-predicate (ADR-0034) does not fire — it reads the Turn's own snapshot
+predicate (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) does not fire — it reads the Turn's own snapshot
 and pauses nothing. Rejected alternatives: a per-provider conditional
 bootstrap (the fallback already no-ops, and branching would couple the
 converter to catalog internals); a compact static catalog in the system

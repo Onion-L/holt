@@ -1,4 +1,4 @@
-//! The git surface (ADR-0001/0022/0024): refs, history/fetch, checkout
+//! The git surface (ADR-git2-as-the-git-backend/0022/0024): refs, history/fetch, checkout
 //! diffs in their modes, and turn change sets.
 
 use holt_proto::TurnChangeSetReply;
@@ -8,7 +8,7 @@ use super::{optional_string, required_string};
 use crate::EngineService;
 
 impl EngineService {
-    // Git capability (ADR-0001): branch listing and safe switching
+    // Git capability (ADR-git2-as-the-git-backend): branch listing and safe switching
     // for space folders. Errors carry git's own message — the picker
     // renders it in place.
     pub(super) async fn list_refs(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -139,7 +139,7 @@ impl EngineService {
                         "chatId is required for turn diffs".into(),
                     ));
                 };
-                // A Turn-addressed read (ADR-0024 ticket 02) serves
+                // A Turn-addressed read (ADR-turn-change-sets-and-review ticket 02) serves
                 // the settled Turn's immutable before/after pair
                 // from its persisted record: restarts and later
                 // workspace edits cannot move history. Without a
@@ -211,7 +211,7 @@ impl EngineService {
         }
     }
 
-    // Turn change sets (ADR-0024): the net Git change from a Turn's
+    // Turn change sets (ADR-turn-change-sets-and-review): the net Git change from a Turn's
     // admission baseline to its live or final working tree. Separate
     // from the checkout-diff scopes, which the UI's Changes pane
     // owns; this family feeds the Turn card. With `messageId` the
@@ -388,7 +388,7 @@ struct RestoreTurnChangesRequest {
 }
 
 /// The explicit non-Git answer `GetTurnChangeSet`/`WatchTurnChangeSet`
-/// share (ADR-0024): an empty change set must never stand in for it.
+/// share (ADR-turn-change-sets-and-review): an empty change set must never stand in for it.
 const NON_GIT_CHANGE_SET_REASON: &str = "the chat's working directory is not a Git work tree";
 
 /// The turn-diff scopes' failure for a chat whose current Turn has no

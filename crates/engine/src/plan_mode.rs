@@ -1,4 +1,4 @@
-//! Plan Mode (ADR-0025): the chat-level planning checkpoint orthogonal to
+//! Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint): the chat-level planning checkpoint orthogonal to
 //! the permission mode. The state rides the chat row (`Chat::plan_mode`,
 //! restored by restart); this module owns the planning-turn shaping the run
 //! loop applies to a Turn admitted under Plan Mode: the read-only tool
@@ -13,19 +13,19 @@ use holt_doc::parts::{PlanApprovalState, PlanApprovalVerdict};
 
 use crate::agent::ChatRuntime;
 
-/// The plan-proposal convention (ADR-0025): the model wraps its complete
+/// The plan-proposal convention (ADR-plan-mode-is-an-independent-approval-checkpoint): the model wraps its complete
 /// plan in this block; the transcript folds each block into an approval
 /// card.
 pub(crate) const PROPOSED_PLAN_OPEN: &str = "<proposed_plan>";
 pub(crate) const PROPOSED_PLAN_CLOSE: &str = "</proposed_plan>";
 
-/// The prompt an approval enqueues (ADR-0025): an ordinary run carrying
+/// The prompt an approval enqueues (ADR-plan-mode-is-an-independent-approval-checkpoint): an ordinary run carrying
 /// the user's consent, so the implementation Turn starts on its own and
 /// reads the approved plan from the conversation History.
 pub(crate) const APPROVAL_FOLLOW_UP_PROMPT: &str = "The plan is approved. Start implementing it.";
 
-/// The shared read-only tool predicate (ADR-0025): the exploration surface
-/// an Explorer subagent gets (ADR-0023) and a planning Turn keeps — nothing
+/// The shared read-only tool predicate (ADR-plan-mode-is-an-independent-approval-checkpoint): the exploration surface
+/// an Explorer subagent gets (ADR-web-tools-full-text-ungated-pluggable-search) and a planning Turn keeps — nothing
 /// that can change files or execute commands.
 pub(crate) fn read_only_tool_allowed(name: &str) -> bool {
     matches!(
@@ -36,7 +36,7 @@ pub(crate) fn read_only_tool_allowed(name: &str) -> bool {
 
 /// The planning system-prompt block: read-only exploration plus the
 /// `submit_plan` submission channel — ordinary text never reaches approval
-/// (ADR-0025), and each submission fully replaces the previous one. The
+/// (ADR-plan-mode-is-an-independent-approval-checkpoint), and each submission fully replaces the previous one. The
 /// `<proposed_plan>` text convention stays as the fallback for a model
 /// that writes the block instead of calling the tool.
 pub(crate) fn planning_system_block() -> String {
@@ -161,9 +161,9 @@ pub(crate) fn has_pending_plan_cards(chat_id: &str, runtime: &crate::agent::Agen
 }
 
 /// Settle every still-pending approval card in the transcript to `verdict`
-/// (ADR-0025). A resolution is pure display state — the lifecycle moved
+/// (ADR-plan-mode-is-an-independent-approval-checkpoint). A resolution is pure display state — the lifecycle moved
 /// through the RPC — so this is a transcript edit only: each changed entry
-/// re-appends itself to the log (ADR-0032). Blocks proposed
+/// re-appends itself to the log (ADR-transcript-append-only-log-per-chat-lock). Blocks proposed
 /// across turns all address the chat's Plan Mode; a verdict settles them
 /// together.
 pub(crate) fn settle_plan_cards(chat: &ChatRuntime, verdict: PlanApprovalVerdict) {

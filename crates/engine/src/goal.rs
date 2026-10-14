@@ -1,4 +1,4 @@
-//! Goal mode (ADR-0044): a chat-scoped objective the queue driver loops on.
+//! Goal mode (ADR-goal-mode-verified-loop-at-turn-settle): a chat-scoped objective the queue driver loops on.
 //!
 //! The goal lives on the chat row (`Chat::goal`); the verifier is one model
 //! pass that runs after a settled Turn's card frame is on its way (after
@@ -229,7 +229,7 @@ fn card_state_prompt(goal: &ChatGoalState) -> String {
     block
 }
 
-/// The continuation's prompt (ADR-0044). The objective is spelled out in
+/// The continuation's prompt (ADR-goal-mode-verified-loop-at-turn-settle). The objective is spelled out in
 /// the History once — the arming Turn's message — so a continuation points
 /// back at it; after a compaction may have folded that message into a
 /// summary (`restate`), the next one carries it verbatim again. A resume
@@ -475,7 +475,7 @@ pub(crate) fn clear_goal_state(service: &EngineService, chat: &Arc<ChatRuntime>)
     service.runtime.publish_chats();
 }
 
-/// A goal lifecycle row in the Transcript (ADR-0010 housekeeping: for the
+/// A goal lifecycle row in the Transcript (ADR-history-is-a-separate-persisted-record housekeeping: for the
 /// reader, never the model — the continuation prompt carries what the model
 /// needs).
 fn notice(service: &EngineService, chat: &Arc<ChatRuntime>, event: GoalEvent, message: String) {
@@ -571,7 +571,7 @@ pub(crate) fn cancel_check(chat: &ChatRuntime) {
 }
 
 /// The verifier's transport: the configured verifier model first (the
-/// ADR-0044 follow-up — a separate judge, ideally on another provider so
+/// ADR-goal-mode-verified-loop-at-turn-settle follow-up — a separate judge, ideally on another provider so
 /// the loop's blind spots are not the judge's too), else the chat's own
 /// model resolved fresh from the row's captured config. A configured model
 /// that no longer resolves — or whose provider lost its key — falls back
@@ -827,7 +827,7 @@ pub(crate) fn enqueue_continuation(
         });
     }
     if paused {
-        // The queue's pause wins (ADR-0021): the row stays for the user to
+        // The queue's pause wins (ADR-attended-sends-run-through-a-paused-queue): the row stays for the user to
         // inspect, but the loop stands down until resumed.
         mutate_goal_row(service, &chat.chat_id, |goal| {
             goal.status = GoalStatus::Paused;
@@ -841,7 +841,7 @@ pub(crate) fn enqueue_continuation(
     Ok(())
 }
 
-/// The queue-driver hook after a settled real Turn (ADR-0044). Runs after
+/// The queue-driver hook after a settled real Turn (ADR-goal-mode-verified-loop-at-turn-settle). Runs after
 /// `clear_final_signal`, inside the driver iteration: the verdict's Notice
 /// can never overtake the Turn's own card frame, and the continuation it may
 /// enqueue is in place before the next admission.
@@ -1113,7 +1113,7 @@ pub(crate) fn pause_on_failed_enqueue(
     );
 }
 
-/// The second hook (ADR-0044): a Message item's admission failure — the
+/// The second hook (ADR-goal-mode-verified-loop-at-turn-settle): a Message item's admission failure — the
 /// model or credential is gone — clears the goal, since no continuation can
 /// fix it. A manual Compaction's failure on the same path never reaches
 /// here (the driver distinguishes the kinds).
@@ -1145,7 +1145,7 @@ pub(crate) async fn after_admission_failure(
     );
 }
 
-/// Deleting the loop's queued continuation is a stop request (ADR-0044):
+/// Deleting the loop's queued continuation is a stop request (ADR-goal-mode-verified-loop-at-turn-settle):
 /// the goal pauses, keeping the objective for an explicit resume.
 pub(crate) fn pause_for_deleted_continuation(service: &EngineService, chat: &Arc<ChatRuntime>) {
     let active = {
@@ -1174,7 +1174,7 @@ pub(crate) fn pause_for_deleted_continuation(service: &EngineService, chat: &Arc
     );
 }
 
-/// Boot reconciliation (ADR-0044): an `active` goal whose queue holds no
+/// Boot reconciliation (ADR-goal-mode-verified-loop-at-turn-settle): an `active` goal whose queue holds no
 /// continuation can never run again — continuations are born only at a Turn
 /// settle — so it opens paused. Runs over the registry before any runtime
 /// exists; queue files are read directly.

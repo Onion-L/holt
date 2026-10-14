@@ -1,8 +1,8 @@
 //! GPUI rendering for the transcript: `render_row` and the shared chip
 //! builders, `impl Render for Transcript`, and the paint-side helpers
-//! (frame-stats knobs, the ADR-0013 scroll chaining). Row kinds live in
+//! (frame-stats knobs, the ADR-nested-scroll-containers-isolate-wheel-events scroll chaining). Row kinds live in
 //! submodules: `user_rows` (skill invocation, compaction divider, bubble
-//! strips, working trailer), `turn_card` (ADR-0024 change card),
+//! strips, working trailer), `turn_card` (ADR-turn-change-sets-and-review change card),
 //! `tool_group` (nested chips, detail bodies, subagent tabs), `highlight`
 //! (background syntax store). Entity state, sync, and events stay in the
 //! facade; this module only reads them.
@@ -109,7 +109,7 @@ fn record_live_frame_us(us: u64) {
     });
 }
 
-/// ADR-0013 chaining for a nested reading viewport (skill body, compaction
+/// ADR-nested-scroll-containers-isolate-wheel-events chaining for a nested reading viewport (skill body, compaction
 /// summary) inside the transcript list: the occluded div owns the wheel only
 /// while it can move, and whatever it could NOT absorb is forwarded to the
 /// outer list so the gesture continues instead of dead-ending at the
@@ -254,7 +254,7 @@ impl Transcript {
                         .ok();
                 });
                 // Chip-projected bubbles copy canonical Markdown: the raw
-                // body plus a display→raw chip table (ADR-0035).
+                // body plus a display→raw chip table (ADR-skill-invocation-is-an-inline-mention).
                 let copy_map =
                     (!mentions.is_empty()).then(|| crate::markdown::selection::CopyMap {
                         raw: raw.to_string(),
@@ -1299,7 +1299,7 @@ fn user_bubble_text_with_chip(
                 // Skill chips lead with the skill identity glyph — the same
                 // cube the `/` menu rows show, at text-matching size — inside
                 // the label's gutter NBSPs (the display text itself is the
-                // bare name — ADR-0035).
+                // bare name — ADR-skill-invocation-is-an-inline-mention).
                 if span.is_skill
                     && let Some(rect) = render::range_rects(&layout, &span.range, 0.0, 2.0)
                         .first()
@@ -1523,7 +1523,7 @@ fn retry_chip(
         .into_any_element()
 }
 
-/// The transcript notice row (ADR-0010): a quiet full-width line of
+/// The transcript notice row (ADR-history-is-a-separate-persisted-record): a quiet full-width line of
 /// housekeeping prose — the legacy-chat and damaged-History notices.
 /// Deliberately quieter than a message (no bubble, 12px muted text, a
 /// faint info glyph) and distinct from an error (neutral ink, no red,
@@ -1634,7 +1634,7 @@ impl Transcript {
     }
 }
 
-/// The goal loop's lifecycle row (ADR-0044): the goal card's settled form
+/// The goal loop's lifecycle row (ADR-goal-mode-verified-loop-at-turn-settle): the goal card's settled form
 /// landed in the transcript — the question chip's passive band. The glyph
 /// says which transition it was (achieved, blocked, paused, cleared), so a
 /// pause never reads as the arc's end; a blocked row tints the warning.
@@ -1761,7 +1761,7 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
         .into_any_element()
 }
 
-/// A collapsed skill invocation / skill-file read (ADR-0006): the skill's
+/// A collapsed skill invocation / skill-file read (ADR-metadata-only-skill-advertising): the skill's
 /// name in the accent colour with a cube glyph — clicking opens the source
 /// `SKILL.md` in the workspace file tab (right pane) so the user can
 /// inspect exactly what the agent was told to follow. Right-aligned like
@@ -2008,7 +2008,7 @@ fn chip_header_row(
             },
         )
         .when_some(
-            // The settled verdict (ADR-0014): a small tinted marker after the
+            // The settled verdict (ADR-permission-modes-gate-mutations-no-os-sandbox): a small tinted marker after the
             // detail — "✓ Approved", "⊘ Denied · "note"", "⚡ Prefix exempt", …
             tool.gate.as_ref().and_then(|gate| match &gate.state {
                 ToolGateState::Settled { verdict } => Some(super::verdict_chip(verdict)),
@@ -2308,7 +2308,7 @@ mod tests {
         assert_eq!(inner.offset().y, gpui::px(-40.0));
     }
 
-    /// ADR-0013 chaining: at the nested viewport's scroll boundary the
+    /// ADR-nested-scroll-containers-isolate-wheel-events chaining: at the nested viewport's scroll boundary the
     /// wheel's unabsorbed remainder moves the OUTER list, instead of
     /// dead-ending. The inner body is 50px tall with 200px of content (max
     /// offset 150); the outer list has four 100px items in a 100px window.

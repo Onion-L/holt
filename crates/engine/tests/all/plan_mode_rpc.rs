@@ -1,4 +1,4 @@
-//! Plan Mode state RPC (ADR-0025, issue 01): entering, exiting, and
+//! Plan Mode state RPC (ADR-plan-mode-is-an-independent-approval-checkpoint, issue 01): entering, exiting, and
 //! querying a chat's planning checkpoint through the public RPC surface —
 //! the entry permission mode is recorded (never moved), the state
 //! persists across restart, and recovery never starts a Turn.
@@ -79,7 +79,7 @@ async fn enter_exit_and_query_round_trip() {
 
     // Entering records the chat's current permission mode as the entry
     // mode. The stored mode itself does not move (Plan Mode is orthogonal
-    // to the permission tiers, ADR-0025).
+    // to the permission tiers, ADR-plan-mode-is-an-independent-approval-checkpoint).
     set_mode(&engine, "chat-1", "auto-review").await;
     engine
         .handle(

@@ -110,7 +110,7 @@ pub(super) const OWN_SEND_MIN_REPLY_ROOM_FRAC: f32 = 1.0 / 3.0;
 /// function of content height instead of the hold. Two pixels of travel is
 /// below perception. That regime was gpui Bottom-alignment behavior; under
 /// the now-universal Top alignment short content still measures, so the
-/// slack is retained but no longer load-bearing (ADR-0008).
+/// slack is retained but no longer load-bearing (ADR-main-transcript-is-top-anchored).
 pub(super) const OWN_SEND_SCROLL_SLACK_PX: f32 = 2.0;
 /// Per-60fps-frame fraction of the remaining entry glide retained (~90%
 /// covered in ~230ms, ease-out).
@@ -300,7 +300,7 @@ pub fn format_elapsed(secs: i64) -> String {
 /// hold here: parking at exact distance 0 re-glues a bottom-aligned gpui
 /// list, which then hard-tracks the pad's stale bottom on every commit —
 /// rig-traced; re-glue is Bottom-only, so under the now-universal Top
-/// alignment the absolute hold is belt-and-braces, ADR-0008). Wheel
+/// alignment the absolute hold is belt-and-braces, ADR-main-transcript-is-top-anchored). Wheel
 /// input releases the hold, leaving the reservation as plain scrollable
 /// space. The anchor retires once the reply overflows the reservation (pad
 /// ~0, height-neutral). The hold position (the prompt's top offset) is

@@ -9,7 +9,7 @@ can curl), so holt's agent had no web capability. A five-way survey of
 Claude Code, Codex, opencode, Kimi CLI, and pi
 (`docs/research/web-tools.md`) framed the choices: summarize
 versus full text, provider-locked versus pluggable search, and where
-fetch sits relative to the ADR-0014 permission gate.
+fetch sits relative to the ADR-permission-modes-gate-mutations-no-os-sandbox permission gate.
 
 ## Decision
 
@@ -30,7 +30,7 @@ provider key surfaces only as a hint, never a preselection, and an
 unconfigured backend means the tool is simply not registered — absent
 from the model's toolset, not erroring into its face.
 
-Neither tool enters the ADR-0014 gate. Fetch is a read; a third
+Neither tool enters the ADR-permission-modes-gate-mutations-no-os-sandbox gate. Fetch is a read; a third
 "network egress" tier would break the one-predicate model. The known
 cost is accepted: in confirm-changes, ungated web tools plus ungated
 file reads form an exfiltration channel (read a secret, encode it in a

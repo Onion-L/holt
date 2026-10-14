@@ -65,9 +65,9 @@ evidence-only evaluation after each Turn, a small state machine
 (active/paused/blocked), hard iteration caps, and interrupt-means-pause.
 
 Two Holt specifics shape the port. First, the queue is durable, visible, and
-user-editable (ADR-0021), so a continuation that rides a hidden channel would
+user-editable (ADR-attended-sends-run-through-a-paused-queue), so a continuation that rides a hidden channel would
 be an alien mechanism — the user could see Turns starting with no row to
-inspect or delete. Second, ADR-0024 already freezes each Turn's change set at
+inspect or delete. Second, ADR-turn-change-sets-and-review already freezes each Turn's change set at
 settle, so the verifier gets real workspace evidence (file status and line
 counts) instead of judging from conversation text alone, which is what every
 other harness feeds its evaluator.
@@ -88,7 +88,7 @@ record on the chat's last Turn.
   (`active`/`paused`/`blocked`), the iteration and no-progress counters, a
   consecutive evaluation-failure counter, `startedAt`, and the last verdict's
   reason. There is no verdict history store — terminal transitions land as
-  Transcript `Notice` rows (the reader-facing housekeeping row, ADR-0010),
+  Transcript `Notice` rows (the reader-facing housekeeping row, ADR-history-is-a-separate-persisted-record),
   so history survives restarts through the record that already persists.
   Each end row is one line: the outcome, the round count, the wall time,
   and the goal's gross tokens since it was armed (every usage record since
@@ -124,7 +124,7 @@ record on the chat's last Turn.
   serde-defaulted). Deleting that item pauses the goal; editing it keeps
   the flag. `ClearGoal` or pausing sweeps every goal-flagged pending row,
   so "off" never leaves a last Turn to run. A continuation landing in a
-  paused queue (ADR-0021's attended-send re-pause included) flips the goal
+  paused queue (ADR-attended-sends-run-through-a-paused-queue's attended-send re-pause included) flips the goal
   to paused — the queue's pause wins.
 - **Caps: `MAX_ITERATIONS = 20` is the primary backstop; no-progress is the
   secondary one.** A Succeeded Turn with zero tool calls and an empty

@@ -121,7 +121,7 @@ pub enum SubagentStatus {
     Failed,
 }
 
-/// Why a Compaction ran (ADR-0011): automatic (the History neared the
+/// Why a Compaction ran (ADR-compaction-is-not-a-turn): automatic (the History neared the
 /// model's context window), manual (`/compact`), or the recovery after a
 /// context-overflow error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +132,7 @@ pub enum CompactionTrigger {
     AfterOverflow,
 }
 
-/// The permission gate's record on a mutating tool call (ADR-0014). Only
+/// The permission gate's record on a mutating tool call (ADR-permission-modes-gate-mutations-no-os-sandbox). Only
 /// gated calls carry one: pending while a confirm-changes Approval awaits
 /// the user's verdict, then settled in place to the verdict. Reads, content
 /// search, and full-access runs leave the chip bare.
@@ -157,7 +157,7 @@ pub struct SubagentOrigin {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolGateState {
     /// confirm-changes: the Turn is paused waiting for the user. A forced
-    /// approval (ADR-0029) carries the stored proposal's summary as its
+    /// approval (ADR-model-setup-applies-stored-proposals) carries the stored proposal's summary as its
     /// note; an ordinary Approval has none.
     #[serde(rename_all = "camelCase")]
     Pending {
@@ -176,13 +176,13 @@ pub enum ToolGateState {
 pub enum GateVerdict {
     /// Allowed for this call only.
     Allowed,
-    /// Always-allow (ADR-0014): the call proceeded and a session-scoped
+    /// Always-allow (ADR-permission-modes-gate-mutations-no-os-sandbox): the call proceeded and a session-scoped
     /// grant now passes its kind through the gate.
     AlwaysAllowed,
     /// An always-allow grant matched this call — auto-passed without
     /// asking.
     Exempted,
-    /// A review pass (ADR-0014): the chat's model judged the call
+    /// A review pass (ADR-permission-modes-gate-mutations-no-os-sandbox): the chat's model judged the call
     /// acceptable.
     ReviewPassed,
     /// A review rejection with the reviewer's reason — the reason is the
@@ -203,9 +203,9 @@ pub enum GateVerdict {
     Aborted,
 }
 
-/// The Plan Mode approval card (ADR-0025): one card per plan submission —
+/// The Plan Mode approval card (ADR-plan-mode-is-an-independent-approval-checkpoint): one card per plan submission —
 /// a `submit_plan` tool result, or a folded `<proposed_plan>` block from
-/// the legacy text convention. Unlike the ADR-0014 tool gate this
+/// the legacy text convention. Unlike the ADR-permission-modes-gate-mutations-no-os-sandbox tool gate this
 /// resolution is pure state — no run is blocked — so a pending card
 /// survives a restart and stays answerable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -218,7 +218,7 @@ pub enum PlanApprovalState {
     Settled { verdict: PlanApprovalVerdict },
 }
 
-/// Where a Provider Mode proposal card stands (ADR-0037). Only the
+/// Where a Provider Mode proposal card stands (ADR-provider-mode-is-a-chat-mode). Only the
 /// human's Write button moves it to `Written`; a newer proposal touching
 /// the same provider supersedes a pending one. Unknown states read as
 /// `Superseded` — inert, never actionable.
@@ -232,7 +232,7 @@ pub enum ProposalCardState {
     Superseded,
 }
 
-/// One question inside a question card (ADR-0040): the asked text and
+/// One question inside a question card (ADR-ask-user-is-a-question-card): the asked text and
 /// its 2–6 enumerated options. One card carries 1–4 of these, answered
 /// in one settle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,7 +242,7 @@ pub struct CardQuestion {
     pub options: Vec<String>,
 }
 
-/// Where a Provider Mode provider-choice card stands (ADR-0037). A click
+/// Where a Provider Mode provider-choice card stands (ADR-provider-mode-is-a-chat-mode). A click
 /// moves it to `Chosen`; any later Turn retires a still-pending one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -268,7 +268,7 @@ pub struct ProviderRef {
     pub configured: bool,
 }
 
-/// Where a Provider Mode key-request card stands (ADR-0037). The key
+/// Where a Provider Mode key-request card stands (ADR-provider-mode-is-a-chat-mode). The key
 /// itself never rides the card — only who it is for and where it goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -280,7 +280,7 @@ pub enum KeyCardState {
     Superseded,
 }
 
-/// How a plan-approval card settled (ADR-0025). Approve exits Plan Mode
+/// How a plan-approval card settled (ADR-plan-mode-is-an-independent-approval-checkpoint). Approve exits Plan Mode
 /// and restores the entry permission mode; a rejection retires the
 /// revision (the document stays) and opens the revision loop; remain
 /// keeps the chat planning without executing.
@@ -368,7 +368,7 @@ pub enum MessagePart {
         /// an older doc carries no key and its chip renders bare.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_usage: Option<u64>,
-        /// The permission gate's record (ADR-0014): absent unless this call
+        /// The permission gate's record (ADR-permission-modes-gate-mutations-no-os-sandbox): absent unless this call
         /// was gated. Additive — old docs and ungated chips decode bare.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gate: Option<ToolGate>,
@@ -382,7 +382,7 @@ pub enum MessagePart {
         resolved: bool,
     },
     /// A skill invocation (or a read of a catalog skill's `SKILL.md`)
-    /// collapsed to a compact chip (ADR-0006): the skill name plus a
+    /// collapsed to a compact chip (ADR-metadata-only-skill-advertising): the skill name plus a
     /// pointer to the source file. On invocations `content` carries the
     /// model-visible `<skill>` block so the chip can expand to show exactly
     /// what the agent was told to follow; read-collapse chips leave it
@@ -401,21 +401,21 @@ pub enum MessagePart {
         message: String,
     },
     /// A quiet housekeeping row addressed to the reader, never the model
-    /// (ADR-0010): the legacy-chat and damaged-History notices here — the
+    /// (ADR-history-is-a-separate-persisted-record): the legacy-chat and damaged-History notices here — the
     /// compaction divider, overflow, and failed-compaction notices join as
     /// their own shapes later. Persisted with the Transcript like any part;
     /// not an `Error`: nothing went wrong with the Turn the row sits in.
     Notice {
         id: String,
         message: String,
-        /// Set on the goal loop's lifecycle rows (ADR-0044): which
+        /// Set on the goal loop's lifecycle rows (ADR-goal-mode-verified-loop-at-turn-settle): which
         /// transition the row records, so readers style it from data, never
         /// by parsing `message`. Absent on every other notice and on goal
         /// rows written before the field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         goal: Option<GoalEvent>,
     },
-    /// The loop's own marker on a goal continuation's user entry (ADR-0044):
+    /// The loop's own marker on a goal continuation's user entry (ADR-goal-mode-verified-loop-at-turn-settle):
     /// what queued this Turn and the verifier's missing piece, as data.
     /// Readers draw the entry as a loop row from it; the model never sees
     /// it (the prompt text is the entry's text part). Old readers fall back
@@ -426,7 +426,7 @@ pub enum MessagePart {
         #[serde(default)]
         reason: String,
     },
-    /// The Compaction divider (ADR-0011): marks where the model's verbatim
+    /// The Compaction divider (ADR-compaction-is-not-a-turn): marks where the model's verbatim
     /// memory begins. The Transcript never loses rows — this row is
     /// appended, never substituted — and expands to show the exact summary
     /// the model now carries, with the before/after token counts and the
@@ -441,7 +441,7 @@ pub enum MessagePart {
         /// Epoch millis.
         timestamp: i64,
     },
-    /// The Plan Mode approval card (ADR-0025): the proposed plan plus its
+    /// The Plan Mode approval card (ADR-plan-mode-is-an-independent-approval-checkpoint): the proposed plan plus its
     /// resolution state. Approve / reject / remain ride
     /// `ResolvePlanApproval`. The content is the plan's Markdown as
     /// proposed by the model (a `<proposed_plan>` block from ordinary
@@ -453,7 +453,7 @@ pub enum MessagePart {
         content: String,
         state: PlanApprovalState,
     },
-    /// A Provider Mode catalog proposal (ADR-0037): the stored proposal's
+    /// A Provider Mode catalog proposal (ADR-provider-mode-is-a-chat-mode): the stored proposal's
     /// id, the providers it writes to, its one-line summary, and the
     /// human-readable diff lines it would write. Write / Discard ride the
     /// proposal RPCs; the card is the only surface that writes.
@@ -468,7 +468,7 @@ pub enum MessagePart {
         lines: Vec<String>,
         state: ProposalCardState,
     },
-    /// A Provider Mode provider choice (ADR-0037): the candidates an
+    /// A Provider Mode provider choice (ADR-provider-mode-is-a-chat-mode): the candidates an
     /// organization name left open. A click settles it through
     /// `SettleProviderChoice`, which records `chosen`.
     #[serde(rename_all = "camelCase")]
@@ -479,7 +479,7 @@ pub enum MessagePart {
         chosen: Option<String>,
         state: ChoiceCardState,
     },
-    /// The agent's question card (ADR-0040): 1–4 questions the model
+    /// The agent's question card (ADR-ask-user-is-a-question-card): 1–4 questions the model
     /// asked through the `ask_user` tool, each with its enumerated
     /// options. The answers settle in one `SettleQuestion` call —
     /// `answers` aligns with `questions` once chosen, and stays empty
@@ -492,7 +492,7 @@ pub enum MessagePart {
         answers: Vec<String>,
         state: ChoiceCardState,
     },
-    /// A Provider Mode API-key request (ADR-0037, amends ADR-0031): which
+    /// A Provider Mode API-key request (ADR-provider-mode-is-a-chat-mode, amends ADR-api-keys-collected-through-key-requests): which
     /// provider the key unlocks and the one destination it is sent to.
     /// The key is entered on the card and goes straight to the credential
     /// store — it never enters History, tool results, or this part.

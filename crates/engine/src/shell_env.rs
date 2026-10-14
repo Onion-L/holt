@@ -8,7 +8,7 @@
 //! through the user's own login shell (see `tools::LocalExecutionEnv::exec`)
 //! lets that shell assemble its environment the way the user configured it.
 //! Direct spawns that cannot go through a shell — MCP stdio children
-//! (ADR-0034) — ask the same shell for its PATH once ([`login_path`]) and
+//! (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) — ask the same shell for its PATH once ([`login_path`]) and
 //! resolve bare command names against it.
 
 use std::{

@@ -1,4 +1,4 @@
-//! The Scheduled page (glossary: Routine, ADR-0042): a card grid of the
+//! The Scheduled page (glossary: Routine, ADR-routines-fire-in-process-and-coalesce-missed-fires): a card grid of the
 //! user's Routines — name, prompt, and a status chip, with Run now, pause,
 //! edit, and delete in the card's kebab menu; clicking a card edits it.
 //! Reads come from the AppState Routines watch; writes are RPCs from here.

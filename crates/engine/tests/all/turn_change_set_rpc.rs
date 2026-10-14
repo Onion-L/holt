@@ -1,4 +1,4 @@
-//! Handle-seam tests for Turn change sets (ADR-0024, tickets 01+02): a real
+//! Handle-seam tests for Turn change sets (ADR-turn-change-sets-and-review, tickets 01+02): a real
 //! engine on a temp data dir, a real fixture repository built with git2,
 //! driven through `RpcService` exactly as the UI drives it. The change set
 //! is the net Git change between a Turn's admission baseline and its live
@@ -1611,7 +1611,7 @@ async fn editing_a_live_turn_retracts_its_change_set() {
     .expect("the live frame arrives");
 
     // Editing cancels the Turn mid-run. Its cleanup freezes and persists
-    // the interrupted Turn's record (ADR-0024 retains partial work) before
+    // the interrupted Turn's record (ADR-turn-change-sets-and-review retains partial work) before
     // the edit path retracts it — the wait on the execution lock orders
     // that cleanup ahead of the delete, so no record may survive the edit.
     engine

@@ -1,4 +1,4 @@
-//! Durable Turn change-set history (ADR-0024, ticket 02): one JSON record
+//! Durable Turn change-set history (ADR-turn-change-sets-and-review, ticket 02): one JSON record
 //! per settled Turn under `{data_dir}/turn-changes/{chatId}/{messageId}.json`
 //! — the frozen summary plus the immutable per-file before/after content.
 //!

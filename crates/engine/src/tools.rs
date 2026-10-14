@@ -2,11 +2,11 @@
 //! bash) mounted onto the local machine — a [`LocalExecutionEnv`] satisfying
 //! pi-core's `FileSystem + Shell` contract, and the assembly that hands each
 //! harness tool the shared [`ExecutionToolContext`] its `execute` downcasts
-//! for — plus holt's own content search (ADR-0004) in [`grep`], directory
-//! listing (ADR-0025's read-only surface) in [`ls`], web fetch (ADR-0023) in
+//! for — plus holt's own content search (ADR-in-process-ripgrep-for-content-search) in [`grep`], directory
+//! listing (ADR-plan-mode-is-an-independent-approval-checkpoint's read-only surface) in [`ls`], web fetch (ADR-web-tools-full-text-ungated-pluggable-search) in
 //! [`web_fetch`], and web search behind the user-configured [`SearchBackend`]
-//! (ADR-0023) in [`web_search`] — plus the question card's `ask_user` tool
-//! (ADR-0040) in [`ask_user`].
+//! (ADR-web-tools-full-text-ungated-pluggable-search) in [`web_search`] — plus the question card's `ask_user` tool
+//! (ADR-ask-user-is-a-question-card) in [`ask_user`].
 
 pub(crate) mod ask_user;
 mod grep;
@@ -237,7 +237,7 @@ fn write_to_file(
     // spelling, so the bytes must land on exactly that entry: a path
     // under the workspace that traverses a symlink (leaf or
     // intermediate) is refused rather than followed to a file the gate
-    // never named — the repo-shipped-symlink case (ADR-0014; audit
+    // never named — the repo-shipped-symlink case (ADR-permission-modes-gate-mutations-no-os-sandbox; audit
     // run-3 finding `write-grant-symlink-landing`). The error names the
     // resolved target — the model may address it directly, and the user
     // then approves the real path. Paths outside the workspace are
@@ -778,7 +778,7 @@ pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
     execution_tools_for_model(cwd, true, None, None)
 }
 
-/// The per-Turn write-attribution handle (ADR-0024): the tools record the
+/// The per-Turn write-attribution handle (ADR-turn-change-sets-and-review): the tools record the
 /// paths they mutate; the Turn change set keeps only attributed files, so
 /// another chat's concurrent work in the same working tree never lands in
 /// this Turn's card. Cloned per tool; the set is shared. `None` on runs

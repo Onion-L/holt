@@ -1,4 +1,4 @@
-//! The skills capability (ADR-0005/0006): root resolution, catalog
+//! The skills capability (ADR-skills-referenced-in-place-from-standard-roots/0006): root resolution, catalog
 //! assembly, precedence/shadowing, and invocation-prompt building over the
 //! upstream agent-loop loader. Skills are referenced in place — nothing is
 //! copied, moved, or persisted; the filesystem is the registry, and every
@@ -16,7 +16,7 @@ use pi_core::agent::harness::types::{ExecutionEnv, Skill};
 
 use crate::tools::LocalExecutionEnv;
 
-/// Character budget for the system-prompt skill block (ADR-0006): past the
+/// Character budget for the system-prompt skill block (ADR-metadata-only-skill-advertising): past the
 /// limit descriptions truncate, then drop, then trailing skills drop —
 /// never an error, and the task stays the bulk of the context window.
 pub(crate) const SKILL_LISTING_BUDGET: usize = 8 * 1024;
@@ -93,7 +93,7 @@ impl Catalog {
     }
 }
 
-/// The model-visible skill advertisement (ADR-0006): a metadata-only
+/// The model-visible skill advertisement (ADR-metadata-only-skill-advertising): a metadata-only
 /// `<available_skills>` block from the upstream formatter, built from the
 /// precedence winners. `disable-model-invocation` entries are filtered
 /// (by the formatter and here, so the budget counts only what renders);
@@ -208,7 +208,7 @@ impl Skills {
         vec![self.personal.clone(), self.holt.clone()]
     }
 
-    /// The roots for one chat, nearest first (ADR-0005 precedence).
+    /// The roots for one chat, nearest first (ADR-skills-referenced-in-place-from-standard-roots precedence).
     fn roots(&self, cwd: Option<&str>) -> Vec<(SkillRoot, PathBuf)> {
         let mut roots = Vec::new();
         if let Some(cwd) = cwd.filter(|cwd| !cwd.trim().is_empty()) {
@@ -243,7 +243,7 @@ impl Skills {
         assemble_catalog(scans)
     }
 
-    /// Resolve one inline mention (ADR-0035): the linked form's path is
+    /// Resolve one inline mention (ADR-skill-invocation-is-an-inline-mention): the linked form's path is
     /// authoritative — exact file match against winners AND shadowed
     /// entries (`~` and relative paths expand against the chat's working
     /// directory first) — falling back to a name lookup against the
@@ -298,7 +298,7 @@ impl Skills {
             };
             // The model-visible prompt of a mention hit: the upstream
             // `<skill>` block — full content with its relative-path-resolve
-            // declaration. No host-side argument substitution (ADR-0006).
+            // declaration. No host-side argument substitution (ADR-metadata-only-skill-advertising).
             let block = invocation_prompt(&skill, None);
             blocks.push(block.clone());
             chips.push(holt_doc::MessagePart::Skill {
@@ -422,7 +422,7 @@ mod tests {
         assert!(block.contains("<name>grill</name>"));
         assert!(block.contains("<description>Grill a plan.</description>"));
         assert!(block.contains("<location>/roots/grill/SKILL.md</location>"));
-        // Content never enters the advertisement (ADR-0006).
+        // Content never enters the advertisement (ADR-metadata-only-skill-advertising).
         assert!(!block.contains("SECRET INSTRUCTIONS"));
     }
 
@@ -485,7 +485,7 @@ mod tests {
             .unwrap();
         assert!(resolved.file_path.contains("project"));
         // …while a linked form pointing at the SHADOWED file gets exactly
-        // that file — the path is authoritative (ADR-0035).
+        // that file — the path is authoritative (ADR-skill-invocation-is-an-inline-mention).
         let linked = holt_doc::SkillMention {
             name: "near".into(),
             path: Some(shadowed_file.clone()),

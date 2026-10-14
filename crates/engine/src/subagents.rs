@@ -1,4 +1,4 @@
-//! Foreground delegation within a parent Turn (ADR-0016).
+//! Foreground delegation within a parent Turn (ADR-subagents-use-independent-history-and-foreground-results).
 
 use std::{
     collections::HashMap,
@@ -206,7 +206,7 @@ impl ChildLink {
                     // The first stamp is the durable "live child" marker:
                     // the restart settle pass reads subagentStatus off the
                     // persisted entry, so it must land on disk once
-                    // (ADR-0032). Later tail updates stay in memory until
+                    // (ADR-transcript-append-only-log-per-chat-lock). Later tail updates stay in memory until
                     // the parent's own completion boundary — a child
                     // streaming must not re-append its parent's entry every
                     // tick.
@@ -265,7 +265,7 @@ pub(crate) struct Delegation {
     pub(crate) api_key: String,
     pub(crate) skills: crate::skills::Skills,
     pub(crate) permission_mode: PermissionMode,
-    /// The parent Turn's web-search backend snapshot (ADR-0023): children
+    /// The parent Turn's web-search backend snapshot (ADR-web-tools-full-text-ungated-pluggable-search): children
     /// mount `web_search` under the same admission-time choice.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
     /// The parent Turn's attribution recorder: the child shares the parent
@@ -401,7 +401,7 @@ async fn execute(
             .insert(id.clone(), child.clone());
         child
     };
-    // The brief is the child's durable birth record (ADR-0032): it lands
+    // The brief is the child's durable birth record (ADR-transcript-append-only-log-per-chat-lock): it lands
     // now, so a chat that never completes a message is still discoverable
     // — the registry lookup reads the transcript's existence.
     child.persist_entry(&brief_id);
@@ -531,7 +531,7 @@ async fn execute(
     }
     // The run loop's own settle normally lands these first; if this sweep
     // fires, its mutations are transcript edits that must re-append like
-    // any other post-run settle (ADR-0032) — a bare publish would leave
+    // any other post-run settle (ADR-transcript-append-only-log-per-chat-lock) — a bare publish would leave
     // the on-disk entry Streaming forever, replaying as Aborted on load.
     for entry_id in settled {
         child.persist_entry(&entry_id);

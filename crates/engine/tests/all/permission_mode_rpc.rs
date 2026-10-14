@@ -1,4 +1,4 @@
-//! Permission-mode lifecycle at the RPC seam (ADR-0014, issue 02): the
+//! Permission-mode lifecycle at the RPC seam (ADR-permission-modes-gate-mutations-no-os-sandbox, issue 02): the
 //! per-chat mode round-trips through `Mutate setChatPermissionMode` and the
 //! chat watch payload, new chats inherit the engine-owned sticky default,
 //! and both the chat's mode and the default survive an engine restart.

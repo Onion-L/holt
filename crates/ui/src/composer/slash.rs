@@ -1,7 +1,7 @@
-//! Slash-command interception (ADR-0006/0035): the composer recognizes
+//! Slash-command interception (ADR-metadata-only-skill-advertising/0035): the composer recognizes
 //! `/compact`, `/plan`, `/init`, and `/provider` on submit and handles them itself — the
 //! raw directive never becomes a prompt. Skill invocation is NOT a slash
-//! directive anymore (ADR-0035): skills ride ordinary messages as inline `$`
+//! directive anymore (ADR-skill-invocation-is-an-inline-mention): skills ride ordinary messages as inline `$`
 //! mentions, and the `/` popup below just inserts their link form. Pure over
 //! the input text so the recognition is unit-testable per the picker-logic
 //! pattern. Also owns the `/` popup's mixed-source candidate model (skills +
@@ -28,15 +28,15 @@ pub(crate) const MODE_COMMANDS: [(&str, &str); 3] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Parsed {
     /// Ordinary text — send it as the prompt, untouched. Inline `$skill`
-    /// mentions ride along and resolve at engine admission (ADR-0035).
+    /// mentions ride along and resolve at engine admission (ADR-skill-invocation-is-an-inline-mention).
     Plain,
-    /// `/compact` — intercepted; never sent as prompt text (ADR-0011).
+    /// `/compact` — intercepted; never sent as prompt text (ADR-compaction-is-not-a-turn).
     Compact,
     /// `/compact` with arguments — still intercepted, with the usage
     /// message for the composer to surface.
     MalformedCompact,
     /// `/plan [off | <task>]` — intercepted; the raw directive never
-    /// becomes prompt text (ADR-0025).
+    /// becomes prompt text (ADR-plan-mode-is-an-independent-approval-checkpoint).
     Plan { action: PlanAction },
     /// `/init` — intercepted; the send path swaps it for [`INIT_PROMPT`]
     /// and queues that as an ordinary message.
@@ -44,17 +44,17 @@ pub(crate) enum Parsed {
     /// `/init` with arguments — still intercepted, with the usage message
     /// for the composer to surface.
     MalformedInit,
-    /// `/provider [off | <task>]` — Provider Mode (ADR-0037); the raw
+    /// `/provider [off | <task>]` — Provider Mode (ADR-provider-mode-is-a-chat-mode); the raw
     /// directive never becomes prompt text.
     Provider { action: ProviderAction },
-    /// `/goal` forms (ADR-0044); the raw directive never becomes prompt text.
+    /// `/goal` forms (ADR-goal-mode-verified-loop-at-turn-settle); the raw directive never becomes prompt text.
     Goal { action: GoalAction },
     /// `/goal` with nothing after it — intercepted, with the usage message
     /// for the composer to surface.
     MalformedGoal,
 }
 
-/// One `/goal` form (ADR-0044).
+/// One `/goal` form (ADR-goal-mode-verified-loop-at-turn-settle).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GoalAction {
     /// `/goal <objective>` — set or replace the chat's goal.
@@ -67,7 +67,7 @@ pub(crate) enum GoalAction {
     Resume,
 }
 
-/// One `/plan` form (ADR-0025).
+/// One `/plan` form (ADR-plan-mode-is-an-independent-approval-checkpoint).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlanAction {
     /// `/plan` — enter Plan Mode on the current chat.
@@ -80,7 +80,7 @@ pub(crate) enum PlanAction {
     Task(String),
 }
 
-/// One `/provider` form (ADR-0037).
+/// One `/provider` form (ADR-provider-mode-is-a-chat-mode).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderAction {
     /// `/provider` — enter Provider Mode on the current chat (or the
@@ -92,7 +92,7 @@ pub(crate) enum ProviderAction {
     Task(String),
 }
 
-/// One `/` popup row, from either source: a catalog skill (ADR-0005 —
+/// One `/` popup row, from either source: a catalog skill (ADR-skills-referenced-in-place-from-standard-roots —
 /// provider-agnostic, survives provider switches) or a provider
 /// prompt-prefix completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +100,7 @@ pub(crate) enum SlashCandidate {
     Skill {
         name: String,
         description: String,
-        /// Absolute `SKILL.md` path — the linked mention's target (ADR-0035).
+        /// Absolute `SKILL.md` path — the linked mention's target (ADR-skill-invocation-is-an-inline-mention).
         file: String,
         /// The source root, shown as the row's right-aligned tag.
         root: SkillRoot,
@@ -127,7 +127,7 @@ impl SlashCandidate {
     }
 
     /// What accepting fills into the composer: the skill's linked mention
-    /// form `[$name](SKILL.md path)` (ADR-0035) — ready for surrounding
+    /// form `[$name](SKILL.md path)` (ADR-skill-invocation-is-an-inline-mention) — ready for surrounding
     /// instructions and submit — or `/name` for a command (`/compact` and
     /// `/init` submit on accept; there is nothing to edit).
     pub(crate) fn title(&self) -> String {
@@ -203,7 +203,7 @@ impl SlashCandidate {
 /// enter the menu. Skills the user disabled on the Skills settings page
 /// (`disabled`, by catalog-unique name) are hidden too. `init_unavailable`
 /// drops the `/init` command — the Home space has no repository to
-/// bootstrap (ADR-0039).
+/// bootstrap (ADR-home-space-for-project-less-chats).
 pub(crate) fn popup_candidates(
     listing: &SkillListing,
     commands: &[SlashCommand],
@@ -234,7 +234,7 @@ pub(crate) fn popup_candidates(
 }
 
 /// Recognize the leading slash directive (never `/skill` anymore — skills
-/// are inline `$` mentions, ADR-0035).
+/// are inline `$` mentions, ADR-skill-invocation-is-an-inline-mention).
 pub(crate) fn parse(text: &str) -> Parsed {
     parse_compact(text)
 }
@@ -255,7 +255,7 @@ fn parse_compact(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/plan` forms (ADR-0025): bare `/plan` enters, `/plan off` leaves, and
+/// `/plan` forms (ADR-plan-mode-is-an-independent-approval-checkpoint): bare `/plan` enters, `/plan off` leaves, and
 /// `/plan <task>` enters with the task as the first planning input.
 /// `/planner`-style longer words and mid-text directives stay ordinary text.
 fn parse_plan(text: &str) -> Parsed {
@@ -295,7 +295,7 @@ fn parse_init(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/provider` forms (ADR-0037): bare enters, `off` leaves, the rest is the
+/// `/provider` forms (ADR-provider-mode-is-a-chat-mode): bare enters, `off` leaves, the rest is the
 /// first task.
 fn parse_provider(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/provider") else {
@@ -318,7 +318,7 @@ fn parse_provider(text: &str) -> Parsed {
     Parsed::Provider { action }
 }
 
-/// `/goal` forms (ADR-0044): `/goal <objective>` sets, `off` clears,
+/// `/goal` forms (ADR-goal-mode-verified-loop-at-turn-settle): `/goal <objective>` sets, `off` clears,
 /// `pause`/`resume` drive the loop. A bare `/goal` is the usage message;
 /// `/goalkeeper`-style longer words stay ordinary text.
 fn parse_goal(text: &str) -> Parsed {
@@ -493,7 +493,7 @@ mod tests {
                 },
             ]
         );
-        // The fill text is the linked mention form (ADR-0035) — ready for
+        // The fill text is the linked mention form (ADR-skill-invocation-is-an-inline-mention) — ready for
         // surrounding instructions and submit — while the ROW shows the
         // bare name and its root tag.
         assert_eq!(candidates[1].title(), "[$grill](/roots/grill/SKILL.md)");
@@ -532,7 +532,7 @@ mod tests {
         );
     }
 
-    /// The Home space never offers `/init` (ADR-0039): the flag drops that
+    /// The Home space never offers `/init` (ADR-home-space-for-project-less-chats): the flag drops that
     /// one command and nothing else.
     #[test]
     fn popup_candidates_drop_init_for_the_home_space() {

@@ -12,7 +12,7 @@ against its source and forfeits the interop point of the shared
 `~/.agents/skills` layout; an explicit registration surface (`/skill add
 <path>` plus a persisted index) was rejected for v1 because a
 convention-based catalog needs no persistence, no new mutations, and no
-lifecycle UI — it is the same cause as ADR-0002's no-repo-registry stance:
+lifecycle UI — it is the same cause as ADR-git-hangs-off-spaces-no-repo-registry's no-repo-registry stance:
 the filesystem is the registry.
 
 ## Consequences

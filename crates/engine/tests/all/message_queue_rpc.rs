@@ -81,7 +81,7 @@ async fn a_send_after_a_failure_runs_through_the_pause_and_parks_the_backlog() {
     .await;
     let_driver_settle().await;
 
-    // The user's own next send is admitted through the pause (ADR-0021):
+    // The user's own next send is admitted through the pause (ADR-attended-sends-run-through-a-paused-queue):
     // it runs instead of the parked backlog.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fresh").await;
     common::wait_for_requests(&provider, 3).await;
@@ -1017,7 +1017,7 @@ async fn deleting_a_failed_head_lets_continue_admit_the_next_item() {
     queue_run(&engine, &fixture.cwd(), "m-a", "head-A").await;
     wait_for_queue(&engine, |q| q["paused"] == true).await;
     // The next send is an attended one now: it attempts immediately on the
-    // missing credentials and settles back onto the pause (ADR-0021).
+    // missing credentials and settles back onto the pause (ADR-attended-sends-run-through-a-paused-queue).
     queue_run(&engine, &fixture.cwd(), "m-b", "next-B").await;
     wait_for_queue(&engine, |q| {
         q["paused"] == true && q["activeMessageId"].is_null()

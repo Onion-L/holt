@@ -208,7 +208,7 @@ pub enum SidebarSort {
     Manual,
 }
 
-/// One persisted file tab (ADR-0020 navigation restore): WHERE it points
+/// One persisted file tab (ADR-file-editing-state-belongs-to-spaces navigation restore): WHERE it points
 /// and whether it was pinned. Deliberately no contents, no undo, no dirty
 /// flag — a restart observes disk, it never claims a recovered draft
 /// (ticket 05).
@@ -274,10 +274,10 @@ pub struct UiSettings {
     /// also the new-tab default when the sidebar filter is "All".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_space_id: Option<String>,
-    /// The Home canvas's first-project hint (ADR-0039) was dismissed.
+    /// The Home canvas's first-project hint (ADR-home-space-for-project-less-chats) was dismissed.
     #[serde(default)]
     pub home_hint_dismissed: bool,
-    /// The goal card renders open (ADR-0044); by default it is the
+    /// The goal card renders open (ADR-goal-mode-verified-loop-at-turn-settle); by default it is the
     /// collapsed capsule, so the loop's state never takes the user's view
     /// until they ask. A new key on purpose: the retired
     /// `goal_card_collapsed` (default open) is ignored, so every install
@@ -330,7 +330,7 @@ pub struct UiSettings {
     /// Changes pane: side-by-side diffs instead of the unified stack.
     pub diff_split: bool,
     /// Device-local master switch for OS banner notifications when a
-    /// background main-chat Turn completes (ADR-0019; issue 03). Explicit
+    /// background main-chat Turn completes (ADR-turn-completion-is-an-engine-owned-event; issue 03). Explicit
     /// default so a pre-notifications file loads with the feature on.
     #[serde(default = "default_true")]
     pub completion_notifications: bool,
@@ -357,7 +357,7 @@ pub struct UiSettings {
     /// the identity. Device-local.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_skills: Vec<String>,
-    /// Per-Space file-sidebar navigation (ADR-0020, ticket 05): open file
+    /// Per-Space file-sidebar navigation (ADR-file-editing-state-belongs-to-spaces, ticket 05): open file
     /// tabs, the selected tab, and expanded tree directories. Contents are
     /// never persisted — restarts observe disk.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]

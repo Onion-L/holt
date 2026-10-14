@@ -1,4 +1,4 @@
-//! The one-shot Title task (ADR-0012): when a chat's first user prompt is
+//! The one-shot Title task (ADR-automatic-titles-run-outside-pi-hooks): when a chat's first user prompt is
 //! accepted, one independent background request asks the configured title
 //! model for a better name. The task is deliberately outside the Turn
 //! lifecycle — its own cancellation token (only chat deletion cancels it),

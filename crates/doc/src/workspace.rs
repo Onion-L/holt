@@ -708,13 +708,13 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
     #[serde(default)]
     compact_before_next_turn: bool,
-    // Doc-store chat rows may predate Plan Mode (ADR-0025): the field
+    // Doc-store chat rows may predate Plan Mode (ADR-plan-mode-is-an-independent-approval-checkpoint): the field
     // decodes as absent on older rows.
     #[serde(default)]
     plan_mode: Option<holt_proto::ChatPlanState>,
     #[serde(default)]
     provider_mode: bool,
-    // Doc-store chat rows may predate session worktrees (ADR-0038): the
+    // Doc-store chat rows may predate session worktrees (ADR-session-worktrees-are-chat-owned-isolation): the
     // field decodes as absent on older rows.
     #[serde(default)]
     worktree: Option<holt_proto::WorktreeSpec>,

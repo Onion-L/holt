@@ -1,4 +1,4 @@
-//! The agent's question card (ADR-0040): `ask_user` asks the user 1–4
+//! The agent's question card (ADR-ask-user-is-a-question-card): `ask_user` asks the user 1–4
 //! questions, each with 2–6 enumerated options. The call never waits — it
 //! lands a `MessagePart::QuestionCard` in the transcript (via its result
 //! details, the `choose_provider` pattern) and returns; the model stops
@@ -35,7 +35,7 @@ dismiss the card unanswered; if the next Turn shows it superseded with no answer
 or ask again in plain text — never re-call immediately. Open-ended questions that cannot \
 be enumerated stay in ordinary text.";
 
-/// The queued answers (ADR-0040): an ordinary user message carrying each
+/// The queued answers (ADR-ask-user-is-a-question-card): an ordinary user message carrying each
 /// question it answers, so the next Turn reads both from History.
 pub(crate) fn question_answer_notice(pairs: &[(String, String)]) -> String {
     match pairs {

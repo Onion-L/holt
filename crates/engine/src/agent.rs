@@ -45,7 +45,7 @@ use crate::stream::{STREAM_IDLE_TIMEOUT, default_stream_fn, guard_stream_fn, ret
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
 
 /// Transcript entry id of the where-the-model's-memory-begins notice
-/// (ADR-0010): appended once when a legacy or damaged History is found,
+/// (ADR-history-is-a-separate-persisted-record): appended once when a legacy or damaged History is found,
 /// and the guard that keeps it from being written twice.
 const HISTORY_NOTICE_ENTRY_ID: &str = "history-notice";
 
@@ -93,7 +93,7 @@ pub(crate) async fn append_workspace_instructions(prompt: &mut String, cwd: &str
 
 /// The run's system prompt plus the catalog it was built from: the
 /// coding-agent template, the workspace's AGENTS.md files, and the
-/// metadata-only skill block (ADR-0006), from a fresh scan of the chat's
+/// metadata-only skill block (ADR-metadata-only-skill-advertising), from a fresh scan of the chat's
 /// three roots — so instructions and skills added, edited, or removed since
 /// the last turn are already reflected. The catalog rides along: it is also
 /// what collapses reads of a skill's `SKILL.md` into chips while decoding
@@ -114,7 +114,7 @@ async fn run_system_prompt(
 }
 
 pub(crate) struct ChatRuntime {
-    /// This chat's persistence lock (ADR-0032): serializes the transcript
+    /// This chat's persistence lock (ADR-transcript-append-only-log-per-chat-lock): serializes the transcript
     /// log and History appends of THIS chat only. Chats persist disjoint
     /// files, so the pre-0032 runtime-wide lock only serialized them
     /// against each other — one chat's disk writes stalling every other
@@ -127,7 +127,7 @@ pub(crate) struct ChatRuntime {
     pub(crate) persistence_error: Mutex<Option<String>>,
     /// Entry id → the part count this process believes is on disk for that
     /// entry — the anchor the incremental settle lines offset from
-    /// (ADR-0032). Absent means the entry's next persist is a full line:
+    /// (ADR-transcript-append-only-log-per-chat-lock). Absent means the entry's next persist is a full line:
     /// the load-time state, so the first write re-anchors any load-time
     /// settles, and the state after a whole-log rewrite clears it. Full
     /// line lands move the anchor; failed appends leave it (disk never got
@@ -147,11 +147,11 @@ pub(crate) struct ChatRuntime {
     /// what makes the frame's number an estimate in the meantime.
     pub(crate) usage_last_report: Mutex<Option<crate::usage::LastReport>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
-    /// The one-shot Title task's token (ADR-0012): independent of `cancel`
+    /// The one-shot Title task's token (ADR-automatic-titles-run-outside-pi-hooks): independent of `cancel`
     /// — a Turn interrupt must not stop title generation; only chat
     /// deletion cancels it (in `AgentRuntime::remove_chat`).
     pub(crate) title_cancel: Mutex<Option<CancellationToken>>,
-    /// The goal verifier's token (ADR-0044): the check runs after the
+    /// The goal verifier's token (ADR-goal-mode-verified-loop-at-turn-settle): the check runs after the
     /// Turn's `cancel` is already cleared, so it rides its own — cancelled
     /// by `ClearGoal`/pause/replacement, a superseding Turn admission, and
     /// chat deletion. The user's Stop key does not reach it (the queue
@@ -165,20 +165,20 @@ pub(crate) struct ChatRuntime {
     /// run that was still alive (an open approval, a cancelled Turn) must
     /// write nothing back to disk — no resurrected transcript or History.
     pub(crate) removed: std::sync::atomic::AtomicBool,
-    /// This chat's always-allow grants (ADR-0014): in-memory and
+    /// This chat's always-allow grants (ADR-permission-modes-gate-mutations-no-os-sandbox): in-memory and
     /// session-scoped — a restart starts with none.
     pub(crate) grants: Arc<Mutex<crate::gate::GateGrants>>,
-    /// This chat's stored catalog proposals (ADR-0029), newest last and
+    /// This chat's stored catalog proposals (ADR-model-setup-applies-stored-proposals), newest last and
     /// capped. Persisted with the Key request and the approvals below in
-    /// `provider-mode/<chatId>.json` (ADR-0037) — every mutation calls
+    /// `provider-mode/<chatId>.json` (ADR-provider-mode-is-a-chat-mode) — every mutation calls
     /// [`ChatRuntime::save_provider_mode`].
     pub(crate) proposals:
         Arc<Mutex<std::collections::VecDeque<crate::tools::model_setup::StoredProposal>>>,
-    /// The chat's pending Key request (ADR-0031): raised by the
+    /// The chat's pending Key request (ADR-api-keys-collected-through-key-requests): raised by the
     /// `request_provider_key` tool, settled by the transcript card.
     pub(crate) key_request: Arc<Mutex<Option<crate::tools::model_setup::PendingKeyRequest>>>,
     /// The destinations a settled Key request approved on this chat
-    /// (ADR-0031, chat-scoped by ADR-0037): (provider, baseUrl) pairs. A
+    /// (ADR-api-keys-collected-through-key-requests, chat-scoped by ADR-provider-mode-is-a-chat-mode): (provider, baseUrl) pairs. A
     /// planned-target probe may carry the stored key only against an
     /// exact pair.
     pub(crate) approved_key_destinations: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
@@ -252,7 +252,7 @@ impl ChatRuntime {
     /// A chat whose transcript persists under `data_dir`, seeded from its
     /// last on-disk snapshot so reopening after a restart restores the
     /// conversation. A corrupt file starts empty rather than failing the
-    /// open; the next publish overwrites it. The History (ADR-0010)
+    /// open; the next publish overwrites it. The History (ADR-history-is-a-separate-persisted-record)
     /// replays the same way: the model-facing record is the replayed
     /// JSONL, so a reopened chat's next Turn carries what the Transcript
     /// shows. A missing record (a legacy chat) or a damaged one opens with
@@ -266,7 +266,7 @@ impl ChatRuntime {
         let (mut history, mut notice) = match replayed {
             Ok(repaired) => (repaired, None),
             Err(reason) => {
-                // A damaged record never blocks the chat (ADR-0010): the
+                // A damaged record never blocks the chat (ADR-history-is-a-separate-persisted-record): the
                 // file is set aside — kept, never overwritten — and the
                 // model starts over, with the reason on the notice.
                 crate::history::quarantine(data_dir, chat_id);
@@ -318,7 +318,7 @@ impl ChatRuntime {
                 append_transcript_entry(data_dir, chat_id, transcript.last().expect("just pushed"));
         }
         // An approval still pending on load belongs to a Turn the restart
-        // ended (ADR-0014): settle it as aborted so the replayed chip never
+        // ended (ADR-permission-modes-gate-mutations-no-os-sandbox): settle it as aborted so the replayed chip never
         // poses as answerable.
         crate::gate::settle_pending_gates_on_load(&mut transcript);
         crate::subagents::settle_on_load(&mut transcript);
@@ -382,7 +382,7 @@ impl ChatRuntime {
                             continuation_of: None,
                         });
                         // The recovery echoes land in the log as they are
-                        // built (ADR-0032): each new entry appends its own
+                        // built (ADR-transcript-append-only-log-per-chat-lock): each new entry appends its own
                         // line, never a whole-file rewrite.
                         if let Err(error) = append_transcript_entry(
                             data_dir,
@@ -479,7 +479,7 @@ impl ChatRuntime {
         }
     }
 
-    /// Persist the chat's Provider Mode state (ADR-0037) after a change to
+    /// Persist the chat's Provider Mode state (ADR-provider-mode-is-a-chat-mode) after a change to
     /// its proposals, Key request, or approved destinations.
     pub(crate) fn save_provider_mode(&self) {
         crate::provider_mode::save(self);
@@ -488,7 +488,7 @@ impl ChatRuntime {
     /// Broadcast the live transcript to the watch (and a subagent's chip
     /// into its parent) — pure memory, no disk. Live mutations stream here
     /// at their own cadence; the record grows only through the `persist_*`
-    /// writers (ADR-0032).
+    /// writers (ADR-transcript-append-only-log-per-chat-lock).
     pub(crate) fn publish(&self) {
         let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
         self.transcript_tx
@@ -547,7 +547,7 @@ impl ChatRuntime {
                         .copied()
                     {
                         // A known anchor and the entry only grew
-                        // (ADR-0011): append the tail.
+                        // (ADR-compaction-is-not-a-turn): append the tail.
                         Some(from) if from <= entry.parts.len() => {
                             if from == entry.parts.len() {
                                 Ok(())
@@ -577,8 +577,8 @@ impl ChatRuntime {
     /// Persist one completed tool call and publish: the entry's
     /// unpersisted tail parts (the round's new parts, a `parts` line),
     /// then — when the settled tool part predates that tail — a `part`
-    /// line carrying the result in place. The completed unit (ADR-0032
-    /// mirrors ADR-0010's per-message granularity) is these small lines
+    /// line carrying the result in place. The completed unit (ADR-transcript-append-only-log-per-chat-lock
+    /// mirrors ADR-history-is-a-separate-persisted-record's per-message granularity) is these small lines
     /// instead of a whole-entry re-append, so a crash mid-Turn keeps every
     /// finished round without quadratic rewrite.
     pub(crate) fn persist_tool_result(&self, entry_id: &str, tool_index: usize) {
@@ -673,7 +673,7 @@ impl ChatRuntime {
                 .is_some_and(|child| child.parent.is_removed())
     }
 
-    /// Append one completed message to the persisted History (ADR-0010):
+    /// Append one completed message to the persisted History (ADR-history-is-a-separate-persisted-record):
     /// per-message as the Turn runs, never a whole-file rewrite at Turn
     /// end, so a crash mid-Turn loses nothing that had completed.
     /// Best-effort like the transcript snapshot — an unreadable tail is
@@ -714,7 +714,7 @@ impl ChatRuntime {
 }
 
 pub(crate) struct AgentRuntime {
-    /// The registry lock (ADR-0032): serializes chats.json writes and the
+    /// The registry lock (ADR-transcript-append-only-log-per-chat-lock): serializes chats.json writes and the
     /// registry mutations they persist. It is NOT a persistence lock for
     /// chat records — each ChatRuntime owns its own lock for its disjoint
     /// transcript/history files, so one chat's disk writes never stall
@@ -730,7 +730,7 @@ pub(crate) struct AgentRuntime {
     pub(crate) sessions_tx: watch::Sender<serde_json::Value>,
     chat_runtime: Mutex<HashMap<String, Arc<ChatRuntime>>>,
     pub(crate) subagents: crate::subagents::Subagents,
-    /// Open confirm-changes approvals across all chats (ADR-0014), keyed
+    /// Open confirm-changes approvals across all chats (ADR-permission-modes-gate-mutations-no-os-sandbox), keyed
     /// by approval id — the registry the `ResolveApproval` RPC addresses.
     /// Entries live only while their gate is open.
     pub(crate) approvals: Arc<crate::gate::ApprovalRegistry>,
@@ -740,14 +740,14 @@ pub(crate) struct AgentRuntime {
     /// same stall protection. Production leaves it unset (and uses the
     /// guarded `default_stream_fn`).
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
-    /// The app-scoped MCP connection pool (ADR-0034): device-level server
+    /// The app-scoped MCP connection pool (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): device-level server
     /// definitions plus the live connections Turns snapshot tools from.
     /// Connections start lazily — nothing spawns until a Turn needs tools.
     pub(crate) mcp: crate::mcp::McpPool,
     /// Live provider-retry notices: the run path's `on_retry` callback fans
     /// out here; `WatchTurnRetry` subscribes.
     pub(crate) retry_events: crate::retry_events::RetryEvents,
-    /// The Routine store (ADR-0042), set once at boot: the gate moves a
+    /// The Routine store (ADR-routines-fire-in-process-and-coalesce-missed-fires), set once at boot: the gate moves a
     /// run Chat's record to waiting while its Approval is open.
     pub(crate) routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
 }
@@ -859,12 +859,12 @@ impl AgentRuntime {
     }
 
     /// Drop a chat's runtime slot and its persisted records. An in-flight
-    /// run is actively stopped (ADR-0014): a run paused behind an open
+    /// run is actively stopped (ADR-permission-modes-gate-mutations-no-os-sandbox): a run paused behind an open
     /// approval would otherwise wait forever — and a late verdict could
     /// still execute a mutating tool for a chat the user deleted. The
     /// runtime is flagged removed first, so the aborted run's settle pass
     /// can neither resurrect the transcript file nor re-append History; a
-    /// pending Title task is cancelled for the same reason (ADR-0012).
+    /// pending Title task is cancelled for the same reason (ADR-automatic-titles-run-outside-pi-hooks).
     pub(crate) fn remove_chat(&self, chat_id: &str) {
         let runtime = self
             .chat_runtime
@@ -930,7 +930,7 @@ impl AgentRuntime {
     }
 
     /// Stamp the chat with the persisted "compact before next Turn" flag
-    /// (the overflow fallback, ADR-0011): the last Turn ended on a context
+    /// (the overflow fallback, ADR-compaction-is-not-a-turn): the last Turn ended on a context
     /// overflow, so the next Turn compacts unconditionally first.
     pub(crate) fn set_compact_before_next_turn(&self, chat_id: &str) {
         let _chats_store = self.chats_store.lock().unwrap_or_else(|e| e.into_inner());
@@ -987,7 +987,7 @@ impl AgentRuntime {
     pub(crate) fn set_session(&self, chat_id: &str, status: SessionStatus) {
         let now = Utc::now();
         let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
-        // A chat deleted mid-run (ADR-0014: an open approval's run is
+        // A chat deleted mid-run (ADR-permission-modes-gate-mutations-no-os-sandbox: an open approval's run is
         // actively cancelled) must not regain a session row from its own
         // settle pass — drop the row instead.
         let chat_exists = self
@@ -1109,32 +1109,32 @@ pub(crate) struct AgentRun {
     pub(crate) api_key: String,
     pub(crate) timestamp: i64,
     pub(crate) cancel: CancellationToken,
-    /// Root resolution for the run's skill listing (ADR-0005/0006).
+    /// Root resolution for the run's skill listing (ADR-skills-referenced-in-place-from-standard-roots/0006).
     pub(crate) skills: crate::skills::Skills,
-    /// The admission-resolved inline skill mentions' chips (ADR-0035), each
+    /// The admission-resolved inline skill mentions' chips (ADR-skill-invocation-is-an-inline-mention), each
     /// carrying the `<skill>` block the model received — seeded as the
     /// FIRST parts of the run's entry, so the agent reply opens with what
     /// it was told to follow, ahead of any thinking.
     pub(crate) invocation: Vec<MessagePart>,
-    /// The Turn's permission-mode snapshot (ADR-0014), taken at acceptance:
+    /// The Turn's permission-mode snapshot (ADR-permission-modes-gate-mutations-no-os-sandbox), taken at acceptance:
     /// switches mid-Turn leave the running Turn under its original mode.
     pub(crate) permission_mode: PermissionMode,
-    /// The Turn's Plan Mode snapshot (ADR-0025): true when the chat was
+    /// The Turn's Plan Mode snapshot (ADR-plan-mode-is-an-independent-approval-checkpoint): true when the chat was
     /// planning at admission, making this a planning Turn. Entering or
     /// leaving Plan Mode mid-Turn cannot move it; it lands from the next
     /// Turn like the permission snapshot beside it.
     pub(crate) plan_mode: bool,
-    /// The Turn's Provider Mode snapshot (ADR-0037), taken at admission:
+    /// The Turn's Provider Mode snapshot (ADR-provider-mode-is-a-chat-mode), taken at admission:
     /// the Turn runs the provider-catalog workflow — the workspace prompt
     /// plus the mode block, a file-free toolset, no delegation, no apply
     /// tool. The write path is the card's RPC, never the agent.
     pub(crate) provider_mode: bool,
-    /// The Turn's web-search backend snapshot (ADR-0023), resolved once at
+    /// The Turn's web-search backend snapshot (ADR-web-tools-full-text-ungated-pluggable-search), resolved once at
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
     /// The provider adapter the model-setup tools write through. `None` on
-    /// subagent runs — the proposal/apply pair is parent-only (ADR-0029).
+    /// subagent runs — the proposal/apply pair is parent-only (ADR-model-setup-applies-stored-proposals).
     pub(crate) providers: Option<Arc<crate::providers::ProviderAdapter>>,
     /// The Turn's attribution recorder (write-attribution follow-up): the
     /// tools record their write paths into it; the Turn change set keeps
@@ -1162,7 +1162,7 @@ struct RunSink {
     cwd: String,
     skill_files: HashMap<String, String>,
     cancel: CancellationToken,
-    /// The Turn's Plan Mode snapshot (ADR-0025): gates the
+    /// The Turn's Plan Mode snapshot (ADR-plan-mode-is-an-independent-approval-checkpoint): gates the
     /// `<proposed_plan>` folding in `assistant_parts` — only a planning
     /// Turn's blocks become approval cards.
     plan_mode: bool,
@@ -1282,7 +1282,7 @@ impl RunSink {
                     &self.device_id,
                     true,
                 );
-                // A completed message is a completed unit (ADR-0032):
+                // A completed message is a completed unit (ADR-transcript-append-only-log-per-chat-lock):
                 // its new parts land here even while the run continues,
                 // so a crash mid-Turn keeps every finished round — and
                 // an approval paused behind a tool call — on disk. The
@@ -1297,7 +1297,7 @@ impl RunSink {
                     crate::usage::capture_round_trip(&self.chat, assistant);
                 }
                 // The completed assistant message joins the persisted
-                // History as it ends (ADR-0010), in its History version:
+                // History as it ends (ADR-history-is-a-separate-persisted-record), in its History version:
                 // a message the run ends on is rewritten to a normal
                 // end (or dropped when it carries nothing but the
                 // error) — the repair invariant, applied per message.
@@ -1380,10 +1380,10 @@ impl RunSink {
             read_chat_title.as_deref(),
             tool_usage_total(&result),
         );
-        // Provider Mode cards (ADR-0037): a stored proposal or a
+        // Provider Mode cards (ADR-provider-mode-is-a-chat-mode): a stored proposal or a
         // shown Key request lands as a card after its tool part;
-        // the question card (ADR-0040) and the plan approval card
-        // (ADR-0025's submit_plan) land the same way.
+        // the question card (ADR-ask-user-is-a-question-card) and the plan approval card
+        // (ADR-plan-mode-is-an-independent-approval-checkpoint's submit_plan) land the same way.
         if !is_error
             && let Some(card) =
                 crate::provider_mode::tool_card(&tool_call_id, &tool_name, &result.details)
@@ -1440,7 +1440,7 @@ impl RunSink {
     }
 }
 
-/// The terminal outcome of one run (ADR-0019). Cancellation (Stop / Steer)
+/// The terminal outcome of one run (ADR-turn-completion-is-an-engine-owned-event). Cancellation (Stop / Steer)
 /// is `Interrupted`; provider, model, context-overflow, and every other
 /// execution failure is `Failed` (its reason rides the terminal event's
 /// internal diagnostic field); an ordinary clean end is `Succeeded`.
@@ -1450,9 +1450,9 @@ pub(crate) enum TurnEnd {
     Interrupted,
 }
 
-/// The Explorer tool whitelist (ADR-0023): the shared read-only surface —
+/// The Explorer tool whitelist (ADR-web-tools-full-text-ungated-pluggable-search): the shared read-only surface —
 /// directory listing, reading, content search, chat reads, and the ungated
-/// web reads. The Plan Mode planning whitelist (ADR-0025) is the same
+/// web reads. The Plan Mode planning whitelist (ADR-plan-mode-is-an-independent-approval-checkpoint) is the same
 /// predicate; workers keep the full toolset.
 fn explorer_tool_allowed(name: &str) -> bool {
     crate::plan_mode::read_only_tool_allowed(name)
@@ -1590,7 +1590,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    // Compaction before the Turn's first request (ADR-0011): when the
+    // Compaction before the Turn's first request (ADR-compaction-is-not-a-turn): when the
     // History nears the model's context window, shrink it to a summary
     // plus a verbatim tail BEFORE the prompt is appended — the compaction
     // entry lands ahead of it in the file, so replay keeps the prompt
@@ -1678,7 +1678,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         consumed: 0,
     }));
     let prompt_message = user_agent_message(prompt.clone(), timestamp);
-    // The user prompt joins the History when the Turn starts (ADR-0010) —
+    // The user prompt joins the History when the Turn starts (ADR-history-is-a-separate-persisted-record) —
     // before any request, so even a Turn that dies immediately keeps what
     // the user asked.
     chat.append_history(prompt_message.clone());
@@ -1699,7 +1699,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // turn's new suffix. Models without 1h support fall back to short in
     // the provider layer.
     stream_options.base.cache_retention = Some(CacheRetention::Long);
-    // Between tool rounds (ADR-0011): the same estimate-and-compact check
+    // Between tool rounds (ADR-compaction-is-not-a-turn): the same estimate-and-compact check
     // as the Turn-start one, through the loop's `prepare_next_turn` hook,
     // as often as the estimate calls for it — the round after a compaction
     // reports the compacted request's usage, which becomes the estimator's
@@ -1789,7 +1789,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         },
     );
     let overflow_model = model.clone();
-    // The permission gate (ADR-0014): the before-tool-call hook that pauses
+    // The permission gate (ADR-permission-modes-gate-mutations-no-os-sandbox): the before-tool-call hook that pauses
     // every mutating call behind the Turn's snapshotted mode. The title
     // task and compaction mount no tools and never pass through here.
     let gate = crate::gate::before_tool_call_hook(crate::gate::GateWiring {
@@ -1823,12 +1823,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         runtime.clone(),
         current_chat_id,
     ));
-    // A new Turn moved past any still-open question (ADR-0040) — a typed
+    // A new Turn moved past any still-open question (ADR-ask-user-is-a-question-card) — a typed
     // answer, or the card click that queued this very Turn (already
     // stamped chosen). Every mode runs questions; no branch here.
     crate::tools::ask_user::supersede_question_cards(&chat);
     if let Some(child) = &chat.child {
-        // A subagent never asks the user (ADR-0040): its questions are its
+        // A subagent never asks the user (ADR-ask-user-is-a-question-card): its questions are its
         // findings, reported through the parent. Workers keep the rest of
         // the default toolset; explorers keep only the read-only surface.
         tools.retain(|tool| tool.name != "ask_user");
@@ -1836,8 +1836,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }
     } else if provider_mode {
-        // The Provider Mode surface (ADR-0037): web research plus the
-        // read-only proposal tool and the Key request (ADR-0031) — no file
+        // The Provider Mode surface (ADR-provider-mode-is-a-chat-mode): web research plus the
+        // read-only proposal tool and the Key request (ADR-api-keys-collected-through-key-requests) — no file
         // access, no delegation, and no apply (the card's button writes).
         // Outside the mode neither catalog tool is mounted.
         tools.retain(|tool| crate::provider_mode::provider_mode_tool_allowed(&tool.name));
@@ -1859,7 +1859,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             ));
         }
     } else if !plan_mode {
-        // A planning Turn delegates nothing (ADR-0025): the whitelist below
+        // A planning Turn delegates nothing (ADR-plan-mode-is-an-independent-approval-checkpoint): the whitelist below
         // would drop the tool anyway, so it is simply never mounted.
         tools.push(crate::subagents::tool(crate::subagents::Delegation {
             runtime: runtime.clone(),
@@ -1878,12 +1878,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             attribution: attribution.clone(),
         }));
     }
-    // The MCP tools (ADR-0034): the Turn-start snapshot — every enabled
+    // The MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the Turn-start snapshot — every enabled
     // server's tools join the toolset as `mcp__<server>__<tool>` agent
     // tools, connecting lazily here and only here. Subagent runs, Provider
     // Mode Turns, and planning Turns (whose read-only retain below
     // would drop the tools anyway) keep their curated toolsets without
-    // spawning a thing. The schemas defer (ADR-0036): a small loader
+    // spawning a thing. The schemas defer (ADR-mcp-tool-schemas-defer-through-a-loader): a small loader
     // joins the toolset and a synthetic bootstrap pair marks the whole
     // snapshot, so supporting providers keep the definitions out of the
     // static context until the model loads and calls them.
@@ -1900,7 +1900,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     } else {
         None
     };
-    // The planning-turn shaping (ADR-0025): the planning block appended to
+    // The planning-turn shaping (ADR-plan-mode-is-an-independent-approval-checkpoint): the planning block appended to
     // the system prompt, the toolset cut down to the read-only exploration
     // surface, and `submit_plan` — the structured submission channel whose
     // typed result becomes the approval card (the `<proposed_plan>` text
@@ -1921,11 +1921,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let config = AgentLoopConfig {
         stream_options,
         model,
-        // The harness converter (ADR-0011): identical to the pass-through
+        // The harness converter (ADR-compaction-is-not-a-turn): identical to the pass-through
         // for ordinary messages, but renders the `compactionSummary`
         // custom message into the templated user message the model reads
         // after a compaction — the pass-through would drop it. The MCP
-        // bootstrap pair (ADR-0036) prefixes the initial LLM view only;
+        // bootstrap pair (ADR-mcp-tool-schemas-defer-through-a-loader) prefixes the initial LLM view only;
         // later requests rely on tool-result markers from actual loader
         // calls. It is never persisted to the transcript.
         convert_to_llm: Arc::new(move |messages| {
@@ -1961,7 +1961,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         Some(stream_fn.clone()),
     )
     .await;
-    // In-Turn overflow recovery (ADR-0011): the provider rejected a request
+    // In-Turn overflow recovery (ADR-compaction-is-not-a-turn): the provider rejected a request
     // as too long before producing anything — the estimate missed. Compact
     // the History as it stands (the failed answer is dropped, the prompt
     // and every finished round kept) and continue the same Turn, once. The
@@ -2094,11 +2094,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             drop(transcript);
             // The terminal write is the run's one landing in the log —
             // everything the run streamed in memory is captured here
-            // (ADR-0032).
+            // (ADR-transcript-append-only-log-per-chat-lock).
             for entry_id in settled {
                 chat.persist_entry(&entry_id);
             }
-            // The overflow fallback (ADR-0011): the estimator missed and
+            // The overflow fallback (ADR-compaction-is-not-a-turn): the estimator missed and
             // the in-Turn recovery above could not absorb it (a second
             // overflow, a failed compaction, or usage that silently
             // exceeded the window). Stamp the chat — the NEXT Turn compacts
@@ -2447,7 +2447,7 @@ mod tests {
     #[test]
     fn the_explorer_whitelist_keeps_reads_and_web_tools_only() {
         // The read-only surface: reads, content search, chat reads, and
-        // both ungated web tools (ADR-0023).
+        // both ungated web tools (ADR-web-tools-full-text-ungated-pluggable-search).
         for name in ["read", "grep", "read_chat", "web_fetch", "web_search"] {
             assert!(
                 explorer_tool_allowed(name),

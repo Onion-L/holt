@@ -28,7 +28,7 @@ pub struct DraftConfig {
     pub branch: Option<String>,
     /// Where the new session runs.
     pub checkout: CheckoutKind,
-    /// The permission mode picked on the new-chat canvas (ADR-0014). `None`
+    /// The permission mode picked on the new-chat canvas (ADR-permission-modes-gate-mutations-no-os-sandbox). `None`
     /// = untouched — the chat then inherits the engine's sticky default, and
     /// no `setChatPermissionMode` rides the first send.
     pub permission_mode: Option<PermissionMode>,
@@ -36,7 +36,7 @@ pub struct DraftConfig {
 
 /// Where a new session runs: the space's own folder, or a fresh worktree
 /// minted on send. A ref already materialized as a worktree is never a
-/// target — that worktree joins holt as its own Space (ADR-0007).
+/// target — that worktree joins holt as its own Space (ADR-branch-is-live-working-tree-state).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CheckoutKind {
     /// The space's own folder — always the new chat's working directory.
@@ -236,7 +236,7 @@ pub(crate) fn branch_create_name(text: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Pure: the switch-failure dialog (ADR-0007)
+// Pure: the switch-failure dialog (ADR-branch-is-live-working-tree-state)
 // ---------------------------------------------------------------------------
 
 /// Content of the switch-failure dialog: inform-only — a short explanation
@@ -285,7 +285,7 @@ Commit or stash these files, then switch again:"
 
 /// The worktree-hosted pick dialog: the ref is checked out in another
 /// worktree, so it can never be switched to — that worktree joins holt as
-/// its own Space (ADR-0007). Guidance, not a dead end.
+/// its own Space (ADR-branch-is-live-working-tree-state). Guidance, not a dead end.
 pub(crate) fn worktree_hosted_dialog(branch: &str, path: &str) -> SwitchDialogContent {
     SwitchDialogContent {
         title: "Can't switch to that branch".into(),
@@ -298,7 +298,7 @@ add that folder as its own project.",
 }
 
 // ---------------------------------------------------------------------------
-// Pure: pick routing + session footer labels (ADR-0007)
+// Pure: pick routing + session footer labels (ADR-branch-is-live-working-tree-state)
 // ---------------------------------------------------------------------------
 
 /// Which surface a ref-pick happened on.
@@ -310,7 +310,7 @@ pub(crate) enum PickSurface {
     Draft,
 }
 
-/// What picking a ref row does (ADR-0007): the branch is live
+/// What picking a ref row does (ADR-branch-is-live-working-tree-state): the branch is live
 /// working-directory state, so a session pick switches immediately — a
 /// Turn is never interrupted, the next Turn runs on whatever the folder
 /// holds when it starts.
@@ -378,7 +378,7 @@ pub(crate) fn session_checkout_label(space_path: &str, chat_cwd: Option<&str>) -
 
 /// The session branch chip's label: the working directory's live current
 /// branch when the refs cache knows it, else the chat's stamped branch
-/// (its latest Turn's, per ADR-0007), else the placeholder.
+/// (its latest Turn's, per ADR-branch-is-live-working-tree-state), else the placeholder.
 pub(crate) fn session_branch_label(live: Option<&str>, stamped: Option<&str>) -> String {
     live.or(stamped).unwrap_or("No ref").to_string()
 }
@@ -951,7 +951,7 @@ mod tests {
             PickRouting::AlreadyCurrent
         );
         // A worktree-hosted ref raises the import-as-a-Space dialog in the
-        // draft too — one rule everywhere (ADR-0007; the reuse arm is gone).
+        // draft too — one rule everywhere (ADR-branch-is-live-working-tree-state; the reuse arm is gone).
         assert_eq!(
             pick_routing(
                 PickSurface::Draft,
@@ -1059,7 +1059,7 @@ mod tests {
                 branch: Some("feat".into())
             }
         );
-        // Two arms only — the reuse-worktree arm is deleted (ADR-0007): a
+        // Two arms only — the reuse-worktree arm is deleted (ADR-branch-is-live-working-tree-state): a
         // new chat's working directory is always its space's folder, and
         // composer/send.rs matches on exactly these discriminants.
         assert_ne!(

@@ -102,7 +102,7 @@ fn skill(root: &std::path::Path, name: &str, body: &str) {
 }
 
 /// Queue an ordinary run whose prompt carries the inline skill mention and
-/// the paths it references — the composer's serialization since ADR-0035.
+/// the paths it references — the composer's serialization since ADR-skill-invocation-is-an-inline-mention.
 async fn invoke_skill(
     engine: &holt_engine::LocalEngine,
     cwd: &str,

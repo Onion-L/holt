@@ -243,7 +243,7 @@ icon_assets![
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     // Concentric rings and a center dot — the goal surface's glyph
-    // (ADR-0044): the arming message's inline chip and the goal card.
+    // (ADR-goal-mode-verified-loop-at-turn-settle): the arming message's inline chip and the goal card.
     (TARGET, "target"),
     (WIDGET, "widget"),
     // Baseline + three column bars, same linear family — the Usage
@@ -305,7 +305,7 @@ icon_assets![
     (EYE_SLASH, "eye-slash"),
     // Hand-drawn shield + open-lock glyphs in the Solar Linear style (like
     // the terminal/plus/return ports) — the embedded set has neither. The
-    // permission-mode tier marks (ADR-0014).
+    // permission-mode tier marks (ADR-permission-modes-gate-mutations-no-os-sandbox).
     (SHIELD, "shield"),
     (LOCK_OPEN, "lock-open"),
 ];

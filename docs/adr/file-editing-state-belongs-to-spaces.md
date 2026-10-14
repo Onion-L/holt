@@ -9,7 +9,7 @@ file editing state, while switching Spaces selects that Space's state.
 Files use the contents tab strip alongside Chat-owned Terminal, Diff, and
 Subagent views; sharing the presentation does not transfer ownership of
 those views to the Space. This deliberately differs from the Terminal
-ownership decision in ADR-0017. Navigation state is restored across app
+ownership decision in ADR-terminals-belong-to-chats-and-end-with-the-app. Navigation state is restored across app
 restarts; unsaved contents are retained during navigation but require a
 Save, Discard, or Cancel decision when they would be closed. The first
 release does not persist unsaved drafts for crash recovery.

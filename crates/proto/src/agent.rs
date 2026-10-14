@@ -121,7 +121,7 @@ pub enum ReasoningLevel {
     Ultrathink,
 }
 
-/// The chat's permission mode (ADR-0014): which gatekeeper each mutating
+/// The chat's permission mode (ADR-permission-modes-gate-mutations-no-os-sandbox): which gatekeeper each mutating
 /// tool call (write, edit, bash) meets before it executes. Reads and content
 /// search are never gated, and there is no read-only tier.
 ///
@@ -173,7 +173,7 @@ pub enum SteeringMode {
     TurnBoundary,
 }
 
-/// A user verdict on a pending Approval (ADR-0014), submitted through the
+/// A user verdict on a pending Approval (ADR-permission-modes-gate-mutations-no-os-sandbox), submitted through the
 /// `ResolveApproval` RPC: allow this call, always-allow its kind for the
 /// rest of the app session (bash by command prefix, write/edit by exact
 /// path — chat-scoped, in-memory), or deny it — optionally with a written
@@ -259,7 +259,7 @@ pub struct RunRequest {
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub cwd: String,
-    /// Advisory/vestigial (ADR-0014): the engine preserves the chat's STORED
+    /// Advisory/vestigial (ADR-permission-modes-gate-mutations-no-os-sandbox): the engine preserves the chat's STORED
     /// mode — a switch lands through the mode RPC and takes effect from the
     /// next Turn — so this field no longer moves a chat's mode. It stays on
     /// the wire for queued and legacy commands, decoding through the
@@ -289,7 +289,7 @@ pub struct RunRequest {
 /// What a queued item executes as (spec: message queue and Steer, ticket
 /// 04): an ordinary message or a skill invocation starts its own Turn; a
 /// manual Compaction occupies the same execution channel without becoming
-/// a Turn (ADR-0011). Serde-defaulted so queue files written before typed
+/// a Turn (ADR-compaction-is-not-a-turn). Serde-defaulted so queue files written before typed
 /// commands decode as ordinary messages.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -317,13 +317,13 @@ pub struct PendingMessage {
     pub skill_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_instructions: Option<String>,
-    /// Goal mode (ADR-0044): this row is the verifier's continuation, not a
+    /// Goal mode (ADR-goal-mode-verified-loop-at-turn-settle): this row is the verifier's continuation, not a
     /// user-typed message. Deleting it pauses the goal; `ClearGoal`/pausing
     /// sweeps every flagged row. Additive — queue files from before goal
     /// mode decode with `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub goal_continuation: bool,
-    /// What queued a goal continuation (ADR-0044): the transcript entry and
+    /// What queued a goal continuation (ADR-goal-mode-verified-loop-at-turn-settle): the transcript entry and
     /// the queue row draw the loop row from it — never by parsing the
     /// prompt. `None` on every other row and on continuations queued before
     /// the field existed.
@@ -557,7 +557,7 @@ pub struct UsageChatBreakdown {
 }
 
 /// Isolated-worktree directive riding [`RunRequest`] and persisted as a
-/// chat's isolation intent (`Chat.worktree`, ADR-0038). The worktree is
+/// chat's isolation intent (`Chat.worktree`, ADR-session-worktrees-are-chat-owned-isolation). The worktree is
 /// created by the HOST at admission — not by the sender over a blocking
 /// CreateWorktree RPC — so the send path stays durable: a lost relay frame
 /// can't wedge the composer on "Sending…" while the session runs anyway
@@ -1039,7 +1039,7 @@ mod tests {
                 mode
             );
         }
-        // Stored sandbox-era values remap on read (ADR-0014): everything
+        // Stored sandbox-era values remap on read (ADR-permission-modes-gate-mutations-no-os-sandbox): everything
         // except danger-full-access lands on confirm-changes.
         let decode = |value: &str| {
             serde_json::from_value::<PermissionMode>(serde_json::json!(value)).unwrap()

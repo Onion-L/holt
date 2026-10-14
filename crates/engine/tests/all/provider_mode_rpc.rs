@@ -1,4 +1,4 @@
-//! Provider Mode (ADR-0037) at the RPC seam: the mode flag on the chat row,
+//! Provider Mode (ADR-provider-mode-is-a-chat-mode) at the RPC seam: the mode flag on the chat row,
 //! its mutual exclusion with Plan Mode, and the Turn shaping — a mode Turn
 //! carries the workspace prompt plus the mode block and only the web and
 //! catalog tools; a normal Turn mounts neither catalog tool.
@@ -1112,7 +1112,7 @@ async fn chats_outside_provider_mode_reject_the_catalog_tools() {
     assert!(cards(&engine, "chat-1", "keyRequest").await.is_empty());
 }
 
-/// Rows the retired Settings setup chat (ADR-0030) left in chats.json are
+/// Rows the retired Settings setup chat (ADR-model-setup-scoped-chat-agent-never-applies) left in chats.json are
 /// deleted on startup; ordinary chats stay.
 #[tokio::test]
 async fn legacy_model_setup_chats_are_deleted_on_startup() {

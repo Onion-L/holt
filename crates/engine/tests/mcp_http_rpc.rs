@@ -1,4 +1,4 @@
-//! Streamable HTTP MCP transport at the RPC seam (ADR-0034, ticket 04):
+//! Streamable HTTP MCP transport at the RPC seam (ADR-mcp-servers-join-as-engine-clients-behind-the-gate, ticket 04):
 //! an `http` config entry (URL + static headers, optionally a bearer token
 //! referenced by environment variable name) connects over the real
 //! Streamable HTTP transport, mounts tools like a stdio server, and keeps

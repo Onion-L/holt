@@ -15,7 +15,7 @@ them.
 ## Decisions
 
 - **"No project" is the Home space.** A single Space row, id `home`
-  (the ADR-0038 deterministic-id convention applied to a singleton), path
+  (the ADR-session-worktrees-are-chat-owned-isolation deterministic-id convention applied to a singleton), path
   `<data_dir>/workspace/default`, name "Home", created (folder + row) and
   repaired idempotently at every engine boot. No `purpose` field: the id is
   the marker, exactly like `wt-<chatId>` rows.
@@ -43,7 +43,7 @@ them.
 - **No post-hoc re-binding.** A chat's space is fixed at creation (the
   glossary's working-directory rule stands); moving chats between spaces is
   out of scope. Session-worktree chats still re-parent at admission
-  (ADR-0038) — that path is unaffected.
+  (ADR-session-worktrees-are-chat-owned-isolation) — that path is unaffected.
 
 ## Consequences
 
