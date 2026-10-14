@@ -37,9 +37,11 @@ on the old one.
 ## Lessons
 
 Before changing code, read [docs/RETROS.md](docs/RETROS.md) — what recent
-merged work got wrong and the rule that would have caught it. When your own
-merged work got something wrong that a rule would have caught, add one
-entry: the rule, the why, the evidence.
+merged work got wrong and the rule that would have caught it. Entries are
+made by the retro review (fixed twice / should not have merged / verified
+too thinly) or by an author who catches their own miss; the format, the
+seen-counter, and the three-strikes promotion into this file's rules are
+the RETROS header's to define.
 
 ## What the engine actually serves
 
