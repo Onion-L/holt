@@ -2,7 +2,7 @@
 //! block-level incremental reparse for streaming, gpui rendering, and a
 //! Tree-sitter paint-only syntax highlighting. No zed GPL crates.
 //!
-//! Design (docs/research/mugen-pretext.md §2):
+//! Design:
 //! - the parse is block-granular and append-incremental: streaming reparses only
 //!   from the last stable top-level block boundary;
 //! - highlighting is **pure paint** — token colors on identical mono runs, so

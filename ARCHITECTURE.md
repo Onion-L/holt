@@ -22,7 +22,7 @@ One binary, headed only. The UI links `crates/engine` for exactly one thing — 
 | `crates/engine` | The backend adapter: `LocalEngine` serves the RPC contract. Every subsystem page's "sources" rows live here. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — the full UI↔backend surface. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), view derivations, usage frames. |
-| `crates/doc` | Wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame` — plus transcript-frame diffing. Persistence itself is engine-owned (see persistence). |
+| `crates/doc` | Wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame` — plus transcript-frame diffing. Persistence itself is engine-owned (see persistence). The crate's Loro session/workspace schemas and HLC registry port are dormant — nothing outside `crates/doc` links them. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
 | `crates/core` | The agent core (package `pi-core-rs`, lib `pi_core`): provider adapters and streaming, the agent loop, the harness. Free of Holt domain concepts — `crates/engine` is the only adapter. MIT-licensed (decision: agent-core-is-a-holt-owned-workspace-crate). |
 

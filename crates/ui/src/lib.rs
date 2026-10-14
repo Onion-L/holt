@@ -1,8 +1,8 @@
 //! holt-ui — the gpui viewport. Shell, sidebar, conversation, composer, terminal,
 //! diff pane.
 //!
-//! Design: ARCHITECTURE.md §4; animation catalog docs/research/feature-inventory.md
-//! §1.12; virtualization/markdown techniques docs/research/mugen-pretext.md.
+//! Design: topology in ARCHITECTURE.md; the animation catalog in [`motion`];
+//! markdown streaming and virtualization in [`markdown`].
 //!
 //! M3a foundation:
 //! - [`theme`] — always-dark monochrome theme (oklch-derived neutrals), a gpui Global;

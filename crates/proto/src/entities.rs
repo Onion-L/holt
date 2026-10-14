@@ -1,7 +1,8 @@
 //! Synced entity rows (workspace doc) and local projections.
 //!
 //! In holt these were synced Postgres rows; in holt they live in the per-org
-//! workspace Loro doc (see ARCHITECTURE.md §2.2) with the same field surface.
+//! workspace Loro doc (dormant; see ARCHITECTURE.md's crates table) with the
+//! same field surface.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -318,7 +319,8 @@ pub struct Chat {
     /// device clears the badge everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<DateTime<Utc>>,
-    /// Which sync room generation serves this chat (docs/chat2-sync.md M2):
+    /// Which sync room generation serves this chat (dormant sync-era design,
+/// spec deleted):
     /// `None`/1 = legacy s2 loro room, 2 = chat2 dumb relay. The HOST flips
     /// this in the same breath as seeding the chat2 checkpoint; every device
     /// dials the room the registry names. Per-chat and instantly revertible.

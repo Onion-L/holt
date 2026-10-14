@@ -1,5 +1,5 @@
 //! Workspace registry — the client side of the row-table sidebar sync that
-//! replaces the Loro workspace doc (docs/registry-sync.md).
+//! replaces the Loro workspace doc (dormant sync-era design, spec deleted).
 //!
 //! [`RegistryDoc`] is a local replica of the per-user registry room:
 //! - `authoritative` rows — the server's truth, replaced wholesale by `state`/
@@ -1037,7 +1037,7 @@ impl RegistryDoc {
         Ok(true)
     }
 
-    /// Flip the chat's sync room generation (docs/chat2-sync.md M2). The
+    /// Flip the chat's sync room generation (dormant sync-era design). The
     /// host calls this in the same breath as seeding the chat2 checkpoint;
     /// LWW per-field like every registry write, so the flip is per-chat and
     /// instantly revertible by writing 1 back.

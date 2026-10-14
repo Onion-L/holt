@@ -4,7 +4,7 @@
 
 /// mimalloc: system malloc (macOS libmalloc especially) never returns the
 /// streaming churn's high-water pages, so transient allocation became
-/// permanent RSS (docs/memory-plan.md §1).
+/// permanent RSS.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

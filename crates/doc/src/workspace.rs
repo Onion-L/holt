@@ -1,5 +1,6 @@
 //! Workspace doc schema over `loro` — the per-org entity index that replaces holt's
-//! residual entity sync (ARCHITECTURE.md §2.2). Lives in its own DO room (same
+//! residual entity sync (dormant; see ARCHITECTURE.md's crates table). Lives
+//! in its own DO room (same
 //! SessionRoom class, doc id `ws/{orgId}`).
 //!
 //! Container layout — maps keyed by id, NOT lists: entity rows are LWW upserts, and a

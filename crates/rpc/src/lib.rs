@@ -30,7 +30,7 @@ pub use client::{RpcClient, RpcSubscription};
 pub use server::serve_connection;
 
 /// RPC method names — single source of truth for both ends.
-/// Full surface: docs/research/feature-inventory.md §2.
+/// Each family's behavior lives in its owning subsystem page (docs/subsystems/).
 pub mod methods {
     pub const LIST_PROVIDERS: &str = "ListProviders";
     pub const SAVE_PROVIDER_KEY: &str = "SaveProviderKey";

@@ -1,7 +1,7 @@
 //! The conversation view: virtualized transcript with block-granularity rows,
 //! stick-to-bottom, tool-group folding, and streaming markdown.
 //!
-//! Row model (docs/research/mugen-pretext.md §3):
+//! Row model:
 //! - one row per BLOCK: user message = one bubble row; assistant messages split
 //!   into one row per markdown top-level block, plus consecutive-tool groups
 //!   (agent/spawn chips split out so they never collapse) and input/error chips;

@@ -961,7 +961,7 @@ impl Theme {
     }
 
     /// Build the dark theme. The surface tones are sampled straight from the
-    /// reference screenshots of the original app (docs/reference): main panel
+    /// reference tones of the original app: main panel
     /// `#060606`, shell/sidebar `#0d0d0d`.
     pub fn dark() -> Self {
         Self::dark_with_accent(AccentColor::default())
