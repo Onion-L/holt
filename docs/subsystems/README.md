@@ -11,7 +11,7 @@ sources against the code you are about to edit.
 | Group | Pages |
 | --- | --- |
 | **agent-runtime** — neutral machinery: any agent system could use it unchanged. Contracts here hold regardless of Holt's product shape. | run-loop · persistence · toolset-mechanics · provider-transport · subagents *(planned)* |
-| **agent-application** — Holt's product policy: prompts, modes, skills, goals. Change these and you change what the product is; users can configure them. | prompts-skills · permission-gate · modes · goals-routines · conversation-policy *(planned)* |
+| **agent-application** — Holt's product policy: prompts, modes, skills, goals. Change these and you change what the product is; users can configure them. | [prompts-skills](prompts-skills.md) · [permission-gate](permission-gate.md) · [modes](modes.md) · [goals-routines](goals-routines.md) · [conversation-policy](conversation-policy.md) |
 | **app** — surfaces with no agent involvement: they exist as-is even if every model disappeared tomorrow. | [terminals](terminals.md) · [workspace-git](workspace-git.md) · [shell-registry](shell-registry.md) |
 
 The test for the split: anything another system could reuse without change
