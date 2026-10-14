@@ -60,7 +60,8 @@ does not run.
 
 ## Commands
 
-- Run: `cargo run --release -p holt` (headed only; no CLI). Data lives under
+- Run: `cargo run -p holt` (headed only; no CLI; debug build — a release
+  build's binary conflicts with an installed holt). Data lives under
   `~/.holt`; override with `HOLT_DATA_DIR`.
 - Check / lint: `cargo check --workspace`, `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`.
