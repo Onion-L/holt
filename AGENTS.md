@@ -6,14 +6,6 @@ relevant work; the one domain section after them carries the knowledge that
 is easiest to waste work on. What this project **is** starts in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Subsystem design and review
-
-Before changing a documented subsystem, read its page under
-[docs/subsystems/](docs/subsystems/README.md) and verify the linked sources
-against the code you are about to edit. When preparing or reviewing a PR,
-follow the same README's update, semantic-change-description, and review
-rules — including its deletion rules for pages that lose their subsystem.
-
 ## Architecture and vocabulary
 
 [ARCHITECTURE.md](ARCHITECTURE.md) holds the topology, the four hard
@@ -23,6 +15,14 @@ git2 only in `engine::git` and the workspace filesystem only in
 to the owning pages. Terms live in [CONTEXT.md](CONTEXT.md); the gpui API
 truth is [docs/research/gpui.md](docs/research/gpui.md) and the vendored
 sources — never online docs, never git.
+
+## Subsystem design and review
+
+Before changing a documented subsystem, read its page under
+[docs/subsystems/](docs/subsystems/README.md) and verify the linked sources
+against the code you are about to edit. When preparing or reviewing a PR,
+follow the same README's update, semantic-change-description, and review
+rules — including its deletion rules for pages that lose their subsystem.
 
 ## Decisions
 
