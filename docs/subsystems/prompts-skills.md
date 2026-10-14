@@ -2,7 +2,7 @@
 
 What the model is told before it acts: the system prompt (a universal template plus every `AGENTS.md` on the walk from the filesystem root down to the chat's cwd) and the skills catalog — three standard roots scanned fresh on every use, advertised metadata-only, and invoked as inline mentions whose linked form is path-authoritative.
 
-Not here: the tools a Turn mounts (see toolset — skills change what the model *knows*, not what it can *do*); the mode-specific prompt blocks (see modes); compaction, which rewrites the History, not the prompt (see conversation-runtime).
+Not here: the tools a Turn mounts (see toolset-mechanics — skills change what the model *knows*, not what it can *do*); the mode-specific prompt blocks (see modes); compaction, which rewrites the History, not the prompt (see conversation-policy).
 
 ## Responsibilities and sources of truth
 

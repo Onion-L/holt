@@ -2,7 +2,7 @@
 
 The two loops that keep a chat working when nobody presses send. A **goal** is a chat-scoped objective the queue driver drives: after a settled Turn, one verifier pass judges the objective from evidence and enqueues the next round as an ordinary, visible queue item. A **routine** is a user-defined schedule (cron or one-shot) that creates its own chat and queues a prompt through the normal run path.
 
-Not here: the queue mechanics both ride (see conversation-runtime — a goal continuation is just a flagged queue item); the modes' mutual exclusion (see modes — rejection, both ways); the usage ledger the verifier books into (`goal-check`, recorded immediately).
+Not here: the queue mechanics both ride (see conversation-policy — a goal continuation is just a flagged queue item); the modes' mutual exclusion (see modes — rejection, both ways); the usage ledger the verifier books into (`goal-check`, recorded immediately).
 
 ## Responsibilities and sources of truth
 
@@ -18,7 +18,7 @@ Not here: the queue mechanics both ride (see conversation-runtime — a goal con
 | Routine store | `routines.json`: every Routine with its newest 200 run records, written atomically, persisted before the in-memory list moves; a malformed file fails startup loudly. Records still running or waiting at launch become interrupted | [`crates/engine/src/routines.rs`](../../crates/engine/src/routines.rs) |
 | Scheduler | One long-lived task sleeping until the earliest next fire among active routines, re-planning on every list change. Fires missed while Holt was quit or the device slept are found at startup or on a wall-clock jump and coalesce into one Catch-up run whose `missedFires` counts them; pausing moves the anchor to now, so missed fires are never made up. An edit that changes the schedule moves the anchor too — an edit never triggers a Catch-up | [`crates/engine/src/scheduler.rs`](../../crates/engine/src/scheduler.rs) |
 | Runs | A fire creates its chat engine-side (the routine's name as a user-owned title, its `ChatConfig` — permission mode included, bypassing the sticky default — the `routine_run` marker, the worktree intent) and queues the prompt verbatim through the normal run path. A fire whose model is gone from the catalog or whose provider has no key records a failed run with the reason and no chat. While a run is running or waiting, further fires record as skipped; the gate moves a run waiting on an Approval and back, and a Turn that succeeds with an unanswered question card settles it waiting | [`crates/engine/src/rpc/routines.rs`](../../crates/engine/src/rpc/routines.rs) |
-| UI cutaways | The routines page (create/edit/pause/run-now, schedule preview); the top-right goal card (verifier-given name, steps, live loop phase, pause/clear); the composer's `/goal` directive chip | [`crates/ui/src/scheduled.rs`](../../crates/ui/src/scheduled.rs), [`shell/goal_card.rs`](../../crates/ui/src/shell/goal_card.rs) |
+| UI cutaways | The routines page (create/edit/pause/run-now, schedule preview); the top-right chat-state card's goal form (verifier-given name, steps, live loop phase, pause/clear); the composer's `/goal` directive chip | [`crates/ui/src/scheduled.rs`](../../crates/ui/src/scheduled.rs), [`shell/state_card.rs`](../../crates/ui/src/shell/state_card.rs) |
 
 ## Runtime path
 

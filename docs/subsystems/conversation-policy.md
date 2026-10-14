@@ -1,8 +1,8 @@
 # Conversation policy
 
-The user-facing rules of a chat's queue and its side tasks: how work is admitted (FIFO with priority and attended-send exceptions), what steer and edit-last do, when compaction runs, the one-shot title task, and the agent's question card. These are the policies a user feels; the loop's streaming, retry, and persistence mechanics they ride belong to conversation-runtime in the runtime group.
+The user-facing rules of a chat's queue and its side tasks: how work is admitted (FIFO with priority and attended-send exceptions), what steer and edit-last do, when compaction runs, the one-shot title task, and the agent's question card. These are the policies a user feels; the loop's streaming and retry mechanics they ride belong to run-loop, the durable records to persistence.
 
-Not here: the agent loop and Turn execution pipeline (see conversation-runtime); the permission gate that pauses a Turn mid-run (see permission-gate); goals and routines, which enqueue through these same rules (see goals-routines).
+Not here: the agent loop and Turn execution pipeline (see run-loop); the permission gate that pauses a Turn mid-run (see permission-gate); goals and routines, which enqueue through these same rules (see goals-routines).
 
 ## Responsibilities and sources of truth
 

@@ -54,6 +54,14 @@ intuition — three strikes is the only gate.
   duplication and dropped three code-style bullets that existed nowhere
   else; they had to be rebuilt from git history
   (c526a91). Seen 1× (2026-10-14).
+- A reference sweep for a deleted or renamed document greps every form
+  the name takes — the path, the path split across a comment line break,
+  the bare page name in prose ("see toolset") — not just one. A sweep
+  that claimed "every dead file reference" missed
+  `docs/research/mugen-pretext.md` wrapped across two lines in
+  `transcript/model.rs`, and five subsystem pages still named the
+  pre-split `conversation-runtime`, `toolset`, and `ui-shell` pages
+  (cffdd0c, fixed again in 9219a26). Seen 1× (2026-10-14).
 
 ## Moved
 

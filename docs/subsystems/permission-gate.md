@@ -2,7 +2,7 @@
 
 How a chat's mutating tool calls are gated: the permission mode picks the gatekeeper — a human Approval, one model review pass, or none — with always-allow session grants on top and a sticky device default for new chats. The whole gate rides the agent loop's before-tool-call hook; the agent core knows nothing about it.
 
-Not here: Plan Mode and Provider Mode (see modes) reshape the toolset before the gate ever sees a call; the MCP pool that mounts `mcp__` tools (see toolset) — though the rule that every `mcp__` call is presumed mutating lives here. What an Approval does to the queue's pacing belongs to conversation-runtime.
+Not here: Plan Mode and Provider Mode (see modes) reshape the toolset before the gate ever sees a call; the MCP pool that mounts `mcp__` tools (see toolset-mechanics) — though the rule that every `mcp__` call is presumed mutating lives here. What an Approval does to the queue's pacing belongs to conversation-policy.
 
 ## Responsibilities and sources of truth
 

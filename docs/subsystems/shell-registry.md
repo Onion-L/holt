@@ -2,7 +2,7 @@
 
 The engine's skeleton: process assembly and the single-instance guard, the Space/Chat registry and its persistence, the entity watch streams, the Home space, and app self-update. Every other page hangs off this one.
 
-Not here: the run loop and queue (conversation-runtime), each capability's own page, and the gpui shell chrome (ui-shell). This page also owns one fence: the collaboration and account RPCs the UI still renders — sign-in, orgs, repos, clone, uploads — reply `UnknownMethod` by design, and the UI surfaces that as an error notice.
+Not here: the run loop and queue (run-loop, conversation-policy), each capability's own page, and the gpui shell chrome (`crates/ui/src/shell`, no page). This page also owns one fence: the collaboration and account RPCs the UI still renders — sign-in, orgs, repos, clone, uploads — reply `UnknownMethod` by design, and the UI surfaces that as an error notice.
 
 ## Responsibilities and sources of truth
 
