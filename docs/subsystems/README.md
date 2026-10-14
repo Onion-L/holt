@@ -12,7 +12,7 @@ sources against the code you are about to edit.
 | --- | --- |
 | **agent-runtime** — neutral machinery: any agent system could use it unchanged. Contracts here hold regardless of Holt's product shape. | [run-loop](run-loop.md) · [persistence](persistence.md) · [toolset-mechanics](toolset-mechanics.md) · [provider-transport](provider-transport.md) · [subagents](subagents.md) |
 | **agent-application** — Holt's product policy: prompts, modes, skills, goals. Change these and you change what the product is; users can configure them. | [prompts-skills](prompts-skills.md) · [permission-gate](permission-gate.md) · [modes](modes.md) · [goals-routines](goals-routines.md) · [conversation-policy](conversation-policy.md) |
-| **app** — surfaces with no agent involvement: they exist as-is even if every model disappeared tomorrow. | [terminals](terminals.md) · [workspace-git](workspace-git.md) · [shell-registry](shell-registry.md) |
+| **app** — surfaces with no agent involvement: they exist as-is even if every model disappeared tomorrow. | [terminals](terminals.md) · [workspace-git](workspace-git.md) · [workspace-files](workspace-files.md) · [shell-registry](shell-registry.md) |
 
 The test for the split: anything another system could reuse without change
 is runtime; anything a user customizes (prompts, modes, schedules) is
