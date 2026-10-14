@@ -12,7 +12,7 @@ sources against the code you are about to edit.
 | --- | --- |
 | **agent-runtime** — neutral machinery: any agent system could use it unchanged. Contracts here hold regardless of Holt's product shape. | run-loop · persistence · toolset-mechanics · provider-transport · subagents *(planned)* |
 | **agent-application** — Holt's product policy: prompts, modes, skills, goals. Change these and you change what the product is; users can configure them. | prompts-skills · permission-gate · modes · goals-routines · conversation-policy *(planned)* |
-| **app** — surfaces with no agent involvement: they exist as-is even if every model disappeared tomorrow. | [terminals](terminals.md) · workspace-git · shell-registry *(planned)* |
+| **app** — surfaces with no agent involvement: they exist as-is even if every model disappeared tomorrow. | [terminals](terminals.md) · [workspace-git](workspace-git.md) · [shell-registry](shell-registry.md) |
 
 The test for the split: anything another system could reuse without change
 is runtime; anything a user customizes (prompts, modes, schedules) is
@@ -61,8 +61,7 @@ outgrows a screen, split the subsystem or link out; do not grow the page.
 | --- | --- | --- |
 | `ARCHITECTURE.md` | topology and hard crate fences | rarely |
 | these pages | how it runs now | with the code |
-| `docs/adr/` | why it was decided, and the alternatives rejected | once, then immutable |
-| code comments | the local invariant, plus an ADR number when one exists | with the code |
+| code comments | the local invariant | with the code |
 
 - Link to files and named symbols, not implementation details that churn.
 - A documentation update does not prove the implementation. Behavior
@@ -76,15 +75,6 @@ the owning page and the implementation. A refactor that preserves
 documented behavior says so explicitly. This is an author-provided account
 the reviewer checks against the diff, not an automatically proven
 compatibility verdict.
-
-## Relationship to ADRs
-
-Each page links the ADRs behind its behavior (a "decision record" row or a
-Decisions section). New decisions supersede old ones by writing a **new**
-ADR and a banner on the old one — never by amending the old ADR in place.
-An ADR deleted as truly dead leaves one tombstone line in its owning page
-("model-setup-applies-stored-proposals: removed, superseded by
-provider-mode-is-a-chat-mode"), so a decision never vanishes silently.
 
 ## Reviewing a change
 

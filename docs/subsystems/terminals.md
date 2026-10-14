@@ -14,7 +14,6 @@ Not here: the agent's `bash` tool (`engine::tools` — a separate execution path
 | Emulator | `alacritty_terminal` 0.26 `Term` + vte ANSI parsing, 10,000 scrollback lines, search inside scrollback | [`crates/ui/src/terminal/emulator.rs`](../../crates/ui/src/terminal/emulator.rs) |
 | Panes and tabs | Split panes (⌘D / ⇧⌘D); tabs on the embedded right-pane panel — the bottom dock stays chat-only; an embedded panel with no chat selected scopes its tabs to the Space | [`crates/ui/src/terminal/panel.rs`](../../crates/ui/src/terminal/panel.rs), [`pane.rs`](../../crates/ui/src/terminal/pane.rs) |
 | Close confirmation | One path for window chrome, ⌘Q, and native Dock quit (`on_should_quit`): unsaved file drafts decide first, then running terminals | [`crates/ui/src/terminal/lifecycle.rs`](../../crates/ui/src/terminal/lifecycle.rs) |
-| Decision record | Ownership (chats, not spaces); no restoration across restarts | [ADR-terminals-belong-to-chats-and-end-with-the-app](../adr/terminals-belong-to-chats-and-end-with-the-app.md) |
 
 ## Runtime path
 
@@ -26,7 +25,7 @@ Not here: the agent's `bash` tool (`engine::tools` — a separate execution path
 
 ## Constraints, state, and failure behavior
 
-- **Nothing persists.** Sessions are memory only; there is no background host and no restoration across app restarts (ADR-terminals-belong-to-chats-and-end-with-the-app). A restarted app starts with no terminals.
+- **Nothing persists.** Sessions are memory only; there is no background host and no restoration across app restarts. A restarted app starts with no terminals.
 - **Replay is bounded and honest.** 1 MiB or 4096 events, whichever hits first; evicted output is reported as an explicit `Gap {seq}`. The pane answers a `Gap` by resetting its emulator, printing "[Output was lost while disconnected; this screen is incomplete.]", and continuing the same session — the process is never killed for a replay shortfall.
 - **An exited shell keeps its output.** It stays listed (`running: false`) until explicitly closed; writes to it fail.
 - **Kill semantics.** Closing kills the PTY's foreground process group and the shell's group (SIGKILL, pids > 1), then reaps. A shell's exit kills the other processes in its login session — once, under the child lock — so background jobs with redirected output do not outlive the terminal.
