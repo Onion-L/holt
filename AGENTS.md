@@ -8,7 +8,7 @@ behind the `RpcService` trait.
 | Question | Home |
 | --- | --- |
 | How does X run today? | `docs/subsystems/` — one page per subsystem, three groups |
-| Why was X decided, and what was rejected? | `docs/decisions.md` (+ surveys under `docs/research/`) |
+| Why was X decided, and what was rejected? | `docs/DECISION.md` (+ surveys under `docs/research/`) |
 | What does this word mean? | `CONTEXT.md` |
 | Topology and hard fences | `ARCHITECTURE.md` |
 
@@ -19,7 +19,7 @@ compatibility rule, or failure behavior updates the owning page **in the same
 PR**; a refactor that preserves them needs no prose change. Full rules:
 `docs/subsystems/README.md`.
 
-A new decision earns a `docs/decisions.md` entry only if it names a rejected
+A new decision earns a `docs/DECISION.md` entry only if it names a rejected
 alternative, spans modules or a serialized format, or someone might
 relitigate it — otherwise it belongs in a code comment.
 

@@ -105,5 +105,5 @@ rg "fn request_layout|fn prepaint|fn paint" third_party/gpui/crates/gpui/src
 cargo test -p holt-ui -- <focused-test-name>
 ```
 
-Read `docs/research/gpui.md` and the `nested-scroll-containers-isolate-wheel-events` entry in `docs/decisions.md`
+Read `docs/research/gpui.md` and the `nested-scroll-containers-isolate-wheel-events` entry in `docs/DECISION.md`
 when the issue involves Holt's frame model or nested scrolling.

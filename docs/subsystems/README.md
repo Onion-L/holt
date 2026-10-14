@@ -61,7 +61,7 @@ outgrows a screen, split the subsystem or link out; do not grow the page.
 | --- | --- | --- |
 | `ARCHITECTURE.md` | topology and hard crate fences | rarely |
 | these pages | how it runs now | with the code |
-| `docs/decisions.md` | why it was decided, and the alternatives rejected | once — a changed decision appends a new entry |
+| `docs/DECISION.md` | why it was decided, and the alternatives rejected | once — a changed decision appends a new entry |
 | code comments | the local invariant | with the code |
 
 - Link to files and named symbols, not implementation details that churn.
