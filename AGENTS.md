@@ -26,6 +26,12 @@ trigger, and before/after; **when reviewing one** — identify the affected
 subsystem and the actual runtime path, and check the page and its links.
 The same README's deletion rules apply to pages that lose their subsystem.
 
+## Code standards
+
+Write and review changes against [docs/CODE-STANDARDS.md](docs/CODE-STANDARDS.md).
+It grows by one mechanism only: a RETROS.md lesson seen on three separate
+days is promoted into it.
+
 ## Decisions
 
 Before changing code, read the [docs/DECISION.md](docs/DECISION.md) entries

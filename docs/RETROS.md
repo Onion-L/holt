@@ -42,9 +42,18 @@ the seen-counter:
 ## Promotion
 
 A lesson seen on 3 or more separate days has proven it recurs: it moves
-into [AGENTS.md](../AGENTS.md) as a standing rule, and this file keeps only
-a one-line "Moved" note. Nothing enters AGENTS.md's rules by intuition —
-three strikes is the only gate.
+into [CODE-STANDARDS.md](CODE-STANDARDS.md) as a standing rule, and this
+file keeps only a one-line "Moved" note. Nothing becomes a standard by
+intuition — three strikes is the only gate.
+
+## Entries
+
+- Before deleting prose as "duplicated," verify every fact in it has
+  another home — a section is only removable when each of its facts lands
+  somewhere first. A pointer-style rewrite of AGENTS.md claimed zero
+  duplication and dropped three code-style bullets that existed nowhere
+  else; they had to be rebuilt from git history
+  (c526a91). Seen 1× (2026-10-14).
 
 ## Moved
 
