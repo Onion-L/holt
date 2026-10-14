@@ -1,7 +1,7 @@
 //! The transcript row model: one row per markdown top-level block plus
 //! tool groups, chips, and user bubbles, with stable ids, content-version
-//! fingerprints, and the entry→rows construction rules (docs/research/
-//! mugen-pretext.md §3). Pure over `holt-doc` parts — no GPUI, no entity
+//! fingerprints, and the entry→rows construction rules. Pure over `holt-doc`
+//! parts — no GPUI, no entity
 //! state.
 
 use std::ops::Range;
