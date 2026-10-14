@@ -1,8 +1,10 @@
 //! Single-instance lock — an exclusive advisory `flock` on `{data_dir}/engine.lock`
-//! held for the engine's lifetime. Two engines sharing one data dir would race the
-//! SQLite snapshots DB and the append-only run journals (WAL + `busy_timeout` guard
-//! individual statements, not whole-file ownership), so the second instance must
-//! fail fast with a clear error instead of corrupting state.
+//! held for the engine's lifetime. The per-chat persistence locks are
+//! in-process mutexes: they order one engine's appends, but two engines on
+//! one data dir would race the append-only JSONL logs and the atomic
+//! whole-file replaces with nothing cross-process to stop them, so the
+//! second instance must fail fast with a clear error instead of corrupting
+//! state.
 //!
 //! The lock is taken before any store opens, so a second process fails fast
 //! instead of racing the first.

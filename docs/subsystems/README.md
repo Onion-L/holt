@@ -32,6 +32,10 @@ preserves the documented contracts requires no page work — but judging
 "does this change a contract?" already requires knowing the contract, so
 a scan first stays worth its cost.
 
+**When the page and the code disagree**, the code is what runs: fix
+whichever is wrong, in the same PR. If you cannot tell which one is
+wrong, stop and ask — never pick a side silently.
+
 | Group | Pages |
 | --- | --- |
 | **agent-runtime** — neutral machinery: any agent system could use it unchanged. Contracts here hold regardless of Holt's product shape. | [run-loop](run-loop.md) · [persistence](persistence.md) · [toolset-mechanics](toolset-mechanics.md) · [provider-transport](provider-transport.md) · [subagents](subagents.md) |

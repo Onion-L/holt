@@ -2,7 +2,7 @@
 //! pool of MCP connections owned by the engine. Every tool a server lists
 //! is wrapped as an ordinary agent tool named `mcp__<server>__<tool>` —
 //! from the model's and the transcript's perspective an MCP tool is just a
-//! tool. Transports: stdio children today, Streamable HTTP in ticket 04.
+//! tool. Transports: stdio children and Streamable HTTP.
 //!
 //! [`McpPool::agent_tools`] is the Turn-start snapshot: enabled servers
 //! connect on demand, list their tools once, and the wrapped set is frozen
