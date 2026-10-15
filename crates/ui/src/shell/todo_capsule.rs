@@ -220,14 +220,14 @@ fn status_glyph(
 ) -> gpui::Div {
     let frame = div()
         .flex_none()
-        .w(px(12.0))
+        .w(px(16.0))
         .flex()
         .items_center()
         .justify_center();
     match status {
         TodoItemStatus::Pending | TodoItemStatus::Unknown => frame.child(
             div()
-                .size(px(9.0))
+                .size(px(10.0))
                 .rounded_full()
                 .border_1()
                 .border_color(theme.hairline(0.28)),
@@ -242,7 +242,7 @@ fn status_glyph(
             };
             frame.child(
                 div()
-                    .size(px(10.0))
+                    .size(px(11.0))
                     .rounded_full()
                     .border_1()
                     .border_color(theme.accent.opacity(0.45))
@@ -251,7 +251,7 @@ fn status_glyph(
                     .justify_center()
                     .child(
                         div()
-                            .size(px(5.0))
+                            .size(px(6.0))
                             .rounded_full()
                             .bg(theme.accent)
                             .opacity(dot_opacity),
@@ -260,12 +260,12 @@ fn status_glyph(
         }
         TodoItemStatus::Done => frame.child(
             crate::icons::icon(crate::icons::CHECK)
-                .size(px(11.0))
+                .size(px(12.0))
                 .text_color(crate::theme::AccentColor::Green.primary(theme.appearance)),
         ),
         TodoItemStatus::Cancelled => frame.child(
             div()
-                .w(px(7.0))
+                .w(px(8.0))
                 .h(px(1.5))
                 .rounded_full()
                 .bg(theme.text_faint),
@@ -282,7 +282,7 @@ fn todo_ring(displayed: f32, done: usize, total: usize, theme: &Theme) -> AnyEle
     } else {
         theme.accent
     };
-    crate::loaders::progress_ring(displayed, 12.0, 1.5, theme.ink(0.12), arc)
+    crate::loaders::progress_ring(displayed, 14.0, 1.5, theme.ink(0.12), arc)
         .flex_none()
         .into_any_element()
 }
@@ -433,12 +433,12 @@ impl Shell {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(5.0))
+            .gap(px(6.0))
             .child(
                 div()
                     .flex_none()
                     .font_family(theme.font_mono.clone())
-                    .text_size(px(11.0))
+                    .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_faint)
                     .child(SharedString::from(format!("{done}/{total}"))),
             );
@@ -446,9 +446,9 @@ impl Shell {
             label = label.child(
                 div()
                     .min_w_0()
-                    .max_w(px(180.0))
+                    .max_w(px(200.0))
                     .truncate()
-                    .text_size(px(11.0))
+                    .text_size(crate::typography::ui_rems(12.5))
                     .text_color(if form.capsule.live {
                         theme.text
                     } else {
@@ -461,7 +461,7 @@ impl Shell {
             // say what it means, in the completion tint.
             label = label.child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(crate::typography::ui_rems(12.5))
                     .text_color(green)
                     .child("All done"),
             );
@@ -478,14 +478,14 @@ impl Shell {
             .pr(px(8.0))
             .child(
                 crate::icons::icon(crate::icons::CHECKLIST)
-                    .size(px(12.0))
+                    .size(px(13.0))
                     .flex_none()
                     .text_color(icon_tint),
             )
             .child(label)
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                    .size(px(10.0))
+                    .size(px(11.0))
                     .flex_none()
                     .text_color(theme.text_faint),
             )
@@ -520,7 +520,7 @@ impl Shell {
             .border_color(theme.hairline(0.08))
             .child(
                 crate::icons::icon(crate::icons::CHECKLIST)
-                    .size(px(13.0))
+                    .size(px(14.0))
                     .flex_none()
                     .text_color(if capsule.live {
                         theme.accent
@@ -534,8 +534,8 @@ impl Shell {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(12.5))
-                    .line_height(px(18.0))
+                    .text_size(crate::typography::ui_rems(14.0))
+                    .line_height(px(20.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child("Todo"),
@@ -545,7 +545,7 @@ impl Shell {
                 div()
                     .flex_none()
                     .font_family(theme.font_mono.clone())
-                    .text_size(px(11.0))
+                    .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_faint)
                     .child(SharedString::from(format!("{}/{}", form.done, form.total))),
             )
@@ -554,7 +554,7 @@ impl Shell {
                     .id("todo-capsule-collapse")
                     .debug_selector(|| "todo-capsule-collapse".to_string())
                     .flex_none()
-                    .size(px(22.0))
+                    .size(px(24.0))
                     .rounded(px(6.0))
                     .flex()
                     .items_center()
@@ -570,7 +570,7 @@ impl Shell {
                     }))
                     .child(
                         crate::icons::icon(crate::icons::ALT_ARROW_UP)
-                            .size(px(12.0))
+                            .size(px(13.0))
                             .text_color(theme.text_muted),
                     ),
             )
@@ -579,7 +579,7 @@ impl Shell {
                     .id("todo-capsule-close")
                     .debug_selector(|| "todo-capsule-close".to_string())
                     .flex_none()
-                    .size(px(22.0))
+                    .size(px(24.0))
                     .rounded(px(6.0))
                     .flex()
                     .items_center()
@@ -597,7 +597,7 @@ impl Shell {
                     }))
                     .child(
                         crate::icons::icon(crate::icons::CLOSE_CIRCLE)
-                            .size(px(12.0))
+                            .size(px(13.0))
                             .text_color(theme.text_muted),
                     ),
             );
@@ -623,7 +623,7 @@ impl Shell {
                 glyph.into_any_element()
             };
             div()
-                .h(px(22.0))
+                .h(px(24.0))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -633,8 +633,8 @@ impl Shell {
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(11.5))
-                        .line_height(px(16.0))
+                        .text_size(crate::typography::ui_rems(13.5))
+                        .line_height(px(19.0))
                         .text_color(match item.status {
                             TodoItemStatus::InProgress => theme.text,
                             TodoItemStatus::Pending | TodoItemStatus::Unknown => theme.text_muted,
@@ -648,8 +648,8 @@ impl Shell {
         div()
             .w(px(state_card::CARD_WIDTH))
             .px(px(12.0))
-            .pt(px(9.0))
-            .pb(px(10.0))
+            .pt(px(10.0))
+            .pb(px(12.0))
             .flex()
             .flex_col()
             .child(header)
@@ -657,8 +657,8 @@ impl Shell {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(3.0))
-                    .pt(px(6.0))
+                    .gap(px(4.0))
+                    .pt(px(7.0))
                     .children(rows),
             )
             .into_any_element()
