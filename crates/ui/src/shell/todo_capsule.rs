@@ -273,34 +273,24 @@ fn status_glyph(
     }
 }
 
-/// The capsule's progress ring: the done fraction as a 12px arc beside the
-/// count — green once the list completes, accent while work remains. The
-/// arc rides the motion frame's displayed fraction, so rewrites glide.
-fn todo_ring(displayed: f32, done: usize, total: usize, theme: &Theme) -> AnyElement {
-    let arc = if total > 0 && done == total {
-        crate::theme::AccentColor::Green.primary(theme.appearance)
-    } else {
-        theme.accent
-    };
-    crate::loaders::progress_ring(displayed, 14.0, 1.5, theme.ink(0.12), arc)
+/// The capsule's progress ring: the done fraction as a 14px arc beside the
+/// count. The arc rides the motion frame's displayed fraction, so rewrites
+/// glide.
+fn todo_ring(displayed: f32, theme: &Theme) -> AnyElement {
+    crate::loaders::progress_ring(displayed, 14.0, 1.5, theme.ink(0.12), theme.accent)
         .flex_none()
         .into_any_element()
 }
 
 /// The pill's progress underline: a 1.5px line clipped to the pill's
-/// rounded chrome — quiet at rest, green once the list completes.
-fn pill_underline(displayed: f32, done: usize, total: usize, theme: &Theme) -> gpui::Div {
-    let arc = if total > 0 && done == total {
-        crate::theme::AccentColor::Green.primary(theme.appearance)
-    } else {
-        theme.accent
-    };
+/// rounded chrome.
+fn pill_underline(displayed: f32, theme: &Theme) -> gpui::Div {
     div().h(px(1.5)).rounded_full().bg(theme.ink(0.05)).child(
         div()
             .h_full()
             .w(gpui::relative(displayed))
             .rounded_full()
-            .bg(arc),
+            .bg(theme.accent),
     )
 }
 
@@ -420,11 +410,8 @@ impl Shell {
     fn todo_pill(&mut self, form: &TodoForm, theme: &Theme) -> AnyElement {
         let (done, total) = (form.done, form.total);
         let all_done = done == total;
-        let green = crate::theme::AccentColor::Green.primary(theme.appearance);
         let icon_tint = if form.capsule.live {
             theme.accent
-        } else if all_done {
-            green
         } else {
             theme.text_muted
         };
@@ -458,12 +445,12 @@ impl Shell {
             );
         } else if all_done {
             // Nothing open: the count alone reads as a cryptic fraction —
-            // say what it means, in the completion tint.
+            // say what it means.
             label = label.child(
                 div()
                     .text_size(crate::typography::ui_rems(12.5))
-                    .text_color(green)
-                    .child("All done"),
+                    .text_color(theme.text_muted)
+                    .child("Done"),
             );
         }
         div()
@@ -496,7 +483,7 @@ impl Shell {
                     .bottom(px(0.0))
                     .left(px(10.0))
                     .right(px(10.0))
-                    .child(pill_underline(form.displayed, done, total, theme)),
+                    .child(pill_underline(form.displayed, theme)),
             )
             .into_any_element()
     }
@@ -508,8 +495,6 @@ impl Shell {
         let capsule = form.capsule;
         let card_id = capsule.card_id.clone();
         let view = cx.entity_id();
-        let all_done = form.total > 0 && form.done == form.total;
-        let green = crate::theme::AccentColor::Green.primary(theme.appearance);
         let header = div()
             .flex()
             .flex_row()
@@ -524,8 +509,6 @@ impl Shell {
                     .flex_none()
                     .text_color(if capsule.live {
                         theme.accent
-                    } else if all_done {
-                        green
                     } else {
                         theme.text_muted
                     }),
@@ -540,7 +523,7 @@ impl Shell {
                     .text_color(theme.text)
                     .child("Todo"),
             )
-            .child(todo_ring(form.displayed, form.done, form.total, theme))
+            .child(todo_ring(form.displayed, theme))
             .child(
                 div()
                     .flex_none()
