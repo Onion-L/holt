@@ -6,6 +6,9 @@
 //! Anything unsupported, still rendering, or failed falls back to the plain
 //! code block — a diagram never blocks layout and never panics the UI
 //! (merman is pinned on an alpha; its render runs unwind-guarded).
+//! Over-budget fences never reach merman at all: the pinned alpha recurses
+//! per nesting level, and a deep enough fence overflows the stack — an
+//! abort `catch_unwind` cannot intercept (issue #31).
 //!
 //! The cache follows the transcript's `HighlightStore` shape: the owner
 //! requests per `(row, block)` slot, a background task fills
@@ -50,12 +53,60 @@ pub fn is_mermaid(language: Option<&str>) -> bool {
     language == Some(MERMAID_LANG)
 }
 
-/// Whether a fence body's diagram family is on the rendered whitelist.
+/// Whether a fence body renders as a diagram: the family is on the
+/// whitelist AND the body stays within the render budget
+/// ([`within_budget`], issue #31).
 pub fn supported_diagram(source: &str) -> bool {
     let trimmed = source.trim_start();
     SUPPORTED_PREFIXES
         .iter()
         .any(|prefix| trimmed.starts_with(prefix))
+        && within_budget(source)
+}
+
+/// Fence-body budgets gating the render path (issue #31). The pinned
+/// merman 0.8.0-alpha.5 flowchart parse recurses per nesting level with no
+/// depth budget, and a deep enough fence ABORTS the process — a stack
+/// overflow is an abort, not a panic, so the `catch_unwind` guard in
+/// `MermaidStore::request` cannot intercept it. Reproduced on a 2 MiB
+/// stack: depth 100 renders, 500–20,000 soft-fail to the code block,
+/// 30,000 aborts. Each cap sits far above legitimate diagrams and far
+/// below the abort zone.
+const MAX_SOURCE_BYTES: usize = 128 * 1024;
+const MAX_SOURCE_LINES: usize = 2_000;
+/// Mirrors the markdown parser's container budget (`parser.rs`).
+const MAX_NESTING_DEPTH: usize = 256;
+
+/// Whether a fence body stays within the render budget. One cheap pass over
+/// the lines: block openers are `subgraph` (flowchart), a trailing `{`
+/// (state/class/er blocks), and the sequenceDiagram grouping keywords;
+/// closers are `end` and `}`. Indentation-nested families (mindmap) are
+/// bounded by the byte/line caps. A false positive degrades to the code
+/// block, never to a broken render.
+fn within_budget(source: &str) -> bool {
+    const OPENERS: &[&str] = &[
+        "subgraph", "loop", "opt", "alt", "par", "critical", "break", "box", "rect",
+    ];
+    if source.len() > MAX_SOURCE_BYTES {
+        return false;
+    }
+    let mut depth = 0usize;
+    for (ix, line) in source.lines().enumerate() {
+        if ix >= MAX_SOURCE_LINES {
+            return false;
+        }
+        let line = line.trim();
+        let first = line.split_whitespace().next().unwrap_or("");
+        if OPENERS.contains(&first) || line.ends_with('{') {
+            depth += 1;
+            if depth > MAX_NESTING_DEPTH {
+                return false;
+            }
+        } else if first == "end" || line.starts_with('}') {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    true
 }
 
 /// Mermaid theme variables derived from the app theme, as CSS color strings.
@@ -705,6 +756,64 @@ mod tests {
         ] {
             assert!(!supported_diagram(source), "should stay code: {source:?}");
         }
+    }
+
+    /// Issue #31's trigger shapes must be refused at the gate, before
+    /// merman ever runs: the pinned alpha's parse recursion turns a deep
+    /// enough fence into a process abort, not a catchable panic.
+    #[test]
+    fn diagram_budget_rejects_oversized_and_deep_fences() {
+        let mut deep = String::from("flowchart TD\n");
+        for i in 0..300 {
+            deep.push_str(&format!("subgraph s{i}\n"));
+        }
+        assert!(
+            !supported_diagram(&deep),
+            "300-deep nesting must be refused"
+        );
+
+        // Shallow but byte-huge.
+        let mut huge = String::from("flowchart TD\n");
+        while huge.len() <= MAX_SOURCE_BYTES {
+            huge.push_str("a --> b\n");
+        }
+        assert!(!supported_diagram(&huge), "over-byte fence must be refused");
+
+        // Shallow but line-heavy.
+        let mut long = String::from("flowchart TD\n");
+        for i in 0..=MAX_SOURCE_LINES {
+            long.push_str(&format!("n{i} --> m{i}\n"));
+        }
+        assert!(!supported_diagram(&long), "over-line fence must be refused");
+
+        // Stray closers must not underflow the depth counter.
+        assert!(supported_diagram("flowchart TD\nend\nend\nA --> B"));
+    }
+
+    /// The budget's allowed zone must still render against the real merman:
+    /// the issue's ladder has depth 100 rendering on a 2 MiB stack, so run
+    /// the render on a 2 MiB thread — the background executor's stack size.
+    #[test]
+    fn nested_subgraphs_within_budget_render() {
+        let mut source = String::from("flowchart TD\n");
+        for i in 0..100 {
+            source.push_str(&format!("subgraph s{i}\n"));
+        }
+        source.push_str("a --> b\n");
+        for _ in 0..100 {
+            source.push_str("end\n");
+        }
+        assert!(supported_diagram(&source), "100-deep nesting is in-budget");
+        let rendered = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || render_svg(&source, &test_palette()))
+            .expect("spawn")
+            .join()
+            .expect("render panicked");
+        assert!(
+            rendered.is_ok(),
+            "100-deep nesting must render: {rendered:?}"
+        );
     }
 
     #[test]
