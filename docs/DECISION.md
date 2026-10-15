@@ -35,7 +35,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) |
-| UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) |
+| UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) |
 
 ---
 
@@ -381,3 +381,19 @@ expresses it). Verifier usage books immediately: the Turn's batch settles
 before the verifier runs. `179cbca` bounds the pass (120 s wall clock — the
 HTTP layer has no total timeout and Stop cannot reach the token) and pauses
 on an un-enqueueable continuation.
+
+## urls-wrap-after-slashes-never-before
+
+`(fill sha at commit — issue #44)`. The vendored gpui wrap rule breaks
+after `/` and never before it, in all three copies of the candidate rule
+(`LineWrapper::wrap_line`, `LineLayout::compute_wrap_boundaries`, and
+`truncate_wrapped_line`) and in their no-candidate hard-break fallbacks:
+inside a URL the only `/` preceded by a non-word char is the `://` pair,
+so the old rule made the scheme the URL's single break point and greedy
+wrapping always split it (`https:/` + `/open…`) — and the fallback could
+land on the second `/` just the same. Rejected: holt-side softening of
+the chip error text (ZWSP break hints pollute copied text, and every
+other wrapped surface — markdown prose, `line_clamp` state cards — kept
+the bug), and making `://` unbreakable alone (a URL then has no break
+candidate before its first path slash and hard-breaks mid-hostname).
+Matches browser behavior: break after the solidus, never before it.

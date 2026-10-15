@@ -54,6 +54,12 @@ intuition — three strikes is the only gate.
   duplication and dropped three code-style bullets that existed nowhere
   else; they had to be rebuilt from git history
   (c526a91). Seen 1× (2026-10-14).
+- A reimplementation of an algorithm is not a test of it. When the real
+  harness is blocked, the blocker is the finding — the URL-wrap fix's
+  replica script "passed" while the vendored suite, once runnable, caught
+  the same dangling slash surviving through the hard-break fallback path
+  the replica never modeled (issue #44, fixed before commit).
+  Seen 1× (2026-10-15).
 - A reference sweep for a deleted or renamed document greps every form
   the name takes — the path, the path split across a comment line break,
   the bare page name in prose ("see toolset") — not just one. A sweep

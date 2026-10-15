@@ -66,7 +66,14 @@ impl LineWrapper {
                         }
 
                         if Self::is_word_char(c) {
-                            if prev_c == ' ' && c != ' ' && first_non_whitespace_ix.is_some() {
+                            // A word char after a `/` is a break opportunity:
+                            // URLs and paths wrap AFTER their slashes
+                            // (`https://host/` + `api/…`), never before them —
+                            // see the `/` rule below.
+                            if (prev_c == ' ' || prev_c == '/')
+                                && c != ' '
+                                && first_non_whitespace_ix.is_some()
+                            {
                                 last_candidate_ix = ix;
                                 last_candidate_width = width;
                             }
@@ -77,8 +84,12 @@ impl LineWrapper {
                             // non-word char directly after a word char is closing
                             // punctuation (`powerless."`, `word)`, `done!`); breaking
                             // there orphans the punctuation at the start of the next
-                            // line.
+                            // line. `/` is never a break position: inside a URL the
+                            // only `/` preceded by a non-word char are the two in
+                            // `://`, so allowing it splits the scheme (`https:/` +
+                            // `/open…`) — slashes break after, via the rule above.
                             if c != ' '
+                                && c != '/'
                                 && !Self::is_word_char(prev_c)
                                 && first_non_whitespace_ix.is_some()
                             {
@@ -113,6 +124,7 @@ impl LineWrapper {
                 };
 
                 width += item_width;
+                let is_slash = matches!(candidate, WrapBoundaryCandidate::Char { character: '/' });
                 if width > wrap_width && ix > last_wrap_ix {
                     if let (None, Some(first_non_whitespace_ix)) = (indent, first_non_whitespace_ix)
                     {
@@ -125,6 +137,14 @@ impl LineWrapper {
                         last_wrap_ix = last_candidate_ix;
                         width -= last_candidate_width;
                         last_candidate_ix = 0;
+                    } else if is_slash {
+                        // No candidate and the overflow lands on a `/`: the
+                        // hard-break fallback must not start a line with a
+                        // dangling slash either (`https:/` + `/open…`).
+                        // Keep accumulating — the char after the slash run
+                        // is a candidate (a word char after `/`).
+                        prev_c = new_prev_c;
+                        continue;
                     } else {
                         last_wrap_ix = ix;
                         width = item_width;
@@ -386,12 +406,17 @@ impl LineWrapper {
 
             let char_width = self.width_for_char(c);
 
+            // Same slash rule as `wrap_line` (break after `/`, never
+            // before) so clamped text wraps like unclamped text. This copy
+            // still allows breaking before any other non-word char — a
+            // pre-existing divergence from `wrap_line`'s closing-punctuation
+            // guard, left as-is.
             if Self::is_word_char(c) {
-                if prev_c == ' ' && first_non_whitespace_ix.is_some() {
+                if (prev_c == ' ' || prev_c == '/') && first_non_whitespace_ix.is_some() {
                     last_candidate_ix = ix;
                     last_candidate_width = width;
                 }
-            } else if c != ' ' && first_non_whitespace_ix.is_some() {
+            } else if c != ' ' && c != '/' && first_non_whitespace_ix.is_some() {
                 last_candidate_ix = ix;
                 last_candidate_width = width;
             }
@@ -409,21 +434,32 @@ impl LineWrapper {
                         indent = Some(Self::MAX_INDENT.min((first_nw - last_wrap_ix) as u32));
                     }
 
-                    if last_candidate_ix > last_wrap_ix {
+                    let broke = if last_candidate_ix > last_wrap_ix {
                         last_wrap_ix = last_candidate_ix;
                         width -= last_candidate_width;
                         last_candidate_ix = 0;
-                    } else {
+                        true
+                    } else if c != '/' {
                         last_wrap_ix = ix;
                         width = char_width;
-                    }
+                        true
+                    } else {
+                        // No candidate and the overflow lands on a `/`: the
+                        // hard-break fallback must not start a line with a
+                        // dangling slash either (`https:/` + `/open…`).
+                        // Keep accumulating — the char after the slash run
+                        // is a candidate (a word char after `/`).
+                        false
+                    };
 
-                    if let Some(ind) = indent {
-                        width += self.width_for_char(' ') * ind as f32;
-                    }
+                    if broke {
+                        if let Some(ind) = indent {
+                            width += self.width_for_char(' ') * ind as f32;
+                        }
 
-                    line += 1;
-                    truncate_ix = last_wrap_ix;
+                        line += 1;
+                        truncate_ix = last_wrap_ix;
+                    }
                 }
             } else {
                 // On the last line: track the furthest point where the affix
@@ -901,6 +937,35 @@ mod tests {
                 .wrap_line(&[LineFragment::text("aaaa bbb \"cc\"")], px(72.))
                 .collect::<Vec<_>>(),
             &[Boundary::new(5, 0), Boundary::new(9, 0)],
+        );
+    }
+
+    #[test]
+    fn test_wrap_line_breaks_urls_after_slashes() {
+        let mut wrapper = build_wrapper();
+
+        // `aaaa https://bb` at 72px: the only break opportunities inside
+        // the URL are AFTER the slashes. The old rule broke between the two
+        // slashes of `://` (`https:/` + `/bb`) — and the no-candidate
+        // hard-break fallback could land on the second `/` just the same;
+        // the scheme now holds and the line breaks right after it.
+        assert_eq!(
+            wrapper
+                .wrap_line(&[LineFragment::text("aaaa https://bb")], px(72.))
+                .collect::<Vec<_>>(),
+            &[Boundary::new(5, 0), Boundary::new(13, 0)],
+        );
+        // Path segments wrap the same way: after each `/`, never before
+        // (9.6px monospace cells: "go" / "https://" / "aa.bb/cc/" / "dd").
+        assert_eq!(
+            wrapper
+                .wrap_line(&[LineFragment::text("go https://aa.bb/cc/dd")], px(72.))
+                .collect::<Vec<_>>(),
+            &[
+                Boundary::new(3, 0),
+                Boundary::new(11, 0),
+                Boundary::new(17, 0)
+            ],
         );
     }
 

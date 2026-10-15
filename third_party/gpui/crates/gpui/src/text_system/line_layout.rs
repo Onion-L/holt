@@ -165,7 +165,13 @@ impl LineLayout {
             // Here is very similar to `LineWrapper::wrap_line` to determine text wrapping,
             // but there are some differences, so we have to duplicate the code here.
             if LineWrapper::is_word_char(ch) {
-                if prev_ch == ' ' && ch != ' ' && first_non_whitespace_ix.is_some() {
+                // A word char after a `/` is a break opportunity: URLs and
+                // paths wrap AFTER their slashes, never before them — see
+                // the `/` rule below. Mirrors `LineWrapper::wrap_line`.
+                if (prev_ch == ' ' || prev_ch == '/')
+                    && ch != ' '
+                    && first_non_whitespace_ix.is_some()
+                {
                     last_candidate_ix = Some(boundary);
                     last_candidate_x = x;
                 }
@@ -174,8 +180,13 @@ impl LineLayout {
                 // a space or another non-word char (CJK sequences). A non-word
                 // char directly after a word char is closing punctuation
                 // (`powerless."`, `word)`, `done!`) — breaking there orphans
-                // the punctuation at the start of the next line.
+                // the punctuation at the start of the next line. `/` is never
+                // a break position: inside a URL the only `/` preceded by a
+                // non-word char are the two in `://`, so allowing it splits
+                // the scheme (`https:/` + `/open…`) — slashes break after,
+                // via the rule above.
                 if ch != ' '
+                    && ch != '/'
                     && !LineWrapper::is_word_char(prev_ch)
                     && first_non_whitespace_ix.is_some()
                 {
@@ -202,11 +213,16 @@ impl LineLayout {
                 if let Some(last_candidate_ix) = last_candidate_ix.take() {
                     last_boundary = last_candidate_ix;
                     last_boundary_x = last_candidate_x;
-                } else {
+                    boundaries.push(last_boundary);
+                } else if ch != '/' {
                     last_boundary = boundary;
                     last_boundary_x = x;
+                    boundaries.push(last_boundary);
                 }
-                boundaries.push(last_boundary);
+                // else: no candidate and the overflow glyph is a `/` — the
+                // fallback must not start a line with a dangling slash
+                // either (`https:/` + `/open…`). Keep scanning; the char
+                // after the slash run is a candidate (a word char after `/`).
             }
             prev_ch = ch;
         }
@@ -1020,6 +1036,34 @@ mod tests {
                 run_ix: 0,
                 glyph_ix: 4
             }]
+        );
+    }
+
+    #[test]
+    fn test_wrap_boundaries_break_urls_after_slashes() {
+        // `aaaa https://bb` shaped at 8px cells, wrapped at 72px: the only
+        // break opportunities inside the URL are AFTER the slashes. The old
+        // rule put a boundary between the two slashes of `://` (`https:/` +
+        // `/bb`); the scheme now holds and the line breaks right after it.
+        let text = "aaaa https://bb";
+        let glyphs = (0..text.len())
+            .map(|i| glyph_at(i as f32 * 8., i))
+            .collect::<Vec<_>>();
+        let mut layout = make_layout(glyphs);
+        layout.width = px(120.);
+        let boundaries = layout.compute_wrap_boundaries(text, px(72.), None);
+        assert_eq!(
+            boundaries.as_slice(),
+            &[
+                WrapBoundary {
+                    run_ix: 0,
+                    glyph_ix: 5
+                },
+                WrapBoundary {
+                    run_ix: 0,
+                    glyph_ix: 13
+                },
+            ]
         );
     }
 
