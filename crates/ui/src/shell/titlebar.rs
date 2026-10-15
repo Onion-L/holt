@@ -94,6 +94,12 @@ pub fn cluster_clearance(
 }
 
 /// The titlebar's nav menu (Scheduled / Chat manager), `Some` while open.
+///
+/// Key bindings dispatch BEFORE the card's `on_key_down` (gpui runs a
+/// matched binding first), so ⌘,/⌘N/⌘1-9 navigate with the card still
+/// focused and unable to intercept — every route-changing entry
+/// (`open_settings`, `open_chat`, `open_new_session`, `apply_nav`) closes
+/// the menu itself.
 pub(super) struct TitlebarMenu {
     /// Keyboard highlight within [`TITLEBAR_MENU_ROWS`] — `None` until ↑↓ is
     /// pressed, so no row wears a wash on open without a hover.
@@ -1445,5 +1451,71 @@ mod tests {
             assert!(matches!(shell.route, Route::Scheduled));
             assert!(shell.titlebar_menu.closing_since().is_some());
         });
+    }
+
+    /// The keyboard-reachable route entries (⌘,/⌘N/⌘1-9/back-forward all
+    /// funnel into `open_settings`/`open_new_session`/`open_chat`/
+    /// `apply_nav`) must close the menu themselves — bindings dispatch
+    /// before the card's `on_key_down`, so the card cannot.
+    #[gpui::test]
+    fn titlebar_menu_closes_on_every_route_change(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            shell.update(cx, |shell, cx| shell.open_titlebar_menu(window, cx));
+            TitlebarMenuHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        let reopen = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                shell.update(cx, |shell, cx| shell.open_titlebar_menu(window, cx))
+            });
+            cx.run_until_parked();
+        };
+        let closes = |cx: &mut gpui::VisualTestContext, route: Route| {
+            cx.run_until_parked();
+            shell.read_with(cx, |shell, _| {
+                assert_eq!(shell.route, route);
+                assert!(
+                    shell.titlebar_menu.closing_since().is_some(),
+                    "the menu must close with the route change"
+                );
+            });
+        };
+
+        // ⌘, → Settings.
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open_settings(SettingsSection::General, cx)
+            })
+        });
+        closes(cx, Route::Settings(SettingsSection::General));
+
+        // ⌘N → the new-session canvas.
+        reopen(cx);
+        cx.update(|_, cx| shell.update(cx, |shell, cx| shell.open_new_session(cx)));
+        closes(cx, Route::Chat);
+
+        // ⌘1-9 / ctrl-tab → open_chat.
+        reopen(cx);
+        cx.update(|_, cx| shell.update(cx, |shell, cx| shell.open_chat("any-session".into(), cx)));
+        closes(cx, Route::Chat);
+
+        // Back/forward → apply_nav (Settings sits behind this chat).
+        reopen(cx);
+        cx.update(|_, cx| shell.update(cx, |shell, cx| shell.navigate_back(cx)));
+        closes(cx, Route::Settings(SettingsSection::General));
     }
 }

@@ -186,7 +186,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // column's search row carries the same shortcut.
         KeyBinding::new(&platform_combo("mod-p"), OpenFileLookup, None),
         // Fixed: ⌘⇧M opens the Chat manager (batch archive/delete); the
-        // titlebar's chat-bubbles button carries the same action.
+        // titlebar nav menu's Chat manager row carries the same action.
         KeyBinding::new(&platform_combo("mod-shift-m"), OpenChatManager, None),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
@@ -1146,6 +1146,7 @@ impl Shell {
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 
