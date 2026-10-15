@@ -282,18 +282,6 @@ fn todo_ring(displayed: f32, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The pill's progress underline: a 1.5px line clipped to the pill's
-/// rounded chrome.
-fn pill_underline(displayed: f32, theme: &Theme) -> gpui::Div {
-    div().h(px(1.5)).rounded_full().bg(theme.ink(0.05)).child(
-        div()
-            .h_full()
-            .w(gpui::relative(displayed))
-            .rounded_full()
-            .bg(theme.accent),
-    )
-}
-
 /// The two forms' shared inputs: the capsule's data plus the motion
 /// frame's computed view (counts derived once, shared by both).
 struct TodoForm<'a> {
@@ -403,10 +391,9 @@ impl Shell {
         Some(state_card::fade_and_frost(card, id, 1.0))
     }
 
-    /// The capsule: identity glyph (accent while the Turn is live, green
-    /// when the list is done), the count, the current task — and the
-    /// progress underline. The whole pill is the expand button; dismissal
-    /// lives in the expanded card, never on the pill.
+    /// The capsule: identity glyph (accent while the Turn is live), the
+    /// count, and the current task. The whole pill is the expand button;
+    /// dismissal lives in the expanded card, never on the pill.
     fn todo_pill(&mut self, form: &TodoForm, theme: &Theme) -> AnyElement {
         let (done, total) = (form.done, form.total);
         let all_done = done == total;
@@ -455,7 +442,6 @@ impl Shell {
         }
         div()
             .group("todo-capsule-pill")
-            .relative()
             .h(px(28.0))
             .flex()
             .flex_row()
@@ -475,15 +461,6 @@ impl Shell {
                     .size(px(11.0))
                     .flex_none()
                     .text_color(theme.text_faint),
-            )
-            // The progress underline, clipped to the pill's rounded chrome.
-            .child(
-                div()
-                    .absolute()
-                    .bottom(px(0.0))
-                    .left(px(10.0))
-                    .right(px(10.0))
-                    .child(pill_underline(form.displayed, theme)),
             )
             .into_any_element()
     }
