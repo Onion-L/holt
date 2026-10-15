@@ -351,7 +351,7 @@ impl Shell {
             displayed,
         };
         let (id, content) = if collapsed {
-            ("todo-capsule-pill", self.todo_pill(&form, theme, cx))
+            ("todo-capsule-pill", self.todo_pill(&form, theme))
         } else {
             ("todo-capsule-card", self.todo_card(&form, theme, cx))
         };
@@ -392,8 +392,9 @@ impl Shell {
                     .child(content),
             );
         if collapsed {
-            // The pill itself is the expand button (the × beside it stops
-            // propagation). The tooltip carries the truncated task title.
+            // The pill itself is the expand button (the whole surface — no
+            // competing affordances on it). The tooltip carries the
+            // truncated task title.
             let tooltip: SharedString = current_title(&capsule.items)
                 .unwrap_or("Task list")
                 .to_owned()
@@ -413,15 +414,17 @@ impl Shell {
     }
 
     /// The capsule: identity glyph (accent while the Turn is live, green
-    /// when the list is done), the count, and the current task — over a
-    /// 2px progress underline; the hover × dismisses until the next card.
-    fn todo_pill(&mut self, form: &TodoForm, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// when the list is done), the count, the current task — and the
+    /// progress underline. The whole pill is the expand button; dismissal
+    /// lives in the expanded card, never on the pill.
+    fn todo_pill(&mut self, form: &TodoForm, theme: &Theme) -> AnyElement {
         let (done, total) = (form.done, form.total);
         let all_done = done == total;
+        let green = crate::theme::AccentColor::Green.primary(theme.appearance);
         let icon_tint = if form.capsule.live {
             theme.accent
         } else if all_done {
-            crate::theme::AccentColor::Green.primary(theme.appearance)
+            green
         } else {
             theme.text_muted
         };
@@ -453,8 +456,16 @@ impl Shell {
                     })
                     .child(SharedString::from(title.to_owned())),
             );
+        } else if all_done {
+            // Nothing open: the count alone reads as a cryptic fraction —
+            // say what it means, in the completion tint.
+            label = label.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(green)
+                    .child("All done"),
+            );
         }
-        let card_id = form.capsule.card_id.clone();
         div()
             .group("todo-capsule-pill")
             .relative()
@@ -462,9 +473,9 @@ impl Shell {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .pl(px(9.0))
-            .pr(px(7.0))
+            .gap(px(7.0))
+            .pl(px(10.0))
+            .pr(px(8.0))
             .child(
                 crate::icons::icon(crate::icons::CHECKLIST)
                     .size(px(12.0))
@@ -477,32 +488,6 @@ impl Shell {
                     .size(px(10.0))
                     .flex_none()
                     .text_color(theme.text_faint),
-            )
-            .child(
-                div()
-                    .id("todo-capsule-dismiss")
-                    .debug_selector(|| "todo-capsule-dismiss".to_string())
-                    .flex_none()
-                    .size(px(16.0))
-                    .rounded(px(5.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .opacity(0.0)
-                    .group_hover("todo-capsule-pill", |el| el.opacity(1.0))
-                    .hover(|el| el.bg(crate::theme::ink(0.08)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.todo_capsule_dismissed = Some(card_id.clone());
-                        this.todo_capsule_expanded = false;
-                        cx.notify();
-                    }))
-                    .child(
-                        crate::icons::icon(crate::icons::CLOSE_CIRCLE)
-                            .size(px(11.0))
-                            .text_color(theme.text_muted),
-                    ),
             )
             // The progress underline, clipped to the pill's rounded chrome.
             .child(
