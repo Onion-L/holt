@@ -5,10 +5,9 @@
 //! `Arc<RenderImage>` → the block renders as an image instead of code.
 //! Anything unsupported, still rendering, or failed falls back to the plain
 //! code block — a diagram never blocks layout and never panics the UI
-//! (merman is pinned on an alpha; its render runs unwind-guarded).
-//! Over-budget fences never reach merman at all: the pinned alpha recurses
-//! per nesting level, and a deep enough fence overflows the stack — an
-//! abort `catch_unwind` cannot intercept (issue #31).
+//! (the render runs unwind-guarded). Over-budget fences never reach merman
+//! at all: deep nesting used to overflow the stack — an abort
+//! `catch_unwind` cannot intercept (issue #31).
 //!
 //! The cache follows the transcript's `HighlightStore` shape: the owner
 //! requests per `(row, block)` slot, a background task fills
@@ -64,14 +63,16 @@ pub fn supported_diagram(source: &str) -> bool {
         && within_budget(source)
 }
 
-/// Fence-body budgets gating the render path (issue #31). The pinned
-/// merman 0.8.0-alpha.5 flowchart parse recurses per nesting level with no
-/// depth budget, and a deep enough fence ABORTS the process — a stack
-/// overflow is an abort, not a panic, so the `catch_unwind` guard in
-/// `MermaidStore::request` cannot intercept it. Reproduced on a 2 MiB
-/// stack: depth 100 renders, 500–20,000 soft-fail to the code block,
-/// 30,000 aborts. Each cap sits far above legitimate diagrams and far
-/// below the abort zone.
+/// Fence-body budgets gating the render path (issue #31). merman
+/// 0.8.0-alpha.5's flowchart parse recursed per nesting level with no depth
+/// budget, and a deep enough fence ABORTED the process — a stack overflow
+/// is an abort, not a panic, so the `catch_unwind` guard in
+/// `MermaidStore::request` could not intercept it. 0.9.0 is stack-safe and
+/// enforces its own resource limits; these caps remain the first line — a
+/// pathological body is refused before any render work is spent on it.
+/// Reproduced on the alpha on a 2 MiB stack: depth 100 renders,
+/// 500–20,000 soft-fail to the code block, 30,000 aborts. Each cap sits far
+/// above legitimate diagrams and far below the abort zone.
 const MAX_SOURCE_BYTES: usize = 128 * 1024;
 const MAX_SOURCE_LINES: usize = 2_000;
 /// Mirrors the markdown parser's container budget (`parser.rs`).
@@ -135,9 +136,11 @@ impl MermaidPalette {
     fn of(theme: &Theme) -> Self {
         Self {
             dark: theme.appearance.is_dark(),
-            // The trailing sans-serif is load-bearing: merman's text
-            // measurement is conservative for unknown fonts and picks a
-            // visibly too-narrow width otherwise (same workaround Zed uses).
+            // The trailing sans-serif is load-bearing: the SVG's font-family
+            // list is what gpui's rasterizer resolves against the system
+            // fontdb (by family name), and the generic fallback keeps text
+            // painted when the primary family is missing there or lacks a
+            // glyph.
             font_family: format!("{}, sans-serif", theme.font_sans),
             raised: css(theme.surface_raised),
             node_fill: css(theme.ink(0.06)),
@@ -291,10 +294,8 @@ fn render_svg_with_config(source: &str, config: merman::MermaidConfig) -> anyhow
         "holt-mermaid-{}",
         DIAGRAM_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let renderer = merman::svg::HeadlessRenderer::new()
-        .with_site_config(config)
-        .with_vendored_text_measurer()
-        .with_diagram_id(&diagram_id);
+    let renderer =
+        merman::Renderer::new().with_engine(merman::Engine::new().with_site_config(config));
     // resvg can't rasterize `<foreignObject>` labels and drops CSS at-rules;
     // this pipeline replaces them with wrapped native SVG text before we
     // rasterize.
@@ -305,9 +306,25 @@ fn render_svg_with_config(source: &str, config: merman::MermaidConfig) -> anyhow
         .with_postprocessor(merman::svg::CssOverridePostprocessor::strip_existing_important())
         .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new("transparent"))
         .with_postprocessor(ClusterTitleLeft);
-    renderer
-        .render_svg_with_pipeline_sync(source, &pipeline)
-        .context("merman render failed")?
+    let request = merman::SvgRequest {
+        pipeline: Some(pipeline),
+        options: merman::svg::SvgRenderOptions {
+            diagram_id: Some(diagram_id),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = renderer
+        .render(merman::RenderRequest::svg(
+            source,
+            merman::OperationControl::new(),
+            request,
+        ))
+        .context("merman render failed")?;
+    let merman::RenderOutput::Svg(svg) = output else {
+        return Err(anyhow!("merman returned a non-SVG output"));
+    };
+    svg.map(|output| output.svg().to_string())
         .ok_or_else(|| anyhow!("merman returned no SVG for the given source"))
 }
 
@@ -505,8 +522,8 @@ impl MermaidStore {
         let svg_renderer = cx.svg_renderer();
         let task_slot = slot.clone();
         let task = cx.spawn(async move |this, cx| {
-            // merman is pinned on an alpha: a panic inside a diagram degrades
-            // to the code block, never takes the app down.
+            // A panic inside a diagram render degrades to the code block,
+            // never takes the app down.
             let rendered = cx
                 .background_executor()
                 .spawn(async move {
@@ -790,30 +807,35 @@ mod tests {
         assert!(supported_diagram("flowchart TD\nend\nend\nA --> B"));
     }
 
-    /// The budget's allowed zone must still render against the real merman:
-    /// the issue's ladder has depth 100 rendering on a 2 MiB stack, so run
-    /// the render on a 2 MiB thread — the background executor's stack size.
+    /// Deep nesting within the budget must never take the process down:
+    /// on merman 0.9.0 it either renders or trips upstream's own resource
+    /// limits, which surface as an ordinary render error (the code-block
+    /// fallback). Run on a 2 MiB thread — the background executor's stack
+    /// size (issue #31: the pinned alpha ABORTED the process at depth
+    /// 30,000; 100 now fails soft inside upstream's 16 MiB selector
+    /// budget).
     #[test]
-    fn nested_subgraphs_within_budget_render() {
-        let mut source = String::from("flowchart TD\n");
-        for i in 0..100 {
-            source.push_str(&format!("subgraph s{i}\n"));
+    fn nested_subgraphs_within_budget_render_or_fail_soft() {
+        for (depth, must_render) in [(20usize, true), (100, false)] {
+            let mut source = String::from("flowchart TD\n");
+            for i in 0..depth {
+                source.push_str(&format!("subgraph s{i}\n"));
+            }
+            source.push_str("a --> b\n");
+            for _ in 0..depth {
+                source.push_str("end\n");
+            }
+            assert!(supported_diagram(&source), "depth {depth} is in-budget");
+            let rendered = std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || render_svg(&source, &test_palette()))
+                .expect("spawn")
+                .join()
+                .expect("render panicked");
+            if must_render {
+                assert!(rendered.is_ok(), "depth {depth} must render: {rendered:?}");
+            }
         }
-        source.push_str("a --> b\n");
-        for _ in 0..100 {
-            source.push_str("end\n");
-        }
-        assert!(supported_diagram(&source), "100-deep nesting is in-budget");
-        let rendered = std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
-            .spawn(move || render_svg(&source, &test_palette()))
-            .expect("spawn")
-            .join()
-            .expect("render panicked");
-        assert!(
-            rendered.is_ok(),
-            "100-deep nesting must render: {rendered:?}"
-        );
     }
 
     #[test]
