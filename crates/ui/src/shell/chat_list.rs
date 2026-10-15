@@ -1033,7 +1033,6 @@ impl Shell {
                     .items_center()
                     .gap(px(Theme::SPACE_SM))
                     .child(div().flex_1().child(settings_row))
-                    .child(self.render_chat_manager_button(theme, cx))
                     .when_some(self.render_update_button(theme, cx), |el, button| {
                         el.child(button)
                     }),
@@ -1139,40 +1138,6 @@ impl Shell {
         self.settings.sidebar_order = order;
         self.settings.sidebar_sort = SidebarSort::Manual;
         self.schedule_save(cx);
-    }
-
-    /// The Chat manager entry, sitting right of the settings row: an icon
-    /// button wearing the selected wash while the manager page is up.
-    pub(super) fn render_chat_manager_button(
-        &self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selected = matches!(self.route, Route::ChatManager);
-        div()
-            .id("sidebar-chat-manager")
-            .flex_none()
-            .size(px(24.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .cursor_pointer()
-            .when(selected, |el| el.bg(crate::theme::glass_selected_bg()))
-            .hover(|style| style.bg(theme.glass_hover()))
-            .on_click(cx.listener(|this, _, _, cx| this.open_chat_manager(cx)))
-            .tooltip(|_, cx| {
-                cx.new(|_| crate::popover::TextTooltip("Chat manager".into()))
-                    .into()
-            })
-            .tooltip_show_delay(std::time::Duration::from_millis(350))
-            // gpui's Svg paints only with its OWN text color, never inherits.
-            .child(icon(icons::INBOX).size(px(15.0)).text_color(if selected {
-                theme.text
-            } else {
-                theme.text_muted
-            }))
-            .into_any_element()
     }
 
     /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens

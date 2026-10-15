@@ -88,6 +88,7 @@ impl Shell {
         self.route = Route::Chat;
         self.state
             .update(cx, |s, cx| s.select_chat(Some(chat_id), cx));
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 
@@ -109,6 +110,7 @@ impl Shell {
             }
             s.select_chat(None, cx);
         });
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 

@@ -141,6 +141,7 @@ impl Shell {
             }
         }
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 }

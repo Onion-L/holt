@@ -186,7 +186,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // column's search row carries the same shortcut.
         KeyBinding::new(&platform_combo("mod-p"), OpenFileLookup, None),
         // Fixed: ⌘⇧M opens the Chat manager (batch archive/delete); the
-        // titlebar's chat-bubbles button carries the same action.
+        // titlebar nav menu's Chat manager row carries the same action.
         KeyBinding::new(&platform_combo("mod-shift-m"), OpenChatManager, None),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
@@ -428,6 +428,8 @@ pub struct Shell {
     shortcuts_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
     chat_menu: popover::Popup<ChatMenuState>,
+    /// The titlebar's nav menu (Scheduled / Chat manager).
+    titlebar_menu: popover::Popup<titlebar::TitlebarMenu>,
     chat_copy_task: Option<Task<()>>,
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
@@ -804,6 +806,7 @@ impl Shell {
             provider_error_timer: None,
             shortcuts_sub: None,
             chat_menu: popover::Popup::default(),
+            titlebar_menu: popover::Popup::default(),
             chat_copy_task: None,
             rename_dialog: None,
             delete_confirm: None,
@@ -1143,10 +1146,11 @@ impl Shell {
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 
-    /// Open the Chat manager page (⌘⇧M / the sidebar's inbox button).
+    /// Open the Chat manager page (⌘⇧M / the titlebar nav menu).
     /// Pressing the shortcut again on the page walks back to wherever the
     /// user came from.
     fn open_chat_manager(&mut self, cx: &mut Context<Self>) {
@@ -1158,6 +1162,7 @@ impl Shell {
         self.nav.push(NavEntry::ChatManager);
         self.reveal_chat_manager(cx);
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 
@@ -1186,12 +1191,13 @@ impl Shell {
         page
     }
 
-    /// Show the Scheduled page from the titlebar cluster.
+    /// Show the Scheduled page from the titlebar nav menu.
     pub(super) fn open_scheduled(&mut self, cx: &mut Context<Self>) {
         self.route = Route::Scheduled;
         self.nav.push(NavEntry::Scheduled);
         self.reveal_scheduled(cx);
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         cx.notify();
     }
 
