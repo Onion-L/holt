@@ -267,7 +267,7 @@ icon_assets![
     (INFO_CIRCLE, "info-circle"),
     (DANGER_TRIANGLE, "danger-triangle"),
     (CHAT_ROUND_LINE, "chat-round-line"),
-    // Inbox tray — the sidebar's Chats nav row (Chat manager).
+    // Inbox tray — the titlebar nav menu's Chat manager row.
     (INBOX, "inbox"),
     // Hand-drawn bot head (antenna + eyes + ears) in the Solar Linear style
     // — the embedded set has no bot/robot glyph. Subagent tabs.
