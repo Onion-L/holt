@@ -31,13 +31,15 @@ pub(crate) const MAX_ITEMS: usize = 20;
 pub(crate) const MAX_TITLE_CHARS: usize = 200;
 
 const DESCRIPTION: &str = "Maintain this turn's task list: a checklist card in the transcript \
-that updates in place as work progresses. Use it for multi-step work (roughly 3+ steps) so the \
-user can follow along; skip it for trivial or single-step tasks. Each call REPLACES the whole \
-list — carry every item forward with its current status (`pending`, `in_progress`, `done`, \
-`cancelled`). At most one item may be `in_progress` at a time. Mark an item `done` only when \
-its work is actually finished; cancel rather than delete work that will not happen. Keep \
-titles short and imperative. Bounded: at most 20 items and 200 characters per title — a cap \
-hit is an error, so trim the list instead of overflowing it.";
+that updates in place as work progresses. Use this tool proactively for any multi-step work \
+(roughly 3+ steps): create the list BEFORE starting the work, keep exactly one item \
+`in_progress`, and mark each item `done` the moment its step finishes — the user follows the \
+card, so update it rather than narrating progress in prose. Skip it for trivial or single-step \
+tasks. Each call REPLACES the whole list — carry every item forward with its current status \
+(`pending`, `in_progress`, `done`, `cancelled`). Mark an item `done` only when its work is \
+actually finished; cancel rather than delete work that will not happen. Keep titles short and \
+imperative. Bounded: at most 20 items and 200 characters per title — a cap hit is an error, so \
+trim the list instead of overflowing it.";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

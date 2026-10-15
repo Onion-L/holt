@@ -20,6 +20,8 @@ The current session provides these execution tools:
   configured for the session.
 - `todo`: maintain this turn's task list — a checklist card in the
   transcript that updates in place; each call rewrites the whole list.
+  For a task with three or more steps, create the list BEFORE starting
+  and update it as each step completes; skip it for single-step tasks.
 - `Agent`: delegate a bounded task to an explorer (read-only) or worker
   subagent; present in ordinary turns, not planning turns.
 
