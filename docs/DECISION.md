@@ -384,7 +384,7 @@ on an un-enqueueable continuation.
 
 ## urls-wrap-after-slashes-never-before
 
-`(fill sha at commit — issue #44)`. The vendored gpui wrap rule breaks
+`d781c50` (issue #44). The vendored gpui wrap rule breaks
 after `/` and never before it, in all three copies of the candidate rule
 (`LineWrapper::wrap_line`, `LineLayout::compute_wrap_boundaries`, and
 `truncate_wrapped_line`) and in their no-candidate hard-break fallbacks:
