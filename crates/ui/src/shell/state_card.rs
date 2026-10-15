@@ -24,9 +24,9 @@ use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
 pub(super) const CARD_WIDTH: f32 = 300.0;
-/// The open card's body hangs under the name: the 13px target glyph plus
+/// The open card's body hangs under the name: the 14px target glyph plus
 /// the header's 6px gap.
-const BODY_INDENT: f32 = 19.0;
+const BODY_INDENT: f32 = 20.0;
 
 /// What the mode form shows and does for one active mode. Plan wins when
 /// both flags are somehow set — the engine keeps the modes exclusive; the
@@ -272,7 +272,7 @@ impl Shell {
                     .gap(px(6.0))
                     .child(
                         crate::icons::icon(mode.icon)
-                            .size(px(13.0))
+                            .size(px(14.0))
                             .text_color(theme.text_muted),
                     )
                     .child(
@@ -280,14 +280,16 @@ impl Shell {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
+                            .line_height(px(20.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(SharedString::from(mode.name)),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(11.0))
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_faint)
                             .child(SharedString::from(mode.status)),
                     )
@@ -296,7 +298,7 @@ impl Shell {
                             .id("mode-card-off")
                             .debug_selector(|| "mode-card-off".to_string())
                             .flex_none()
-                            .size(px(20.0))
+                            .size(px(24.0))
                             .rounded(px(6.0))
                             .flex()
                             .items_center()
@@ -320,8 +322,8 @@ impl Shell {
             .child(
                 div()
                     .min_w_0()
-                    .text_size(px(11.0))
-                    .line_height(px(15.0))
+                    .text_size(crate::typography::ui_rems(12.5))
+                    .line_height(px(18.0))
                     .text_color(theme.text_faint)
                     .child(mode.blurb),
             );
@@ -385,12 +387,12 @@ impl Shell {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .pl(px(9.0))
-            .pr(px(7.0))
+            .gap(px(7.0))
+            .pl(px(10.0))
+            .pr(px(8.0))
             .child(
                 crate::icons::icon(crate::icons::TARGET)
-                    .size(px(12.0))
+                    .size(px(13.0))
                     .flex_none()
                     .text_color(status_tint),
             )
@@ -400,7 +402,7 @@ impl Shell {
             .child(goal_status(goal, phase, theme, cx))
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                    .size(px(10.0))
+                    .size(px(11.0))
                     .flex_none()
                     .text_color(theme.text_faint),
             )
@@ -435,7 +437,7 @@ impl Shell {
                 .id(id)
                 .debug_selector(move || selector.to_string())
                 .flex_none()
-                .size(px(22.0))
+                .size(px(24.0))
                 .rounded(px(6.0))
                 .flex()
                 .items_center()
@@ -450,16 +452,16 @@ impl Shell {
                 // container's text color.
                 .child(
                     crate::icons::icon(icon)
-                        .size(px(12.0))
+                        .size(px(13.0))
                         .text_color(theme.text_muted),
                 )
         };
         div()
             .w(px(CARD_WIDTH))
             .pl(px(12.0))
-            .pr(px(6.0))
-            .pt(px(6.0))
-            .pb(px(10.0))
+            .pr(px(8.0))
+            .pt(px(8.0))
+            .pb(px(12.0))
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -469,14 +471,14 @@ impl Shell {
                 // the objective itself heads the card (one line) rather than
                 // a contentless "Goal".
                 div()
-                    .h(px(26.0))
+                    .h(px(28.0))
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(6.0))
                     .child(
                         crate::icons::icon(crate::icons::TARGET)
-                            .size(px(13.0))
+                            .size(px(14.0))
                             .flex_none()
                             .text_color(status_tint),
                     )
@@ -486,8 +488,8 @@ impl Shell {
                             .min_w_0()
                             .truncate()
                             .debug_selector(|| "goal-card-name".to_string())
-                            .text_size(px(12.5))
-                            .line_height(px(18.0))
+                            .text_size(crate::typography::ui_rems(14.0))
+                            .line_height(px(20.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(goal_title(goal)),
@@ -559,8 +561,8 @@ impl Shell {
                         .pl(px(BODY_INDENT))
                         .pr(px(6.0))
                         .mt(px(2.0))
-                        .text_size(px(11.5))
-                        .line_height(px(16.0))
+                        .text_size(crate::typography::ui_rems(12.5))
+                        .line_height(px(18.0))
                         .text_color(theme.text_muted)
                         .line_clamp(2)
                         .child(SharedString::from(goal.text.clone())),
@@ -584,18 +586,18 @@ impl Shell {
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .gap(px(6.0))
+                                .gap(px(7.0))
                                 .debug_selector(move || selector.clone())
                                 .child(
                                     div()
                                         .flex_none()
-                                        .w(px(12.0))
+                                        .w(px(16.0))
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .child(if step.done {
                                             crate::icons::icon(crate::icons::CHECK)
-                                                .size(px(11.0))
+                                                .size(px(12.0))
                                                 .text_color(
                                                     crate::theme::AccentColor::Green
                                                         .primary(theme.appearance),
@@ -603,7 +605,7 @@ impl Shell {
                                                 .into_any_element()
                                         } else {
                                             div()
-                                                .size(px(8.0))
+                                                .size(px(10.0))
                                                 .rounded_full()
                                                 .border_1()
                                                 .border_color(theme.text_faint)
@@ -614,8 +616,8 @@ impl Shell {
                                     div()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(11.0))
-                                        .line_height(px(15.0))
+                                        .text_size(crate::typography::ui_rems(13.5))
+                                        .line_height(px(19.0))
                                         .text_color(if step.done {
                                             theme.text_faint
                                         } else {
@@ -639,8 +641,8 @@ impl Shell {
                         .flex_row()
                         .gap(px(5.0))
                         .items_start()
-                        .text_size(px(11.0))
-                        .line_height(px(15.0))
+                        .text_size(crate::typography::ui_rems(12.5))
+                        .line_height(px(18.0))
                         .text_color(if blocked {
                             status_tint
                         } else {
@@ -649,7 +651,7 @@ impl Shell {
                         .when(blocked, |el| {
                             el.child(
                                 crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                                    .size(px(11.0))
+                                    .size(px(12.0))
                                     .flex_none()
                                     .mt(px(2.0)),
                             )
@@ -822,8 +824,8 @@ fn goal_status(
     };
     div()
         .flex_none()
-        .text_size(px(11.0))
-        .line_height(px(16.0))
+        .text_size(crate::typography::ui_rems(12.0))
+        .line_height(px(18.0))
         .text_color(goal_status_tint(phase, theme))
         .opacity(opacity)
         .child(goal_status_label(goal, phase))
