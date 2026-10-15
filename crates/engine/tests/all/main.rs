@@ -46,6 +46,7 @@ mod subagents_rpc;
 mod title_ownership;
 mod title_settings;
 mod title_task;
+mod todo_rpc;
 mod turn_change_set_rpc;
 mod turn_retry_rpc;
 mod turn_terminal_events_rpc;

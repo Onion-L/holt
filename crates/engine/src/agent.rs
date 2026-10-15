@@ -1380,6 +1380,18 @@ impl RunSink {
             read_chat_title.as_deref(),
             tool_usage_total(&result),
         );
+        // The task-list card (issue #47) upserts instead of landing one
+        // card per call: the Turn's first `todo` write appends it, later
+        // writes rewrite it in place.
+        if !is_error && tool_name == "todo" {
+            crate::tools::todo::upsert_card(
+                &self.chat,
+                &self.base_parts,
+                &self.run_entry,
+                &tool_call_id,
+                &result.details,
+            );
+        }
         // Provider Mode cards (ADR-provider-mode-is-a-chat-mode): a stored proposal or a
         // shown Key request lands as a card after its tool part;
         // the question card (ADR-ask-user-is-a-question-card) and the plan approval card
@@ -1877,6 +1889,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             cancel: cancel.clone(),
             attribution: attribution.clone(),
         }));
+        // The task list (issue #47) mounts on main-chat Turns only — the
+        // MCP policy: subagent, planning, and Provider Mode Turns keep
+        // their curated toolsets (this branch already excludes all three).
+        tools.push(crate::tools::create_todo_tool());
     }
     // The MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the Turn-start snapshot — every enabled
     // server's tools join the toolset as `mcp__<server>__<tool>` agent
@@ -2381,16 +2397,17 @@ mod tests {
     }
 
     /// Drift tripwire: every tool a full turn mounts — the harness set, plus
-    /// `read_chat`, `web_search` behind a backend, and the `Agent`
-    /// delegation tool — must be named in the template's tool list, so a
-    /// tool added or renamed without updating the prompt fails here.
+    /// `read_chat`, `web_search` behind a backend, the `Agent` delegation
+    /// tool, and the `todo` task list — must be named in the template's tool
+    /// list, so a tool added or renamed without updating the prompt fails
+    /// here.
     #[test]
     fn system_prompt_names_every_mounted_tool() {
         let tools = crate::tools::execution_tools("/tmp/holt");
         let mounted: Vec<&str> = tools
             .iter()
             .map(|tool| tool.name.as_str())
-            .chain(["read_chat", "web_search", "Agent"])
+            .chain(["read_chat", "web_search", "Agent", "todo"])
             .collect();
         assert!(!mounted.is_empty());
         for name in &mounted {

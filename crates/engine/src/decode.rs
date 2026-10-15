@@ -83,6 +83,27 @@ fn decode_tool_call(
         "web_search" => TranscriptToolCall::WebSearch {
             query: arg("query").unwrap_or_default(),
         },
+        // The task list (issue #47): the chip shows the items as asked
+        // (done vs. open — the richer four-status picture is the card's);
+        // titles ride the chip, the sanitize policy already keeps them.
+        "todo" => TranscriptToolCall::Todo {
+            items: arguments
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            let title = item.get("title")?.as_str()?.trim();
+                            (!title.is_empty()).then(|| holt_proto::TodoItem {
+                                text: title.to_owned(),
+                                done: item.get("status").and_then(|s| s.as_str()) == Some("done"),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        },
         // MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) decode onto the structured Mcp chip: the
         // two-level name splits at the first `__` after the prefix, the
         // input rides verbatim. A server name containing `__` would

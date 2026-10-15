@@ -18,6 +18,8 @@ The current session provides these execution tools:
 - `web_fetch`: fetch one HTTP(S) URL and return its content as text.
 - `web_search`: search the web; present only when a search backend is
   configured for the session.
+- `todo`: maintain this turn's task list — a checklist card in the
+  transcript that updates in place; each call rewrites the whole list.
 - `Agent`: delegate a bounded task to an explorer (read-only) or worker
   subagent; present in ordinary turns, not planning turns.
 

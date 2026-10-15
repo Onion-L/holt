@@ -242,6 +242,30 @@ pub struct CardQuestion {
     pub options: Vec<String>,
 }
 
+/// One item on a [`MessagePart::TodoCard`]: a short title and where it
+/// stands. The list is positional — items carry no ids; each `todo` call
+/// rewrites the card whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoCardItem {
+    pub title: String,
+    pub status: TodoItemStatus,
+}
+
+/// Where one todo item stands (issue #47). A status this build has never
+/// heard of decodes as `Unknown` — rendered like pending, never a decode
+/// failure (a downgrade still opens the transcript).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoItemStatus {
+    Pending,
+    InProgress,
+    Done,
+    Cancelled,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Where a Provider Mode provider-choice card stands (ADR-provider-mode-is-a-chat-mode). A click
 /// moves it to `Chosen`; any later Turn retires a still-pending one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,6 +516,16 @@ pub enum MessagePart {
         answers: Vec<String>,
         state: ChoiceCardState,
     },
+    /// The agent's task list (issue #47): the card the `todo` tool's writes
+    /// land on — one card per Turn, rewritten in place on each call, so the
+    /// last write is the Turn's settled record. Chat-scoped display state
+    /// only: it never touches the workspace and never meets the gate.
+    #[serde(rename_all = "camelCase")]
+    TodoCard {
+        id: String,
+        #[serde(default)]
+        items: Vec<TodoCardItem>,
+    },
     /// A Provider Mode API-key request (ADR-provider-mode-is-a-chat-mode, amends ADR-api-keys-collected-through-key-requests): which
     /// provider the key unlocks and the one destination it is sent to.
     /// The key is entered on the card and goes straight to the credential
@@ -522,6 +556,7 @@ impl MessagePart {
             | MessagePart::ModelProposal { id, .. }
             | MessagePart::ProviderChoice { id, .. }
             | MessagePart::QuestionCard { id, .. }
+            | MessagePart::TodoCard { id, .. }
             | MessagePart::KeyRequest { id, .. } => id,
         }
     }
@@ -592,6 +627,12 @@ impl MessagePart {
                     + answers.iter().map(String::len).sum::<usize>()
                     + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
+            MessagePart::TodoCard { items, .. } => items
+                .iter()
+                .map(|item| {
+                    item.title.len() + serde_json::to_vec(&item.status).map_or(0, |v| v.len())
+                })
+                .sum::<usize>(),
             MessagePart::KeyRequest {
                 provider_name,
                 destination,
@@ -1588,5 +1629,55 @@ mod tests {
         .unwrap();
         assert_eq!(payload.part_id, "t");
         assert_eq!(payload.output.as_deref(), Some("full output"));
+    }
+
+    /// The todo card is additive (issue #47): it round-trips camelCased,
+    /// entries that predate it never carry the kind, and a status this
+    /// build has never heard of reads as pending-in-spirit, never a
+    /// decode failure.
+    #[test]
+    fn todo_card_is_additive_and_tolerant() {
+        let card = MessagePart::TodoCard {
+            id: "c0".into(),
+            items: vec![
+                TodoCardItem {
+                    title: "Map the fold path".into(),
+                    status: TodoItemStatus::InProgress,
+                },
+                TodoCardItem {
+                    title: "Ship it".into(),
+                    status: TodoItemStatus::Done,
+                },
+            ],
+        };
+        let json = serde_json::to_value(&card).unwrap();
+        assert_eq!(json["kind"], "todoCard");
+        assert_eq!(json["items"][0]["status"], "inProgress");
+        assert_eq!(serde_json::from_value::<MessagePart>(json).unwrap(), card);
+
+        // A card written before `items` existed decodes to an empty list.
+        let bare: MessagePart = serde_json::from_value(serde_json::json!({
+            "kind": "todoCard",
+            "id": "c0",
+        }))
+        .unwrap();
+        assert!(matches!(
+            bare,
+            MessagePart::TodoCard { ref items, .. } if items.is_empty()
+        ));
+
+        // A status from a newer build reads as Unknown rather than
+        // failing the part.
+        let newer: MessagePart = serde_json::from_value(serde_json::json!({
+            "kind": "todoCard",
+            "id": "c0",
+            "items": [{ "title": "x", "status": "doing" }],
+        }))
+        .unwrap();
+        assert!(matches!(
+            newer,
+            MessagePart::TodoCard { ref items, .. }
+                if items[0].status == TodoItemStatus::Unknown
+        ));
     }
 }
