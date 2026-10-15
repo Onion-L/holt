@@ -273,15 +273,34 @@ fn status_glyph(
     }
 }
 
-/// The gliding progress strip: a 2px track, the accent fill's width at the
-/// frame's displayed fraction.
-fn progress_strip(displayed: f32, theme: &Theme) -> gpui::Div {
-    div().h(px(2.0)).rounded_full().bg(theme.ink(0.06)).child(
+/// The capsule's progress ring: the done fraction as a 12px arc beside the
+/// count — green once the list completes, accent while work remains. The
+/// arc rides the motion frame's displayed fraction, so rewrites glide.
+fn todo_ring(displayed: f32, done: usize, total: usize, theme: &Theme) -> AnyElement {
+    let arc = if total > 0 && done == total {
+        crate::theme::AccentColor::Green.primary(theme.appearance)
+    } else {
+        theme.accent
+    };
+    crate::loaders::progress_ring(displayed, 12.0, 1.5, theme.ink(0.12), arc)
+        .flex_none()
+        .into_any_element()
+}
+
+/// The pill's progress underline: a 1.5px line clipped to the pill's
+/// rounded chrome — quiet at rest, green once the list completes.
+fn pill_underline(displayed: f32, done: usize, total: usize, theme: &Theme) -> gpui::Div {
+    let arc = if total > 0 && done == total {
+        crate::theme::AccentColor::Green.primary(theme.appearance)
+    } else {
+        theme.accent
+    };
+    div().h(px(1.5)).rounded_full().bg(theme.ink(0.05)).child(
         div()
             .h_full()
             .w(gpui::relative(displayed))
             .rounded_full()
-            .bg(theme.accent),
+            .bg(arc),
     )
 }
 
@@ -492,7 +511,7 @@ impl Shell {
                     .bottom(px(0.0))
                     .left(px(10.0))
                     .right(px(10.0))
-                    .child(progress_strip(form.displayed, theme)),
+                    .child(pill_underline(form.displayed, done, total, theme)),
             )
             .into_any_element()
     }
@@ -504,17 +523,27 @@ impl Shell {
         let capsule = form.capsule;
         let card_id = capsule.card_id.clone();
         let view = cx.entity_id();
+        let all_done = form.total > 0 && form.done == form.total;
+        let green = crate::theme::AccentColor::Green.primary(theme.appearance);
         let header = div()
-            .h(px(26.0))
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.0))
+            .pb(px(7.0))
+            .border_b_1()
+            .border_color(theme.hairline(0.08))
             .child(
                 crate::icons::icon(crate::icons::CHECKLIST)
                     .size(px(13.0))
                     .flex_none()
-                    .text_color(theme.text_muted),
+                    .text_color(if capsule.live {
+                        theme.accent
+                    } else if all_done {
+                        green
+                    } else {
+                        theme.text_muted
+                    }),
             )
             .child(
                 div()
@@ -526,6 +555,7 @@ impl Shell {
                     .text_color(theme.text)
                     .child("Todo"),
             )
+            .child(todo_ring(form.displayed, form.done, form.total, theme))
             .child(
                 div()
                     .flex_none()
@@ -608,17 +638,18 @@ impl Shell {
                 glyph.into_any_element()
             };
             div()
+                .h(px(22.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(7.0))
                 .child(glyph)
                 .child(
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(11.0))
-                        .line_height(px(15.0))
+                        .text_size(px(11.5))
+                        .line_height(px(16.0))
                         .text_color(match item.status {
                             TodoItemStatus::InProgress => theme.text,
                             TodoItemStatus::Pending | TodoItemStatus::Unknown => theme.text_muted,
@@ -631,21 +662,18 @@ impl Shell {
 
         div()
             .w(px(state_card::CARD_WIDTH))
-            .pl(px(12.0))
-            .pr(px(6.0))
-            .pt(px(6.0))
+            .px(px(12.0))
+            .pt(px(9.0))
             .pb(px(10.0))
             .flex()
             .flex_col()
-            .gap(px(4.0))
             .child(header)
-            .child(progress_strip(form.displayed, theme))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(5.0))
-                    .pt(px(2.0))
+                    .gap(px(3.0))
+                    .pt(px(6.0))
                     .children(rows),
             )
             .into_any_element()
