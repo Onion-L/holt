@@ -18,7 +18,7 @@ The current session provides these execution tools:
 - `web_fetch`: fetch one HTTP(S) URL and return its content as text.
 - `web_search`: search the web; present only when a search backend is
   configured for the session.
-- `todo`: maintain this turn's task list — a checklist card in the
+- `todo`: maintain this turn's task list — a checklist capsule above the
   transcript that updates in place; each call rewrites the whole list.
   For a task with three or more steps, create the list BEFORE starting
   and update it as each step completes; skip it for single-step tasks.

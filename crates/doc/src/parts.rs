@@ -516,9 +516,11 @@ pub enum MessagePart {
         answers: Vec<String>,
         state: ChoiceCardState,
     },
-    /// The agent's task list (issue #47): the card the `todo` tool's writes
-    /// land on — one card per Turn, rewritten in place on each call, so the
-    /// last write is the Turn's settled record. Chat-scoped display state
+    /// The agent's task list (issue #47): the record the `todo` tool's
+    /// writes land on — one card per Turn, rewritten in place on each call,
+    /// so the last write is the Turn's settled record. The transcript part
+    /// is the transport and the durable record; the top-right capsule
+    /// projects it (it never renders as a row). Chat-scoped display state
     /// only: it never touches the workspace and never meets the gate.
     #[serde(rename_all = "camelCase")]
     TodoCard {

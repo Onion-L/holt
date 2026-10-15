@@ -23,7 +23,7 @@ use crate::goal::LoopPhase;
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
-const CARD_WIDTH: f32 = 300.0;
+pub(super) const CARD_WIDTH: f32 = 300.0;
 /// The open card's body hangs under the name: the 13px target glyph plus
 /// the header's 6px gap.
 const BODY_INDENT: f32 = 19.0;
@@ -74,7 +74,7 @@ fn mode_card_for(chat: &Chat) -> Option<ModeCard> {
 /// recipe: a faint wash over the frost blur with a hairline border, never
 /// a solid slab (composer.rs; a drop shadow under the translucent fill
 /// paints through as an inner glow, so glass gets none).
-fn state_card_chrome(theme: &Theme) -> gpui::Div {
+pub(super) fn state_card_chrome(theme: &Theme) -> gpui::Div {
     div()
         // The card floats over the transcript: keep its clicks from
         // landing on the rows beneath, but let wheel scroll through.
@@ -94,7 +94,7 @@ fn state_card_chrome(theme: &Theme) -> gpui::Div {
 /// The entrance fade, then the card's own frost scene layer (the
 /// BadgeCard precedent): sharing the transcript's layer lets bubble text
 /// paint over it.
-fn fade_and_frost(
+pub(super) fn fade_and_frost(
     el: gpui::Stateful<gpui::Div>,
     id: &'static str,
     base_opacity: f32,
@@ -111,11 +111,50 @@ fn fade_and_frost(
 /// measured size (canvas-fed each frame), so a reflow mid-morph retargets
 /// the lerp instead of finishing on a stale size. Manual evaluation, never
 /// `with_animation` — element-id keying replays on remount (panes.rs
-/// `WidthTween`'s rationale).
+/// `WidthTween`'s rationale). Shared by every card on this surface (the
+/// state card, the todo capsule).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StateCardMorph {
     from: (f32, f32),
     started: std::time::Instant,
+}
+
+/// Arm a morph from the outgoing form's measured size; a zero measurement
+/// (never painted) or reduced motion snaps instead.
+pub(super) fn arm_morph(from: (f32, f32), reduced_motion: bool) -> Option<StateCardMorph> {
+    if reduced_motion || from == (0.0, 0.0) {
+        None
+    } else {
+        Some(StateCardMorph {
+            from,
+            started: std::time::Instant::now(),
+        })
+    }
+}
+
+/// The in-flight morph's current box size: an eased lerp from the
+/// toggle-time size toward the form's live measured size (canvas-fed with
+/// the usual one-frame lag), `None` once settled or snapped. Sets the
+/// shell's motion flag mid-flight so the render tail keeps frames coming.
+pub(super) fn morph_box_size(
+    morph: &mut Option<StateCardMorph>,
+    natural: (f32, f32),
+    reduced_motion: bool,
+    motion_active: &std::cell::Cell<bool>,
+) -> Option<(f32, f32)> {
+    let in_flight = (*morph)?;
+    let total = motion::RESIZE.total().mul_f32(motion::speed_scale());
+    let raw = in_flight.started.elapsed().as_secs_f32() / total.as_secs_f32();
+    if raw >= 1.0 || reduced_motion {
+        *morph = None;
+        return None;
+    }
+    let eased = motion::RESIZE.progress(raw);
+    motion_active.set(true);
+    Some((
+        motion::lerp(in_flight.from.0, natural.0, eased),
+        motion::lerp(in_flight.from.1, natural.1, eased),
+    ))
 }
 
 impl Shell {
@@ -150,21 +189,12 @@ impl Shell {
         // the live measured target (previous frame — the bottom_stack
         // idiom). A completed morph clears to natural sizing.
         let natural = self.state_card_size.get();
-        let mut morph_size = None;
-        if let Some(morph) = self.state_card_morph {
-            let total = motion::RESIZE.total().mul_f32(motion::speed_scale());
-            let raw = morph.started.elapsed().as_secs_f32() / total.as_secs_f32();
-            if raw >= 1.0 || self.reduced_motion {
-                self.state_card_morph = None;
-            } else {
-                let eased = motion::RESIZE.progress(raw);
-                self.motion_active.set(true);
-                morph_size = Some((
-                    motion::lerp(morph.from.0, natural.0, eased),
-                    motion::lerp(morph.from.1, natural.1, eased),
-                ));
-            }
-        }
+        let morph_size = morph_box_size(
+            &mut self.state_card_morph,
+            natural,
+            self.reduced_motion,
+            &self.motion_active,
+        );
 
         // The floating box: the composer pill's chrome recipe — a faint
         // wash over the frost blur with a hairline border, never a solid
@@ -641,15 +671,7 @@ impl Shell {
     /// Starts the size morph from the outgoing form's measured size; a
     /// zero measurement (never painted) or reduced motion snaps instead.
     fn set_state_card_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
-        let from = self.state_card_size.get();
-        self.state_card_morph = if self.reduced_motion || from == (0.0, 0.0) {
-            None
-        } else {
-            Some(StateCardMorph {
-                from,
-                started: std::time::Instant::now(),
-            })
-        };
+        self.state_card_morph = arm_morph(self.state_card_size.get(), self.reduced_motion);
         self.settings.state_card_expanded = !collapsed;
         crate::settings::update(crate::settings::SavePolicy::Debounced, cx, move |current| {
             current.state_card_expanded = !collapsed;

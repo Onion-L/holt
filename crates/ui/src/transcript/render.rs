@@ -670,9 +670,6 @@ impl Transcript {
                 answers,
                 state,
             } => question_card::render_question_card(questions, answers, *state, &theme),
-            RowKind::TodoCard { items, live } => {
-                self.render_todo_card(&row.id, items, *live, &theme, window, cx)
-            }
             RowKind::KeyRequest {
                 provider_name,
                 destination,

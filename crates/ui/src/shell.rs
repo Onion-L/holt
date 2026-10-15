@@ -65,6 +65,7 @@ mod spaces;
 mod state_card;
 mod tabs;
 mod titlebar;
+mod todo_capsule;
 mod update;
 
 pub use chat_list::*;
@@ -296,6 +297,15 @@ pub struct Shell {
     /// The state card's goal form's measured outer size (w, h) — canvas-fed each
     /// frame, read with the usual one-frame lag (the bottom_stack idiom).
     state_card_size: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// The todo capsule's (issue #47, replaced surface): same mechanics as
+    /// the state card's, one surface below it.
+    todo_capsule_morph: Option<state_card::StateCardMorph>,
+    todo_capsule_size: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// The capsule's expand toggle and the manually dismissed card id —
+    /// both view chrome (the list itself lives in the transcript): in-memory,
+    /// per app session.
+    todo_capsule_expanded: bool,
+    todo_capsule_dismissed: Option<String>,
     /// Ephemeral collapsed project sections, keyed by organization + id.
     pub(super) sidebar_collapsed_groups: std::collections::HashSet<String>,
     /// In-flight disclosure tweens, shared by the project groups.
@@ -746,6 +756,10 @@ impl Shell {
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),
             state_card_morph: None,
             state_card_size: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            todo_capsule_morph: None,
+            todo_capsule_size: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            todo_capsule_expanded: false,
+            todo_capsule_dismissed: None,
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,
@@ -1833,7 +1847,14 @@ impl Shell {
         } else {
             None
         };
-        if !self.holt_notices.is_empty() || state_card.is_some() {
+        // The todo capsule (issue #47) rides the same top-right stack, under
+        // the state card: the chat's live task list as a pinned pill.
+        let todo_capsule = if matches!(self.route, Route::Chat) && !self.right_pane_expanded {
+            self.render_todo_capsule(&theme, cx)
+        } else {
+            None
+        };
+        if !self.holt_notices.is_empty() || state_card.is_some() || todo_capsule.is_some() {
             // Top-right stacked holt notices. Newest at the bottom of the
             // visual stack (matches the top alert above) so a fresh notice
             // does not push existing ones off-screen; a single fixed slot
@@ -1855,6 +1876,9 @@ impl Shell {
                 .pr(px(14.0 + pane_inset));
             if let Some(card) = state_card {
                 stack = stack.child(card);
+            }
+            if let Some(capsule) = todo_capsule {
+                stack = stack.child(capsule);
             }
             for notice in &self.holt_notices {
                 let id = notice.id;

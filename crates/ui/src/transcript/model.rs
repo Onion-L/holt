@@ -337,15 +337,6 @@ pub enum RowKind {
         answers: Arc<Vec<SharedString>>,
         state: holt_doc::ChoiceCardState,
     },
-    /// The Turn's task list (issue #47): one checklist card per Turn,
-    /// rewritten in place by each `todo` call. Passive — no interaction,
-    /// its animation is the record moving. `live` while the entry still
-    /// streams (the in-progress dot pulses; a settled Turn renders
-    /// statically).
-    TodoCard {
-        items: Arc<Vec<holt_doc::TodoCardItem>>,
-        live: bool,
-    },
     /// A Provider Mode key request (ADR-provider-mode-is-a-chat-mode): who the key unlocks and the
     /// one destination it goes to. The masked input is a Transcript-owned
     /// entity keyed by row id — the key never enters the row.
@@ -906,6 +897,11 @@ pub fn rows_for_entry(
                 pending_group.push(item);
                 group_last_part_ix = part_ix;
             }
+            // The task list rides the top-right capsule (issue #47's
+            // replaced surface) — the transcript part is its record and
+            // transport, never a row. Fully invisible here: no flush, so
+            // the part never splits a tool group either.
+            MessagePart::TodoCard { .. } => {}
             other => {
                 // A pending question card keeps the group above it as the
                 // live tail (the gate's rule): the turn is stopped on the
@@ -1074,9 +1070,12 @@ pub fn rows_for_entry(
                     // nothing reaches here.
                     // A round tag only rides user entries (the loop row
                     // above); on any other entry it draws nothing.
+                    // The task list is the capsule's record (the early arm
+                    // above) — never a row.
                     MessagePart::Tool { .. }
                     | MessagePart::Reasoning { .. }
-                    | MessagePart::GoalRound { .. } => {}
+                    | MessagePart::GoalRound { .. }
+                    | MessagePart::TodoCard { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
                         proposal_id,
@@ -1164,23 +1163,6 @@ pub fn rows_for_entry(
                                     answers.iter().cloned().map(SharedString::from).collect(),
                                 ),
                                 state: *state,
-                            },
-                            entry_id: entry_id.clone(),
-                            timestamp: None,
-                            copy_text: None,
-                        });
-                    }
-                    MessagePart::TodoCard { id: part_id, items } => {
-                        rows.push(Row {
-                            id: format!("{}#{}", entry.id, part_id).into(),
-                            version: fnv1a(
-                                serde_json::to_vec(items).unwrap_or_default().as_slice(),
-                            ) << 1
-                                | streaming as u64,
-                            turn_start: false,
-                            kind: RowKind::TodoCard {
-                                items: Arc::new(items.clone()),
-                                live: streaming,
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
@@ -1305,7 +1287,6 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
             | RowKind::ModelProposal { .. }
             | RowKind::ProviderChoice { .. }
             | RowKind::QuestionCard { .. }
-            | RowKind::TodoCard { .. }
             | RowKind::KeyRequest { .. }
             | RowKind::TurnChangeCard { .. }
             | RowKind::CompactionDivider { .. }
@@ -1317,7 +1298,6 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
                 | RowKind::ModelProposal { .. }
                 | RowKind::ProviderChoice { .. }
                 | RowKind::QuestionCard { .. }
-                | RowKind::TodoCard { .. }
                 | RowKind::KeyRequest { .. }
                 | RowKind::TurnChangeCard { .. }
                 | RowKind::CompactionDivider { .. }
@@ -1561,7 +1541,6 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
                 | MessagePart::ModelProposal { .. }
                 | MessagePart::ProviderChoice { .. }
                 | MessagePart::QuestionCard { .. }
-                | MessagePart::TodoCard { .. }
                 | MessagePart::KeyRequest { .. }
         ) {
             acc.extend_from_slice(&serde_json::to_vec(part).unwrap_or_default());
@@ -1617,79 +1596,6 @@ mod tests {
         assert_ne!(
             entry_fingerprint(&pending, false),
             entry_fingerprint(&written, false)
-        );
-    }
-
-    /// The task-list card (issue #47): one row per card, re-versioned in
-    /// place on each write (same row id, new version — the row diff
-    /// resplices exactly the card), and the whole card rides the entry
-    /// fingerprint so a rewrite of a SETTLED entry still re-renders.
-    #[test]
-    fn a_todo_card_updates_in_place_under_a_stable_row_id() {
-        let card = |items: &[(&str, holt_doc::TodoItemStatus)]| MessagePart::TodoCard {
-            id: "call-1-card".into(),
-            items: items
-                .iter()
-                .map(|(title, status)| holt_doc::TodoCardItem {
-                    title: title.to_string(),
-                    status: *status,
-                })
-                .collect(),
-        };
-        let first = assistant(
-            "run-1",
-            MessageStatus::Streaming,
-            vec![
-                tool_part("call-1", "ls"),
-                card(&[("map", holt_doc::TodoItemStatus::InProgress)]),
-            ],
-        );
-        let rows = rows_for_entry(&first, false, &mut parse);
-        let card_row = rows
-            .iter()
-            .find(|row| matches!(row.kind, RowKind::TodoCard { .. }))
-            .expect("a card row");
-        assert_eq!(card_row.id.as_ref(), "run-1#call-1-card");
-        let RowKind::TodoCard { items, live } = &card_row.kind else {
-            unreachable!();
-        };
-        assert_eq!(items.len(), 1);
-        assert!(live, "the row knows its entry is streaming");
-
-        // The rewrite: same row id, new version — an in-place resplice.
-        let second = assistant(
-            "run-1",
-            MessageStatus::Streaming,
-            vec![
-                tool_part("call-1", "ls"),
-                card(&[
-                    ("map", holt_doc::TodoItemStatus::Done),
-                    ("ship", holt_doc::TodoItemStatus::InProgress),
-                ]),
-            ],
-        );
-        let rows2 = rows_for_entry(&second, false, &mut parse);
-        let card_row2 = rows2
-            .iter()
-            .find(|row| matches!(row.kind, RowKind::TodoCard { .. }))
-            .unwrap();
-        assert_eq!(card_row2.id, card_row.id);
-        assert_ne!(card_row2.version, card_row.version);
-        // A settled entry whose card is rewritten still changes its
-        // fingerprint (the whole-card hash).
-        let settled_first = assistant(
-            "run-1",
-            MessageStatus::Complete,
-            vec![card(&[("map", holt_doc::TodoItemStatus::InProgress)])],
-        );
-        let settled_second = assistant(
-            "run-1",
-            MessageStatus::Complete,
-            vec![card(&[("map", holt_doc::TodoItemStatus::Done)])],
-        );
-        assert_ne!(
-            entry_fingerprint(&settled_first, false),
-            entry_fingerprint(&settled_second, false)
         );
     }
 
