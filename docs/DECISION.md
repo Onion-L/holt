@@ -21,7 +21,7 @@ in the same commit.
 
 | Page | Entries |
 | --- | --- |
-| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) |
+| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) |
@@ -259,6 +259,19 @@ normal chats' catalog-write capability is nil.
 programmatic writes touch only the live layer. Rejected: the tool writing
 `provider-store.json` — restart-gated, the first programmatic writer of a
 0600 user-owned file, and it worsens the snapshot-freeze problem.
+
+## foreign-thinking-is-dropped-not-replayed-as-text
+
+`b57c49b`. When history is replayed to a different model,
+`transform_messages` drops non-redacted foreign thinking blocks instead of
+converting them to text. Rejected: pi-core's convert-to-text — observed
+2026-10-16 after a mid-chat GLM→Kimi switch, ~120 replayed turns of
+reasoning-as-text taught Kimi K3 to emit its own reasoning in the text
+channel (0 thinking tokens, the whole reply as reasoning prose, so the UI
+showed raw thinking with no fold); reproduced standalone by replaying the
+same contaminated history to the kimi endpoint, while a clean history
+returns proper thinking blocks. Claude Code likewise never replays foreign
+thinking. Same-model thinking still replays, signature intact.
 
 ## api-keys-collected-through-key-requests
 
