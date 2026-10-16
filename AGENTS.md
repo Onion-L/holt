@@ -85,7 +85,9 @@ does not run.
   use: core, engine, ui — comma-joined when a change spans several.
 - Releases: a pushed `v*` tag must match the workspace `version` in the
   root `Cargo.toml` (the Release workflow fails closed). A release bumps
-  the version, adds the `site/changelog.html` entry, then commits
-  `chore: bump workspace version to X.Y.Z`, tags, and pushes both.
+  the version, adds the `site/src/pages/changelog.astro` entry, then
+  commits `chore: bump workspace version to X.Y.Z`, tags, and pushes both.
+  The Release workflow runs over 20 minutes — push and move on; never
+  block a session watching it.
 - Issues are GitHub issues, filed through the `issue` skill; there is no
   local tracker.
