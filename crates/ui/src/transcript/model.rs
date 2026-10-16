@@ -347,9 +347,10 @@ pub enum RowKind {
     },
     /// The Turn's file-change card (ADR-turn-change-sets-and-review ticket 03): what one main-chat
     /// Turn changed so far — or, once it settled (success, failure, or
-    /// interruption), what it froze as. Appended after the Turn's last row,
-    /// never part of the entry rows themselves: it rides app state keyed by
-    /// the Turn's user-message id, not the doc. An empty change set builds
+    /// interruption), what it froze as. Appended after the Turn's last
+    /// conversation row (trailing housekeeping System entries render below
+    /// it), never part of the entry rows themselves: it rides app state
+    /// keyed by the Turn's user-message id, not the doc. An empty change set builds
     /// no row — an empty card is not a result. Review/Open actions are
     /// ticket 04.
     TurnChangeCard {
@@ -1413,9 +1414,11 @@ pub fn hand_footers_to_goal_rounds(rows: &mut [Row]) {
 }
 
 /// The card row for one Turn's change set (ADR-turn-change-sets-and-review ticket 03). `entry_id`
-/// is the last entry the Turn rendered — the row the card visually follows.
-/// The version keys the row diff and moves only when the change set's
-/// content does, so a live update resplices exactly the one card it moved.
+/// is the last CONVERSATION entry the Turn rendered — the row the card
+/// visually follows (trailing housekeeping System entries render below the
+/// card). The version keys the row diff and moves only when the change
+/// set's content does, so a live update resplices exactly the one card it
+/// moved.
 pub fn turn_change_row(
     turn_id: &str,
     entry_id: SharedString,

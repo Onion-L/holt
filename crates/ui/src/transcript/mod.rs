@@ -1665,10 +1665,25 @@ impl Transcript {
 
         let mut new_rows: Vec<Row> = Vec::new();
         // The change-set card (ADR-turn-change-sets-and-review ticket 03) closes its Turn: it lands
-        // after the last row of the entries a User message opened — the next
-        // User entry (or the transcript's end) ends the Turn. `turn_id`
-        // tracks the most recent User entry; the state map guarantees any
-        // stored set is non-empty.
+        // after the last CONVERSATION row of the entries a User message
+        // opened — the next conversation entry being a User (or the
+        // transcript's end) ends the Turn. Housekeeping System entries (a
+        // manual compaction's divider, a notice) sit past the boundary:
+        // they are not the Turn's work, so the card renders above them
+        // (user report: a /compact divider landed above the settled card).
+        // `turn_id` tracks the most recent User entry; the state map
+        // guarantees any stored set is non-empty.
+        let mut next_conversation_ends_turn = vec![true; entries.len()];
+        {
+            let mut next: Option<holt_doc::MessageRole> = None;
+            for (ix, entry) in entries.iter().enumerate().rev() {
+                next_conversation_ends_turn[ix] =
+                    next.is_none_or(|role| role == holt_doc::MessageRole::User);
+                if entry.role != holt_doc::MessageRole::System {
+                    next = Some(entry.role);
+                }
+            }
+        }
         let mut turn_id: Option<&str> = None;
         for (ix, entry) in entries.iter().enumerate() {
             if entry.role == holt_doc::MessageRole::User {
@@ -1677,7 +1692,8 @@ impl Transcript {
             new_rows.extend(self.rows_for(entry, false));
             let turn_ends =
                 ix + 1 == entries.len() || entries[ix + 1].role == holt_doc::MessageRole::User;
-            if turn_ends
+            if entry.role != holt_doc::MessageRole::System
+                && next_conversation_ends_turn[ix]
                 && let Some(id) = turn_id
                 && let Some(change_set) = turn_change_sets.get(id)
                 // Only the SETTLE surfaces a card: live frames keep the
@@ -2460,6 +2476,110 @@ mod tests {
                 updated_at: chrono::Utc::now(),
             });
             assert!(!s.turn_restores.contains_key("m-1"));
+        });
+    }
+
+    /// A trailing housekeeping System entry (a manual /compact's divider)
+    /// is not the Turn's work: the settled change card lands after the
+    /// Turn's last CONVERSATION entry, above the divider (user report).
+    #[gpui::test]
+    fn the_change_card_lands_above_a_trailing_compaction_divider(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+
+        let entry = |id: &str,
+                     role: holt_doc::MessageRole,
+                     parts: Vec<holt_doc::MessagePart>|
+         -> SessionMessageEntry {
+            SessionMessageEntry {
+                id: id.into(),
+                role,
+                parts,
+                created_at: 0,
+                device_id: "dev".into(),
+                status: Some(holt_doc::MessageStatus::Complete),
+                continuation_of: None,
+            }
+        };
+        let text = |id: &str, role: holt_doc::MessageRole| {
+            entry(
+                id,
+                role,
+                vec![holt_doc::MessagePart::Text {
+                    id: "t0".into(),
+                    text: format!("entry {id}"),
+                }],
+            )
+        };
+        state.update(cx, |s, cx| {
+            s.transcript = vec![
+                text("m-1", holt_doc::MessageRole::User),
+                text("a-1", holt_doc::MessageRole::Assistant),
+                entry(
+                    "sys-1",
+                    holt_doc::MessageRole::System,
+                    vec![holt_doc::MessagePart::CompactionDivider {
+                        id: "d0".into(),
+                        summary: "## Goal\nship it".into(),
+                        tokens_before: 45231,
+                        tokens_after: 8002,
+                        trigger: holt_doc::parts::CompactionTrigger::Manual,
+                        timestamp: 7,
+                    }],
+                ),
+            ];
+            s.transcript_replayed = true;
+            s.turn_change_sets.insert(
+                "m-1".into(),
+                holt_proto::TurnChangeSet {
+                    chat_id: "chat-1".into(),
+                    message_id: "m-1".into(),
+                    phase: holt_proto::TurnChangeSetPhase::Final,
+                    files: vec![holt_proto::TurnFileChange {
+                        path: "src/lib.rs".into(),
+                        old_path: None,
+                        status: holt_proto::TurnFileChangeStatus::Modified,
+                        additions: 3,
+                        deletions: 1,
+                        binary: false,
+                    }],
+                    additions: 3,
+                    deletions: 1,
+                    truncated: false,
+                    updated_at: chrono::Utc::now(),
+                },
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        transcript.update(cx, |this, _| {
+            let card_ix = this
+                .rows
+                .iter()
+                .position(|row| row.id.as_ref() == "m-1#tcs")
+                .expect("the settled Turn's card exists");
+            let divider_ix = this
+                .rows
+                .iter()
+                .position(|row| matches!(row.kind, RowKind::CompactionDivider { .. }))
+                .expect("the divider row exists");
+            assert!(
+                card_ix < divider_ix,
+                "the card closes the Turn above the housekeeping divider"
+            );
+            assert_eq!(this.rows[card_ix].entry_id.as_ref(), "a-1");
+            // The card is emitted once — the divider does not retrigger it.
+            assert_eq!(
+                this.rows
+                    .iter()
+                    .filter(|row| row.id.as_ref() == "m-1#tcs")
+                    .count(),
+                1
+            );
         });
     }
 
