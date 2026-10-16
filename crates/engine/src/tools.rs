@@ -6,7 +6,8 @@
 //! listing (ADR-plan-mode-is-an-independent-approval-checkpoint's read-only surface) in [`ls`], web fetch (ADR-web-tools-full-text-ungated-pluggable-search) in
 //! [`web_fetch`], and web search behind the user-configured [`SearchBackend`]
 //! (ADR-web-tools-full-text-ungated-pluggable-search) in [`web_search`] — plus the question card's `ask_user` tool
-//! (ADR-ask-user-is-a-question-card) in [`ask_user`].
+//! (ADR-ask-user-is-a-question-card) in [`ask_user`] and the Turn task list's `todo` tool
+//! (issue #47) in [`todo`].
 
 pub(crate) mod ask_user;
 mod grep;
@@ -16,6 +17,7 @@ mod read_chat;
 pub(crate) mod submit_plan;
 #[cfg(test)]
 pub(crate) mod test_http;
+pub(crate) mod todo;
 mod web_fetch;
 pub(crate) mod web_search;
 
@@ -924,6 +926,7 @@ pub(crate) use model_setup::create_choose_provider_tool;
 pub(crate) use model_setup::create_model_proposal_tool;
 pub(crate) use model_setup::create_request_provider_key_tool;
 pub(crate) use read_chat::create_read_chat_tool;
+pub(crate) use todo::create_todo_tool;
 pub use web_search::{SearchBackend, SearchHit, SearchResults};
 
 /// Foreground commands get a bounded wait. The engine applies no timeout of

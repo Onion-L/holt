@@ -23,7 +23,7 @@ in the same commit.
 | --- | --- |
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) |
-| [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) |
+| [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
@@ -397,3 +397,16 @@ other wrapped surface — markdown prose, `line_clamp` state cards — kept
 the bug), and making `://` unbreakable alone (a URL then has no break
 candidate before its first path slash and hard-breaks mid-hostname).
 Matches browser behavior: break after the solidus, never before it.
+
+## todo-card-is-the-record
+
+(issue #47; landing sha filled on merge.) The `todo` tool is stateless —
+every call carries the whole list — and the Turn's one `TodoCard` part,
+upserted in place from the result details, is the record (restart-safe by
+riding the transcript, like the question card). Rejected: engine-held
+chat-scoped state (a second store to persist and reconcile, when the card
+already is it); reviving the vestigial ACP `ToolCall::Todo` chip as the
+checklist surface (a chip renders one line per call — a card that rewrites
+in place is a part, not a chip; the chip stays as the per-call record);
+mounting beyond main-chat Turns (the MCP policy — subagent, planning, and
+Provider Mode Turns keep their curated toolsets).

@@ -23,10 +23,10 @@ use crate::goal::LoopPhase;
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
-const CARD_WIDTH: f32 = 300.0;
-/// The open card's body hangs under the name: the 13px target glyph plus
+pub(super) const CARD_WIDTH: f32 = 300.0;
+/// The open card's body hangs under the name: the 14px target glyph plus
 /// the header's 6px gap.
-const BODY_INDENT: f32 = 19.0;
+const BODY_INDENT: f32 = 20.0;
 
 /// What the mode form shows and does for one active mode. Plan wins when
 /// both flags are somehow set — the engine keeps the modes exclusive; the
@@ -74,7 +74,7 @@ fn mode_card_for(chat: &Chat) -> Option<ModeCard> {
 /// recipe: a faint wash over the frost blur with a hairline border, never
 /// a solid slab (composer.rs; a drop shadow under the translucent fill
 /// paints through as an inner glow, so glass gets none).
-fn state_card_chrome(theme: &Theme) -> gpui::Div {
+pub(super) fn state_card_chrome(theme: &Theme) -> gpui::Div {
     div()
         // The card floats over the transcript: keep its clicks from
         // landing on the rows beneath, but let wheel scroll through.
@@ -94,7 +94,7 @@ fn state_card_chrome(theme: &Theme) -> gpui::Div {
 /// The entrance fade, then the card's own frost scene layer (the
 /// BadgeCard precedent): sharing the transcript's layer lets bubble text
 /// paint over it.
-fn fade_and_frost(
+pub(super) fn fade_and_frost(
     el: gpui::Stateful<gpui::Div>,
     id: &'static str,
     base_opacity: f32,
@@ -111,11 +111,50 @@ fn fade_and_frost(
 /// measured size (canvas-fed each frame), so a reflow mid-morph retargets
 /// the lerp instead of finishing on a stale size. Manual evaluation, never
 /// `with_animation` — element-id keying replays on remount (panes.rs
-/// `WidthTween`'s rationale).
+/// `WidthTween`'s rationale). Shared by every card on this surface (the
+/// state card, the todo capsule).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StateCardMorph {
     from: (f32, f32),
     started: std::time::Instant,
+}
+
+/// Arm a morph from the outgoing form's measured size; a zero measurement
+/// (never painted) or reduced motion snaps instead.
+pub(super) fn arm_morph(from: (f32, f32), reduced_motion: bool) -> Option<StateCardMorph> {
+    if reduced_motion || from == (0.0, 0.0) {
+        None
+    } else {
+        Some(StateCardMorph {
+            from,
+            started: std::time::Instant::now(),
+        })
+    }
+}
+
+/// The in-flight morph's current box size: an eased lerp from the
+/// toggle-time size toward the form's live measured size (canvas-fed with
+/// the usual one-frame lag), `None` once settled or snapped. Sets the
+/// shell's motion flag mid-flight so the render tail keeps frames coming.
+pub(super) fn morph_box_size(
+    morph: &mut Option<StateCardMorph>,
+    natural: (f32, f32),
+    reduced_motion: bool,
+    motion_active: &std::cell::Cell<bool>,
+) -> Option<(f32, f32)> {
+    let in_flight = (*morph)?;
+    let total = motion::RESIZE.total().mul_f32(motion::speed_scale());
+    let raw = in_flight.started.elapsed().as_secs_f32() / total.as_secs_f32();
+    if raw >= 1.0 || reduced_motion {
+        *morph = None;
+        return None;
+    }
+    let eased = motion::RESIZE.progress(raw);
+    motion_active.set(true);
+    Some((
+        motion::lerp(in_flight.from.0, natural.0, eased),
+        motion::lerp(in_flight.from.1, natural.1, eased),
+    ))
 }
 
 impl Shell {
@@ -150,21 +189,12 @@ impl Shell {
         // the live measured target (previous frame — the bottom_stack
         // idiom). A completed morph clears to natural sizing.
         let natural = self.state_card_size.get();
-        let mut morph_size = None;
-        if let Some(morph) = self.state_card_morph {
-            let total = motion::RESIZE.total().mul_f32(motion::speed_scale());
-            let raw = morph.started.elapsed().as_secs_f32() / total.as_secs_f32();
-            if raw >= 1.0 || self.reduced_motion {
-                self.state_card_morph = None;
-            } else {
-                let eased = motion::RESIZE.progress(raw);
-                self.motion_active.set(true);
-                morph_size = Some((
-                    motion::lerp(morph.from.0, natural.0, eased),
-                    motion::lerp(morph.from.1, natural.1, eased),
-                ));
-            }
-        }
+        let morph_size = morph_box_size(
+            &mut self.state_card_morph,
+            natural,
+            self.reduced_motion,
+            &self.motion_active,
+        );
 
         // The floating box: the composer pill's chrome recipe — a faint
         // wash over the frost blur with a hairline border, never a solid
@@ -242,7 +272,7 @@ impl Shell {
                     .gap(px(6.0))
                     .child(
                         crate::icons::icon(mode.icon)
-                            .size(px(13.0))
+                            .size(px(14.0))
                             .text_color(theme.text_muted),
                     )
                     .child(
@@ -250,14 +280,16 @@ impl Shell {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
+                            .line_height(px(20.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(SharedString::from(mode.name)),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(px(11.0))
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_faint)
                             .child(SharedString::from(mode.status)),
                     )
@@ -266,7 +298,7 @@ impl Shell {
                             .id("mode-card-off")
                             .debug_selector(|| "mode-card-off".to_string())
                             .flex_none()
-                            .size(px(20.0))
+                            .size(px(24.0))
                             .rounded(px(6.0))
                             .flex()
                             .items_center()
@@ -290,8 +322,8 @@ impl Shell {
             .child(
                 div()
                     .min_w_0()
-                    .text_size(px(11.0))
-                    .line_height(px(15.0))
+                    .text_size(crate::typography::ui_rems(12.5))
+                    .line_height(px(18.0))
                     .text_color(theme.text_faint)
                     .child(mode.blurb),
             );
@@ -355,12 +387,12 @@ impl Shell {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .pl(px(9.0))
-            .pr(px(7.0))
+            .gap(px(7.0))
+            .pl(px(10.0))
+            .pr(px(8.0))
             .child(
                 crate::icons::icon(crate::icons::TARGET)
-                    .size(px(12.0))
+                    .size(px(13.0))
                     .flex_none()
                     .text_color(status_tint),
             )
@@ -370,7 +402,7 @@ impl Shell {
             .child(goal_status(goal, phase, theme, cx))
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                    .size(px(10.0))
+                    .size(px(11.0))
                     .flex_none()
                     .text_color(theme.text_faint),
             )
@@ -405,7 +437,7 @@ impl Shell {
                 .id(id)
                 .debug_selector(move || selector.to_string())
                 .flex_none()
-                .size(px(22.0))
+                .size(px(24.0))
                 .rounded(px(6.0))
                 .flex()
                 .items_center()
@@ -420,16 +452,16 @@ impl Shell {
                 // container's text color.
                 .child(
                     crate::icons::icon(icon)
-                        .size(px(12.0))
+                        .size(px(13.0))
                         .text_color(theme.text_muted),
                 )
         };
         div()
             .w(px(CARD_WIDTH))
             .pl(px(12.0))
-            .pr(px(6.0))
-            .pt(px(6.0))
-            .pb(px(10.0))
+            .pr(px(8.0))
+            .pt(px(8.0))
+            .pb(px(12.0))
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -439,14 +471,14 @@ impl Shell {
                 // the objective itself heads the card (one line) rather than
                 // a contentless "Goal".
                 div()
-                    .h(px(26.0))
+                    .h(px(28.0))
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(6.0))
                     .child(
                         crate::icons::icon(crate::icons::TARGET)
-                            .size(px(13.0))
+                            .size(px(14.0))
                             .flex_none()
                             .text_color(status_tint),
                     )
@@ -456,8 +488,8 @@ impl Shell {
                             .min_w_0()
                             .truncate()
                             .debug_selector(|| "goal-card-name".to_string())
-                            .text_size(px(12.5))
-                            .line_height(px(18.0))
+                            .text_size(crate::typography::ui_rems(14.0))
+                            .line_height(px(20.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(goal_title(goal)),
@@ -529,8 +561,8 @@ impl Shell {
                         .pl(px(BODY_INDENT))
                         .pr(px(6.0))
                         .mt(px(2.0))
-                        .text_size(px(11.5))
-                        .line_height(px(16.0))
+                        .text_size(crate::typography::ui_rems(12.5))
+                        .line_height(px(18.0))
                         .text_color(theme.text_muted)
                         .line_clamp(2)
                         .child(SharedString::from(goal.text.clone())),
@@ -554,18 +586,18 @@ impl Shell {
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .gap(px(6.0))
+                                .gap(px(7.0))
                                 .debug_selector(move || selector.clone())
                                 .child(
                                     div()
                                         .flex_none()
-                                        .w(px(12.0))
+                                        .w(px(16.0))
                                         .flex()
                                         .items_center()
                                         .justify_center()
                                         .child(if step.done {
                                             crate::icons::icon(crate::icons::CHECK)
-                                                .size(px(11.0))
+                                                .size(px(12.0))
                                                 .text_color(
                                                     crate::theme::AccentColor::Green
                                                         .primary(theme.appearance),
@@ -573,7 +605,7 @@ impl Shell {
                                                 .into_any_element()
                                         } else {
                                             div()
-                                                .size(px(8.0))
+                                                .size(px(10.0))
                                                 .rounded_full()
                                                 .border_1()
                                                 .border_color(theme.text_faint)
@@ -584,8 +616,8 @@ impl Shell {
                                     div()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(11.0))
-                                        .line_height(px(15.0))
+                                        .text_size(crate::typography::ui_rems(13.5))
+                                        .line_height(px(19.0))
                                         .text_color(if step.done {
                                             theme.text_faint
                                         } else {
@@ -609,8 +641,8 @@ impl Shell {
                         .flex_row()
                         .gap(px(5.0))
                         .items_start()
-                        .text_size(px(11.0))
-                        .line_height(px(15.0))
+                        .text_size(crate::typography::ui_rems(12.5))
+                        .line_height(px(18.0))
                         .text_color(if blocked {
                             status_tint
                         } else {
@@ -619,7 +651,7 @@ impl Shell {
                         .when(blocked, |el| {
                             el.child(
                                 crate::icons::icon(crate::icons::DANGER_TRIANGLE)
-                                    .size(px(11.0))
+                                    .size(px(12.0))
                                     .flex_none()
                                     .mt(px(2.0)),
                             )
@@ -641,15 +673,7 @@ impl Shell {
     /// Starts the size morph from the outgoing form's measured size; a
     /// zero measurement (never painted) or reduced motion snaps instead.
     fn set_state_card_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
-        let from = self.state_card_size.get();
-        self.state_card_morph = if self.reduced_motion || from == (0.0, 0.0) {
-            None
-        } else {
-            Some(StateCardMorph {
-                from,
-                started: std::time::Instant::now(),
-            })
-        };
+        self.state_card_morph = arm_morph(self.state_card_size.get(), self.reduced_motion);
         self.settings.state_card_expanded = !collapsed;
         crate::settings::update(crate::settings::SavePolicy::Debounced, cx, move |current| {
             current.state_card_expanded = !collapsed;
@@ -800,8 +824,8 @@ fn goal_status(
     };
     div()
         .flex_none()
-        .text_size(px(11.0))
-        .line_height(px(16.0))
+        .text_size(crate::typography::ui_rems(12.0))
+        .line_height(px(18.0))
         .text_color(goal_status_tint(phase, theme))
         .opacity(opacity)
         .child(goal_status_label(goal, phase))

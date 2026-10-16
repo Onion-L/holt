@@ -311,12 +311,14 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
         MessagePart::ModelProposal { id, .. }
         | MessagePart::ProviderChoice { id, .. }
         | MessagePart::QuestionCard { id, .. }
+        | MessagePart::TodoCard { id, .. }
         | MessagePart::KeyRequest { id, .. } => DocPartJson {
             id: id.clone(),
             kind: match part {
                 MessagePart::ModelProposal { .. } => "modelProposal",
                 MessagePart::ProviderChoice { .. } => "providerChoice",
                 MessagePart::QuestionCard { .. } => "questionCard",
+                MessagePart::TodoCard { .. } => "todoCard",
                 _ => "keyRequest",
             }
             .into(),
@@ -428,7 +430,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             text: p.reasoning.unwrap_or_default(),
         },
-        "modelProposal" | "providerChoice" | "questionCard" | "keyRequest" => {
+        "modelProposal" | "providerChoice" | "questionCard" | "keyRequest" | "todoCard" => {
             match p
                 .card
                 .and_then(|card| serde_json::from_value::<MessagePart>(card).ok())
@@ -437,6 +439,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                     card @ (MessagePart::ModelProposal { .. }
                     | MessagePart::ProviderChoice { .. }
                     | MessagePart::QuestionCard { .. }
+                    | MessagePart::TodoCard { .. }
                     | MessagePart::KeyRequest { .. }),
                 ) => card,
                 _ => MessagePart::Text {
@@ -1523,6 +1526,31 @@ mod tests {
                 state: crate::parts::ChoiceCardState::Chosen,
             },
         ];
+        let doc = SessionDoc::init("chat-1").unwrap();
+        doc.push_message(&SessionMessageEntry {
+            role: MessageRole::System,
+            parts: cards.clone(),
+            ..user_entry("m1", "ignored")
+        })
+        .unwrap();
+        assert_eq!(doc.read_entries().unwrap()[0].parts, cards);
+    }
+
+    #[test]
+    fn round_trips_todo_cards() {
+        let cards = vec![MessagePart::TodoCard {
+            id: "todo-card".into(),
+            items: vec![
+                crate::parts::TodoCardItem {
+                    title: "Map the fold path".into(),
+                    status: crate::parts::TodoItemStatus::Done,
+                },
+                crate::parts::TodoCardItem {
+                    title: "Ship it".into(),
+                    status: crate::parts::TodoItemStatus::InProgress,
+                },
+            ],
+        }];
         let doc = SessionDoc::init("chat-1").unwrap();
         doc.push_message(&SessionMessageEntry {
             role: MessageRole::System,

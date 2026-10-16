@@ -897,6 +897,11 @@ pub fn rows_for_entry(
                 pending_group.push(item);
                 group_last_part_ix = part_ix;
             }
+            // The task list rides the top-right capsule (issue #47's
+            // replaced surface) — the transcript part is its record and
+            // transport, never a row. Fully invisible here: no flush, so
+            // the part never splits a tool group either.
+            MessagePart::TodoCard { .. } => {}
             other => {
                 // A pending question card keeps the group above it as the
                 // live tail (the gate's rule): the turn is stopped on the
@@ -1065,9 +1070,12 @@ pub fn rows_for_entry(
                     // nothing reaches here.
                     // A round tag only rides user entries (the loop row
                     // above); on any other entry it draws nothing.
+                    // The task list is the capsule's record (the early arm
+                    // above) — never a row.
                     MessagePart::Tool { .. }
                     | MessagePart::Reasoning { .. }
-                    | MessagePart::GoalRound { .. } => {}
+                    | MessagePart::GoalRound { .. }
+                    | MessagePart::TodoCard { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
                         proposal_id,
