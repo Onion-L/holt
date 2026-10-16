@@ -400,7 +400,7 @@ Matches browser behavior: break after the solidus, never before it.
 
 ## todo-card-is-the-record
 
-(issue #47; landing sha filled on merge.) The `todo` tool is stateless —
+`2dc0ce8` and `487b6a2` (issue #47). The `todo` tool is stateless —
 every call carries the whole list — and the Turn's one `TodoCard` part,
 upserted in place from the result details, is the record (restart-safe by
 riding the transcript, like the question card). Rejected: engine-held
