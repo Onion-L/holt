@@ -11,3 +11,4 @@ node_modules
 build/
 edge/dist/
 docs/research/
+crates/ui/prototypes/

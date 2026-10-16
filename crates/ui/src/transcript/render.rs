@@ -27,6 +27,7 @@ use holt_proto::TurnFileChange;
 use holt_proto::TurnFileChangeStatus;
 use holt_proto::view::tool_chip_content_in;
 
+use super::agent_avatar::{AgentIdentity, AvatarMood, agent_avatar};
 use super::model::{
     Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
     is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
@@ -1852,6 +1853,7 @@ enum ChipTrail {
 /// header rewriting itself per stream delta read as noise — user report).
 fn chip_header_row(
     tool: &ToolItem,
+    identity: Option<AgentIdentity>,
     trail: Option<ChipTrail>,
     theme: &Theme,
     view: gpui::EntityId,
@@ -1863,6 +1865,8 @@ fn chip_header_row(
     } else {
         tool_chip_content_in(&tool.call, cwd)
     };
+    // A bound spawn chip wears its assigned name, not the genus label.
+    let label = identity.map(|identity| identity.name).unwrap_or(label);
     let subagent_type = match &tool.call {
         ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. }
             if !tool.is_thought && is_agent_call(&tool.call) =>
@@ -1892,6 +1896,20 @@ fn chip_header_row(
     } else {
         theme.text_muted
     };
+    let avatar = identity.map(|identity| {
+        // Running from first paint (call unresolved, ref not yet stamped)
+        // through the eager-done window (ref stamped, status Running); the
+        // status wins once it lands. Legacy docs carry no status: settled
+        // chips read as Done.
+        let mood = if failed {
+            AvatarMood::Failed
+        } else if matches!(tool.subagent_status, Some(SubagentStatus::Running)) || !tool.resolved {
+            AvatarMood::Running
+        } else {
+            AvatarMood::Done
+        };
+        agent_avatar(identity, mood, view, cx)
+    });
     div()
         .h(px(CHIP_HEIGHT))
         .w_full()
@@ -1903,10 +1921,18 @@ fn chip_header_row(
         .px(px(8.0))
         .text_size(px(12.0))
         .line_height(px(18.0))
-        .child(
+        .child(match avatar {
+            // The spawn chip leads with its 22px avatar face instead of the
+            // glyph; the rail is a separate sibling, so widening the slot
+            // doesn't move it.
+            Some(avatar) => div()
+                .size(px(22.0))
+                .flex_none()
+                .child(avatar)
+                .into_any_element(),
             // Bare leading icon — the slot keeps the old tile's 18px
             // footprint so the guide rail hanging under it doesn't move.
-            div()
+            None => div()
                 .size(px(18.0))
                 .flex_none()
                 .flex()
@@ -1920,8 +1946,9 @@ fn chip_header_row(
                     })
                     .size(px(13.0))
                     .text_color(theme.text_muted.opacity(0.85)),
-                ),
-        )
+                )
+                .into_any_element(),
+        })
         .child(
             div()
                 .flex_none()
@@ -2074,6 +2101,7 @@ fn chip_header_row(
 /// The header row of an expandable chip card.
 fn chip_header(
     tool: &ToolItem,
+    identity: Option<AgentIdentity>,
     open: bool,
     theme: &Theme,
     view: gpui::EntityId,
@@ -2082,6 +2110,7 @@ fn chip_header(
 ) -> gpui::Div {
     chip_header_row(
         tool,
+        identity,
         Some(ChipTrail::Chevron { open }),
         theme,
         view,

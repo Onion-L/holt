@@ -449,6 +449,7 @@ mod tests {
     fn tool_group_summaries() {
         let exec = |c: &str| ToolItem {
             call: ToolCall::Exec { command: c.into() },
+            call_id: None,
             is_error: false,
             resolved: true,
             detail: None,
@@ -469,6 +470,7 @@ mod tests {
                 old_string: None,
                 new_string: None,
             },
+            call_id: None,
             is_error: false,
             resolved: true,
             detail: None,
@@ -505,6 +507,7 @@ mod tests {
         let tools = vec![
             ToolItem {
                 call: ToolCall::ReadFile { path: "x".into() },
+                call_id: None,
                 is_error: false,
                 resolved: true,
                 detail: None,
@@ -523,6 +526,7 @@ mod tests {
                 call: ToolCall::Glob {
                     pattern: "*.rs".into(),
                 },
+                call_id: None,
                 is_error: false,
                 resolved: true,
                 detail: None,
@@ -539,6 +543,7 @@ mod tests {
             },
             ToolItem {
                 call: ToolCall::WebSearch { query: "q".into() },
+                call_id: None,
                 is_error: false,
                 resolved: true,
                 detail: None,

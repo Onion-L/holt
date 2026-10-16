@@ -30,6 +30,10 @@ use crate::theme::Theme;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolItem {
     pub call: ToolCall,
+    /// The tool part's id — an agent chip's identity key from its very first
+    /// paint, before the engine stamps `subagent_ref` (the ref arrives on
+    /// this same part, so the key never changes under the chip).
+    pub call_id: Option<SharedString>,
     pub is_error: bool,
     pub resolved: bool,
     /// Expandable detail: a code-block of output lines, or a real diff
@@ -131,6 +135,7 @@ fn thought_item(tree: &BlockTree, live: bool) -> ToolItem {
             name: "Thought process".into(),
             input: None,
         },
+        call_id: None,
         is_error: false,
         resolved: !live,
         detail: (!lines.is_empty()).then(|| {
@@ -780,6 +785,7 @@ pub fn rows_for_entry(
                 pending_group.push(ToolItem {
                     invocation: call_block(&call).map(Arc::new),
                     call,
+                    call_id: None,
                     is_error: false,
                     resolved: true,
                     detail: None,
@@ -796,7 +802,7 @@ pub fn rows_for_entry(
                 group_last_part_ix = part_ix;
             }
             MessagePart::Tool {
-                id: _,
+                id,
                 call,
                 is_error,
                 resolved,
@@ -814,6 +820,7 @@ pub fn rows_for_entry(
             } => {
                 let item = ToolItem {
                     call: call.clone(),
+                    call_id: Some(SharedString::from(id.clone())),
                     is_error: *is_error,
                     resolved: *resolved,
                     detail: tool_detail(output.as_deref(), diff.as_ref(), diff_stats.as_deref())

@@ -298,6 +298,20 @@ impl Transcript {
 
         let summary = tool_group_summary(tools);
 
+        // Agent chips wear their identity from the first paint: the draw keys
+        // on the call id (present before the engine stamps the subagent's
+        // doc ref), so the pre-spawn window already has a face and a name.
+        let identities: Vec<Option<AgentIdentity>> = tools
+            .iter()
+            .map(|tool| {
+                if !is_agent_call(&tool.call) {
+                    return None;
+                }
+                let key = tool.call_id.as_deref().or(tool.subagent_ref.as_deref())?;
+                Some(self.agent_identities.for_doc(key))
+            })
+            .collect();
+
         let toggle_id = row_id.clone();
         // Header (holt tool-group.tsx): a small bare chevron centered over the
         // chips' guide rail, then the quiet 12px summary.
@@ -362,6 +376,7 @@ impl Transcript {
                     );
                     return subagent_chip(
                         tool,
+                        identities[ix],
                         SharedString::from(format!("{row_id}#s{ix}")),
                         cx.listener(move |_, _, _, cx| {
                             cx.emit(TranscriptEvent::OpenSubagent {
@@ -383,6 +398,7 @@ impl Transcript {
                 if detail.is_none() && invocation.is_none() {
                     return tool_chip(
                         tool,
+                        identities[ix],
                         collapses,
                         theme,
                         cx.entity_id(),
@@ -457,6 +473,7 @@ impl Transcript {
                             }))
                             .child(chip_header(
                                 tool,
+                                identities[ix],
                                 open,
                                 theme,
                                 cx.entity_id(),
@@ -817,6 +834,7 @@ fn subagent_tab_title(call: &ToolCall) -> SharedString {
 /// when the chip lives under a collapsible header.
 fn tool_chip(
     tool: &ToolItem,
+    identity: Option<AgentIdentity>,
     rail: bool,
     theme: &Theme,
     view: gpui::EntityId,
@@ -846,7 +864,7 @@ fn tool_chip(
                 .min_w_0()
                 .flex_1()
                 .overflow_hidden()
-                .child(chip_header_row(tool, None, theme, view, cwd, cx)),
+                .child(chip_header_row(tool, identity, None, theme, view, cwd, cx)),
         )
         .into_any_element()
 }
@@ -859,6 +877,7 @@ fn tool_chip(
 #[allow(clippy::too_many_arguments)]
 fn subagent_chip(
     tool: &ToolItem,
+    identity: Option<AgentIdentity>,
     id: SharedString,
     on_open: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     rail: bool,
@@ -899,6 +918,7 @@ fn subagent_chip(
                 .on_click(on_open)
                 .child(chip_header_row(
                     tool,
+                    identity,
                     Some(ChipTrail::OpenArrow),
                     theme,
                     view,

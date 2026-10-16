@@ -88,6 +88,7 @@ pub use tool::{
 mod markdown;
 mod model;
 
+mod agent_avatar;
 mod approval;
 mod plan_card;
 mod provider_card;
@@ -166,6 +167,20 @@ struct FoldState {
     last_target: f32,
 }
 
+/// Entropy for one transcript's identity draws: wall-clock nanos mixed with
+/// a process counter so transcripts built in the same tick still differ.
+fn avatar_seed() -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos
+        ^ COUNTER
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .rotate_left(32)
+}
+
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
@@ -210,6 +225,10 @@ pub struct Transcript {
     live_parsers: HashMap<String, IncrementalParser>,
     tree_cache: HashMap<String, (usize, Arc<BlockTree>)>,
     folds: HashMap<SharedString, FoldState>,
+    /// Spawn-chip identities (name + squircle color) keyed by subagent doc
+    /// id, drawn on first render without repeating a live draw. Render-local
+    /// like `folds`; the session reshuffles on restart.
+    agent_identities: agent_avatar::AgentIdentities,
     /// Tracked scroll handles for the nested reading viewports (skill
     /// invocation bodies, compaction summaries), keyed by row id: ADR-nested-scroll-containers-isolate-wheel-events
     /// chaining reads offset/max to forward the wheel remainder the body
@@ -503,6 +522,7 @@ impl Transcript {
             live_parsers: HashMap::new(),
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
+            agent_identities: agent_avatar::AgentIdentities::new(avatar_seed()),
             nested_scrolls: HashMap::new(),
             provider_cards: HashMap::new(),
             tool_details: HashMap::new(),
