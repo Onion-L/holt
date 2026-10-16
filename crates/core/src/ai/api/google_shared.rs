@@ -237,39 +237,32 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Content> {
                             parts.push(part);
                         }
                         crate::ai::types::AssistantContent::Thinking(thinking) => {
-                            if is_same_provider_and_model {
-                                let thought_signature = resolve_thought_signature(
-                                    is_same_provider_and_model,
-                                    thinking.thinking_signature.as_deref(),
-                                );
-                                // An empty thinking block is dropped only
-                                // when it carries no signature.
-                                if (thinking.thinking.is_empty()
-                                    || thinking.thinking.trim().is_empty())
-                                    && thought_signature.is_none()
-                                {
-                                    continue;
-                                }
-                                let mut part = json!({
-                                    "thought": true,
-                                    "text": sanitize_surrogates(&thinking.thinking),
-                                });
-                                if let Some(thought_signature) = thought_signature {
-                                    part["thoughtSignature"] = json!(thought_signature);
-                                }
-                                parts.push(part);
-                            } else {
-                                // Cross-provider/model: the signature is
-                                // unusable, empty blocks stay dropped.
-                                if thinking.thinking.is_empty()
-                                    || thinking.thinking.trim().is_empty()
-                                {
-                                    continue;
-                                }
-                                parts.push(
-                                    json!({ "text": sanitize_surrogates(&thinking.thinking) }),
-                                );
+                            // Foreign thinking is already dropped by
+                            // transform_messages before this conversion;
+                            // dropping here too is a defensive fallback,
+                            // never a replay as text.
+                            if !is_same_provider_and_model {
+                                continue;
                             }
+                            let thought_signature = resolve_thought_signature(
+                                is_same_provider_and_model,
+                                thinking.thinking_signature.as_deref(),
+                            );
+                            // An empty thinking block is dropped only
+                            // when it carries no signature.
+                            if (thinking.thinking.is_empty() || thinking.thinking.trim().is_empty())
+                                && thought_signature.is_none()
+                            {
+                                continue;
+                            }
+                            let mut part = json!({
+                                "thought": true,
+                                "text": sanitize_surrogates(&thinking.thinking),
+                            });
+                            if let Some(thought_signature) = thought_signature {
+                                part["thoughtSignature"] = json!(thought_signature);
+                            }
+                            parts.push(part);
                         }
                         crate::ai::types::AssistantContent::ToolCall(tool_call) => {
                             let thought_signature = resolve_thought_signature(

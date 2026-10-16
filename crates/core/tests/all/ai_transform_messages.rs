@@ -96,7 +96,7 @@ fn assistant_of(message: &Message) -> &AssistantMessage {
 }
 
 #[test]
-fn converts_thinking_blocks_to_plain_text_when_source_model_differs() {
+fn drops_thinking_blocks_when_source_model_differs() {
     let model = copilot_claude_model();
     // The TypeScript normalizer also receives the model; the Rust port drops
     // the unused parameter, and this fixture ignores it either way.
@@ -133,19 +133,24 @@ fn converts_thinking_blocks_to_plain_text_when_source_model_differs() {
         .expect("assistant message");
     let assistant_msg = assistant_of(assistant_msg);
 
-    // Thinking block should be converted to text since models differ.
+    // Foreign thinking is dropped entirely, never replayed as text:
+    // reasoning prose in the text channel teaches the new model to
+    // reason in visible text instead of its thinking channel.
     let thinking_blocks = assistant_msg
         .content
         .iter()
         .filter(|block| matches!(block, AssistantContent::Thinking(_)))
         .count();
-    let text_blocks = assistant_msg
+    let text_blocks: Vec<&str> = assistant_msg
         .content
         .iter()
-        .filter(|block| matches!(block, AssistantContent::Text(_)))
-        .count();
+        .filter_map(|block| match block {
+            AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(thinking_blocks, 0);
-    assert!(text_blocks >= 2);
+    assert_eq!(text_blocks, vec!["Hi there!"]);
 }
 
 #[test]

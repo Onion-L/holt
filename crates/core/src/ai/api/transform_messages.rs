@@ -85,8 +85,8 @@ pub type ToolCallIdNormalizer<'a> = dyn Fn(&str, &AssistantMessage) -> String + 
 
 /// Port of `transformMessages`: normalizes tool call IDs for cross-provider
 /// compatibility (Anthropic requires `^[a-zA-Z0-9_-]+$`, max 64 chars),
-/// downgrades images for non-vision models, converts cross-model thinking
-/// blocks to text, and inserts synthetic tool results for orphaned calls.
+/// downgrades images for non-vision models, drops cross-model thinking
+/// blocks, and inserts synthetic tool results for orphaned calls.
 pub fn transform_messages(
     messages: &[Message],
     model: &Model,
@@ -136,17 +136,20 @@ pub fn transform_messages(
                                 transformed_content.push(block.clone());
                                 continue;
                             }
-                            // Skip empty thinking blocks; convert others.
+                            // Skip empty thinking blocks; replay
+                            // same-model thinking; drop foreign thinking.
+                            // Foreign thinking is dropped rather than
+                            // replayed as text: a visible block of another
+                            // model's reasoning prose teaches the new model
+                            // to reason in the text channel instead of the
+                            // thinking channel (seen after a mid-chat
+                            // GLM→Kimi switch: 0 thinking tokens, the whole
+                            // reply as reasoning-style text).
                             if thinking.thinking.trim().is_empty() {
                                 continue;
                             }
                             if is_same_model {
                                 transformed_content.push(block.clone());
-                            } else {
-                                transformed_content.push(AssistantContent::Text(TextContent {
-                                    text: thinking.thinking.clone(),
-                                    ..Default::default()
-                                }));
                             }
                         }
                         AssistantContent::Text(text) => {

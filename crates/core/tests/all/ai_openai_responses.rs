@@ -34,8 +34,8 @@ use pi_core::ai::types::{
     ConstrainedSamplingConfig, ConstrainedSamplingStrict, Context, Message, Model, ModelCompat,
     ModelInput, ProviderEnv, ProviderRequestOptions, RoleAssistant, RoleToolResult, RoleUser,
     SessionAffinityFormat, StopReason, StreamOptions, TextContent, TextSignaturePhase,
-    TextSignatureV1, ThinkingContent, Tool, ToolCall, ToolConstrainedSampling, ToolResultMessage,
-    Usage, UserContent, UserMessage,
+    TextSignatureV1, Tool, ToolCall, ToolConstrainedSampling, ToolResultMessage, Usage,
+    UserContent, UserMessage,
 };
 use pi_core::ai::utils::event_stream::{collect_events, create_assistant_message_event_stream};
 use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
@@ -843,8 +843,8 @@ async fn generates_unique_fallback_message_ids_for_multiple_text_blocks_in_one_a
     let model = builtin("openai-codex", "gpt-5.5");
     let assistant = assistant_message(
         vec![
-            AssistantContent::Thinking(ThinkingContent {
-                thinking: "private reasoning".to_string(),
+            AssistantContent::Text(TextContent {
+                text: "first answer part".to_string(),
                 ..Default::default()
             }),
             AssistantContent::Text(TextContent {
