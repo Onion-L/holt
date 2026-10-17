@@ -298,17 +298,18 @@ impl Transcript {
 
         let summary = tool_group_summary(tools);
 
-        // Agent chips wear their identity from the first paint: the draw keys
-        // on the call id (present before the engine stamps the subagent's
-        // doc ref), so the pre-spawn window already has a face and a name.
+        // Agent chips wear their identity from the first paint: the draw
+        // keys on the call id while the spawn is in flight and adopts the
+        // subagent's doc id when the ref lands (the doc half persists, so a
+        // reopened chat keeps its names and faces).
         let identities: Vec<Option<AgentIdentity>> = tools
             .iter()
             .map(|tool| {
                 if !is_agent_call(&tool.call) {
                     return None;
                 }
-                let key = tool.call_id.as_deref().or(tool.subagent_ref.as_deref())?;
-                Some(self.agent_identities.for_doc(key))
+                self.agent_identities
+                    .identity_for(tool.call_id.as_deref(), tool.subagent_ref.as_deref())
             })
             .collect();
 
@@ -376,7 +377,7 @@ impl Transcript {
                     );
                     return subagent_chip(
                         tool,
-                        identities[ix],
+                        identities[ix].clone(),
                         SharedString::from(format!("{row_id}#s{ix}")),
                         cx.listener(move |_, _, _, cx| {
                             cx.emit(TranscriptEvent::OpenSubagent {
@@ -398,7 +399,7 @@ impl Transcript {
                 if detail.is_none() && invocation.is_none() {
                     return tool_chip(
                         tool,
-                        identities[ix],
+                        identities[ix].clone(),
                         collapses,
                         theme,
                         cx.entity_id(),
@@ -473,7 +474,7 @@ impl Transcript {
                             }))
                             .child(chip_header(
                                 tool,
-                                identities[ix],
+                                identities[ix].clone(),
                                 open,
                                 theme,
                                 cx.entity_id(),

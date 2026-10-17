@@ -1,17 +1,23 @@
 //! Subagent chip identities: every agent call gets a random NAME and a
 //! random matte pastel, drawn without replacement so a fan-out of concurrent
-//! children never repeats either. The identity keys on the tool CALL id —
-//! present from the chip's first paint, before the engine stamps the
-//! subagent's doc ref — and lives for the session (a reopened chat re-draws:
-//! the name is garnish, not a record).
+//! children never repeats either.
+//!
+//! The identity lands on the chip's first paint keyed by the tool CALL id
+//! (the pre-spawn window), then adopts the subagent's doc id when the engine
+//! stamps it — same identity, no mid-view swap. Doc-keyed identities persist
+//! to `{data_dir}/agent-identities.json` (same family as
+//! `composer-defaults.json`): reopening the app shows the same name and face
+//! for every recorded subagent. Call-keyed draws never persist — a spawn
+//! that dies before its doc exists leaves no record.
 //!
 //! The avatar is the chip's 22px leading face: a full-bleed squircle in the
 //! identity color with two white pill eyes. Running subagents blink and
 //! glance (phases ride the shared [`motion::pulse_delta`] clock, offset per
-//! doc id so siblings desync); done settles into happy-arch eyes; failed
+//! agent so siblings desync); done settles into happy-arch eyes; failed
 //! freezes mid-look. Reduced motion pins every face static.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use gpui::{App, Div, EntityId, Hsla, ParentElement, SharedString, Styled, div, px};
 
@@ -37,6 +43,8 @@ const COLORS: &[u32] = &[
     0xef7470, // coral
     0xe87fb8, // pink
 ];
+
+const FILE_NAME: &str = "agent-identities.json";
 
 /// Blink cadence: one dip per period, offset per agent.
 pub(crate) const AVATAR_BLINK: MotionSpec = MotionSpec::new(5200, motion::EASE);
@@ -69,11 +77,10 @@ fn gaze_shift(phase: f32, dir: f32) -> f32 {
 
 /// A subagent's chip identity: the name the chip wears, the squircle's
 /// fill, and the animation personality (blink/glance phase offset and glance
-/// side, drawn with the identity so siblings desync). Copy — render sites
-/// resolve per paint.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// side, drawn with the identity so siblings desync).
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AgentIdentity {
-    pub name: &'static str,
+    pub name: SharedString,
     pub color: Hsla,
     /// Blink/glance phase offset [0,1): siblings share the global clock, so
     /// this is what keeps a fan-out from blinking in unison.
@@ -82,10 +89,63 @@ pub(crate) struct AgentIdentity {
     pub gaze_dir: f32,
 }
 
-/// One transcript's identity registry: doc-id-keyed assignments plus the two
-/// decks the draw comes from. A deck refills (reshuffled) only when empty, so
-/// repeats need the whole pool cycled first; a refill that would hand back
-/// the just-drawn card swaps it away.
+/// The persisted record for one subagent doc.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredIdentity {
+    name: String,
+    /// "#rrggbb" — round-trips exactly, unlike float hsl conversions.
+    color: String,
+    phase: f32,
+    gaze_dir: f32,
+}
+
+/// The on-disk shape: one map, doc id → identity.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct IdentityFile {
+    by_doc: HashMap<String, StoredIdentity>,
+}
+
+fn hex_of(color: Hsla) -> String {
+    let rgb = color.to_rgb();
+    let byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
+    format!("#{:02x}{:02x}{:02x}", byte(rgb.r), byte(rgb.g), byte(rgb.b))
+}
+
+fn hsla_of(hex: &str) -> Option<Hsla> {
+    let digits = hex.strip_prefix('#')?;
+    if digits.len() != 6 {
+        return None;
+    }
+    let value = u32::from_str_radix(digits, 16).ok()?;
+    Some(Hsla::from(gpui::rgb(value)))
+}
+
+impl AgentIdentity {
+    fn to_stored(&self) -> StoredIdentity {
+        StoredIdentity {
+            name: self.name.to_string(),
+            color: hex_of(self.color),
+            phase: self.phase,
+            gaze_dir: self.gaze_dir,
+        }
+    }
+
+    fn from_stored(stored: &StoredIdentity) -> Option<Self> {
+        Some(Self {
+            name: SharedString::from(stored.name.clone()),
+            color: hsla_of(&stored.color)?,
+            phase: stored.phase,
+            gaze_dir: stored.gaze_dir,
+        })
+    }
+}
+
+/// One transcript's identity registry. `by_doc` is the persisted half (the
+/// file loads into it and every insert saves); `by_call` is the transient
+/// pre-spawn half, keyed by tool call id and adopted into `by_doc` when the
+/// engine stamps the ref onto the same part.
 pub(crate) struct AgentIdentities {
     rng: u64,
     names: Vec<&'static str>,
@@ -93,36 +153,61 @@ pub(crate) struct AgentIdentities {
     /// The full color deck, kept to refill `colors` from (the pool is hex
     /// consts; the deck deals the converted Hslas).
     color_pool: Vec<Hsla>,
-    by_doc: HashMap<SharedString, AgentIdentity>,
+    by_doc: HashMap<String, AgentIdentity>,
+    by_call: HashMap<String, AgentIdentity>,
+    data_dir: Option<PathBuf>,
 }
 
 impl AgentIdentities {
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, data_dir: Option<PathBuf>) -> Self {
         let color_pool: Vec<Hsla> = COLORS
             .iter()
             .map(|&hex| Hsla::from(gpui::rgb(hex)))
             .collect();
+        let by_doc = data_dir.as_deref().map(load).unwrap_or_default();
         let mut this = Self {
             rng: seed | 1,
             names: NAMES.to_vec(),
             colors: color_pool.clone(),
             color_pool,
-            by_doc: HashMap::new(),
+            by_doc,
+            by_call: HashMap::new(),
+            data_dir,
         };
         shuffle(&mut this.names, &mut this.rng);
         shuffle(&mut this.colors, &mut this.rng);
         this
     }
 
-    /// The identity for one subagent doc, assigning on first sight.
-    pub fn for_doc(&mut self, doc_id: &str) -> AgentIdentity {
-        if let Some(identity) = self.by_doc.get(doc_id) {
-            return *identity;
+    /// The identity for one agent chip. `doc_id` (the subagent's doc) beats
+    /// `call_id` (the spawn tool call) — the doc is the persisted key, so a
+    /// reloaded chat keeps its names; a live spawn wears its call-keyed draw
+    /// until the ref lands, then adopts the doc key without changing face.
+    pub fn identity_for(
+        &mut self,
+        call_id: Option<&str>,
+        doc_id: Option<&str>,
+    ) -> Option<AgentIdentity> {
+        if let Some(doc) = doc_id
+            && let Some(identity) = self.by_doc.get(doc)
+        {
+            return Some(identity.clone());
         }
-        let color_pool = self.color_pool.clone();
+        if let Some(call) = call_id
+            && let Some(identity) = self.by_call.get(call).cloned()
+        {
+            if let Some(doc) = doc_id {
+                self.by_doc.insert(doc.to_owned(), identity.clone());
+                self.save();
+            }
+            return Some(identity);
+        }
         let identity = AgentIdentity {
-            name: draw(&mut self.names, NAMES, &mut self.rng),
-            color: draw(&mut self.colors, &color_pool, &mut self.rng),
+            name: SharedString::from(draw(&mut self.names, NAMES, &mut self.rng)),
+            color: {
+                let color_pool = self.color_pool.clone();
+                draw(&mut self.colors, &color_pool, &mut self.rng)
+            },
             phase: (next_u64(&mut self.rng) % 1000) as f32 / 1000.0,
             gaze_dir: if next_u64(&mut self.rng) & 1 == 0 {
                 -1.0
@@ -130,10 +215,63 @@ impl AgentIdentities {
                 1.0
             },
         };
-        self.by_doc
-            .insert(SharedString::from(doc_id.to_owned()), identity);
-        identity
+        if let Some(doc) = doc_id {
+            self.by_doc.insert(doc.to_owned(), identity.clone());
+            self.save();
+        } else {
+            self.by_call.insert(call_id?.to_owned(), identity.clone());
+        }
+        Some(identity)
     }
+
+    /// Persist the doc-keyed half (atomic temp + rename, like
+    /// `composer-defaults.json`). Garnish must never break a render: a write
+    /// failure is a warning, not an error.
+    fn save(&self) {
+        let Some(dir) = self.data_dir.as_deref() else {
+            return;
+        };
+        let file = IdentityFile {
+            by_doc: self
+                .by_doc
+                .iter()
+                .map(|(doc, identity)| (doc.clone(), identity.to_stored()))
+                .collect(),
+        };
+        if let Err(err) = save(dir, &file) {
+            tracing::warn!(error = %err, "agent-identities save failed");
+        }
+    }
+}
+
+fn load(data_dir: &Path) -> HashMap<String, AgentIdentity> {
+    let path = data_dir.join(FILE_NAME);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<IdentityFile>(&text) {
+            Ok(file) => file
+                .by_doc
+                .iter()
+                .filter_map(|(doc, stored)| {
+                    AgentIdentity::from_stored(stored).map(|identity| (doc.clone(), identity))
+                })
+                .collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "agent-identities corrupt; starting fresh");
+                HashMap::new()
+            }
+        },
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save(data_dir: &Path, file: &IdentityFile) -> std::io::Result<()> {
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join(FILE_NAME);
+    let tmp = path.with_extension("json.tmp");
+    let json = serde_json::to_string_pretty(file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, &path)
 }
 
 fn next_u64(state: &mut u64) -> u64 {
@@ -185,7 +323,7 @@ pub(crate) enum AvatarMood {
 /// The 22px squircle face leading a spawn chip. Paint-local: eyes breathe
 /// inside fixed slots, the row never relays out.
 pub(crate) fn agent_avatar(
-    identity: AgentIdentity,
+    identity: &AgentIdentity,
     mood: AvatarMood,
     view: EntityId,
     cx: &mut App,
@@ -252,22 +390,37 @@ pub(crate) fn agent_avatar(
 mod tests {
     use super::*;
 
+    fn identities(seed: u64) -> AgentIdentities {
+        AgentIdentities::new(seed, None)
+    }
+
     #[test]
     fn draws_do_not_repeat_within_a_pool_cycle() {
         // One full name cycle from a fresh pool: no repeats.
-        let mut identities = AgentIdentities::new(42);
+        let mut registry = identities(42);
         let names: Vec<_> = (0..NAMES.len())
-            .map(|i| identities.for_doc(&format!("doc-{i}")).name)
+            .map(|i| {
+                registry
+                    .identity_for(None, Some(&format!("doc-{i}")))
+                    .unwrap()
+                    .name
+                    .to_string()
+            })
             .collect();
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), NAMES.len(), "one full cycle, no repeats");
-        // Same for colors (a for_doc draw takes one of each, so the color
+        // Same for colors (an identity draw takes one of each, so the color
         // cycle needs its own fresh pool to line up with the draws).
-        let mut identities = AgentIdentities::new(42);
+        let mut registry = identities(42);
         let colors: Vec<_> = (0..COLORS.len())
-            .map(|i| identities.for_doc(&format!("color-{i}")).color)
+            .map(|i| {
+                registry
+                    .identity_for(None, Some(&format!("color-{i}")))
+                    .unwrap()
+                    .color
+            })
             .collect();
         let mut unique_colors: Vec<Hsla> = Vec::new();
         for color in colors {
@@ -280,21 +433,77 @@ mod tests {
     }
 
     #[test]
-    fn identity_is_stable_per_doc() {
-        let mut identities = AgentIdentities::new(7);
-        let first = identities.for_doc("doc-a");
-        assert_eq!(identities.for_doc("doc-a"), first);
+    fn identity_is_stable_per_key() {
+        let mut registry = identities(7);
+        let first = registry.identity_for(None, Some("doc-a")).unwrap();
+        assert_eq!(registry.identity_for(None, Some("doc-a")), Some(first));
     }
 
     #[test]
     fn refill_avoids_immediate_repeats() {
-        let mut identities = AgentIdentities::new(99);
+        let mut registry = identities(99);
         let names: Vec<_> = (0..NAMES.len() * 3)
-            .map(|i| identities.for_doc(&format!("doc-{i}")).name)
+            .map(|i| {
+                registry
+                    .identity_for(None, Some(&format!("doc-{i}")))
+                    .unwrap()
+                    .name
+                    .to_string()
+            })
             .collect();
         for pair in names.windows(2) {
             assert_ne!(pair[0], pair[1], "adjacent draws never repeat");
         }
+    }
+
+    #[test]
+    fn doc_identities_survive_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = {
+            let mut registry = AgentIdentities::new(1, Some(dir.path().to_path_buf()));
+            registry.identity_for(None, Some("chat--sub--1")).unwrap()
+        };
+        let mut reloaded = AgentIdentities::new(2, Some(dir.path().to_path_buf()));
+        assert_eq!(
+            reloaded.identity_for(None, Some("chat--sub--1")),
+            Some(first),
+            "a doc-keyed identity restores across a restart"
+        );
+    }
+
+    #[test]
+    fn call_only_draws_never_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = AgentIdentities::new(1, Some(dir.path().to_path_buf()));
+        registry.identity_for(Some("call-1"), None).unwrap();
+        assert!(registry.by_doc.is_empty());
+        assert!(!dir.path().join(FILE_NAME).exists(), "no doc id, no file");
+    }
+
+    #[test]
+    fn the_ref_landing_adopts_the_call_keyed_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = AgentIdentities::new(1, Some(dir.path().to_path_buf()));
+        let transient = registry.identity_for(Some("call-1"), None).unwrap();
+        let adopted = registry
+            .identity_for(Some("call-1"), Some("chat--sub--9"))
+            .unwrap();
+        assert_eq!(adopted, transient, "no mid-view name swap");
+        let mut reloaded = AgentIdentities::new(2, Some(dir.path().to_path_buf()));
+        assert_eq!(
+            reloaded.identity_for(None, Some("chat--sub--9")),
+            Some(transient)
+        );
+    }
+
+    #[test]
+    fn color_hex_round_trips_the_pool() {
+        for &hex in COLORS {
+            let color = Hsla::from(gpui::rgb(hex));
+            assert_eq!(hex_of(color), format!("#{hex:06x}"));
+        }
+        assert_eq!(hsla_of("garbage"), None);
+        assert_eq!(hsla_of("#12345"), None);
     }
 
     #[test]

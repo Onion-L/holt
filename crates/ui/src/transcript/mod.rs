@@ -501,6 +501,7 @@ impl Transcript {
         // until streaming overflows the pane — then it follows, releases on
         // wheel-up, and resticks/jumps exactly like the main transcript.
         let pinned = follow;
+        let agent_data_dir = state.read(cx).data_dir.clone();
         let mut this = Self {
             state,
             list,
@@ -522,7 +523,7 @@ impl Transcript {
             live_parsers: HashMap::new(),
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
-            agent_identities: agent_avatar::AgentIdentities::new(avatar_seed()),
+            agent_identities: agent_avatar::AgentIdentities::new(avatar_seed(), agent_data_dir),
             nested_scrolls: HashMap::new(),
             provider_cards: HashMap::new(),
             tool_details: HashMap::new(),

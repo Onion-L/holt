@@ -1866,22 +1866,10 @@ fn chip_header_row(
         tool_chip_content_in(&tool.call, cwd)
     };
     // A bound spawn chip wears its assigned name, not the genus label.
-    let label = identity.map(|identity| identity.name).unwrap_or(label);
-    let subagent_type = match &tool.call {
-        ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. }
-            if !tool.is_thought && is_agent_call(&tool.call) =>
-        {
-            input
-                .as_ref()
-                .and_then(|input| input.get("subagent_type")?.as_str())
-                .and_then(|name| {
-                    let mut chars = name.trim().chars();
-                    let first = chars.next()?;
-                    Some(format!("{}{}", first.to_uppercase(), chars.as_str()))
-                })
-        }
-        _ => None,
-    };
+    let label: SharedString = identity
+        .as_ref()
+        .map(|identity| identity.name.clone())
+        .unwrap_or_else(|| SharedString::from(label));
     let running = tool.subagent_ref.is_some()
         && matches!(tool.subagent_status, Some(SubagentStatus::Running));
     // An ordinary tool mid-call (part not yet resolved): same trailing
@@ -1896,7 +1884,7 @@ fn chip_header_row(
     } else {
         theme.text_muted
     };
-    let avatar = identity.map(|identity| {
+    let avatar = identity.as_ref().map(|identity| {
         // Running from first paint (call unresolved, ref not yet stamped)
         // through the eager-done window (ref stamped, status Running); the
         // status wins once it lands. Legacy docs carry no status: settled
@@ -1957,15 +1945,7 @@ fn chip_header_row(
                 .items_center()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(tint)
-                .gap(px(4.0))
-                .child(SharedString::from(label))
-                .when_some(subagent_type, |row, name| {
-                    row.child(
-                        div()
-                            .text_color(theme.accent)
-                            .child(SharedString::from(name)),
-                    )
-                }),
+                .child(label),
         )
         // The detail hugs its text (grow 0, shrink 1) so the trailing
         // affordance sits right after it; a long line still truncates.
