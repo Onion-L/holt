@@ -36,11 +36,32 @@ pub const TITLEBAR_IDENTITY_GAP: f32 = Theme::SPACE_MD;
 /// A 28px action centered in the 38px titlebar with its 2px downward optical
 /// shift lands 6px from the top; use the same inset at the trailing edge.
 pub const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
-/// Air between the new-session `+` and the nav-menu trigger: one button
-/// slot, so the overflow "..." reads as its own group at the cluster's
-/// trailing edge (holt window-controls.tsx) rather than a fourth navigation
-/// button.
+/// Air between the new-session `+` and the nav-menu trigger IN THE DECLARED
+/// cluster geometry: one button slot, so the overflow "..." reads as its own
+/// group at the cluster's trailing edge (holt window-controls.tsx) rather
+/// than a fourth navigation button. The trigger's ACTUAL margin is
+/// [`titlebar_menu_margin`] — with the sidebar open it leaves the cluster
+/// edge and pins to the sidebar seam.
 pub const TITLEBAR_MENU_GAP: f32 = 24.0;
+/// Cluster geometry ahead of the nav-menu trigger's slot: sidebar toggle
+/// (24), group gap, history pair (24+2+24), group gap, new-session (24).
+const TITLEBAR_MENU_PREFIX: f32 =
+    24.0 + TITLEBAR_GROUP_GAP + (24.0 * 2.0 + TITLEBAR_CONTROL_GAP) + TITLEBAR_GROUP_GAP + 24.0;
+/// The trigger pins its icon to the sidebar's view-options (sort) button
+/// below: sort's icon centers 22.5px in from the sidebar's right edge (8px
+/// row inset + half its 29px box); this 24px trigger's icon centers 12px in
+/// from its own box — so the box's left edge lands 34.5px ahead of the seam.
+const TITLEBAR_MENU_SEAM_INSET: f32 = 22.5 + 12.0;
+
+/// Left margin ahead of the nav-menu trigger. With the sidebar open the
+/// trigger tracks the sidebar's right seam (resize tween included) so the
+/// two menu buttons share one vertical line; a collapsed or too-narrow
+/// sidebar parks it one group-gap past the `+`.
+pub fn titlebar_menu_margin(buttons_start: f32, sidebar_width: f32) -> f32 {
+    (sidebar_width - TITLEBAR_MENU_SEAM_INSET - buttons_start - TITLEBAR_MENU_PREFIX)
+        .max(TITLEBAR_GROUP_GAP)
+}
+
 /// Width of the persistent top-left button cluster itself: a 24px sidebar
 /// trigger, an 8px group gap, two 24px history buttons on a 2px rhythm, then
 /// [`TITLEBAR_MENU_GAP`] of air and the 24px nav-menu trigger. The
@@ -491,8 +512,21 @@ impl Shell {
             ));
         }
 
+        // Anchor to the sidebar seam (tracking its tween) so the trigger
+        // lines up with the sidebar's view-options button below; a
+        // collapsed or narrow sidebar parks it just past the `+`.
+        let buttons_start = self.eval_tween(
+            self.titlebar_tween,
+            cluster_buttons_start(
+                cfg!(target_os = "macos"),
+                self.fullscreen.unwrap_or(false),
+                self.linux_left_caption_count(),
+            ),
+        );
+        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
+        let menu_ml = titlebar_menu_margin(buttons_start, sidebar_now);
         div()
-            .ml(px(TITLEBAR_MENU_GAP))
+            .ml(px(menu_ml))
             .flex_none()
             .relative()
             .child(trigger)
@@ -1357,6 +1391,26 @@ mod tests {
         assert_eq!(cluster_buttons_start(false, false, 3), 10.0 + 76.0 + 2.0);
         // macOS ignores the Linux caption count entirely.
         assert_eq!(cluster_buttons_start(true, false, 3), 88.0);
+    }
+
+    #[test]
+    fn titlebar_menu_tracks_the_sidebar_seam() {
+        // The trigger's icon center lands on the view-options button's icon
+        // center (sidebar_width − 22.5) at any sidebar width that affords it.
+        let aligned = |sidebar: f32, start: f32| {
+            let ml = titlebar_menu_margin(start, sidebar);
+            start + TITLEBAR_MENU_PREFIX + ml + 12.0
+        };
+        let sort_icon_center = |sidebar: f32| sidebar - 22.5;
+        for sidebar in [244.5, 256.0, 300.0, 400.0] {
+            assert_eq!(aligned(sidebar, 88.0), sort_icon_center(sidebar));
+            // Fullscreen cluster start tracks too.
+            assert_eq!(aligned(sidebar, 12.0), sort_icon_center(sidebar));
+        }
+        // Too narrow to align without overlapping the `+`: parks one group
+        // gap after the prefix; a collapsed sidebar parks there as well.
+        assert_eq!(titlebar_menu_margin(88.0, 208.0), TITLEBAR_GROUP_GAP);
+        assert_eq!(titlebar_menu_margin(88.0, 0.0), TITLEBAR_GROUP_GAP);
     }
 
     #[test]
