@@ -1,6 +1,8 @@
 //! The task-list capsule (issue #47, replaced surface): the Turn's `todo`
 //! list as a pinned pill at the top-right of the chat — stacked under the
-//! state card — expanding into the checklist card on click. The transcript
+//! state card — expanding into the checklist card on click. In goal mode
+//! (issue #49) the capsule stands down: the state card carries the list as
+//! a labeled section, so two similar cards never stack. The transcript
 //! keeps the `TodoCard` part as the record and transport (the capsule is a
 //! projection of the latest write); the pill retires when the next Turn
 //! opens (a user entry follows the card's entry) or on a manual close.
@@ -36,11 +38,12 @@ const FLIP_WINDOW: Duration = Duration::from_millis(260);
 const STORE_KEEP: Duration = Duration::from_secs(30);
 
 /// The capsule's read of the transcript: the latest write's card id and
-/// items, and whether its Turn is still running.
+/// items, and whether its Turn is still running. Fields are `pub(super)`:
+/// the goal card embeds the same list as a section in goal mode (issue #49).
 pub(super) struct TodoCapsule {
-    card_id: String,
-    items: Vec<TodoCardItem>,
-    live: bool,
+    pub(super) card_id: String,
+    pub(super) items: Vec<TodoCardItem>,
+    pub(super) live: bool,
 }
 
 /// The capsule's data: the LATEST `TodoCard` part in the chat's
@@ -131,8 +134,8 @@ thread_local! {
 /// What the capsule renders this frame: which slots are inside their flip
 /// window, the progress fraction to display, and whether any tween still
 /// needs frames. Detects transitions against the store and records them —
-/// one call per capsule render.
-fn motion_frame(
+/// one call per capsule render. Shared with the goal card's todo section.
+pub(super) fn motion_frame(
     card_id: &str,
     statuses: &[TodoItemStatus],
     fraction: f32,
@@ -210,8 +213,9 @@ fn reset_motion() {
 /// One item's status glyph at the capsule's scale — the state card's
 /// step-row language: a hairline ring for pending, an accent ring with a
 /// breathing dot for in-progress (the shared pulse clock while the Turn is
-/// live), a plain green check for done, a dash for cancelled.
-fn status_glyph(
+/// live), a plain green check for done, a dash for cancelled. Shared with
+/// the goal card's todo section.
+pub(super) fn status_glyph(
     status: TodoItemStatus,
     live: bool,
     theme: &Theme,
@@ -273,10 +277,65 @@ fn status_glyph(
     }
 }
 
+/// One row of the list: the status glyph (popping once when its slot just
+/// flipped) plus the truncated title. Shared by the capsule's card and the
+/// goal card's todo section (issue #49).
+pub(super) fn todo_row(
+    capsule: &TodoCapsule,
+    ix: usize,
+    flip: bool,
+    theme: &Theme,
+    view: gpui::EntityId,
+    cx: &mut App,
+) -> AnyElement {
+    let item = &capsule.items[ix];
+    let settled = matches!(
+        item.status,
+        TodoItemStatus::Done | TodoItemStatus::Cancelled
+    );
+    let glyph = status_glyph(item.status, capsule.live, theme, view, cx);
+    // A slot inside its flip window pops the new glyph — fade + 2px rise —
+    // once; the id keys the flip's status, so each flip is a fresh clock
+    // and a settled card never replays.
+    let glyph: AnyElement = if flip {
+        glyph
+            .with_animation(
+                SharedString::from(format!("{}#g{ix}-{:?}", capsule.card_id, item.status)),
+                FLIP.animation(),
+                |el, t| el.relative().opacity(t).top(px(2.0 * (1.0 - t))),
+            )
+            .into_any_element()
+    } else {
+        glyph.into_any_element()
+    };
+    div()
+        .h(px(24.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(7.0))
+        .child(glyph)
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(crate::typography::ui_rems(13.5))
+                .line_height(px(19.0))
+                .text_color(match item.status {
+                    TodoItemStatus::InProgress => theme.text,
+                    TodoItemStatus::Pending | TodoItemStatus::Unknown => theme.text_muted,
+                    TodoItemStatus::Done | TodoItemStatus::Cancelled => theme.text_faint,
+                })
+                .when(settled, |el| el.line_through())
+                .child(SharedString::from(item.title.clone())),
+        )
+        .into_any_element()
+}
+
 /// The capsule's progress ring: the done fraction as a 14px arc beside the
 /// count. The arc rides the motion frame's displayed fraction, so rewrites
-/// glide.
-fn todo_ring(displayed: f32, theme: &Theme) -> AnyElement {
+/// glide. Shared with the goal card's todo section.
+pub(super) fn todo_ring(displayed: f32, theme: &Theme) -> AnyElement {
     crate::loaders::progress_ring(displayed, 14.0, 1.5, theme.ink(0.12), theme.accent)
         .flex_none()
         .into_any_element()
@@ -302,6 +361,17 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        // Goal mode: the state card carries the list as a section (issue
+        // #49) — the capsule never stacks a second card under it. Chats
+        // without a goal keep the capsule exactly as it was.
+        if self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .is_some_and(|chat| chat.goal.is_some())
+        {
+            return None;
+        }
         let capsule = current_todo(&self.state.read(cx).transcript)?;
         if self.todo_capsule_dismissed.as_deref() == Some(capsule.card_id.as_str()) {
             return None;
@@ -562,47 +632,15 @@ impl Shell {
                     ),
             );
 
-        let rows = capsule.items.iter().enumerate().map(|(ix, item)| {
-            let settled = matches!(
-                item.status,
-                TodoItemStatus::Done | TodoItemStatus::Cancelled
-            );
-            let glyph = status_glyph(item.status, capsule.live, theme, view, cx);
-            // A slot inside its flip window pops the new glyph — fade + 2px
-            // rise — once; the id keys the flip's status, so each flip is a
-            // fresh clock and a settled card never replays.
-            let glyph: AnyElement = if form.flips.get(ix).copied().unwrap_or(false) {
-                glyph
-                    .with_animation(
-                        SharedString::from(format!("{}#g{ix}-{:?}", capsule.card_id, item.status)),
-                        FLIP.animation(),
-                        |el, t| el.relative().opacity(t).top(px(2.0 * (1.0 - t))),
-                    )
-                    .into_any_element()
-            } else {
-                glyph.into_any_element()
-            };
-            div()
-                .h(px(24.0))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(7.0))
-                .child(glyph)
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(crate::typography::ui_rems(13.5))
-                        .line_height(px(19.0))
-                        .text_color(match item.status {
-                            TodoItemStatus::InProgress => theme.text,
-                            TodoItemStatus::Pending | TodoItemStatus::Unknown => theme.text_muted,
-                            TodoItemStatus::Done | TodoItemStatus::Cancelled => theme.text_faint,
-                        })
-                        .when(settled, |el| el.line_through())
-                        .child(SharedString::from(item.title.clone())),
-                )
+        let rows = (0..capsule.items.len()).map(|ix| {
+            todo_row(
+                capsule,
+                ix,
+                form.flips.get(ix).copied().unwrap_or(false),
+                theme,
+                view,
+                cx,
+            )
         });
 
         div()
@@ -817,6 +855,82 @@ mod tests {
             1.0 / 3.0,
         );
         assert_eq!(flips, [false, false, false]);
+    }
+
+    /// Goal mode (issue #49): the state card carries the list as a section,
+    /// so the capsule never stacks under it — a goal chat with a live list
+    /// draws nothing here. (The section's own test lives in state_card.rs.)
+    #[gpui::test]
+    fn goal_mode_suppresses_the_capsule(cx: &mut gpui::TestAppContext) {
+        use std::sync::Arc;
+
+        use crate::state::AppState;
+
+        struct NoopEngine;
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for NoopEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                _params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "goal-chat", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-10-10T00:00:00Z",
+                    "goal": {
+                        "text": "ship the compaction slice",
+                        "status": "active", "iteration": 1,
+                        "noProgress": 0, "evalFailures": 0,
+                        "startedAt": "2026-10-10T00:00:00Z"
+                    }
+                }))
+                .unwrap(),
+            );
+            state.selected_chat = Some("goal-chat".into());
+            state.transcript = vec![with_card(
+                "r1",
+                Some(MessageStatus::Streaming),
+                vec![("ship", TodoItemStatus::InProgress)],
+            )];
+            state
+        });
+        let engine = Arc::new(NoopEngine);
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine)
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.route = super::super::Route::Chat;
+            shell
+        });
+        shell.update(cx, |shell, cx| {
+            let theme = Theme::of(cx).clone();
+            assert!(
+                shell.render_todo_capsule(&theme, cx).is_none(),
+                "a goal chat never draws the standalone capsule"
+            );
+        });
     }
 
     /// The drawing + wiring half (the state card tests' pattern): a chat

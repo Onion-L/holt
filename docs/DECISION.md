@@ -29,7 +29,7 @@ in the same commit.
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
-| [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) |
+| [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
 | [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) |
@@ -394,6 +394,25 @@ expresses it). Verifier usage books immediately: the Turn's batch settles
 before the verifier runs. `179cbca` bounds the pass (120 s wall clock — the
 HTTP layer has no total timeout and Stop cannot reach the token) and pauses
 on an un-enqueueable continuation.
+
+## goal-card-drops-the-steps-checklist
+
+(issue #49). The goal card stopped rendering the verifier's steps as a
+checklist, and the Turn's todo list moved into the card as a labeled
+section — the standalone capsule stands down in goal mode, so two similar
+cards never stack. The verifier is a judge, not a planner: its own prompt
+disowns the `[ ]` half ("plans, intentions, and todo lists are not
+progress"), and all-checked never implied COMPLETE — the verdict line is
+the sole authority, so the checklist form promised a completion contract
+that does not exist. The steps survive on the card only as a compact
+`done/total verified` indicator. Rejected: keeping both lists sectioned
+on one card (two look-alike checklists with different trust levels —
+self-reported intent vs verified evidence — was the duplication being
+fixed); restyling the todo capsule as a chromeless line (expanding still
+produced a second card); merging the two lists into one (conflates intent
+with evidence). The steps' per-item text belongs in the transcript as a
+per-check verdict row — an engine change filed as a follow-up, since a
+CONTINUE pass pushes no transcript row today.
 
 ## urls-wrap-after-slashes-never-before
 

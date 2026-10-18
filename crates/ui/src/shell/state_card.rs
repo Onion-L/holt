@@ -1,21 +1,30 @@
 //! The chat-state card: the goal loop (ADR-goal-mode-verified-loop-at-turn-settle) and the Plan/Provider
 //! Mode states (ADR-plan-mode-is-an-independent-approval-checkpoint/0037) as a pinned top-right overlay — one card,
 //! since the three states are mutually exclusive. The goal form shows the
-//! objective, the loop's status and round, the last verdict's reason, and
-//! the pause/resume + clear controls (it replaced the composer footer's
-//! goal chip); the mode form shows the active mode with the button forms
-//! of `/plan off` and `/provider off` (the mode-flag chips' successor).
-//! State answers to the conversation, not to the next message. Rendered
+//! objective, the loop's status and round, the verdict's steps as a compact
+//! verified indicator (per-item text left the card in issue #49: the judge
+//! owns evidence, not a plan — a checklist promised a completion contract
+//! the verdict never signs), the last verdict's reason, and the
+//! pause/resume + clear controls (it replaced the composer footer's goal
+//! chip); the mode form shows the active mode with the button forms of
+//! `/plan off` and `/provider off` (the mode-flag chips' successor). In
+//! goal mode the Turn's live todo list rides the card as a labeled section
+//! — the card's one checklist — while `render_todo_capsule` stands down,
+//! so two similar cards never stack. State answers to the conversation,
+//! not to the next message. Rendered
 //! only on the Chat route, above the notice stack in the same anchored
-//! column. The goal form collapses to a capsule (glyph + status word,
-//! persisted in `UiSettings::state_card_expanded`); the swap tweens
+//! column. The goal form collapses to a capsule (glyph + status word + the
+//! live list's count, persisted in `UiSettings::state_card_expanded`); the
+//! swap tweens
 //! the box's width/height between the two forms' measured sizes instead of
 //! cutting.
 
 use super::Shell;
+use super::todo_capsule::{self, TodoCapsule};
 
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 
+use holt_doc::TodoItemStatus;
 use holt_proto::{Chat, ChatGoalState, GoalStatus};
 use holt_rpc::methods;
 
@@ -157,7 +166,49 @@ pub(super) fn morph_box_size(
     ))
 }
 
+/// The Turn's live todo list folded into the goal card (issue #49): the
+/// capsule's transcript projection plus one frame of its motion state.
+struct GoalTodo {
+    capsule: TodoCapsule,
+    flips: Vec<bool>,
+    done: usize,
+    total: usize,
+    displayed: f32,
+}
+
 impl Shell {
+    /// The live task list for the goal card: `None` when the chat has no
+    /// live list (never written, retired by a following Turn) or the user
+    /// dismissed this write — the capsule's semantics, one surface up.
+    fn goal_todo(&mut self, cx: &mut Context<Self>) -> Option<GoalTodo> {
+        let capsule = todo_capsule::current_todo(&self.state.read(cx).transcript)?;
+        if self.todo_capsule_dismissed.as_deref() == Some(capsule.card_id.as_str()) {
+            return None;
+        }
+        let done = capsule
+            .items
+            .iter()
+            .filter(|item| item.status == TodoItemStatus::Done)
+            .count();
+        let total = capsule.items.len();
+        let fraction = done as f32 / total.max(1) as f32;
+        let statuses: Vec<TodoItemStatus> = capsule.items.iter().map(|item| item.status).collect();
+        let (flips, displayed, animating) =
+            todo_capsule::motion_frame(&capsule.card_id, &statuses, fraction);
+        if animating {
+            // The shell render tail keeps frames coming while a tween is
+            // mid-flight.
+            self.motion_active.set(true);
+        }
+        Some(GoalTodo {
+            capsule,
+            flips,
+            done,
+            total,
+            displayed,
+        })
+    }
+
     /// The selected chat's state card, or `None` when the chat carries
     /// none of the states: the goal loop first, then Plan/Provider Mode
     /// (mutually exclusive; the UI picks deterministically).
@@ -176,12 +227,16 @@ impl Shell {
         // Distinct ids per form: the swap unmounts one, so the other's
         // entrance fade replays (opacity only — the morph moves the box,
         // the content never translates).
+        let todo = self.goal_todo(cx);
         let (id, content) = if collapsed {
-            ("goal-card-pill", self.goal_pill(&goal, phase, theme, cx))
+            (
+                "goal-card-pill",
+                self.goal_pill(&goal, phase, todo.as_ref(), theme, cx),
+            )
         } else {
             (
                 "goal-card",
-                self.goal_body("goal-card", &goal, phase, theme, cx),
+                self.goal_body("goal-card", &goal, phase, todo, theme, cx),
             )
         };
 
@@ -372,12 +427,14 @@ impl Shell {
     }
 
     /// The capsule's content row: identity glyph, the loop's status word,
-    /// and the expand affordance (the name rides the tooltip). Handlers live on the
+    /// the live list's count while one is on the table, and the expand
+    /// affordance (the name rides the tooltip). Handlers live on the
     /// box (render_state_card adds them in collapsed mode).
     fn goal_pill(
         &mut self,
         goal: &ChatGoalState,
         phase: LoopPhase,
+        todo: Option<&GoalTodo>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -400,6 +457,28 @@ impl Shell {
             // card, so the folded capsule stays small enough to sit in the
             // corner without covering the transcript.
             .child(goal_status(goal, phase, theme, cx))
+            .when_some(todo, |el, todo| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            crate::icons::icon(crate::icons::CHECKLIST)
+                                .size(px(11.0))
+                                .flex_none()
+                                .text_color(theme.text_faint),
+                        )
+                        .child(
+                            div()
+                                .font_family(theme.font_mono.clone())
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(format!("{}/{}", todo.done, todo.total))),
+                        ),
+                )
+            })
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
                     .size(px(11.0))
@@ -410,13 +489,15 @@ impl Shell {
     }
 
     /// The card's content column: header (identity, status, controls),
-    /// the objective, and the last verdict's reason. The floating box
+    /// the objective, the verified indicator, the last verdict's reason,
+    /// and the live todo section. The floating box
     /// chrome lives in `render_state_card`; `id` scopes the buttons.
     fn goal_body(
         &mut self,
         id: &'static str,
         goal: &ChatGoalState,
         phase: LoopPhase,
+        todo: Option<GoalTodo>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -456,6 +537,7 @@ impl Shell {
                         .text_color(theme.text_muted),
                 )
         };
+        let view = cx.entity_id();
         div()
             .w(px(CARD_WIDTH))
             .pl(px(12.0))
@@ -568,66 +650,60 @@ impl Shell {
                         .child(SharedString::from(goal.text.clone())),
                 )
             })
-            // The verifier-maintained plan: a finished step reads struck
-            // and faint behind its check, a pending one plain behind an
-            // empty ring.
+            // The verdict's steps as a compact verified indicator (issue
+            // #49): the judge owns evidence, not a plan, and all-checked
+            // never implies COMPLETE — per-item text promised a completion
+            // contract the verdict never signs, so only the ratio survives.
             .when(!goal.steps.is_empty(), |el| {
+                let verified = goal.steps.iter().filter(|step| step.done).count();
+                let total = goal.steps.len();
                 el.child(
                     div()
+                        .id("goal-card-verified")
+                        .debug_selector(|| "goal-card-verified".to_string())
                         .pl(px(BODY_INDENT))
                         .pr(px(6.0))
-                        .mt(px(4.0))
+                        .mt(px(6.0))
                         .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .children(goal.steps.iter().enumerate().map(|(ix, step)| {
-                            let selector = format!("goal-card-step-{ix}");
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
                             div()
                                 .flex()
                                 .flex_row()
-                                .items_center()
-                                .gap(px(7.0))
-                                .debug_selector(move || selector.clone())
-                                .child(
+                                .gap(px(3.0))
+                                .children(goal.steps.iter().map(|step| {
                                     div()
-                                        .flex_none()
                                         .w(px(16.0))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(if step.done {
-                                            crate::icons::icon(crate::icons::CHECK)
-                                                .size(px(12.0))
-                                                .text_color(
-                                                    crate::theme::AccentColor::Green
-                                                        .primary(theme.appearance),
-                                                )
-                                                .into_any_element()
+                                        .h(px(3.0))
+                                        .rounded_full()
+                                        .bg(if step.done {
+                                            crate::theme::AccentColor::Green
+                                                .primary(theme.appearance)
                                         } else {
-                                            div()
-                                                .size(px(10.0))
-                                                .rounded_full()
-                                                .border_1()
-                                                .border_color(theme.text_faint)
-                                                .into_any_element()
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(crate::typography::ui_rems(13.5))
-                                        .line_height(px(19.0))
-                                        .text_color(if step.done {
-                                            theme.text_faint
-                                        } else {
-                                            theme.text_muted
+                                            theme.hairline(0.12)
                                         })
-                                        .when(step.done, |el| el.line_through())
-                                        .child(SharedString::from(step.text.clone())),
+                                })),
+                        )
+                        .child(
+                            div()
+                                .font_family(theme.font_mono.clone())
+                                .text_size(crate::typography::ui_rems(11.5))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(format!("{verified}/{total} verified"))),
+                        )
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| {
+                                crate::popover::TextTooltip(
+                                    format!(
+                                        "The verifier's latest pass: {verified} of {total} steps backed by concrete evidence"
+                                    )
+                                    .into(),
                                 )
-                                .into_any_element()
-                        })),
+                            })
+                            .into()
+                        }),
                 )
             })
             .when_some(goal_reason_line(goal), |el, reason| {
@@ -661,6 +737,113 @@ impl Shell {
                                 .min_w_0()
                                 .line_clamp(2)
                                 .child(SharedString::from(reason)),
+                        ),
+                )
+            })
+            // The Turn's live todo list as the card's one checklist (issue
+            // #49): a labeled section, never a second pinned card beneath.
+            // Dismissal keeps the capsule's semantics — hidden until the
+            // next write.
+            .when_some(todo, |el, todo| {
+                let card_id = todo.capsule.card_id.clone();
+                el.child(
+                    div()
+                        .id("goal-card-todo")
+                        .debug_selector(|| "goal-card-todo".to_string())
+                        .mt(px(8.0))
+                        .pt(px(8.0))
+                        .border_t_1()
+                        .border_color(theme.hairline(0.08))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .pl(px(12.0))
+                                .pr(px(8.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(7.0))
+                                .child(
+                                    crate::icons::icon(crate::icons::CHECKLIST)
+                                        .size(px(13.0))
+                                        .flex_none()
+                                        .text_color(if todo.capsule.live {
+                                            theme.accent
+                                        } else {
+                                            theme.text_muted
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(crate::typography::ui_rems(12.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.text_muted)
+                                        .child("Todo"),
+                                )
+                                .child(todo_capsule::todo_ring(todo.displayed, theme))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .font_family(theme.font_mono.clone())
+                                        .text_size(crate::typography::ui_rems(12.0))
+                                        .text_color(theme.text_faint)
+                                        .child(SharedString::from(format!(
+                                            "{}/{}",
+                                            todo.done, todo.total
+                                        ))),
+                                )
+                                .child(
+                                    div()
+                                        .id("goal-card-todo-dismiss")
+                                        .debug_selector(|| "goal-card-todo-dismiss".to_string())
+                                        .flex_none()
+                                        .size(px(24.0))
+                                        .rounded(px(6.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .hover(|el| el.bg(crate::theme::ink(0.06)))
+                                        .tooltip(move |_, cx| {
+                                            cx.new(|_| {
+                                                crate::popover::TextTooltip(
+                                                    "Close until the next list".into(),
+                                                )
+                                            })
+                                            .into()
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.todo_capsule_dismissed = Some(card_id.clone());
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            crate::icons::icon(crate::icons::CLOSE_CIRCLE)
+                                                .size(px(13.0))
+                                                .text_color(theme.text_muted),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .pl(px(12.0))
+                                .pr(px(14.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .children((0..todo.capsule.items.len()).map(|ix| {
+                                    todo_capsule::todo_row(
+                                        &todo.capsule,
+                                        ix,
+                                        todo.flips.get(ix).copied().unwrap_or(false),
+                                        theme,
+                                        view,
+                                        cx,
+                                    )
+                                })),
                         ),
                 )
             })
@@ -1160,10 +1343,13 @@ mod tests {
         assert!(visual.debug_bounds("goal-card-pill").is_some());
     }
 
-    /// The verifier-maintained card content: the goal's name heads the card
-    /// and its steps render in order — done ones styled complete.
+    /// The verifier-maintained card content (issue #49): the goal's name
+    /// heads the card and its steps render as the compact verified
+    /// indicator — per-item text no longer gets a checklist (all-checked
+    /// never implied COMPLETE, so the rows promised a contract the verdict
+    /// never signs).
     #[gpui::test]
-    fn the_card_shows_the_name_and_steps(cx: &mut gpui::TestAppContext) {
+    fn the_card_shows_the_name_and_the_verified_indicator(cx: &mut gpui::TestAppContext) {
         use std::sync::Arc;
 
         use crate::state::AppState;
@@ -1263,15 +1449,155 @@ mod tests {
         assert!(visual.debug_bounds("goal-card-name").is_some());
         assert!(visual.debug_bounds("goal-card-text").is_none());
 
-        // Every step row renders; a goal without steps draws none (the
-        // collapse test's fixture above asserts the same card's controls).
-        for selector in ["goal-card-step-0", "goal-card-step-1", "goal-card-step-2"] {
-            assert!(
-                visual.debug_bounds(selector).is_some(),
-                "{selector} renders"
-            );
+        // The steps paint one verified indicator; the per-item checklist
+        // is gone (a goal without steps draws neither).
+        assert!(visual.debug_bounds("goal-card-verified").is_some());
+        assert!(visual.debug_bounds("goal-card-step-0").is_none());
+        visual.update(|_, cx| {
+            chats.update(cx, |state, _| {
+                state.chats[0].goal.as_mut().unwrap().steps = Vec::new();
+            });
+            cx.refresh_windows();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("goal-card-verified").is_none());
+    }
+
+    /// The goal card carries the Turn's live todo list as a section (issue
+    /// #49) — and the standalone capsule stands down, so two cards never
+    /// stack. Dismissal hides the section until the next write.
+    #[gpui::test]
+    fn the_goal_card_embeds_the_live_todo_list(cx: &mut gpui::TestAppContext) {
+        use std::sync::Arc;
+
+        use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+
+        use crate::state::AppState;
+
+        struct NoopEngine;
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for NoopEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                _params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
+            }
         }
-        assert!(visual.debug_bounds("goal-card-step-3").is_none());
+
+        struct GoalCardView {
+            shell: gpui::Entity<Shell>,
+        }
+        impl gpui::Render for GoalCardView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let theme = Theme::of(cx).clone();
+                let card = self
+                    .shell
+                    .update(cx, |shell, cx| shell.render_state_card(&theme, cx));
+                div().children(card)
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "goal-chat", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-10-10T00:00:00Z",
+                    "goal": {
+                        "text": "ship the compaction slice",
+                        "status": "active", "iteration": 2,
+                        "noProgress": 0, "evalFailures": 0,
+                        "startedAt": "2026-10-10T00:00:00Z"
+                    }
+                }))
+                .unwrap(),
+            );
+            state.selected_chat = Some("goal-chat".into());
+            state.transcript = vec![
+                SessionMessageEntry {
+                    id: "u1".into(),
+                    role: MessageRole::User,
+                    parts: vec![MessagePart::Text {
+                        id: "t0".into(),
+                        text: "ship it".into(),
+                    }],
+                    created_at: 0,
+                    device_id: "dev".into(),
+                    status: None,
+                    continuation_of: None,
+                },
+                SessionMessageEntry {
+                    id: "r1".into(),
+                    role: MessageRole::Assistant,
+                    parts: vec![MessagePart::TodoCard {
+                        id: "card-1".into(),
+                        items: vec![
+                            holt_doc::TodoCardItem {
+                                title: "map".into(),
+                                status: holt_doc::TodoItemStatus::Done,
+                            },
+                            holt_doc::TodoCardItem {
+                                title: "ship".into(),
+                                status: holt_doc::TodoItemStatus::InProgress,
+                            },
+                        ],
+                    }],
+                    created_at: 1,
+                    device_id: "dev".into(),
+                    status: Some(MessageStatus::Streaming),
+                    continuation_of: None,
+                },
+            ];
+            state
+        });
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(Arc::new(NoopEngine))
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.route = super::super::Route::Chat;
+            shell.settings.state_card_expanded = true;
+            shell
+        });
+        // The capsule stands down in goal mode — the card owns the list.
+        shell.update(cx, |shell, cx| {
+            let theme = Theme::of(cx).clone();
+            assert!(
+                shell.render_todo_capsule(&theme, cx).is_none(),
+                "goal mode never stacks the capsule under the card"
+            );
+        });
+        let (_view, visual) = cx.add_window_view(|_, _| GoalCardView {
+            shell: shell.clone(),
+        });
+
+        // The section paints inside the card; dismissal hides it.
+        let dismiss = visual
+            .debug_bounds("goal-card-todo-dismiss")
+            .expect("the todo section renders inside the goal card");
+        visual.simulate_click(dismiss.center(), Default::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("goal-card-todo").is_none());
     }
 
     /// The mode form: a Plan/Provider chat (no goal) draws the off button,
