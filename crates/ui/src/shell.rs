@@ -580,7 +580,6 @@ struct ShellSettingsFields {
     sidebar_sort: SidebarSort,
     sidebar_order: Vec<String>,
     sidebar_show_provider: bool,
-    sidebar_show_branch: bool,
     sidebar_show_pull_request: bool,
     keymap: settings::KeymapConfig,
     external_app: String,
@@ -606,7 +605,6 @@ impl ShellSettingsFields {
             sidebar_sort: settings.sidebar_sort,
             sidebar_order: settings.sidebar_order.clone(),
             sidebar_show_provider: settings.sidebar_show_provider,
-            sidebar_show_branch: settings.sidebar_show_branch,
             sidebar_show_pull_request: settings.sidebar_show_pull_request,
             keymap: settings.keymap.clone(),
             external_app: settings.external_app.clone(),
@@ -631,7 +629,6 @@ impl ShellSettingsFields {
         current.sidebar_sort = self.sidebar_sort;
         current.sidebar_order = self.sidebar_order;
         current.sidebar_show_provider = self.sidebar_show_provider;
-        current.sidebar_show_branch = self.sidebar_show_branch;
         current.sidebar_show_pull_request = self.sidebar_show_pull_request;
         current.keymap = self.keymap;
         current.external_app = self.external_app;
