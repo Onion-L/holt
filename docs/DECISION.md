@@ -482,33 +482,33 @@ reopen turn-diff-net-change-baseline.
 
 ## step-checkpoints-in-a-chat-owned-object-store
 
-Each tool call that changes files in a Git working tree records a step
-checkpoint: every changed path's exact before and after bytes, as blobs in a
-bare Git object store owned by the chat (`checkpoints/<chatId>/objects`),
-listed in an append-only step log beside it. The store holds only what the
-agent's own calls changed: write and edit read their target around the call;
-bash stores every uncommitted file's bytes before the command (identical
-content is stored once) and takes clean files from HEAD, so a step's before
-side is exact bytes — never content rebuilt from patch text, which loses
-CRLF and a missing final newline. Files above 10 MiB, and anything but a
-regular file, are recorded by path only. A non-Git working tree records
-nothing, as its Turn change set answers `Unsupported`. Deleting a chat
-deletes the directory; libgit2 has no gc, and per-chat stores need none. Step
-ids in the log are opaque to every consumer, so the storage can change behind
-them. While a call runs, its start (the before sides) waits on disk; a crash
-leaves it there, and the next load measures it against the working tree,
+`f3d4a58`, `b69fbaa`. Each tool call that changes files in a Git working tree
+records a step checkpoint: every changed path's exact before and after bytes,
+as blobs in a bare Git object store owned by the chat
+(`checkpoints/<chatId>/objects`), listed in an append-only step log beside it.
+The store holds only what the agent's own calls changed: write and edit read
+their target around the call; bash stores every uncommitted file's bytes
+before the command (identical content is stored once) and takes clean files
+from HEAD, so a step's before side is exact bytes — never content rebuilt from
+patch text, which loses CRLF and a missing final newline. Files above 10 MiB,
+and anything but a regular file, are recorded by path only. A non-Git working
+tree records nothing, as its Turn change set answers `Unsupported`. Deleting a
+chat deletes the directory; libgit2 has no gc, and per-chat stores need none.
+Step ids in the log are opaque to every consumer, so the storage can change
+behind them. While a call runs, its start (the before sides) waits on disk; a
+crash leaves it there, and the next load measures it against the working tree,
 records an interrupted step, and adds the changed files to the cut-off call's
-"may have partly run" result — the model still decides, nothing is re-run
-(see turns-resume-from-an-intent-journal). This does not reopen
+"may have partly run" result — the model still decides, nothing is re-run (see
+turns-resume-from-an-intent-journal). This does not reopen
 turn-diff-net-change-baseline: the Turn diff keeps its baseline; checkpoints
 are a separate per-step record.
 Rejected: a Holt-specific blob format now (it rebuilds Git's content
 addressing and compression before it can improve on them; revisit for chunked
 dedup of large binaries, dedup across workspaces, non-Git folders, or
 multi-agent branching); objects in the user's `.git` under a private ref
-(grows the user's repository); a whole-tree snapshot per step (the
-`git add`-everything disk blowups in OpenCode, Codex, Roo and Cline;
-libgit2 takes 120–660 ms per scan); APFS `clonefile` (cost grows with file
-count, ignored trees included: 38 s on a 141 GB tree); borrowing the user's
-objects through alternates (nothing unchanged is stored, and a user's history
-rewrite plus gc could prune what a checkpoint points at).
+(grows the user's repository); a whole-tree snapshot per step (the `git
+add`-everything disk blowups in OpenCode, Codex, Roo and Cline; libgit2 takes
+120–660 ms per scan); APFS `clonefile` (cost grows with file count, ignored
+trees included: 38 s on a 141 GB tree); borrowing the user's objects through
+alternates (nothing unchanged is stored, and a user's history rewrite plus gc
+could prune what a checkpoint points at).
