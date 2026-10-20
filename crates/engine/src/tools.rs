@@ -265,6 +265,24 @@ fn write_to_file(
         std::fs::create_dir_all(parent)
             .map_err(|error| io_file_error(&error, &format!("{}/", parent.display())))?;
     }
+    let bytes = match content {
+        WriteContent::Text(text) => text.as_bytes(),
+        WriteContent::Bytes(bytes) => bytes.as_slice(),
+    };
+    if !append {
+        // A whole-file write replaces atomically: a crash mid-write must
+        // not leave a half-written file for a resumed Turn to build on
+        // (ADR-turns-resume-from-an-intent-journal). A confined path was
+        // proven symlink-free above, and the rename replaces the entry
+        // itself; an outside path keeps writing through its symlink, as
+        // the open did.
+        let target = if confined {
+            addressed.to_path_buf()
+        } else {
+            std::fs::canonicalize(addressed).unwrap_or_else(|_| addressed.to_path_buf())
+        };
+        return replace_atomically(&target, bytes).map_err(|error| io_file_error(&error, path));
+    }
     let mut options = std::fs::OpenOptions::new();
     options
         .write(true)
@@ -289,11 +307,34 @@ fn write_to_file(
         }
         io_file_error(&error, path)
     })?;
-    match content {
-        WriteContent::Text(text) => std::io::Write::write_all(&mut file, text.as_bytes()),
-        WriteContent::Bytes(bytes) => std::io::Write::write_all(&mut file, bytes),
+    std::io::Write::write_all(&mut file, bytes).map_err(|error| io_file_error(&error, path))
+}
+
+/// Replace `path` with `bytes` through a synced sibling temp file and a
+/// rename, keeping the existing file's permissions.
+fn replace_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = parent.join(format!(".{name}.holt-write-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            std::fs::set_permissions(&temp, meta.permissions())?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
-    .map_err(|error| io_file_error(&error, path))
+    result
 }
 
 impl FileSystem for LocalExecutionEnv {
@@ -1157,6 +1198,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
+        // The atomic replace lands on the resolved file, never over the link.
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_whole_file_write_replaces_atomically_and_keeps_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let root_path = std::path::Path::new(&root);
+        let target = root_path.join("run.sh");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let before = std::fs::metadata(&target).unwrap();
+        env.write_file("run.sh", &"new".into(), None).await.unwrap();
+        let after = std::fs::metadata(&target).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(after.permissions().mode() & 0o777, 0o755);
+        // A new inode: the old one was replaced whole, never truncated.
+        assert_ne!(
+            std::os::unix::fs::MetadataExt::ino(&before),
+            std::os::unix::fs::MetadataExt::ino(&after)
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(root_path)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("holt-write"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[tokio::test]
