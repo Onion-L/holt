@@ -445,36 +445,37 @@ Provider Mode Turns keep their curated toolsets).
 
 ## turns-resume-from-an-intent-journal
 
-`52eb35d`, `45231e3`, `2fd3425`, amended `b5993ee` and `e73b1ce`. A Turn
-cut off by a crash or quit resumes at launch from its last committed step instead of being recovered as
-interrupted; continuing no longer needs a new queue item. The journal is a new kind in the History JSONL
-(see history-is-a-separate-persisted-record): once the permission gate lets a
-call through, the engine fsyncs a tool intent before the call runs. On load, a
-call without a result is answered by what the journal proves — no intent:
-not executed; intent: started and may have partly run, check before
-repeating (the old "interrupted by the user … not executed" was wrong for a
-crash). Nothing is re-run automatically; the model decides. An unfinished
-model stream is never continued: the request is re-sent from History. A Turn
-that crashes three times in a row stops resuming and is recovered as
-interrupted, as is one the user stopped: Stop, Steer and edit-last record the
-stop on the started item before cancelling, so a quit that beats the settle
-cannot undo it. Core is unchanged: the engine already owns the last hook before
-execution (the gate), and resumption goes through `run_agent_loop_continue`.
-A hard kill runs no destructor, so a bash process group outlives it and keeps
-changing the workspace; launch kills every recorded group before any Turn
-resumes.
+`52eb35d`, `45231e3`, `2fd3425`, amended `b5993ee` and `e73b1ce`. A Turn cut
+off by a crash or quit resumes at launch from its last committed step instead
+of being recovered as interrupted; continuing no longer needs a new queue
+item. The journal is a new kind in the History JSONL (see
+history-is-a-separate-persisted-record): once the permission gate lets a call
+through, the engine fsyncs a tool intent before the call runs. On load, a call
+without a result is answered by what the journal proves — no intent: not
+executed; intent: started and may have partly run, check before repeating (the
+old "interrupted by the user … not executed" was wrong for a crash). Nothing
+is re-run automatically; the model decides. An unfinished model stream is
+never continued: the request is re-sent from History. A Turn that crashes
+three times in a row stops resuming and is recovered as interrupted, as is one
+the user stopped: Stop, Steer and edit-last record the stop on the started
+item before cancelling, so a quit that beats the settle cannot undo it. Core
+is unchanged: the engine already owns the last hook before execution (the
+gate), and resumption goes through `run_agent_loop_continue`. A hard kill runs
+no destructor, so a bash process group outlives it and keeps changing the
+workspace; launch kills every recorded group before any Turn resumes.
 Resumption is independent of goal mode: goal is one consumer, not the
 orchestration of long runs.
 Rejected: asking before resuming on open (Stop is how a user ends a run; a
-quit is not a decision about the Turn); pi-durable's model of one SQLite transaction per step over task
-state machines (a second store beside History, transcript and queue; Holt no
-longer builds on pi — its spec and source informed the intent rule only);
-automatic re-run of read-only tools after a crash (a per-tool replay policy
-saves one model round; deferred until that round matters); adopting core's
-ported pi harness scaffold (`agent/harness`, never wired, every operation
-`HarnessNotImplemented`, and its session codec was already rejected); deterministic re-execution against a journal in the
-Temporal/Restate style (an in-process loop with one model call per step
-gains nothing from replaying code, and model and tool calls cannot be made
-deterministic); resuming a half-received provider stream (no provider
-supports it). Workspace snapshots per step are deferred to their own entry —
-they reopen turn-diff-net-change-baseline.
+quit is not a decision about the Turn); pi-durable's model of one SQLite
+transaction per step over task state machines (a second store beside History,
+transcript and queue; Holt no longer builds on pi — its spec and source
+informed the intent rule only); automatic re-run of read-only tools after a
+crash (a per-tool replay policy saves one model round; deferred until that
+round matters); adopting core's ported pi harness scaffold (`agent/harness`,
+never wired, every operation `HarnessNotImplemented`, and its session codec
+was already rejected); deterministic re-execution against a journal in the
+Temporal/Restate style (an in-process loop with one model call per step gains
+nothing from replaying code, and model and tool calls cannot be made
+deterministic); resuming a half-received provider stream (no provider supports
+it). Workspace snapshots per step are deferred to their own entry — they
+reopen turn-diff-net-change-baseline.
