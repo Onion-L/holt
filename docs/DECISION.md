@@ -445,8 +445,8 @@ Provider Mode Turns keep their curated toolsets).
 
 ## turns-resume-from-an-intent-journal
 
-`52eb35d`, `45231e3`, `2fd3425`, amended by the orphan sweep. A Turn cut off by a crash or quit resumes
-at launch from its last committed step instead of being recovered as
+`52eb35d`, `45231e3`, `2fd3425`, amended `b5993ee` and `e73b1ce`. A Turn
+cut off by a crash or quit resumes at launch from its last committed step instead of being recovered as
 interrupted; continuing no longer needs a new queue item. The journal is a new kind in the History JSONL
 (see history-is-a-separate-persisted-record): once the permission gate lets a
 call through, the engine fsyncs a tool intent before the call runs. On load, a
