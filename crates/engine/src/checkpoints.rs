@@ -255,6 +255,41 @@ fn change_note(step: &Step) -> String {
     }
 }
 
+/// A chat's checkpoint store.
+pub(crate) fn store_dir(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
+    Some(chat_dir(data_dir, chat_id)?.join("objects"))
+}
+
+/// A chat's recorded steps, in log order.
+pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Vec<Step> {
+    let Some(bytes) =
+        chat_dir(data_dir, chat_id).and_then(|dir| std::fs::read(dir.join("steps.jsonl")).ok())
+    else {
+        return Vec::new();
+    };
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect()
+}
+
+/// Replace the step log with `steps` (a rewind dropping what it undid):
+/// tmp + rename, so a crash leaves the old log or the new one.
+pub(crate) fn rewrite(data_dir: &Path, chat_id: &str, steps: &[Step]) -> std::io::Result<()> {
+    let dir = chat_dir(data_dir, chat_id).ok_or_else(|| std::io::Error::other("unsafe chat id"))?;
+    std::fs::create_dir_all(&dir)?;
+    let mut bytes = Vec::new();
+    for step in steps {
+        serde_json::to_writer(&mut bytes, step).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+    }
+    let temp = dir.join(format!(".steps-{}.jsonl", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(&temp, dir.join("steps.jsonl")).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
 /// Drop a chat's whole checkpoint directory.
 pub(crate) fn delete_chat(data_dir: &Path, chat_id: &str) {
     if let Some(dir) = chat_dir(data_dir, chat_id) {

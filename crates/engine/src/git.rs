@@ -1823,6 +1823,13 @@ pub(crate) fn files_since(
     checkpoints::files_since(&repo, store, start, &sections).map_err(git_message)
 }
 
+/// A checkpoint blob's bytes; `None` when the store or the blob is gone.
+pub(crate) fn checkpoint_blob(store: &Path, id: &str) -> Option<Vec<u8>> {
+    let store = Repository::open_bare(store).ok()?;
+    let blob = store.find_blob(git2::Oid::from_str(id).ok()?).ok()?;
+    Some(blob.content().to_vec())
+}
+
 /// `path` (absolute, or relative to `repo_root`) as a repo-root-relative
 /// path; `None` when it escapes the work tree.
 fn relative_path(repo: &Repository, repo_root: &str, path: &str) -> Option<String> {

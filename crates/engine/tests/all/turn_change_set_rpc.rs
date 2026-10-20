@@ -1901,3 +1901,157 @@ async fn a_call_a_crash_cut_off_tells_the_resumed_model_what_it_changed() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Rewind to a step (RewindToStep)
+// ---------------------------------------------------------------------------
+
+/// Rewind once the settled Turn has let go of the chat: the queue reads
+/// idle a moment before the Turn's settle releases execution.
+async fn rewind(engine: &LocalEngine, call: &str, dry_run: bool) -> holt_proto::RewindReply {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let reply = engine
+            .handle(
+                methods::REWIND_TO_STEP,
+                serde_json::json!({ "chatId": "chat-1", "toolCallId": call, "dryRun": dry_run }),
+            )
+            .await;
+        match reply {
+            Ok(RpcReply::Value(value)) => return serde_json::from_value(value).unwrap(),
+            Err(RpcError::Failed(message))
+                if message.contains("a Turn is running")
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("rewind failed: {error:?}"),
+            Ok(_) => panic!("unary reply"),
+        }
+    }
+}
+
+/// A Turn of three steps: write a.txt, then one bash that rewrites it,
+/// creates b.txt and deletes README.md.
+fn three_step_provider(after: Vec<ScriptedReply>) -> ScriptedProvider {
+    let mut replies = vec![
+        ScriptedReply::tool_call(
+            "w-1",
+            "write",
+            serde_json::json!({ "path": "a.txt", "content": "one\n" }),
+        ),
+        tool_bash(
+            "b-1",
+            "printf 'two\\n' > a.txt && printf 'x' > b.txt && rm README.md",
+        ),
+        ScriptedReply::text("done"),
+    ];
+    replies.extend(after);
+    ScriptedProvider::new(replies)
+}
+
+#[tokio::test]
+async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_after_the_step() {
+    use holt_proto::{RewindAction, RewindFile};
+    let fixture = Fixture::new();
+    let provider = three_step_provider(vec![ScriptedReply::text("after the rewind")]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    assert!(fixture.path("b.txt").exists());
+
+    let plan = rewind(&engine, "w-1", true).await;
+    let mut files = plan.files.clone();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    assert_eq!(
+        files,
+        [
+            RewindFile {
+                path: "README.md".into(),
+                action: RewindAction::Restore
+            },
+            RewindFile {
+                path: "a.txt".into(),
+                action: RewindAction::Restore
+            },
+            RewindFile {
+                path: "b.txt".into(),
+                action: RewindAction::Delete
+            },
+        ]
+    );
+    assert!(plan.conflicts.is_empty() && !plan.applied);
+    assert!(fixture.path("b.txt").exists(), "a dry run writes nothing");
+
+    let done = rewind(&engine, "w-1", false).await;
+    assert!(done.applied);
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert!(!fixture.path("b.txt").exists());
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(
+        transcript.contains("w-1") && !transcript.contains("b-1"),
+        "{transcript}"
+    );
+    let calls: Vec<String> = steps(&fixture)
+        .iter()
+        .map(|step| step["toolCallId"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(calls, ["w-1"], "the undone steps leave the log");
+    let records = std::fs::read_dir(fixture.data_dir.path().join("turn-changes/chat-1"))
+        .map(|dir| dir.count())
+        .unwrap_or(0);
+    assert_eq!(records, 0, "the cut Turn's change set is retracted");
+
+    // The next Turn's model sees the conversation up to the step.
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "go another way").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let requests = provider.requests();
+    let tail: Vec<String> = common::summarize(&requests.last().unwrap().messages)
+        .into_iter()
+        .rev()
+        .take(2)
+        .collect();
+    assert_eq!(tail[0], "user:go another way");
+    assert!(tail[1].starts_with("toolresult:w-1:"), "{tail:?}");
+}
+
+#[tokio::test]
+async fn a_file_that_moved_on_refuses_the_whole_rewind() {
+    use holt_proto::{RewindConflict, RewindConflictReason};
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&three_step_provider(Vec::new()));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    // The user edits a file the rewind would put back.
+    std::fs::write(fixture.path("a.txt"), "mine\n").unwrap();
+
+    let reply = rewind(&engine, "w-1", false).await;
+    assert!(!reply.applied);
+    assert_eq!(
+        reply.conflicts,
+        [RewindConflict {
+            path: "a.txt".into(),
+            reason: RewindConflictReason::Changed
+        }]
+    );
+    assert!(fixture.path("b.txt").exists(), "nothing was written");
+    assert!(!fixture.path("README.md").exists());
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(transcript.contains("b-1"), "the conversation is untouched");
+    assert_eq!(steps(&fixture).len(), 2);
+}

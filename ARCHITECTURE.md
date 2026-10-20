@@ -42,7 +42,7 @@ Method names live in `rpc::methods` (code is the contract). Each family's behavi
 | Family | Selected methods | Owning page |
 | --- | --- | --- |
 | Identity, entity watches, mutations, self-update | `EngineInfo`, `WatchChats`/`Spaces`/`Sessions`, `Mutate` ops, `UpdateStatus` | [shell-registry](docs/subsystems/shell-registry.md) |
-| The run: queue, message edits, terminal events, retries | `QueueCommand`, `EditLastMessage`, `WatchMessageQueue`, `WatchTurnTerminalEvents`, `WatchTurnRetry` | [conversation-policy](docs/subsystems/conversation-policy.md), [run-loop](docs/subsystems/run-loop.md) |
+| The run: queue, message edits, terminal events, retries | `QueueCommand`, `EditLastMessage`, `RewindToStep`, `WatchMessageQueue`, `WatchTurnTerminalEvents`, `WatchTurnRetry` | [conversation-policy](docs/subsystems/conversation-policy.md), [run-loop](docs/subsystems/run-loop.md) |
 | Provider configuration and catalog writes | `ListProviders`, `SaveProviderKey`, `SaveModelRecord`, `ProbeProvider` | [provider-transport](docs/subsystems/provider-transport.md) |
 | Permission modes, approvals, questions | `setChatPermissionMode`, `ResolveApproval`, `SettleQuestion` | [permission-gate](docs/subsystems/permission-gate.md), [conversation-policy](docs/subsystems/conversation-policy.md) |
 | Plan and Provider modes, proposals, key requests | `EnterPlanMode`, `ApplyModelProposal`, `SettleProviderKeyRequest` | [modes](docs/subsystems/modes.md) |

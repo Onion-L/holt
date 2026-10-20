@@ -30,9 +30,9 @@ in the same commit.
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
-| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
+| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
-| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
+| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) |
 | UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) |
@@ -512,3 +512,25 @@ add`-everything disk blowups in OpenCode, Codex, Roo and Cline; libgit2 takes
 trees included: 38 s on a 141 GB tree); borrowing the user's objects through
 alternates (nothing unchanged is stored, and a user's history rewrite plus gc
 could prune what a checkpoint points at).
+
+## rewind-to-a-step-is-all-or-nothing
+
+A chat rewinds to just after any tool step of a settled Turn, conversation
+and files together, in one action (`RewindToStep`). The History is cut after
+the results of the assistant message that made the call — parallel siblings
+stay, so no call is left without its result. The files are put back from the
+step checkpoints (see step-checkpoints-in-a-chat-owned-object-store): every
+step recorded after the kept tail's newest timestamp, by a call the kept
+History does not hold, is undone; subagent steps carry the child's call ids,
+so only the clock places them. One file that moved on since its last undone
+step, whose content was never stored, or that would leave the work tree
+refuses the whole rewind before anything is written — the never-merge stance
+of turn-restore-from-change-records, applied to the set. Files go first, then
+the step log drops the undone steps (a later rewind would otherwise see them
+as conflicts), then the conversation; the cut Turns' change sets are retracted
+as an edit-last prune's are. The chat stays idle afterwards.
+Rejected: rewinding only to a user message (a long Turn could not be entered);
+separate conversation-only and files-only rewinds (two states that disagree);
+restoring what can be and skipping conflicts (a conversation that no longer
+describes the files); continuing the run from the step automatically (the
+user rewinds to change course, so the next word is theirs).

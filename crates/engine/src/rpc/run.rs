@@ -1020,6 +1020,95 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({ "messageId": message_id }))
     }
 
+    /// Rewind the chat to just after one tool step
+    /// (ADR-step-checkpoints-in-a-chat-owned-object-store): the conversation
+    /// is cut after the results of the assistant message that made the call,
+    /// and every file a later step changed goes back. Files go first, then
+    /// the step log, then the conversation, so a failure part-way leaves a
+    /// conversation that still describes the files; a conflict writes
+    /// nothing. The chat stays idle afterwards: the user decides what next.
+    pub(super) async fn rewind_to_step(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?.to_string();
+        let call_id = required_string(&params, "toolCallId")?.to_string();
+        let dry_run = params
+            .get("dryRun")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !crate::store::id_is_path_safe(&chat_id) {
+            return Err(RpcError::BadParams("invalid chatId".into()));
+        }
+        let chat = self.runtime.chat(&chat_id);
+        // The driver holds the execution lock for a whole Turn; holding it
+        // here keeps the next one from starting until the rewind is done.
+        let execution = chat.execution.try_lock();
+        let idle = chat.queue.lock().unwrap_or_else(|e| e.into_inner()).idle();
+        let (Ok(_execution), true) = (execution, idle) else {
+            return Err(RpcError::Failed(
+                "a Turn is running in this chat; rewind after it settles".into(),
+            ));
+        };
+
+        let cut = rewind_cut(
+            &chat.history.read().unwrap_or_else(|e| e.into_inner()),
+            &call_id,
+        )?;
+        let (entries, cut_turns) = transcript_cut(
+            &chat.transcript.read().unwrap_or_else(|e| e.into_inner()),
+            &cut.group,
+        )?;
+        let (undone, kept): (Vec<_>, Vec<_>) = crate::checkpoints::load(&self.data_dir, &chat_id)
+            .into_iter()
+            .partition(|step| {
+                step.timestamp > cut.boundary && !cut.retained.contains(&step.tool_call_id)
+            });
+        let reply = if undone.is_empty() {
+            holt_proto::RewindReply {
+                files: Vec::new(),
+                conflicts: Vec::new(),
+                applied: !dry_run,
+            }
+        } else {
+            let root = self.turn_change_root(&chat_id)?;
+            let workdir = self.git.workdir(&root).await.map_err(RpcError::Failed)?;
+            let store = crate::checkpoints::store_dir(&self.data_dir, &chat_id)
+                .ok_or_else(|| RpcError::BadParams("invalid chatId".into()))?;
+            tokio::task::spawn_blocking(move || {
+                crate::rewind::rewind_files(&workdir, &store, &undone, dry_run)
+            })
+            .await
+            .map_err(|error| RpcError::Failed(format!("rewind task failed: {error}")))?
+            .map_err(RpcError::Failed)?
+        };
+        if !reply.applied {
+            return RpcReply::value(&reply);
+        }
+        crate::checkpoints::rewrite(&self.data_dir, &chat_id, &kept)
+            .map_err(|error| RpcError::Failed(format!("rewrite the step log: {error}")))?;
+
+        let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut history = chat.history.write().unwrap_or_else(|e| e.into_inner());
+            history.truncate(cut.history_len);
+            crate::history::rewrite(&self.data_dir, &chat_id, &history)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
+        crate::store::rewrite_transcript(&self.data_dir, &chat_id, &entries)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        *chat.transcript.write().unwrap_or_else(|e| e.into_inner()) = entries;
+        chat.clear_persisted_parts();
+        // The cut Turns' change sets describe a working tree that no longer
+        // exists — retracted like an edit-last prune's.
+        for message_id in &cut_turns {
+            crate::turn_change_store::delete(&self.data_dir, &chat_id, message_id);
+            self.turn_changes.retract(&chat_id, message_id);
+        }
+        chat.publish();
+        RpcReply::value(&reply)
+    }
+
     /// Undo the edit's pause on a failure path: a queue the user had
     /// already parked stays parked; only a queue that was running before
     /// the edit resumes.
@@ -1255,4 +1344,103 @@ struct UsageStatsParams {
 struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
+}
+
+/// Where a rewind cuts the History.
+struct RewindCut {
+    /// Messages kept: through the last result of the step's assistant
+    /// message.
+    history_len: usize,
+    /// The calls of that assistant message — parallel siblings stay with it.
+    group: std::collections::HashSet<String>,
+    /// Every call the kept History holds.
+    retained: std::collections::HashSet<String>,
+    /// The kept tail's newest timestamp: a step recorded later, by a call
+    /// the kept History does not hold, is undone. Subagent steps carry the
+    /// child's call ids, so only the clock places them.
+    boundary: i64,
+}
+
+fn rewind_cut(
+    history: &[holt_core::agent::types::AgentMessage],
+    call_id: &str,
+) -> Result<RewindCut, RpcError> {
+    use holt_core::agent::types::AgentMessage;
+    use holt_core::ai::types::AssistantContent;
+    let calls = |message: &AgentMessage| -> Vec<String> {
+        match message {
+            AgentMessage::Assistant(assistant) => assistant
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    AssistantContent::ToolCall(call) => Some(call.id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let start = history
+        .iter()
+        .position(|message| calls(message).iter().any(|id| id == call_id))
+        .ok_or_else(|| {
+            RpcError::Failed(
+                "that step is no longer in the conversation (compacted or rewound)".into(),
+            )
+        })?;
+    let group: std::collections::HashSet<String> = calls(&history[start]).into_iter().collect();
+    let mut end = start + 1;
+    while let Some(AgentMessage::ToolResult(result)) = history.get(end)
+        && group.contains(&result.tool_call_id)
+    {
+        end += 1;
+    }
+    let boundary = history[start..end]
+        .iter()
+        .filter_map(|message| message.as_llm_message())
+        .map(|message| message.timestamp())
+        .max()
+        .unwrap_or_default();
+    Ok(RewindCut {
+        history_len: end,
+        retained: history[..end].iter().flat_map(calls).collect(),
+        group,
+        boundary,
+    })
+}
+
+/// The transcript a rewind keeps — through the step group's last tool chip —
+/// and the message ids of the Turns it cuts into or drops.
+fn transcript_cut(
+    transcript: &[SessionMessageEntry],
+    group: &std::collections::HashSet<String>,
+) -> Result<(Vec<SessionMessageEntry>, Vec<String>), RpcError> {
+    let is_step =
+        |part: &MessagePart| matches!(part, MessagePart::Tool { id, .. } if group.contains(id));
+    let (index, last_part) = transcript
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry)| {
+            entry
+                .parts
+                .iter()
+                .rposition(is_step)
+                .map(|part| (index, part))
+        })
+        .ok_or_else(|| RpcError::Failed("that step is not in the transcript".into()))?;
+    let mut kept = transcript[..=index].to_vec();
+    kept[index].parts.truncate(last_part + 1);
+    let cut_turns = transcript[..index]
+        .iter()
+        .rev()
+        .find(|entry| entry.role == MessageRole::User)
+        .into_iter()
+        .chain(
+            transcript[index + 1..]
+                .iter()
+                .filter(|entry| entry.role == MessageRole::User),
+        )
+        .map(|entry| entry.id.clone())
+        .collect();
+    Ok((kept, cut_turns))
 }
