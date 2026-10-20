@@ -21,11 +21,10 @@ pub(crate) mod todo;
 mod web_fetch;
 pub(crate) mod web_search;
 
-use crate::git::Git;
+use crate::git::{CheckpointFile, CheckpointSide, Git, WindowStart};
 use crate::shell_env::login_shell;
 use crate::turn_changes::Attribution;
 use std::{
-    collections::HashMap,
     future::pending,
     path::{Path, PathBuf},
     process::Stdio,
@@ -843,49 +842,112 @@ pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
 /// another chat's concurrent work in the same working tree never lands in
 /// this Turn's card. Cloned per tool; the set is shared. `None` on runs
 /// without a Turn (compaction) — nothing records, nothing filters.
+///
+/// With a step log, each call that changed files also records a step
+/// checkpoint (ADR-step-checkpoints-in-a-chat-owned-object-store).
 #[derive(Clone)]
 pub(crate) struct ChangeAttribution {
     set: Arc<Attribution>,
     git: Git,
+    steps: Option<crate::checkpoints::StepLog>,
 }
 
 impl ChangeAttribution {
-    pub(crate) fn new(set: Arc<Attribution>, git: Git) -> Self {
-        Self { set, git }
+    pub(crate) fn new(
+        set: Arc<Attribution>,
+        git: Git,
+        steps: Option<crate::checkpoints::StepLog>,
+    ) -> Self {
+        Self { set, git, steps }
     }
 
-    /// A write/edit tool's target path, resolved to the repo-root-relative
-    /// form the capture vocabulary uses. Recording is best-effort: an
-    /// unresolved path attributes nothing, never fails the tool.
-    async fn record_tool_path(&self, cwd: &str, path: &str) {
+    /// A write/edit target's side before the call, when the Turn
+    /// checkpoints. Best-effort: a failed read records no step.
+    async fn before_write(&self, cwd: &str, path: &str) -> Option<(String, CheckpointSide)> {
+        let steps = self.steps.as_ref()?;
+        self.git
+            .path_checkpoint(cwd, steps.store(), path)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// A write/edit target's path, resolved to the repo-root-relative
+    /// form the capture vocabulary uses, and — with its before side — its
+    /// step. Recording is best-effort: an unresolved path attributes
+    /// nothing, never fails the tool.
+    async fn record_tool_path(
+        &self,
+        cwd: &str,
+        path: &str,
+        call: (&str, &str),
+        before: Option<(String, CheckpointSide)>,
+    ) {
         if let Some(relative) = self.git.repo_relative(cwd, path).await {
             self.set.record([relative]);
         }
+        let (Some(steps), Some((relative, before))) = (&self.steps, before) else {
+            return;
+        };
+        if let Ok(Some((_, after))) = self.git.path_checkpoint(cwd, steps.store(), path).await
+            && after != before
+        {
+            steps.append(
+                call.0,
+                call.1,
+                vec![CheckpointFile {
+                    path: relative,
+                    before,
+                    after,
+                }],
+            );
+        }
     }
 
-    /// The current uncommitted section map — a bash command's window start.
-    async fn sections(&self, cwd: &str) -> HashMap<String, String> {
-        self.git.changed_sections(cwd).await
+    /// A bash command's window start: the current uncommitted section map,
+    /// plus the before sides a step checkpoint needs.
+    async fn window_start(&self, cwd: &str) -> WindowStart {
+        self.git
+            .window_start(cwd, self.steps.as_ref().map(|steps| steps.store()))
+            .await
     }
 
     /// Attribute a bash command's writes: every path whose section changed
     /// across the command's window (creations, modifications, deletions).
     /// Runs after the command whatever its exit code — a failed command's
     /// partial writes still happened.
-    async fn record_bash_delta(&self, cwd: &str, before: HashMap<String, String>) {
+    async fn record_bash_delta(&self, cwd: &str, call: (&str, &str), before: WindowStart) {
         let after = self.git.changed_sections(cwd).await;
         let touched = after
             .iter()
-            .filter(|(path, text)| before.get(*path) != Some(*text))
+            .filter(|(path, text)| before.sections.get(*path) != Some(*text))
             .map(|(path, _)| path.clone())
             .chain(
                 before
+                    .sections
                     .keys()
                     .filter(|path| !after.contains_key(*path))
                     .cloned(),
             )
             .collect::<Vec<_>>();
-        self.set.record(touched);
+        self.set.record(touched.iter().cloned());
+        let Some(steps) = &self.steps else {
+            return;
+        };
+        if touched.is_empty() {
+            return;
+        }
+        match self
+            .git
+            .window_checkpoint(cwd, steps.store(), before, touched)
+            .await
+        {
+            Ok(Some(files)) => steps.append(call.0, call.1, files),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(target: "holt::checkpoints", %error, "could not store a step checkpoint");
+            }
+        }
     }
 }
 
@@ -900,21 +962,30 @@ fn attribute_tool(
     };
     let attribution = attribution.clone();
     let cwd = cwd.to_string();
+    let name = tool.name.clone();
     let execute = Arc::clone(&tool.execute);
     tool.execute = Arc::new(move |id, params, signal, update| {
         let attribution = attribution.clone();
         let cwd = cwd.clone();
+        let name = name.clone();
+        let call = id.to_string();
         let path = params
             .get("path")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
         let future = execute(id, params, signal, update);
         Box::pin(async move {
+            let before = match path.as_deref() {
+                Some(path) => attribution.before_write(&cwd, path).await,
+                None => None,
+            };
             let result = future.await;
             if result.is_ok()
                 && let Some(path) = path.as_deref()
             {
-                attribution.record_tool_path(&cwd, path).await;
+                attribution
+                    .record_tool_path(&cwd, path, (&call, &name), before)
+                    .await;
             }
             result
         })
@@ -933,15 +1004,20 @@ fn attribute_bash(
     };
     let attribution = attribution.clone();
     let cwd = cwd.to_string();
+    let name = tool.name.clone();
     let execute = Arc::clone(&tool.execute);
     tool.execute = Arc::new(move |id, params, signal, update| {
         let attribution = attribution.clone();
         let cwd = cwd.clone();
+        let name = name.clone();
+        let call = id.to_string();
         let future = execute(id, params, signal, update);
         Box::pin(async move {
-            let before = attribution.sections(&cwd).await;
+            let before = attribution.window_start(&cwd).await;
             let result = future.await;
-            attribution.record_bash_delta(&cwd, before).await;
+            attribution
+                .record_bash_delta(&cwd, (&call, &name), before)
+                .await;
             result
         })
     });

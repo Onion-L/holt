@@ -1005,6 +1005,7 @@ impl AgentRuntime {
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
         crate::turn_change_store::delete_chat(&self.data_dir, chat_id);
+        crate::checkpoints::delete_chat(&self.data_dir, chat_id);
         crate::provider_mode::delete(&self.data_dir, chat_id);
         self.subagents.remove_parent(&self.data_dir, chat_id);
         // The usage ledger archives before it dies: the chat's records move

@@ -705,7 +705,13 @@ impl EngineService {
         let attribution = if had_baseline {
             self.turn_changes
                 .attribution(chat_id, &message_id)
-                .map(|set| crate::tools::ChangeAttribution::new(set, self.git.clone()))
+                .map(|set| {
+                    crate::tools::ChangeAttribution::new(
+                        set,
+                        self.git.clone(),
+                        crate::checkpoints::StepLog::new(&self.data_dir, chat_id, &message_id),
+                    )
+                })
         } else {
             None
         };

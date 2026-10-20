@@ -25,6 +25,7 @@ use holt_proto::{HOME_SPACE_ID, Space};
 use tokio::sync::watch;
 
 mod agent;
+mod checkpoints;
 pub mod clock;
 pub mod compaction;
 pub mod credentials;

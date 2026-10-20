@@ -1413,6 +1413,7 @@ async fn deleting_the_chat_removes_its_persisted_change_sets() {
             .join("turn-changes/chat-1/m-1.json")
             .exists()
     );
+    assert_eq!(steps(&fixture).len(), 1);
 
     engine
         .handle(
@@ -1424,6 +1425,10 @@ async fn deleting_the_chat_removes_its_persisted_change_sets() {
     assert!(
         !fixture.data_dir.path().join("turn-changes/chat-1").exists(),
         "chat deletion reclaims the chat's change-set history"
+    );
+    assert!(
+        !fixture.data_dir.path().join("checkpoints/chat-1").exists(),
+        "and its step checkpoints"
     );
 }
 
@@ -1669,4 +1674,149 @@ async fn editing_a_live_turn_retracts_its_change_set() {
         }
         reply => panic!("expected the replacement Turn's final set, got {reply:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Step checkpoints (ADR-step-checkpoints-in-a-chat-owned-object-store)
+// ---------------------------------------------------------------------------
+
+/// The chat's recorded steps, oldest first.
+fn steps(fixture: &Fixture) -> Vec<serde_json::Value> {
+    let path = fixture
+        .data_dir
+        .path()
+        .join("checkpoints/chat-1/steps.jsonl");
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// One side's bytes from the chat's store; `None` for an absent file.
+fn side_bytes(fixture: &Fixture, side: &serde_json::Value) -> Option<Vec<u8>> {
+    match side["kind"].as_str().unwrap() {
+        "absent" => None,
+        "blob" => {
+            let store =
+                Repository::open_bare(fixture.data_dir.path().join("checkpoints/chat-1/objects"))
+                    .unwrap();
+            let oid = git2::Oid::from_str(side["id"].as_str().unwrap()).unwrap();
+            Some(store.find_blob(oid).unwrap().content().to_vec())
+        }
+        other => panic!("unexpected side {other}"),
+    }
+}
+
+/// `(path, before, after)`.
+type StepFile = (String, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// One step's files.
+fn step_files(fixture: &Fixture, step: &serde_json::Value) -> Vec<StepFile> {
+    step["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| {
+            (
+                file["path"].as_str().unwrap().to_string(),
+                side_bytes(fixture, &file["before"]),
+                side_bytes(fixture, &file["after"]),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn each_changing_call_records_exact_before_and_after_bytes() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        tool_write("new.txt", "fresh\n"),
+        ScriptedReply::tool_call(
+            "e-1",
+            "edit",
+            serde_json::json!({
+                "path": "README.md",
+                "edits": [{ "oldText": "hello", "newText": "hi" }],
+            }),
+        ),
+        tool_bash("b-1", "printf 'by bash' > dirty.txt && rm movable.txt"),
+        // Changes nothing: no step.
+        tool_bash("b-2", "true"),
+        ScriptedReply::text("done"),
+    ]));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    // Pre-Turn dirt whose bytes no patch text round-trips: CRLF, and no
+    // final newline.
+    std::fs::write(fixture.path("dirty.txt"), "user\r\nno newline").unwrap();
+
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "touch files").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    let steps = steps(&fixture);
+    let calls: Vec<&str> = steps
+        .iter()
+        .map(|step| step["toolCallId"].as_str().unwrap())
+        .collect();
+    assert_eq!(calls, ["w-1", "e-1", "b-1"]);
+    assert_eq!(
+        step_files(&fixture, &steps[0]),
+        [("new.txt".into(), None, Some(b"fresh\n".to_vec()))]
+    );
+    assert_eq!(
+        step_files(&fixture, &steps[1]),
+        [(
+            "README.md".into(),
+            Some(b"hello\n".to_vec()),
+            Some(b"hi\n".to_vec())
+        )]
+    );
+    let mut bash = step_files(&fixture, &steps[2]);
+    bash.sort();
+    assert_eq!(
+        bash,
+        [
+            (
+                "dirty.txt".into(),
+                Some(b"user\r\nno newline".to_vec()),
+                Some(b"by bash".to_vec())
+            ),
+            (
+                "movable.txt".into(),
+                Some(movable_body().into_bytes()),
+                None
+            ),
+        ]
+    );
+    assert_eq!(steps[2]["toolName"], "bash");
+}
+
+#[tokio::test]
+async fn a_non_git_workspace_records_no_steps() {
+    let fixture = Fixture::new();
+    let plain = TempDir::new().unwrap();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        tool_write("note.txt", "plain\n"),
+        ScriptedReply::text("done"),
+    ]));
+    register_space(&engine, &plain.path().display().to_string(), "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+    save_key(&engine).await;
+    grant_full_access(&engine, "chat-1").await;
+
+    run_prompt(
+        &engine,
+        "chat-1",
+        &plain.path().display().to_string(),
+        "write",
+    )
+    .await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    assert_eq!(
+        std::fs::read_to_string(plain.path().join("note.txt")).unwrap(),
+        "plain\n"
+    );
+    assert!(!fixture.data_dir.path().join("checkpoints").exists());
 }
