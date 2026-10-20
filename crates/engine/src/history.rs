@@ -423,6 +423,14 @@ pub(crate) fn history_assistant(assistant: &AssistantMessage) -> Option<Assistan
     }
 }
 
+/// What cut a run short with tool calls still unanswered: the user (Stop,
+/// Steer, an edit) inside a live process, or a restart found on load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cut {
+    User,
+    Restart,
+}
+
 /// Tool calls in `messages` that never received their result, in call
 /// order — the crash-mid-run and interrupted-mid-run shapes.
 fn dangling_tool_calls(messages: &[AgentMessage]) -> Vec<(String, String)> {
@@ -445,19 +453,40 @@ fn dangling_tool_calls(messages: &[AgentMessage]) -> Vec<(String, String)> {
     dangling
 }
 
-/// A synthetic error tool result for a call that never ran: an honest
+/// A synthetic error tool result for a call left without one: an honest
 /// "this was interrupted" record, distinguishable from a real failure.
 /// holt writes these itself so upstream's request-time normalizer ("No
-/// result provided") never has anything to synthesize.
-fn interrupted_tool_result(tool_call_id: &str, tool_name: &str) -> AgentMessage {
+/// result provided") never has anything to synthesize. The intent journal
+/// decides the claim (ADR-turns-resume-from-an-intent-journal): a journaled
+/// call started and may have partly run; any other never ran.
+fn interrupted_tool_result(
+    tool_call_id: &str,
+    tool_name: &str,
+    cut: Cut,
+    started: bool,
+) -> AgentMessage {
+    let text = match (cut, started) {
+        (Cut::User, false) => format!(
+            "The Turn was interrupted by the user; the \"{tool_name}\" tool call was not executed."
+        ),
+        (Cut::User, true) => format!(
+            "The Turn was interrupted by the user while the \"{tool_name}\" tool call was running; \
+             it may have partly run. Check the current state before repeating it."
+        ),
+        (Cut::Restart, false) => {
+            format!("Holt restarted before the \"{tool_name}\" tool call ran; it was not executed.")
+        }
+        (Cut::Restart, true) => format!(
+            "Holt restarted while the \"{tool_name}\" tool call was running; it may have partly \
+             run. Check the current state before repeating it."
+        ),
+    };
     AgentMessage::ToolResult(Box::new(ToolResultMessage {
         role: Default::default(),
         tool_call_id: tool_call_id.to_string(),
         tool_name: tool_name.to_string(),
         content: vec![BlockContent::Text(TextContent {
-            text: format!(
-                "The Turn was interrupted by the user; the \"{tool_name}\" tool call was not executed."
-            ),
+            text,
             ..Default::default()
         })],
         details: None,
@@ -471,10 +500,14 @@ fn interrupted_tool_result(tool_call_id: &str, tool_name: &str) -> AgentMessage 
 /// The synthetic interrupted-results for calls in `messages` that never
 /// got their result — the run-end sweep's disk appends (everything else
 /// already landed per-message as it completed).
-pub(crate) fn interrupted_results_for(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+pub(crate) fn interrupted_results_for(
+    messages: &[AgentMessage],
+    cut: Cut,
+    started: &HashSet<String>,
+) -> Vec<AgentMessage> {
     dangling_tool_calls(messages)
         .into_iter()
-        .map(|(id, name)| interrupted_tool_result(&id, &name))
+        .map(|(id, name)| interrupted_tool_result(&id, &name, cut, started.contains(&id)))
         .collect()
 }
 
@@ -484,13 +517,18 @@ pub(crate) fn interrupted_results_for(messages: &[AgentMessage]) -> Vec<AgentMes
 /// that made the call, where providers require it, not at the tail. Runs
 /// after replay on load — the crash-truncated tail never reaches the
 /// model as-is.
-pub(crate) fn repair_history(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+pub(crate) fn repair_history(
+    messages: &[AgentMessage],
+    cut: Cut,
+    started: &HashSet<String>,
+) -> Vec<AgentMessage> {
     let mut repaired = Vec::with_capacity(messages.len());
     // Calls of the most recent assistant message still awaiting results.
     let mut open: Vec<(String, String)> = Vec::new();
     let flush = |open: &mut Vec<(String, String)>, repaired: &mut Vec<AgentMessage>| {
         for (id, name) in open.drain(..) {
-            repaired.push(interrupted_tool_result(&id, &name));
+            let journaled = started.contains(&id);
+            repaired.push(interrupted_tool_result(&id, &name, cut, journaled));
         }
     };
     for message in messages {
@@ -541,12 +579,12 @@ pub(crate) fn repair_history(messages: &[AgentMessage]) -> Vec<AgentMessage> {
 /// after later Turns, at the tail, away from the call it answers). The
 /// record stays append-only: the additions go at the end of the file,
 /// which is where a crash-truncated tail's dangling calls are.
-pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
+pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str, cut: Cut) -> Result<Replayed, String> {
     let Replayed {
         messages: replayed,
         intents,
     } = replay(data_dir, chat_id)?;
-    let repaired = repair_history(&replayed);
+    let repaired = repair_history(&replayed, cut, &intents);
     let answered: Vec<&str> = replayed
         .iter()
         .filter_map(|message| match message {
@@ -670,7 +708,7 @@ mod tests {
                 ],
             ),
         ];
-        let repaired = repair_history(&messages);
+        let repaired = repair_history(&messages, Cut::User, &HashSet::new());
         assert_eq!(repaired.len(), 5);
         // The assistant message survives as a normal end…
         let AgentMessage::Assistant(assistant) = &repaired[1] else {
@@ -706,7 +744,7 @@ mod tests {
             })),
             tool_result("call-1"),
         ];
-        let repaired = repair_history(&messages);
+        let repaired = repair_history(&messages, Cut::User, &HashSet::new());
         assert_eq!(repaired.len(), 4);
         assert_eq!(result_ids(&repaired), ["call-1", "call-2"]);
         let AgentMessage::ToolResult(synthetic) = &repaired[3] else {
@@ -722,7 +760,10 @@ mod tests {
             user("hello"),
             terminal_assistant(StopReason::Aborted, vec![]),
         ];
-        assert_eq!(repair_history(&messages), vec![user("hello")]);
+        assert_eq!(
+            repair_history(&messages, Cut::User, &HashSet::new()),
+            vec![user("hello")]
+        );
     }
 
     #[test]
@@ -746,7 +787,7 @@ mod tests {
             user("never mind"),
             assistant("ok"),
         ];
-        let repaired = repair_history(&messages);
+        let repaired = repair_history(&messages, Cut::User, &HashSet::new());
         assert_eq!(result_ids(&repaired), ["call-1", "call-2"]);
         assert!(matches!(&repaired[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"));
         assert!(matches!(&repaired[3], AgentMessage::ToolResult(r) if r.tool_call_id == "call-2"));
@@ -762,7 +803,10 @@ mod tests {
             user("try this"),
             terminal_assistant(StopReason::Error, vec![]),
         ];
-        assert_eq!(repair_history(&messages), vec![user("try this")]);
+        assert_eq!(
+            repair_history(&messages, Cut::User, &HashSet::new()),
+            vec![user("try this")]
+        );
 
         // Partial content before the error: the interrupted rule applies —
         // the content survives as a normal end, the error does not.
@@ -770,7 +814,7 @@ mod tests {
             user("try this"),
             terminal_assistant(StopReason::Error, vec![text_block("half an a")]),
         ];
-        let repaired = repair_history(&messages);
+        let repaired = repair_history(&messages, Cut::User, &HashSet::new());
         assert_eq!(repaired.len(), 2);
         let AgentMessage::Assistant(assistant) = &repaired[1] else {
             panic!("expected the assistant message");
@@ -803,7 +847,9 @@ mod tests {
             .unwrap();
         let replayed = load(&dir, "chat-1").unwrap();
         assert_eq!(replayed.len(), 2);
-        let repaired = load_repaired(&dir, "chat-1").unwrap().messages;
+        let repaired = load_repaired(&dir, "chat-1", Cut::Restart)
+            .unwrap()
+            .messages;
         assert_eq!(result_ids(&repaired), ["call-1"]);
         assert_eq!(repaired.len(), 3);
         assert_eq!(load(&dir, "chat-1").unwrap(), repaired);
@@ -813,11 +859,59 @@ mod tests {
         // the tail behind the newer messages.
         append_message(&dir, "chat-1", &user("later")).unwrap();
         append_message(&dir, "chat-1", &assistant("sure")).unwrap();
-        let reloaded = load_repaired(&dir, "chat-1").unwrap().messages;
+        let reloaded = load_repaired(&dir, "chat-1", Cut::Restart)
+            .unwrap()
+            .messages;
         assert_eq!(reloaded.len(), 5);
         assert!(matches!(&reloaded[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"));
         assert_eq!(reloaded[3], user("later"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unanswered_call_is_described_by_its_cut_and_its_intent() {
+        let messages = vec![
+            user("go"),
+            terminal_assistant(
+                StopReason::ToolUse,
+                vec![
+                    tool_call_block("ran", "bash"),
+                    tool_call_block("queued", "edit"),
+                ],
+            ),
+        ];
+        let started: HashSet<String> = ["ran".to_string()].into();
+        let texts = |cut| -> Vec<String> {
+            repair_history(&messages, cut, &started)
+                .iter()
+                .filter_map(|message| match message {
+                    AgentMessage::ToolResult(result) => Some(result_text(result)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let restart = texts(Cut::Restart);
+        assert!(restart[0].contains("Holt restarted while the \"bash\" tool call was running"));
+        assert!(restart[0].contains("may have partly run"));
+        assert!(restart[1].contains("Holt restarted before the \"edit\" tool call ran"));
+        assert!(restart[1].contains("not executed"));
+        let user_cut = texts(Cut::User);
+        assert!(user_cut[0].contains("interrupted by the user while the \"bash\""));
+        assert!(user_cut[0].contains("may have partly run"));
+        assert!(
+            user_cut[1]
+                .contains("interrupted by the user; the \"edit\" tool call was not executed")
+        );
+        assert_eq!(
+            interrupted_results_for(&messages, Cut::Restart, &started)
+                .iter()
+                .map(|message| match message {
+                    AgentMessage::ToolResult(result) => result_text(result),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>(),
+            restart
+        );
     }
 
     #[test]
@@ -848,7 +942,7 @@ mod tests {
         let replayed = replay(&dir, "chat-1").unwrap();
         assert_eq!(replayed.messages.len(), 3);
         assert!(replayed.intents.contains("call-1"));
-        let repaired = load_repaired(&dir, "chat-1").unwrap();
+        let repaired = load_repaired(&dir, "chat-1", Cut::Restart).unwrap();
         assert_eq!(repaired.messages, replayed.messages);
         assert_eq!(repaired.intents, replayed.intents);
         std::fs::remove_dir_all(&dir).ok();
@@ -893,7 +987,9 @@ mod tests {
         std::fs::write(&path, format!("{damaged}\n")).unwrap();
 
         for load in 1..=3 {
-            let history = load_repaired(&dir, "chat-1").unwrap().messages;
+            let history = load_repaired(&dir, "chat-1", Cut::Restart)
+                .unwrap()
+                .messages;
             assert_eq!(
                 result_ids(&history),
                 ["call-1"],
@@ -933,7 +1029,9 @@ mod tests {
             .write_all(b"{\"kind\":\"message\",\"entry\":")
             .unwrap();
         for load in 1..=3 {
-            let history = load_repaired(&dir, "chat-1").unwrap().messages;
+            let history = load_repaired(&dir, "chat-1", Cut::Restart)
+                .unwrap()
+                .messages;
             assert_eq!(
                 result_ids(&history),
                 ["call-1"],
@@ -966,7 +1064,9 @@ mod tests {
         append_message(dir.path(), "chat-1", &user("after")).unwrap();
 
         assert_eq!(
-            load_repaired(dir.path(), "chat-1").unwrap().messages,
+            load_repaired(dir.path(), "chat-1", Cut::Restart)
+                .unwrap()
+                .messages,
             [user("before"), user("after")]
         );
         assert!(std::fs::read(&path).unwrap().starts_with(&bytes));

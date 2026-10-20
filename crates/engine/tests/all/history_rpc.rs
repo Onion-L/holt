@@ -502,8 +502,10 @@ async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
         "{}",
         summary[2]
     );
+    // The bash call was journaled before it ran, so the restart's repair
+    // says it may have partly run — not that it never executed.
     assert!(
-        summary[2].contains("interrupted by the user"),
+        summary[2].contains("Holt restarted while the \"bash\" tool call was running"),
         "{}",
         summary[2]
     );

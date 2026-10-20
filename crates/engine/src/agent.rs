@@ -268,7 +268,9 @@ impl ChatRuntime {
     pub(crate) fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
         let persistence = Arc::new(Mutex::new(()));
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
-        let replayed = crate::history::load_repaired(data_dir, chat_id);
+        // A call still unanswered on load was cut off by a restart.
+        let replayed =
+            crate::history::load_repaired(data_dir, chat_id, crate::history::Cut::Restart);
         let mut intents = Default::default();
         let (mut history, mut notice) = match replayed {
             Ok(replayed) => {
@@ -731,6 +733,13 @@ impl ChatRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .insert(tool_call_id.to_string());
         Ok(())
+    }
+
+    pub(crate) fn tool_intents(&self) -> std::collections::HashSet<String> {
+        self.tool_intents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub(crate) fn append_compaction(&self, record: &CompactionRecord) {
@@ -2075,6 +2084,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             let mut history = base.history.clone();
             history.extend(crate::history::repair_history(
                 &messages[base.consumed.min(messages.len())..],
+                crate::history::Cut::User,
+                &chat.tool_intents(),
             ));
             history
         };
@@ -2162,7 +2173,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             let base = run_base.lock().unwrap_or_else(|e| e.into_inner());
             *stored = base.history.clone();
             let remaining = &messages[base.consumed.min(messages.len())..];
-            let repaired = crate::history::repair_history(remaining);
+            let started = chat.tool_intents();
+            let repaired =
+                crate::history::repair_history(remaining, crate::history::Cut::User, &started);
             for message in &repaired {
                 stored.push(message.clone());
             }
@@ -2170,7 +2183,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             // Disk already carries every completed message from the sink;
             // the sweep only adds the synthetic results for calls the run
             // ended before they could execute.
-            for message in crate::history::interrupted_results_for(&messages) {
+            for message in crate::history::interrupted_results_for(
+                &messages,
+                crate::history::Cut::User,
+                &started,
+            ) {
                 chat.append_history(message);
             }
             // An interrupted loop never sends the closing MessageEnd, so its
@@ -2278,8 +2295,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             {
                 let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
                 if !chat.is_removed()
-                    && let Ok(replayed) =
-                        crate::history::load_repaired(&chat.data_dir, &chat.chat_id)
+                    && let Ok(replayed) = crate::history::load_repaired(
+                        &chat.data_dir,
+                        &chat.chat_id,
+                        crate::history::Cut::User,
+                    )
                 {
                     *chat.history.write().unwrap_or_else(|e| e.into_inner()) = replayed.messages;
                 }
