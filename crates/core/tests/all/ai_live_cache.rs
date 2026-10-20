@@ -8,8 +8,8 @@ use std::sync::Arc;
 use common::live::{
     LiveOptions, get_model_or_panic, live_complete, live_env, now_millis, resolve_api_key, skip,
 };
-use pi_core::ai::compat::complete_simple;
-use pi_core::ai::types::{
+use holt_core::ai::compat::complete_simple;
+use holt_core::ai::types::{
     AssistantContent, Context, Message, OnPayloadCallback, ProviderRequestOptions, RoleUser,
     SimpleStreamOptions, StopReason, StreamOptions, Transport, UserContent, UserMessage,
 };
@@ -28,7 +28,7 @@ fn context(system: &str, prompt: &str) -> Context {
     }
 }
 
-fn text(response: &pi_core::ai::types::AssistantMessage) -> String {
+fn text(response: &holt_core::ai::types::AssistantMessage) -> String {
     response
         .content
         .iter()
@@ -44,7 +44,7 @@ async fn openai_codex_cache_affinity_e2e() {
     let Some(token) = resolve_api_key("openai-codex").await else {
         skip(
             "openai-codex cache affinity e2e",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
         return;
     };

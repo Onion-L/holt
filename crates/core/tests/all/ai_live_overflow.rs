@@ -8,7 +8,7 @@
 //! or the conditional z.ai/ollama handling). The shared TS body
 //! (`testContextOverflow`) and `logResult` are ported below; assertions use
 //! the same regexes as the TypeScript source and
-//! `pi_core::ai::utils::overflow::is_context_overflow`.
+//! `holt_core::ai::utils::overflow::is_context_overflow`.
 //!
 //! Gates translated verbatim (env vars, azure/bedrock helpers,
 //! `resolveApiKey` for the Copilot/Codex OAuth suites, and the local-LLM
@@ -23,11 +23,11 @@ use common::live::{
     self, LiveOptions, as_openai_completions, get_builtin_models, get_model_or_panic,
     live_complete, live_env, now_millis, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantMessage, Context, Message, Model, ModelCost, ModelInput, RoleUser, StopReason,
     UserContent, UserMessage,
 };
-use pi_core::ai::utils::overflow::is_context_overflow;
+use holt_core::ai::utils::overflow::is_context_overflow;
 
 // Lorem ipsum paragraph for realistic token estimation (verbatim from the TS
 // suite, including the trailing space).
@@ -49,7 +49,7 @@ struct OverflowResult {
     context_window: u64,
     stop_reason: StopReason,
     error_message: Option<String>,
-    usage: pi_core::ai::types::Usage,
+    usage: holt_core::ai::types::Usage,
     has_usage_data: bool,
     response: AssistantMessage,
 }
@@ -213,7 +213,7 @@ async fn overflow_github_copilot() {
     let Some(token) = live::resolve_api_key("github-copilot").await else {
         skip(
             "GitHub Copilot (OAuth) overflow",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
         return;
     };
@@ -320,7 +320,7 @@ async fn overflow_openai_codex_oauth() {
     let Some(token) = live::resolve_api_key("openai-codex").await else {
         skip(
             "OpenAI Codex (OAuth) gpt-5.5 overflow",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
         return;
     };

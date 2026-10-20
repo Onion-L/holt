@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use pi_core::telemetry::{
+use holt_core::telemetry::{
     InMemoryTelemetryContext, NOOP_TELEMETRY_CONTEXT, SpanAttributes, SpanOptions, SpanStatus,
     TelemetryContextExt, TelemetrySpanExt, create_typed_span_starter, define_telemetry_schema,
     noop_telemetry_context,
 };
-use pi_core::telemetry::{
+use holt_core::telemetry::{
     TelemetryAttributeDefinition, TelemetryAttributeKind, TelemetryCardinality,
     TelemetryEventDefinition, TelemetryParentDefinition, TelemetrySchemaDefinition,
     TelemetrySpanDefinition, TelemetrySpanStatusDefinition, TelemetryStartAttributeDefinition,
@@ -162,7 +162,7 @@ async fn telemetry_schemas_combine_vocabularies_and_bind_child_starters() {
     let request = define_telemetry_schema(request_schema());
     let telemetry_context = Arc::new(InMemoryTelemetryContext::new());
     let start_span = create_typed_span_starter(
-        Arc::clone(&telemetry_context) as Arc<dyn pi_core::telemetry::TelemetryContext>,
+        Arc::clone(&telemetry_context) as Arc<dyn holt_core::telemetry::TelemetryContext>,
         (operation, request),
     );
 

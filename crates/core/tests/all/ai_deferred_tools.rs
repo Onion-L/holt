@@ -14,9 +14,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use pi_core::ai::api::openai_completions::{ResolvedCompletionsCompat, convert_messages};
-use pi_core::ai::compat::stream_simple as compat_stream_simple;
-use pi_core::ai::types::{
+use holt_core::ai::api::openai_completions::{ResolvedCompletionsCompat, convert_messages};
+use holt_core::ai::compat::stream_simple as compat_stream_simple;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, ChatTemplateKwargs, Context,
     DeferredToolsMode, ImageContent, MaxTokensField, Message, Model, ModelCompat,
     OpenRouterRouting, ProviderRequestOptions, RoleAssistant, RoleToolResult, RoleUser,
@@ -24,8 +24,8 @@ use pi_core::ai::types::{
     ThinkingFormat, Tool, ToolCall, ToolResultMessage, Transport, Usage, UsageCost, UserContent,
     UserMessage, VercelGatewayRouting,
 };
-use pi_core::ai::utils::estimate::estimate_context_tokens;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::estimate::estimate_context_tokens;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -127,8 +127,8 @@ fn make_kimi_model(deferred_tools_mode: bool) -> Model {
         provider: "moonshotai".to_string(),
         base_url: "http://127.0.0.1:9/v1".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
-        cost: pi_core::ai::types::ModelCost::default(),
+        input: vec![holt_core::ai::types::ModelInput::Text],
+        cost: holt_core::ai::types::ModelCost::default(),
         context_window: 128_000,
         max_tokens: 4_096,
         compat: deferred_tools_mode.then(|| ModelCompat {
@@ -141,7 +141,7 @@ fn make_kimi_model(deferred_tools_mode: bool) -> Model {
 
 /// The compat.ts `getModel` helper.
 fn get_model(provider: &str, id: &str) -> Model {
-    pi_core::ai::compat::get_model(provider, id)
+    holt_core::ai::compat::get_model(provider, id)
         .unwrap_or_else(|| panic!("missing model {provider}/{id}"))
 }
 

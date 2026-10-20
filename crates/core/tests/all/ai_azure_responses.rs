@@ -28,24 +28,24 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::azure_openai_responses::{
+use holt_core::ai::api::azure_openai_responses::{
     AzureOpenAIResponsesOptions, parse_deployment_name_map, resolve_deployment_name,
     stream as stream_azure, stream_simple,
 };
-use pi_core::ai::api::openai_responses_shared::{
+use holt_core::ai::api::openai_responses_shared::{
     convert_responses_messages, process_responses_stream,
 };
-use pi_core::ai::auth::resolve::now_millis;
-use pi_core::ai::providers::builtin::get_builtin_model;
-use pi_core::ai::session_resources::get_pi_user_agent;
-use pi_core::ai::types::{
+use holt_core::ai::auth::resolve::now_millis;
+use holt_core::ai::providers::builtin::get_builtin_model;
+use holt_core::ai::session_resources::get_user_agent;
+use holt_core::ai::types::{
     AssistantMessage, ConstrainedSamplingConfig, ConstrainedSamplingStrict, Context, Message,
     Model, ModelCompat, ModelCost, ModelInput, ProviderEnv, ProviderRequestOptions, RoleAssistant,
     RoleUser, SimpleStreamOptions, StopReason, StreamOptions, Tool, ToolChoice,
     ToolConstrainedSampling, UserContent, UserMessage,
 };
-use pi_core::ai::utils::event_stream::create_assistant_message_event_stream;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::event_stream::create_assistant_message_event_stream;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ async fn capture_client_headers(headers: Option<Vec<(String, String)>>) -> Vec<(
         entries
             .into_iter()
             .map(|(name, value)| (name, Some(value)))
-            .collect::<pi_core::ai::types::ProviderHeaders>()
+            .collect::<holt_core::ai::types::ProviderHeaders>()
     });
     let options = AzureOpenAIResponsesOptions {
         base: StreamOptions {
@@ -405,7 +405,7 @@ async fn builds_correct_default_url_from_azure_openai_resource_name() {
 #[tokio::test]
 async fn uses_pi_s_user_agent_by_default() {
     let headers = capture_client_headers(None).await;
-    let expected = get_pi_user_agent();
+    let expected = get_user_agent();
     assert_eq!(
         header_value(&headers, "User-Agent"),
         Some(expected.as_str())

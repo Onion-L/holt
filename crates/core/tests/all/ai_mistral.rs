@@ -11,10 +11,10 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::mistral_conversations::{MistralOptions, stream, stream_simple};
-use pi_core::ai::compat;
-use pi_core::ai::providers::builtin::get_builtin_model;
-use pi_core::ai::types::{
+use holt_core::ai::api::mistral_conversations::{MistralOptions, stream, stream_simple};
+use holt_core::ai::compat;
+use holt_core::ai::providers::builtin::get_builtin_model;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, CacheRetention, ConstrainedSamplingConfig,
     ConstrainedSamplingStrict, Context, ImageContent, Message, Model, ModelCost, ModelInput,
     OnPayloadCallback, OnResponseCallback, ProviderHeaders, ProviderRequestOptions,
@@ -22,7 +22,7 @@ use pi_core::ai::types::{
     TextContent, ThinkingContent, ThinkingLevel, Tool, ToolCall, ToolConstrainedSampling,
     ToolResultMessage, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -356,7 +356,7 @@ async fn serializes_sdk_style_payloads_to_the_mistral_wire_format() {
     assert_eq!(header(&request, "x-custom"), Some("value"));
     assert_eq!(
         header(&request, "user-agent"),
-        Some(pi_core::ai::session_resources::get_pi_user_agent().as_str())
+        Some(holt_core::ai::session_resources::get_user_agent().as_str())
     );
 
     // The onPayload hook sees the SDK-style camelCase payload.

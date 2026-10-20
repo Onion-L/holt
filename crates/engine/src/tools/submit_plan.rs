@@ -8,11 +8,11 @@
 //! the composer's approval bar through the same `ResolvePlanApproval` RPC.
 
 use futures::future::BoxFuture;
-use holt_doc::parts::{MessagePart, PlanApprovalState};
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };
+use holt_doc::parts::{MessagePart, PlanApprovalState};
 use serde_json::json;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;

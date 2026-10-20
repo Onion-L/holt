@@ -111,7 +111,7 @@ pub fn tool_detail(
     }
     // The doc carries the FULL tool output (the engine no longer summarizes),
     // so the inline cap matches the fetched-blob ceiling — a Read shows its
-    // whole file up to pi-core's own truncation point.
+    // whole file up to holt-core's own truncation point.
     let truncated_by = lines.len().saturating_sub(FULL_OUTPUT_MAX_LINES);
     lines.truncate(FULL_OUTPUT_MAX_LINES);
     Some(ToolDetail::Output {

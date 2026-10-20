@@ -16,11 +16,11 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use holt_doc::parts::ProviderRef;
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, Model as CoreModel, TextContent},
 };
+use holt_doc::parts::ProviderRef;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;

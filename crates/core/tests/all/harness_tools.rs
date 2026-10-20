@@ -11,17 +11,17 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use pi_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
-use pi_core::agent::harness::tools::bash::{BashExecution, BashToolOptions, create_bash_tool};
-use pi_core::agent::harness::tools::edit::create_edit_tool;
-use pi_core::agent::harness::tools::read::{ReadToolOptions, create_read_tool};
-use pi_core::agent::harness::tools::tool_context::ExecutionToolContext;
-use pi_core::agent::harness::tools::write::create_write_tool;
-use pi_core::agent::harness::types::{
+use holt_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
+use holt_core::agent::harness::tools::bash::{BashExecution, BashToolOptions, create_bash_tool};
+use holt_core::agent::harness::tools::edit::create_edit_tool;
+use holt_core::agent::harness::tools::read::{ReadToolOptions, create_read_tool};
+use holt_core::agent::harness::tools::tool_context::ExecutionToolContext;
+use holt_core::agent::harness::tools::write::create_write_tool;
+use holt_core::agent::harness::types::{
     AgentToolContext, ExecutionEnv, FileSystem, Shell, ShellExecResult, WriteContent,
 };
-use pi_core::agent::types::AgentToolResult;
-use pi_core::ai::types::BlockContent;
+use holt_core::agent::types::AgentToolResult;
+use holt_core::ai::types::BlockContent;
 use tokio_util::sync::CancellationToken;
 
 fn context_for(root: &str) -> AgentToolContext {
@@ -54,7 +54,7 @@ fn text_output(result: &AgentToolResult) -> String {
 }
 
 async fn run(
-    tool: &pi_core::agent::harness::types::AgentHarnessTool,
+    tool: &holt_core::agent::harness::types::AgentHarnessTool,
     params: serde_json::Value,
     context: &AgentToolContext,
 ) -> Result<AgentToolResult, String> {
@@ -595,7 +595,7 @@ async fn bash_reports_nonzero_exits_and_timeouts() {
 async fn bash_preserves_truncated_output_when_a_command_times_out() {
     let root = common::create_temp_dir();
     let context = context_for(&root);
-    let lines = (1..=pi_core::agent::harness::utils::truncate::DEFAULT_MAX_LINES + 1)
+    let lines = (1..=holt_core::agent::harness::utils::truncate::DEFAULT_MAX_LINES + 1)
         .map(|index| format!("line-{index}"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -633,7 +633,7 @@ async fn bash_preserves_truncated_output_when_a_command_times_out() {
 async fn bash_supports_command_prefixes_and_prepare_hooks() {
     let root = common::create_temp_dir();
     let context = context_for(&root);
-    let prepare: pi_core::agent::harness::tools::bash::BashPrepare = Arc::new(
+    let prepare: holt_core::agent::harness::tools::bash::BashPrepare = Arc::new(
         |execution: &mut BashExecution, _signal: Option<&CancellationToken>| {
             let execution: &mut BashExecution = execution;
             execution
@@ -710,7 +710,7 @@ impl FileSystem for StubEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.absolute_path(path, signal)
     }
@@ -718,7 +718,7 @@ impl FileSystem for StubEnv {
         &'a self,
         parts: &'a [String],
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.join_path(parts, signal)
     }
@@ -726,18 +726,18 @@ impl FileSystem for StubEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.read_text_file(path, signal)
     }
     fn read_text_lines<'a>(
         &'a self,
         path: &'a str,
-        options: pi_core::agent::harness::types::ReadTextLinesOptions,
+        options: holt_core::agent::harness::types::ReadTextLinesOptions,
         signal: Option<CancellationToken>,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<Vec<String>, pi_core::agent::harness::types::FileError>,
+        Result<Vec<String>, holt_core::agent::harness::types::FileError>,
     > {
         self.inner.read_text_lines(path, options, signal)
     }
@@ -745,7 +745,7 @@ impl FileSystem for StubEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<Vec<u8>, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<Vec<u8>, holt_core::agent::harness::types::FileError>>
     {
         self.inner.read_binary_file(path, signal)
     }
@@ -754,7 +754,8 @@ impl FileSystem for StubEnv {
         path: &'a str,
         content: &'a WriteContent,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.write_file(path, content, signal)
     }
     fn append_file<'a>(
@@ -762,7 +763,8 @@ impl FileSystem for StubEnv {
         path: &'a str,
         content: &'a WriteContent,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.append_file(path, content, signal)
     }
     fn rename_file<'a>(
@@ -770,7 +772,8 @@ impl FileSystem for StubEnv {
         source: &'a str,
         destination: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.rename_file(source, destination, signal)
     }
     fn file_info<'a>(
@@ -779,7 +782,10 @@ impl FileSystem for StubEnv {
         signal: Option<CancellationToken>,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<pi_core::agent::harness::types::FileInfo, pi_core::agent::harness::types::FileError>,
+        Result<
+            holt_core::agent::harness::types::FileInfo,
+            holt_core::agent::harness::types::FileError,
+        >,
     > {
         self.inner.file_info(path, signal)
     }
@@ -790,8 +796,8 @@ impl FileSystem for StubEnv {
     ) -> futures::future::BoxFuture<
         'a,
         Result<
-            Vec<pi_core::agent::harness::types::FileInfo>,
-            pi_core::agent::harness::types::FileError,
+            Vec<holt_core::agent::harness::types::FileInfo>,
+            holt_core::agent::harness::types::FileError,
         >,
     > {
         self.inner.list_dir(path, signal)
@@ -800,7 +806,7 @@ impl FileSystem for StubEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.canonical_path(path, signal)
     }
@@ -808,39 +814,41 @@ impl FileSystem for StubEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<bool, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<bool, holt_core::agent::harness::types::FileError>>
     {
         self.inner.exists(path, signal)
     }
     fn create_dir<'a>(
         &'a self,
         path: &'a str,
-        options: pi_core::agent::harness::types::CreateDirOptions,
+        options: holt_core::agent::harness::types::CreateDirOptions,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.create_dir(path, options, signal)
     }
     fn remove<'a>(
         &'a self,
         path: &'a str,
-        options: pi_core::agent::harness::types::RemoveOptions,
+        options: holt_core::agent::harness::types::RemoveOptions,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.remove(path, options, signal)
     }
     fn create_temp_dir<'a>(
         &'a self,
         prefix: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.create_temp_dir(prefix, signal)
     }
     fn create_temp_file<'a>(
         &'a self,
-        options: &'a pi_core::agent::harness::types::CreateTempFileOptions,
+        options: &'a holt_core::agent::harness::types::CreateTempFileOptions,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.create_temp_file(options, signal)
     }
@@ -853,10 +861,10 @@ impl Shell for StubEnv {
     fn exec<'a>(
         &'a self,
         _command: &'a str,
-        options: Option<&'a pi_core::agent::harness::types::ShellExecOptions>,
+        options: Option<&'a holt_core::agent::harness::types::ShellExecOptions>,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<ShellExecResult, pi_core::agent::harness::types::ExecutionError>,
+        Result<ShellExecResult, holt_core::agent::harness::types::ExecutionError>,
     > {
         Box::pin(async move {
             let on_stdout = options.and_then(|options| options.on_stdout.clone());
@@ -927,7 +935,7 @@ impl FileSystem for BlockingWriteEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.absolute_path(path, signal)
     }
@@ -935,7 +943,7 @@ impl FileSystem for BlockingWriteEnv {
         &'a self,
         parts: &'a [String],
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.join_path(parts, signal)
     }
@@ -943,18 +951,18 @@ impl FileSystem for BlockingWriteEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.read_text_file(path, signal)
     }
     fn read_text_lines<'a>(
         &'a self,
         path: &'a str,
-        options: pi_core::agent::harness::types::ReadTextLinesOptions,
+        options: holt_core::agent::harness::types::ReadTextLinesOptions,
         signal: Option<CancellationToken>,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<Vec<String>, pi_core::agent::harness::types::FileError>,
+        Result<Vec<String>, holt_core::agent::harness::types::FileError>,
     > {
         self.inner.read_text_lines(path, options, signal)
     }
@@ -962,7 +970,7 @@ impl FileSystem for BlockingWriteEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<Vec<u8>, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<Vec<u8>, holt_core::agent::harness::types::FileError>>
     {
         self.inner.read_binary_file(path, signal)
     }
@@ -971,7 +979,8 @@ impl FileSystem for BlockingWriteEnv {
         path: &'a str,
         content: &'a WriteContent,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         let is_first = match content {
             WriteContent::Text(text) => text == &self.first_content,
             _ => false,
@@ -1002,7 +1011,8 @@ impl FileSystem for BlockingWriteEnv {
         path: &'a str,
         content: &'a WriteContent,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.append_file(path, content, signal)
     }
     fn rename_file<'a>(
@@ -1010,7 +1020,8 @@ impl FileSystem for BlockingWriteEnv {
         source: &'a str,
         destination: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.rename_file(source, destination, signal)
     }
     fn file_info<'a>(
@@ -1019,7 +1030,10 @@ impl FileSystem for BlockingWriteEnv {
         signal: Option<CancellationToken>,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<pi_core::agent::harness::types::FileInfo, pi_core::agent::harness::types::FileError>,
+        Result<
+            holt_core::agent::harness::types::FileInfo,
+            holt_core::agent::harness::types::FileError,
+        >,
     > {
         self.inner.file_info(path, signal)
     }
@@ -1030,8 +1044,8 @@ impl FileSystem for BlockingWriteEnv {
     ) -> futures::future::BoxFuture<
         'a,
         Result<
-            Vec<pi_core::agent::harness::types::FileInfo>,
-            pi_core::agent::harness::types::FileError,
+            Vec<holt_core::agent::harness::types::FileInfo>,
+            holt_core::agent::harness::types::FileError,
         >,
     > {
         self.inner.list_dir(path, signal)
@@ -1040,7 +1054,7 @@ impl FileSystem for BlockingWriteEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.canonical_path(path, signal)
     }
@@ -1048,39 +1062,41 @@ impl FileSystem for BlockingWriteEnv {
         &'a self,
         path: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<bool, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<bool, holt_core::agent::harness::types::FileError>>
     {
         self.inner.exists(path, signal)
     }
     fn create_dir<'a>(
         &'a self,
         path: &'a str,
-        options: pi_core::agent::harness::types::CreateDirOptions,
+        options: holt_core::agent::harness::types::CreateDirOptions,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.create_dir(path, options, signal)
     }
     fn remove<'a>(
         &'a self,
         path: &'a str,
-        options: pi_core::agent::harness::types::RemoveOptions,
+        options: holt_core::agent::harness::types::RemoveOptions,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<(), pi_core::agent::harness::types::FileError>> {
+    ) -> futures::future::BoxFuture<'a, Result<(), holt_core::agent::harness::types::FileError>>
+    {
         self.inner.remove(path, options, signal)
     }
     fn create_temp_dir<'a>(
         &'a self,
         prefix: &'a str,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.create_temp_dir(prefix, signal)
     }
     fn create_temp_file<'a>(
         &'a self,
-        options: &'a pi_core::agent::harness::types::CreateTempFileOptions,
+        options: &'a holt_core::agent::harness::types::CreateTempFileOptions,
         signal: Option<CancellationToken>,
-    ) -> futures::future::BoxFuture<'a, Result<String, pi_core::agent::harness::types::FileError>>
+    ) -> futures::future::BoxFuture<'a, Result<String, holt_core::agent::harness::types::FileError>>
     {
         self.inner.create_temp_file(options, signal)
     }
@@ -1093,10 +1109,10 @@ impl Shell for BlockingWriteEnv {
     fn exec<'a>(
         &'a self,
         command: &'a str,
-        options: Option<&'a pi_core::agent::harness::types::ShellExecOptions>,
+        options: Option<&'a holt_core::agent::harness::types::ShellExecOptions>,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<ShellExecResult, pi_core::agent::harness::types::ExecutionError>,
+        Result<ShellExecResult, holt_core::agent::harness::types::ExecutionError>,
     > {
         self.inner.exec(command, options)
     }
@@ -1120,7 +1136,7 @@ fn blocking_context(env: Arc<BlockingWriteEnv>) -> AgentToolContext {
 }
 
 async fn run_with_signal(
-    tool: &pi_core::agent::harness::types::AgentHarnessTool,
+    tool: &holt_core::agent::harness::types::AgentHarnessTool,
     id: &str,
     params: serde_json::Value,
     signal: Option<&CancellationToken>,
@@ -1163,7 +1179,7 @@ async fn read_delegates_image_conversion_and_resizing_to_an_injected_processor()
             let mime_type = mime_type.to_string();
             Box::pin(async move {
                 *seen.lock().unwrap() = Some((bytes, mime_type, auto_resize));
-                pi_core::agent::harness::tools::read::ReadImageProcessorResult::Ok {
+                holt_core::agent::harness::tools::read::ReadImageProcessorResult::Ok {
                     data: "converted".to_string(),
                     mime_type: "image/png".to_string(),
                     hints: vec!["[Image converted from image/bmp to image/png.]".to_string()],
@@ -1386,7 +1402,7 @@ async fn bash_coalesces_updates_and_persists_truncated_full_output() {
     let root = common::create_temp_dir();
     let context = context_for(&root);
     let updates: Arc<Mutex<Vec<AgentToolResult>>> = Arc::new(Mutex::new(Vec::new()));
-    let callback: pi_core::agent::types::AgentToolUpdateCallback = {
+    let callback: holt_core::agent::types::AgentToolUpdateCallback = {
         let updates = Arc::clone(&updates);
         Arc::new(move |update: AgentToolResult| {
             updates.lock().unwrap().push(update);

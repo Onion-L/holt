@@ -6,7 +6,7 @@
 //! re-serializes, and compares the parsed structure — and round-trips the Rust
 //! value through JSON to check lossless deserialization.
 
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantMessage, AssistantMessageEvent, Context, DeferredHandle, Message, Model, Tool, Usage,
     UserContent, UserMessage,
 };
@@ -71,12 +71,12 @@ fn user_blocks_matches_oracle() {
 
 #[test]
 fn tool_result_matches_oracle() {
-    assert_round_trip::<pi_core::ai::types::ToolResultMessage>("toolResult");
+    assert_round_trip::<holt_core::ai::types::ToolResultMessage>("toolResult");
 }
 
 #[test]
 fn tool_result_error_matches_oracle() {
-    assert_round_trip::<pi_core::ai::types::ToolResultMessage>("toolResultError");
+    assert_round_trip::<holt_core::ai::types::ToolResultMessage>("toolResultError");
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn model_compat_samples_match_oracle() {
     let golden = load_golden("modelCompatSamples");
     let obj = golden.as_object().expect("compat samples object");
     for (name, value) in obj {
-        let compat: pi_core::ai::types::ModelCompat =
+        let compat: holt_core::ai::types::ModelCompat =
             serde_json::from_value(value.clone()).expect("compat parses");
         let output = serde_json::to_value(&compat).expect("compat serializes");
         assert_eq!(

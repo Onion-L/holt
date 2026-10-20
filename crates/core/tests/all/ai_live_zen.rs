@@ -3,7 +3,7 @@
 use crate::common;
 
 use common::live::{LiveOptions, get_builtin_models, live_complete, live_env, now_millis, skip};
-use pi_core::ai::types::{Context, Message, RoleUser, StopReason, UserContent, UserMessage};
+use holt_core::ai::types::{Context, Message, RoleUser, StopReason, UserContent, UserMessage};
 
 #[tokio::test]
 async fn opencode_model_smoke_matrix() {

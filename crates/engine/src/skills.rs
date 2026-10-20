@@ -7,12 +7,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing, SkillRoot};
-use pi_core::agent::harness::skills::{
+use holt_core::agent::harness::skills::{
     LoadedSkills, SkillDiagnostic, format_skill_invocation, load_skills,
 };
-use pi_core::agent::harness::system_prompt::format_skills_for_system_prompt;
-use pi_core::agent::harness::types::{ExecutionEnv, Skill};
+use holt_core::agent::harness::system_prompt::format_skills_for_system_prompt;
+use holt_core::agent::harness::types::{ExecutionEnv, Skill};
+use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing, SkillRoot};
 
 use crate::tools::LocalExecutionEnv;
 

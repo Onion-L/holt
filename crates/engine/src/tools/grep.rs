@@ -14,11 +14,11 @@ use std::{
 use futures::future::BoxFuture;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
-use ignore::WalkBuilder;
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };
+use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;

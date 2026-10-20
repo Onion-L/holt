@@ -302,7 +302,7 @@ async fn request_stream(
         std::collections::BTreeMap::new();
     header_map.insert(
         "User-Agent".to_string(),
-        crate::ai::session_resources::get_pi_user_agent(),
+        crate::ai::session_resources::get_user_agent(),
     );
     if let Some(model_headers) = &model.headers {
         for (name, value) in model_headers {

@@ -8,21 +8,23 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use pi_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
-use pi_core::agent::harness::prompt_templates::{
+use holt_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
+use holt_core::agent::harness::prompt_templates::{
     format_prompt_template_invocation, load_prompt_templates, parse_command_args, substitute_args,
 };
-use pi_core::agent::harness::session::memory::{InMemorySessionStorage, Session};
-use pi_core::agent::harness::session::types::SessionMetadata;
-use pi_core::agent::harness::skills::{format_skill_invocation, load_skills, load_sourced_skills};
-use pi_core::agent::harness::system_prompt::format_skills_for_system_prompt;
-use pi_core::agent::harness::types::{ExecutionEnv, FileSystem, Skill, WriteContent};
-use pi_core::agent::search::{
+use holt_core::agent::harness::session::memory::{InMemorySessionStorage, Session};
+use holt_core::agent::harness::session::types::SessionMetadata;
+use holt_core::agent::harness::skills::{
+    format_skill_invocation, load_skills, load_sourced_skills,
+};
+use holt_core::agent::harness::system_prompt::format_skills_for_system_prompt;
+use holt_core::agent::harness::types::{ExecutionEnv, FileSystem, Skill, WriteContent};
+use holt_core::agent::search::{
     ScanningReadableOptions, ScanningSessionSearchOptions, SessionSearchOptions, StorageReadable,
     create_scanning_session_search,
 };
-use pi_core::agent::types::AgentMessage;
-use pi_core::ai::types::{BlockContent, RoleUser, TextContent, UserContent, UserMessage};
+use holt_core::agent::types::AgentMessage;
+use holt_core::ai::types::{BlockContent, RoleUser, TextContent, UserContent, UserMessage};
 
 fn env_for(root: &str) -> Arc<NodeExecutionEnv> {
     Arc::new(NodeExecutionEnv::new(NodeExecutionEnvOptions {
@@ -51,7 +53,7 @@ async fn loads_templates_from_directories_and_files() {
     let env = env_for(&root);
     env.create_dir(
         "templates",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -115,7 +117,7 @@ fn substitute_args_replaces_all_placeholder_forms() {
 
 #[test]
 fn format_prompt_template_invocation_substitutes() {
-    let template = pi_core::agent::harness::types::PromptTemplate {
+    let template = holt_core::agent::harness::types::PromptTemplate {
         name: "review".to_string(),
         description: None,
         content: "Review $1 with $ARGUMENTS".to_string(),
@@ -195,7 +197,7 @@ async fn loads_skill_md_files_through_the_execution_environment() {
     let env = env_for(&root);
     env.create_dir(
         ".agents/skills/example",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -227,7 +229,7 @@ async fn loads_skills_through_symlinked_directories() {
     let env = env_for(&root);
     env.create_dir(
         "actual/example",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -262,7 +264,7 @@ async fn preserves_source_info_for_sourced_skills() {
     let env = env_for(&root);
     env.create_dir(
         "user/example",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -299,7 +301,7 @@ async fn attaches_source_info_to_diagnostics() {
     let env = env_for(&root);
     env.create_dir(
         "user/broken",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -333,7 +335,7 @@ async fn loads_direct_markdown_children_only_from_the_root_directory() {
     let env = env_for(&root);
     env.create_dir(
         "skills/nested",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -370,7 +372,7 @@ async fn ignores_root_markdown_docs_that_do_not_declare_skills() {
     let env = env_for(&root);
     env.create_dir(
         "skills/nested-skill",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -437,12 +439,12 @@ fn memory_session(id: &str) -> Arc<InMemorySessionStorage> {
 }
 
 fn project_text(
-    _metadata: &pi_core::agent::harness::session::jsonl::types::JsonlSessionMetadata,
-    entry: &pi_core::agent::harness::session::types::Entry,
+    _metadata: &holt_core::agent::harness::session::jsonl::types::JsonlSessionMetadata,
+    entry: &holt_core::agent::harness::session::types::Entry,
     _label: Option<&str>,
 ) -> String {
     match entry {
-        pi_core::agent::harness::session::types::Entry::Message {
+        holt_core::agent::harness::session::types::Entry::Message {
             message: AgentMessage::User(user),
             ..
         } => match &user.content {
@@ -464,7 +466,7 @@ fn project_text(
 async fn scans_an_arbitrary_in_memory_projected_source() {
     let root = memory_session("root");
     let session = Session::new(
-        Arc::clone(&root) as Arc<dyn pi_core::agent::harness::session::types::SessionStorage>
+        Arc::clone(&root) as Arc<dyn holt_core::agent::harness::session::types::SessionStorage>
     );
     session
         .append_message(message("fix auth flow"))
@@ -475,13 +477,13 @@ async fn scans_an_arbitrary_in_memory_projected_source() {
         .await
         .unwrap();
 
-    let readable: Arc<dyn pi_core::agent::search::ScanningReadable> =
+    let readable: Arc<dyn holt_core::agent::search::ScanningReadable> =
         Arc::new(StorageReadable(Arc::clone(&root)
             as Arc<
-                dyn pi_core::agent::harness::session::types::SessionStorage,
+                dyn holt_core::agent::harness::session::types::SessionStorage,
             >));
     let readables = vec![readable];
-    let source: pi_core::agent::search::ScanningReadableSource =
+    let source: holt_core::agent::search::ScanningReadableSource =
         Arc::new(move |_options| Box::pin(futures::future::ready(readables.clone())));
     let search = create_scanning_session_search(
         source,
@@ -515,7 +517,7 @@ async fn scans_an_arbitrary_in_memory_projected_source() {
 async fn applies_limit_and_entry_type_filters() {
     let root = memory_session("root");
     let session = Session::new(
-        Arc::clone(&root) as Arc<dyn pi_core::agent::harness::session::types::SessionStorage>
+        Arc::clone(&root) as Arc<dyn holt_core::agent::harness::session::types::SessionStorage>
     );
     session
         .append_message(message("fix auth flow"))
@@ -524,13 +526,13 @@ async fn applies_limit_and_entry_type_filters() {
     session.append_message(message("auth again")).await.unwrap();
     session.append_message(message("auth third")).await.unwrap();
 
-    let readable: Arc<dyn pi_core::agent::search::ScanningReadable> =
+    let readable: Arc<dyn holt_core::agent::search::ScanningReadable> =
         Arc::new(StorageReadable(Arc::clone(&root)
             as Arc<
-                dyn pi_core::agent::harness::session::types::SessionStorage,
+                dyn holt_core::agent::harness::session::types::SessionStorage,
             >));
     let readables = vec![readable];
-    let source: pi_core::agent::search::ScanningReadableSource =
+    let source: holt_core::agent::search::ScanningReadableSource =
         Arc::new(move |_options| Box::pin(futures::future::ready(readables.clone())));
     let search = create_scanning_session_search(
         source,
@@ -587,7 +589,7 @@ async fn preserves_source_info_for_sourced_prompt_templates() {
     let env = env_for(&root);
     env.create_dir(
         "prompts",
-        pi_core::agent::harness::types::CreateDirOptions::default(),
+        holt_core::agent::harness::types::CreateDirOptions::default(),
         None,
     )
     .await
@@ -600,9 +602,9 @@ async fn preserves_source_info_for_sourced_prompt_templates() {
     .await;
 
     let (templates, diagnostics) =
-        pi_core::agent::harness::prompt_templates::load_sourced_prompt_templates(
+        holt_core::agent::harness::prompt_templates::load_sourced_prompt_templates(
             &env_trait(&env),
-            &[pi_core::agent::harness::prompt_templates::SourcedInput {
+            &[holt_core::agent::harness::prompt_templates::SourcedInput {
                 path: "prompts".to_string(),
                 source: json!({ "type": "project" }),
             }],
@@ -634,9 +636,9 @@ async fn attaches_source_info_to_prompt_template_diagnostics() {
     .await;
 
     let (templates, diagnostics) =
-        pi_core::agent::harness::prompt_templates::load_sourced_prompt_templates(
+        holt_core::agent::harness::prompt_templates::load_sourced_prompt_templates(
             &env_trait(&env),
-            &[pi_core::agent::harness::prompt_templates::SourcedInput {
+            &[holt_core::agent::harness::prompt_templates::SourcedInput {
                 path: "broken.md".to_string(),
                 source: json!({ "type": "user" }),
             }],
@@ -652,11 +654,11 @@ async fn attaches_source_info_to_prompt_template_diagnostics() {
 // ---------------------------------------------------------------------------
 // search.test.ts
 
-fn search_message(text: &str) -> pi_core::agent::types::AgentMessage {
-    pi_core::agent::types::AgentMessage::User(pi_core::ai::types::UserMessage {
-        role: pi_core::ai::types::RoleUser,
-        content: pi_core::ai::types::UserContent::Blocks(vec![
-            pi_core::ai::types::BlockContent::Text(pi_core::ai::types::TextContent {
+fn search_message(text: &str) -> holt_core::agent::types::AgentMessage {
+    holt_core::agent::types::AgentMessage::User(holt_core::ai::types::UserMessage {
+        role: holt_core::ai::types::RoleUser,
+        content: holt_core::ai::types::UserContent::Blocks(vec![
+            holt_core::ai::types::BlockContent::Text(holt_core::ai::types::TextContent {
                 text: text.to_string(),
                 ..Default::default()
             }),
@@ -668,16 +670,16 @@ fn search_message(text: &str) -> pi_core::agent::types::AgentMessage {
 fn deterministic_memory_session(
     id: &str,
     created_at: i64,
-) -> pi_core::agent::harness::session::memory::Session {
-    let storage = pi_core::agent::harness::session::memory::InMemorySessionStorage::new(
-        pi_core::agent::harness::session::types::SessionMetadata {
+) -> holt_core::agent::harness::session::memory::Session {
+    let storage = holt_core::agent::harness::session::memory::InMemorySessionStorage::new(
+        holt_core::agent::harness::session::types::SessionMetadata {
             id: id.to_string(),
             created_at,
             parent_session_id: None,
         },
     );
     let next_id = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-    pi_core::agent::harness::session::memory::Session::with_id_generator(
+    holt_core::agent::harness::session::memory::Session::with_id_generator(
         std::sync::Arc::new(storage),
         std::sync::Arc::new(move || {
             format!(
@@ -689,21 +691,21 @@ fn deterministic_memory_session(
 }
 
 async fn collect_hits(
-    search: &std::sync::Arc<dyn pi_core::agent::search::SessionSearch>,
+    search: &std::sync::Arc<dyn holt_core::agent::search::SessionSearch>,
     text: &str,
-    options: Option<pi_core::agent::search::SessionSearchOptions>,
-) -> Vec<pi_core::agent::search::ScanningSessionSearchHit> {
+    options: Option<holt_core::agent::search::SessionSearchOptions>,
+) -> Vec<holt_core::agent::search::ScanningSessionSearchHit> {
     search.search(text, options).await.expect("search")
 }
 
 fn scanning_source(
-    storages: Vec<Arc<dyn pi_core::agent::harness::session::types::SessionStorage>>,
-) -> pi_core::agent::search::ScanningReadableSource {
-    let readables: Vec<Arc<dyn pi_core::agent::search::ScanningReadable>> = storages
+    storages: Vec<Arc<dyn holt_core::agent::harness::session::types::SessionStorage>>,
+) -> holt_core::agent::search::ScanningReadableSource {
+    let readables: Vec<Arc<dyn holt_core::agent::search::ScanningReadable>> = storages
         .into_iter()
         .map(|storage| {
-            Arc::new(pi_core::agent::search::StorageReadable(storage))
-                as Arc<dyn pi_core::agent::search::ScanningReadable>
+            Arc::new(holt_core::agent::search::StorageReadable(storage))
+                as Arc<dyn holt_core::agent::search::ScanningReadable>
         })
         .collect();
     Arc::new(move |_options| Box::pin(futures::future::ready(readables.clone())))
@@ -721,9 +723,9 @@ async fn includes_labels_in_memory_scanning_projections() {
         .set_label(&entry_id, Some("important label".to_string()))
         .await
         .expect("set label");
-    let search = pi_core::agent::search::create_scanning_session_search(
+    let search = holt_core::agent::search::create_scanning_session_search(
         scanning_source(vec![Arc::clone(session.storage())]),
-        pi_core::agent::search::ScanningSessionSearchOptions::default(),
+        holt_core::agent::search::ScanningSessionSearchOptions::default(),
     );
 
     let hits = collect_hits(&search, "important", None).await;
@@ -744,17 +746,17 @@ async fn honors_entry_type_filters_and_abort_signals_in_scanning_search() {
         .append_custom_entry("note", Some(json!({ "text": "auth custom" })))
         .await
         .expect("append custom");
-    let search = pi_core::agent::search::create_scanning_session_search(
+    let search = holt_core::agent::search::create_scanning_session_search(
         scanning_source(vec![Arc::clone(session.storage())]),
-        pi_core::agent::search::ScanningSessionSearchOptions::default(),
+        holt_core::agent::search::ScanningSessionSearchOptions::default(),
     );
 
     let hits = collect_hits(
         &search,
         "auth",
-        Some(pi_core::agent::search::SessionSearchOptions {
+        Some(holt_core::agent::search::SessionSearchOptions {
             entry_types: Some(vec![
-                pi_core::agent::harness::session::types::EntryType::Message,
+                holt_core::agent::harness::session::types::EntryType::Message,
             ]),
             limit: None,
             signal: None,
@@ -770,7 +772,7 @@ async fn honors_entry_type_filters_and_abort_signals_in_scanning_search() {
     let aborted = search
         .search(
             "auth",
-            Some(pi_core::agent::search::SessionSearchOptions {
+            Some(holt_core::agent::search::SessionSearchOptions {
                 entry_types: None,
                 limit: None,
                 signal: Some(signal),
@@ -793,15 +795,15 @@ async fn scans_jsonl_sessions_from_disk_through_the_jsonl_source() {
         cwd: root.to_string(),
         ..Default::default()
     }));
-    let options = pi_core::agent::harness::session::jsonl::types::JsonlSessionRepoOptions {
+    let options = holt_core::agent::harness::session::jsonl::types::JsonlSessionRepoOptions {
         fs: env.clone(),
         sessions_root: root.to_string(),
     };
     let repository =
-        Arc::new(pi_core::agent::harness::session::jsonl::repo::JsonlSessionRepo::new(options));
+        Arc::new(holt_core::agent::harness::session::jsonl::repo::JsonlSessionRepo::new(options));
     let session = repository
         .create(
-            pi_core::agent::harness::session::jsonl::types::JsonlSessionCreateOptions {
+            holt_core::agent::harness::session::jsonl::types::JsonlSessionCreateOptions {
                 id: Some("jsonl".to_string()),
                 cwd: format!("{root}/workspace"),
                 ..Default::default()
@@ -819,7 +821,7 @@ async fn scans_jsonl_sessions_from_disk_through_the_jsonl_source() {
         .expect("set label");
     let other = repository
         .create(
-            pi_core::agent::harness::session::jsonl::types::JsonlSessionCreateOptions {
+            holt_core::agent::harness::session::jsonl::types::JsonlSessionCreateOptions {
                 id: Some("other".to_string()),
                 cwd: format!("{root}/other"),
                 ..Default::default()
@@ -833,28 +835,29 @@ async fn scans_jsonl_sessions_from_disk_through_the_jsonl_source() {
         .expect("append other");
 
     let source_repository = Arc::clone(&repository);
-    let source: pi_core::agent::search::ScanningReadableSource = Arc::new(move |_options| {
+    let source: holt_core::agent::search::ScanningReadableSource = Arc::new(move |_options| {
         let repository = Arc::clone(&source_repository);
         Box::pin(async move {
             let metadata = repository
                 .list(
-                    &pi_core::agent::harness::session::jsonl::types::JsonlSessionListOptions::default(),
+                    &holt_core::agent::harness::session::jsonl::types::JsonlSessionListOptions::default(),
                 )
                 .await
                 .expect("list JSONL sessions");
-            let mut readables: Vec<Arc<dyn pi_core::agent::search::ScanningReadable>> = Vec::new();
+            let mut readables: Vec<Arc<dyn holt_core::agent::search::ScanningReadable>> =
+                Vec::new();
             for metadata in metadata {
                 let session = repository.open(metadata).await.expect("open JSONL session");
-                readables.push(Arc::new(pi_core::agent::search::StorageReadable(
+                readables.push(Arc::new(holt_core::agent::search::StorageReadable(
                     Arc::clone(session.storage()),
                 )));
             }
             readables
         })
     });
-    let search = pi_core::agent::search::create_scanning_session_search(
+    let search = holt_core::agent::search::create_scanning_session_search(
         source,
-        pi_core::agent::search::ScanningSessionSearchOptions::default(),
+        holt_core::agent::search::ScanningSessionSearchOptions::default(),
     );
 
     let auth_hits = collect_hits(&search, "auth", None).await;

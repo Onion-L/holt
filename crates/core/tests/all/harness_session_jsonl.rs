@@ -7,25 +7,27 @@ use crate::common;
 
 use std::sync::Arc;
 
-use pi_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
-use pi_core::agent::harness::session::jsonl::codec::{
+use holt_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
+use holt_core::agent::harness::session::jsonl::codec::{
     encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation,
 };
-use pi_core::agent::harness::session::jsonl::errors::JsonlDecodeErrorKind;
-use pi_core::agent::harness::session::jsonl::repo::{JsonlSessionRepo, load_jsonl_session_storage};
-use pi_core::agent::harness::session::jsonl::storage::JsonlSessionStorage;
-use pi_core::agent::harness::session::jsonl::types::{
+use holt_core::agent::harness::session::jsonl::errors::JsonlDecodeErrorKind;
+use holt_core::agent::harness::session::jsonl::repo::{
+    JsonlSessionRepo, load_jsonl_session_storage,
+};
+use holt_core::agent::harness::session::jsonl::storage::JsonlSessionStorage;
+use holt_core::agent::harness::session::jsonl::types::{
     JsonlSessionCreateOptions, JsonlSessionListOptions, JsonlSessionMetadata,
     JsonlSessionRepoOptions, JsonlV4Header,
 };
-use pi_core::agent::harness::session::memory::{Session, set_clock_override};
-use pi_core::agent::harness::session::state::SessionMutation;
-use pi_core::agent::harness::session::types::{
+use holt_core::agent::harness::session::memory::{Session, set_clock_override};
+use holt_core::agent::harness::session::state::SessionMutation;
+use holt_core::agent::harness::session::types::{
     Entry, ForkOptions, LaneRecord, OperationIntent, SessionErrorCode, UsageCause,
 };
-use pi_core::agent::harness::types::{FileSystem, WriteContent};
-use pi_core::agent::types::AgentMessage;
-use pi_core::ai::types::{
+use holt_core::agent::harness::types::{FileSystem, WriteContent};
+use holt_core::agent::types::AgentMessage;
+use holt_core::ai::types::{
     AssistantContent, BlockContent, RoleAssistant, RoleUser, StopReason, TextContent, Usage,
     UserContent, UserMessage,
 };
@@ -71,7 +73,7 @@ fn usage_fixture() -> Usage {
         cache_read: 5,
         cache_write: 0,
         total_tokens: 35,
-        cost: pi_core::ai::types::UsageCost {
+        cost: holt_core::ai::types::UsageCost {
             input: 0.1.into(),
             output: 0.2.into(),
             cache_read: 0.05.into(),
@@ -94,10 +96,10 @@ fn user_text_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_tool_use_message() -> AgentMessage {
-    AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content: vec![
-            AssistantContent::Thinking(pi_core::ai::types::ThinkingContent {
+            AssistantContent::Thinking(holt_core::ai::types::ThinkingContent {
                 thinking: "hmm".to_string(),
                 thinking_signature: Some("sig".to_string()),
                 ..Default::default()
@@ -106,7 +108,7 @@ fn assistant_tool_use_message() -> AgentMessage {
                 text: "hi there".to_string(),
                 ..Default::default()
             }),
-            AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+            AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
                 id: "call-1".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({ "command": "ls" })
@@ -169,7 +171,7 @@ async fn replay_oracle_scenario(env: &Arc<NodeExecutionEnv>, root: &str) -> Stri
         .unwrap();
     session
         .append_message(AgentMessage::ToolResult(Box::new(
-            pi_core::ai::types::ToolResultMessage {
+            holt_core::ai::types::ToolResultMessage {
                 role: Default::default(),
                 tool_call_id: "call-1".to_string(),
                 tool_name: "bash".to_string(),
@@ -908,7 +910,7 @@ async fn storage_rejects_entries_referencing_missing_parents() {
 async fn session_file_name_matches_the_typescript_timestamp_format() {
     // Verified against `new Date(1700000000000).toISOString()` in the
     // oracle environment.
-    use pi_core::agent::harness::session::jsonl::repo::session_file_name;
+    use holt_core::agent::harness::session::jsonl::repo::session_file_name;
     assert_eq!(
         session_file_name(1_700_000_000_000, "id"),
         "2023-11-14T22-13-20-000Z_id.jsonl"

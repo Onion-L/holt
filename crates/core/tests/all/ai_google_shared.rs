@@ -13,14 +13,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::google_generative_ai::stream_simple_with_transport as stream_simple_google;
-use pi_core::ai::api::google_shared::{
+use holt_core::ai::api::google_generative_ai::stream_simple_with_transport as stream_simple_google;
+use holt_core::ai::api::google_shared::{
     FunctionCallingConfigMode, convert_messages, convert_tools, is_thinking_part,
     requires_tool_call_id, resolve_google_function_calling_mode, resolve_google_thinking_level,
     retain_thought_signature, supports_google_strict_tool_sampling,
 };
-use pi_core::ai::api::google_vertex::stream_simple_with_transport as stream_simple_vertex;
-use pi_core::ai::types::{
+use holt_core::ai::api::google_vertex::stream_simple_with_transport as stream_simple_vertex;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, ConstrainedSamplingConfig,
     ConstrainedSamplingStrict, Context, ImageContent, Message, Model, ModelCost, ModelInput,
     ModelThinkingLevel, OnPayloadCallback, RoleAssistant, RoleToolResult, RoleUser,
@@ -28,7 +28,7 @@ use pi_core::ai::types::{
     ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolConstrainedSampling, ToolResultMessage,
     Usage, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpFetch, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpFetch, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -962,7 +962,7 @@ impl HttpFetch for PayloadCapturedFetch {
         _request: HttpRequest,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<HttpResponse, pi_core::ai::utils::http::HttpFetchError>,
+        Result<HttpResponse, holt_core::ai::utils::http::HttpFetchError>,
     > {
         Box::pin(async {
             Ok(HttpResponse {
@@ -991,7 +991,7 @@ async fn capture_google_payload(
     };
     let options = SimpleStreamOptions {
         base: StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("test".to_string()),
                 fetch: Some(Arc::new(PayloadCapturedFetch)),
                 on_payload: Some(on_payload),
@@ -1037,7 +1037,7 @@ async fn capture_vertex_payload(
     };
     let options = SimpleStreamOptions {
         base: StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("test".to_string()),
                 fetch: Some(Arc::new(PayloadCapturedFetch)),
                 on_payload: Some(on_payload),

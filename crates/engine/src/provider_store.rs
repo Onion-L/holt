@@ -1,5 +1,5 @@
 //! The provider store: `<data_dir>/provider-store.json`, the catalog Holt
-//! owns. Boot writes the compiled `pi-core-rs` catalog there when the file
+//! owns. Boot writes the compiled `holt-core` catalog there when the file
 //! is missing and otherwise reads it, overlaying it on the compiled
 //! baseline: providers match by id (a non-built-in id is dropped), models
 //! match by id within their provider (a file entry replaces the compiled
@@ -32,7 +32,7 @@
 
 use std::{collections::HashMap, io::Write, path::Path};
 
-use pi_core::ai::{
+use holt_core::ai::{
     compat,
     providers::builtin::{builtin_providers, get_builtin_model_data_generated_at},
     types::{Model as CoreModel, ModelCost, ModelCostRates, ProviderHeaders},
@@ -230,7 +230,7 @@ fn snapshot() -> ProviderStore {
 struct ProviderStore {
     version: u32,
     /// The compiled catalog's own generation stamp, or `null` when
-    /// `pi-core-rs` reports none.
+    /// `holt-core` reports none.
     source_generated_at: Option<i64>,
     written_at: i64,
     providers: Vec<CatalogProvider>,
@@ -515,7 +515,7 @@ mod tests {
         model
     }
 
-    fn compiled_openai() -> Arc<dyn pi_core::ai::models::Provider> {
+    fn compiled_openai() -> Arc<dyn holt_core::ai::models::Provider> {
         builtin_providers()
             .into_iter()
             .find(|provider| provider.id() == "openai")

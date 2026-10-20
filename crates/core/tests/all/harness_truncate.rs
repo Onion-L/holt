@@ -6,7 +6,7 @@
 //! Buffer-tail-equivalence checks over the valid-UTF-8 alphabet instead;
 //! the surrogate replacement paths are enforced by the type system.
 
-use pi_core::agent::harness::utils::truncate::{
+use holt_core::agent::harness::utils::truncate::{
     TruncatedBy, TruncationOptions, truncate_head, truncate_tail,
 };
 

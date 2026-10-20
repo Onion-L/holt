@@ -10,16 +10,16 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use pi_core::agent::agent::{Agent, AgentInitialState, AgentOptions};
-use pi_core::agent::types::{
+use holt_core::agent::agent::{Agent, AgentInitialState, AgentOptions};
+use holt_core::agent::types::{
     AgentEvent, AgentMessage, AgentTool, AgentToolResult, StreamFn, ThinkingLevel,
 };
-use pi_core::ai::compat::{register_faux_provider, stream_simple};
-use pi_core::ai::providers::faux::{
+use holt_core::ai::compat::{register_faux_provider, stream_simple};
+use holt_core::ai::providers::faux::{
     FauxMessageOptions, FauxModelDefinition, FauxResponseStep, FauxTokenSize,
     RegisterFauxProviderOptions, faux_assistant_message, faux_text, faux_thinking, faux_tool_call,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, BlockContent, RoleAssistant, RoleUser, StopReason, TextContent,
     ToolResultMessage, Usage,
 };
@@ -183,7 +183,7 @@ fn stream_simple_fn() -> StreamFn {
     Arc::new(|model, context, options| Ok(stream_simple(model, context, options)))
 }
 
-fn get_text_content_assistant(message: &pi_core::ai::types::AssistantMessage) -> String {
+fn get_text_content_assistant(message: &holt_core::ai::types::AssistantMessage) -> String {
     message
         .content
         .iter()
@@ -215,7 +215,7 @@ fn message_text(message: &AgentMessage) -> Option<String> {
     }
 }
 
-async fn basic_prompt(model: pi_core::ai::types::Model) {
+async fn basic_prompt(model: holt_core::ai::types::Model) {
     let agent = Agent::new(AgentOptions {
         stream_fn: Some(stream_simple_fn()),
         initial_state: Some(AgentInitialState {
@@ -247,7 +247,7 @@ async fn basic_prompt(model: pi_core::ai::types::Model) {
     );
 }
 
-async fn tool_execution(model: pi_core::ai::types::Model) {
+async fn tool_execution(model: holt_core::ai::types::Model) {
     let agent = Agent::new(AgentOptions {
         stream_fn: Some(stream_simple_fn()),
         initial_state: Some(AgentInitialState {
@@ -330,7 +330,7 @@ async fn tool_execution(model: pi_core::ai::types::Model) {
     );
 }
 
-async fn abort_execution(model: pi_core::ai::types::Model) {
+async fn abort_execution(model: holt_core::ai::types::Model) {
     let agent = Arc::new(Agent::new(AgentOptions {
         stream_fn: Some(stream_simple_fn()),
         initial_state: Some(AgentInitialState {
@@ -375,7 +375,7 @@ async fn abort_execution(model: pi_core::ai::types::Model) {
     assert_eq!(agent.error_message(), last_message.error_message);
 }
 
-async fn state_updates(model: pi_core::ai::types::Model) {
+async fn state_updates(model: holt_core::ai::types::Model) {
     let agent = Agent::new(AgentOptions {
         stream_fn: Some(stream_simple_fn()),
         initial_state: Some(AgentInitialState {
@@ -442,7 +442,7 @@ async fn state_updates(model: pi_core::ai::types::Model) {
     assert_eq!(agent.messages().len(), 2);
 }
 
-async fn multi_turn_conversation(model: pi_core::ai::types::Model) {
+async fn multi_turn_conversation(model: holt_core::ai::types::Model) {
     let agent = Agent::new(AgentOptions {
         stream_fn: Some(stream_simple_fn()),
         initial_state: Some(AgentInitialState {
@@ -474,7 +474,7 @@ async fn multi_turn_conversation(model: pi_core::ai::types::Model) {
 fn faux_assistant(
     content: Vec<AssistantContent>,
     stop_reason: StopReason,
-) -> pi_core::ai::types::AssistantMessage {
+) -> holt_core::ai::types::AssistantMessage {
     faux_assistant_message(
         content,
         FauxMessageOptions {
@@ -569,10 +569,10 @@ async fn maintains_context_across_multiple_turns() {
         ))),
         FauxResponseStep::Factory(Arc::new(|context, _options, _state, _model| {
             let has_alice = context.messages.iter().any(|message| match message {
-                pi_core::ai::types::Message::User(user) => match &user.content {
-                    pi_core::ai::types::UserContent::Text(text) => text.contains("Alice"),
-                    pi_core::ai::types::UserContent::Blocks(blocks) => blocks.iter().any(
-                        |block| matches!(block, pi_core::ai::types::BlockContent::Text(text) if text.text.contains("Alice")),
+                holt_core::ai::types::Message::User(user) => match &user.content {
+                    holt_core::ai::types::UserContent::Text(text) => text.contains("Alice"),
+                    holt_core::ai::types::UserContent::Blocks(blocks) => blocks.iter().any(
+                        |block| matches!(block, holt_core::ai::types::BlockContent::Text(text) if text.text.contains("Alice")),
                     ),
                 },
                 _ => false,
@@ -628,11 +628,13 @@ async fn preserves_thinking_content_blocks() {
     assert_eq!(
         assistant.content,
         vec![
-            pi_core::ai::types::AssistantContent::Thinking(pi_core::ai::types::ThinkingContent {
-                thinking: "step by step".to_string(),
-                ..Default::default()
-            }),
-            pi_core::ai::types::AssistantContent::Text(TextContent {
+            holt_core::ai::types::AssistantContent::Thinking(
+                holt_core::ai::types::ThinkingContent {
+                    thinking: "step by step".to_string(),
+                    ..Default::default()
+                }
+            ),
+            holt_core::ai::types::AssistantContent::Text(TextContent {
                 text: "4".to_string(),
                 ..Default::default()
             }),
@@ -671,7 +673,7 @@ async fn continue_throws_when_last_message_is_assistant() {
     let _guard = registry_lock().await;
     let faux = register_faux_provider(RegisterFauxProviderOptions::default());
     let model = faux.get_model();
-    let assistant_message = pi_core::ai::types::AssistantMessage {
+    let assistant_message = holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content: vec![AssistantContent::Text(TextContent {
             text: "Hello".to_string(),
@@ -724,14 +726,18 @@ async fn continues_and_gets_response_when_last_message_is_user() {
         ..Default::default()
     });
 
-    agent.set_messages(vec![AgentMessage::User(pi_core::ai::types::UserMessage {
-        role: RoleUser,
-        content: pi_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(TextContent {
-            text: "Say exactly: HELLO WORLD".to_string(),
-            ..Default::default()
-        })]),
-        timestamp: 0,
-    })]);
+    agent.set_messages(vec![AgentMessage::User(
+        holt_core::ai::types::UserMessage {
+            role: RoleUser,
+            content: holt_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
+                TextContent {
+                    text: "Say exactly: HELLO WORLD".to_string(),
+                    ..Default::default()
+                },
+            )]),
+            timestamp: 0,
+        },
+    )]);
 
     agent.continue_().await.unwrap();
 
@@ -773,9 +779,9 @@ async fn continues_and_processes_tool_results() {
     });
 
     agent.set_messages(vec![
-        AgentMessage::User(pi_core::ai::types::UserMessage {
+        AgentMessage::User(holt_core::ai::types::UserMessage {
             role: RoleUser,
-            content: pi_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
+            content: holt_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
                 TextContent {
                     text: "What is 5 + 3?".to_string(),
                     ..Default::default()
@@ -783,14 +789,14 @@ async fn continues_and_processes_tool_results() {
             )]),
             timestamp: 0,
         }),
-        AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+        AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
             role: RoleAssistant,
             content: vec![
                 AssistantContent::Text(TextContent {
                     text: "Let me calculate that.".to_string(),
                     ..Default::default()
                 }),
-                AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+                AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
                     id: "calc-1".to_string(),
                     name: "calculate".to_string(),
                     arguments: json!({ "expression": "5 + 3" })

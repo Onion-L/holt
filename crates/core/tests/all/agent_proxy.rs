@@ -9,11 +9,13 @@ use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use serde_json::json;
 
-use pi_core::agent::proxy::{ProxyAssistantMessageEvent, ProxyStreamOptions, stream_proxy};
-use pi_core::ai::types::{AssistantMessageEvent, Context, DoneReason, Model, ModelInput, ToolCall};
-use pi_core::ai::utils::event_stream::AssistantMessageEventStream;
-use pi_core::ai::utils::http::HttpRequest;
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpResponse};
+use holt_core::agent::proxy::{ProxyAssistantMessageEvent, ProxyStreamOptions, stream_proxy};
+use holt_core::ai::types::{
+    AssistantMessageEvent, Context, DoneReason, Model, ModelInput, ToolCall,
+};
+use holt_core::ai::utils::event_stream::AssistantMessageEventStream;
+use holt_core::ai::utils::http::HttpRequest;
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpResponse};
 
 fn model() -> Model {
     Model {
@@ -58,7 +60,7 @@ impl HttpFetch for CannedFetch {
 }
 
 async fn collect_events(stream: &AssistantMessageEventStream) -> Vec<AssistantMessageEvent> {
-    pi_core::ai::utils::event_stream::collect_events(stream).await
+    holt_core::ai::utils::event_stream::collect_events(stream).await
 }
 
 #[tokio::test]
@@ -96,7 +98,7 @@ async fn preserves_tool_call_metadata_received_only_on_toolcall_end() {
         .iter()
         .map(|event| format!("data: {}\n\n", serde_json::to_string(event).unwrap()))
         .collect::<String>();
-    let fetch: pi_core::ai::types::FetchFunction = Arc::new(CannedFetch {
+    let fetch: holt_core::ai::types::FetchFunction = Arc::new(CannedFetch {
         status: 200,
         body,
         requests: std::sync::Mutex::new(Vec::new()),
@@ -125,7 +127,7 @@ async fn preserves_tool_call_metadata_received_only_on_toolcall_end() {
     assert_eq!(tool_call.namespace.as_deref(), Some("dynamic_tools"));
 
     match &result.content[0] {
-        pi_core::ai::types::AssistantContent::ToolCall(tool_call) => {
+        holt_core::ai::types::AssistantContent::ToolCall(tool_call) => {
             assert_eq!(
                 tool_call.arguments,
                 json!({ "value": "hello" })

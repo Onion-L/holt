@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use pi_core::agent::harness::telemetry::{
+use holt_core::agent::harness::telemetry::{
     agent_schema_versions, agent_telemetry_schemas, agent_typed_span_starter, ai_telemetry_schema,
     harness_telemetry_schema, span_attributes, start_ai_span, start_harness_span,
 };
-use pi_core::telemetry::{
+use holt_core::telemetry::{
     AttributeValue, InMemoryTelemetryContext, TelemetryContext, TelemetryContextExt,
     TelemetryParentDefinition,
 };
@@ -23,7 +23,7 @@ fn serializes_both_schemas_and_exposes_the_span_vocabularies() {
     assert_eq!(ai["version"], serde_json::json!(1));
     assert_eq!(harness["version"], serde_json::json!(1));
 
-    let span_names = pi_core::agent::harness::telemetry::harness_span_names();
+    let span_names = holt_core::agent::harness::telemetry::harness_span_names();
     assert_eq!(
         span_names,
         [
@@ -42,7 +42,7 @@ fn serializes_both_schemas_and_exposes_the_span_vocabularies() {
     );
 
     assert_eq!(
-        pi_core::agent::harness::telemetry::ai_span_names(),
+        holt_core::agent::harness::telemetry::ai_span_names(),
         ["pi.ai.request"]
     );
 
@@ -164,9 +164,9 @@ async fn typed_starter_composes_over_both_schemas() {
 
 #[test]
 fn noop_context_helpers_run_without_panicking() {
-    let context = pi_core::telemetry::noop_telemetry_context();
+    let context = holt_core::telemetry::noop_telemetry_context();
     context.start_span(
-        pi_core::telemetry::SpanOptions::new("pi.harness.run").with("pi.lane.name", "main"),
+        holt_core::telemetry::SpanOptions::new("pi.harness.run").with("pi.lane.name", "main"),
         |_span| {},
     );
 }

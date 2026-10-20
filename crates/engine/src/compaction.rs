@@ -1,5 +1,5 @@
 //! Compaction (ADR-compaction-is-not-a-turn): shrink a chat's History into a model-written
-//! summary plus a verbatim recent tail, using pi-core's compaction
+//! summary plus a verbatim recent tail, using holt-core's compaction
 //! primitives with their defaults — `should_compact` against the model's
 //! context window minus the reserve (16384), a tail of roughly the
 //! recent-tokens budget (20000), the upstream estimator (last real usage
@@ -12,14 +12,14 @@
 //! request and the scripted provider covers summaries in tests. It does
 //! NOT go through the upstream model registry.
 
-use pi_core::agent::harness::compaction::compaction::{
+use holt_core::agent::harness::compaction::compaction::{
     self, CompactionPreparation, DEFAULT_COMPACTION_SETTINGS,
 };
-use pi_core::agent::harness::compaction::utils::serialize_conversation;
-use pi_core::agent::harness::messages::{convert_to_llm, create_compaction_summary_message};
-use pi_core::agent::harness::session::types::Entry;
-use pi_core::agent::types::{AgentMessage, StreamFn};
-use pi_core::ai::types::{
+use holt_core::agent::harness::compaction::utils::serialize_conversation;
+use holt_core::agent::harness::messages::{convert_to_llm, create_compaction_summary_message};
+use holt_core::agent::harness::session::types::Entry;
+use holt_core::agent::types::{AgentMessage, StreamFn};
+use holt_core::ai::types::{
     BlockContent, CacheRetention, Context, Message, Model, RoleUser, SimpleStreamOptions,
     StopReason, StreamOptions, TextContent, UserContent, UserMessage,
 };
@@ -29,7 +29,7 @@ use crate::history::CompactionRecord;
 /// The metering bypass (usage-ledger ticket 02): one call per summary
 /// response — aborted and failed ones included, so a compaction's model
 /// work is billed even when it produces no summary.
-pub(crate) type CompactionMeter<'a> = &'a (dyn Fn(&pi_core::ai::types::AssistantMessage) + Sync);
+pub(crate) type CompactionMeter<'a> = &'a (dyn Fn(&holt_core::ai::types::AssistantMessage) + Sync);
 
 // The summarization BODY templates are private upstream (only the system
 // prompt is exported); these mirror them verbatim — pinned by the
@@ -82,7 +82,7 @@ pub(crate) async fn compact(
     trigger: holt_doc::parts::CompactionTrigger,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
-    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
+    on_retry: Option<holt_core::ai::types::OnRetryCallback>,
 ) -> Result<Option<CompactionOutcome>, String> {
     if !needed(history, model) {
         return Ok(None);
@@ -111,7 +111,7 @@ pub(crate) async fn compact_now(
     trigger: holt_doc::parts::CompactionTrigger,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
-    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
+    on_retry: Option<holt_core::ai::types::OnRetryCallback>,
 ) -> Result<Option<CompactionOutcome>, String> {
     let Some(preparation) =
         compaction::prepare_compaction(&flat_entries(history), DEFAULT_COMPACTION_SETTINGS)
@@ -206,7 +206,7 @@ async fn summarize(
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
-    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
+    on_retry: Option<holt_core::ai::types::OnRetryCallback>,
 ) -> Result<String, String> {
     let base_prompt = if previous_summary.is_some() {
         UPDATE_SUMMARIZATION_PROMPT
@@ -237,7 +237,7 @@ async fn summarize_turn_prefix(
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
-    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
+    on_retry: Option<holt_core::ai::types::OnRetryCallback>,
 ) -> Result<String, String> {
     let conversation = serialize_conversation(&convert_to_llm(messages.to_vec()));
     let prompt = format!(
@@ -261,7 +261,7 @@ async fn complete_summary(
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
     max_tokens_factor: f64,
-    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
+    on_retry: Option<holt_core::ai::types::OnRetryCallback>,
 ) -> Result<String, String> {
     let max_tokens =
         (max_tokens_factor * DEFAULT_COMPACTION_SETTINGS.reserve_tokens as f64).floor() as u64;
@@ -274,7 +274,7 @@ async fn complete_summary(
         base: StreamOptions {
             max_tokens: Some(max_tokens),
             cache_retention: Some(CacheRetention::None),
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 signal: signal.cloned(),
                 ..Default::default()
             },
@@ -341,7 +341,7 @@ async fn complete_summary(
                 .error_message
                 .unwrap_or_else(|| "Unknown error".into())
         )),
-        _ => Ok(pi_core::ai::utils::text::content_text(
+        _ => Ok(holt_core::ai::utils::text::content_text(
             &response.content,
             "\n",
         )),

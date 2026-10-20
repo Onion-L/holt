@@ -3318,6 +3318,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "holt-core"
+version = "0.84.4"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "crc32fast",
+ "futures",
+ "getrandom 0.3.4",
+ "hmac 0.13.0",
+ "httpdate",
+ "indexmap",
+ "libc",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tungstenite",
+ "unicode-normalization",
+ "url",
+ "zstd",
+]
+
+[[package]]
 name = "holt-doc"
 version = "0.5.4"
 dependencies = [
@@ -3345,6 +3373,7 @@ dependencies = [
  "git2",
  "grep-regex",
  "grep-searcher",
+ "holt-core",
  "holt-doc",
  "holt-proto",
  "holt-rpc",
@@ -3356,7 +3385,6 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "objc2-foundation 0.3.2",
- "pi-core-rs",
  "png 0.18.1",
  "portable-pty",
  "reqwest 0.12.28",
@@ -3475,6 +3503,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "gpui_tokio",
+ "holt-core",
  "holt-doc",
  "holt-engine",
  "holt-proto",
@@ -3484,7 +3513,6 @@ dependencies = [
  "image",
  "merman",
  "objc",
- "pi-core-rs",
  "pulldown-cmark 0.12.2",
  "serde",
  "serde_json",
@@ -5912,34 +5940,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
-]
-
-[[package]]
-name = "pi-core-rs"
-version = "0.84.4"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "crc32fast",
- "futures",
- "getrandom 0.3.4",
- "hmac 0.13.0",
- "httpdate",
- "indexmap",
- "libc",
- "regex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.11.0",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "tungstenite",
- "unicode-normalization",
- "url",
- "zstd",
 ]
 
 [[package]]

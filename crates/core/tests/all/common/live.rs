@@ -3,7 +3,7 @@
 //! Rust counterpart of the TypeScript live-test scaffolding:
 //!
 //! - `pi-core/ai/test/oauth.ts` `resolveApiKey`: API-key/OAuth resolution from
-//!   `~/.pi/agent/auth.json`, refreshing expired OAuth tokens through the
+//!   `~/.holt/live-auth.json`, refreshing expired OAuth tokens through the
 //!   builtin provider's OAuth flow and saving the credential back.
 //! - The credential gates from `pi-core/ai/test/azure-utils.ts`,
 //!   `bedrock-utils.ts`, and `cloudflare-utils.ts`, translated verbatim.
@@ -14,7 +14,7 @@
 //!   `interleavedThinking`, `azureDeploymentName`, `project`, `location`,
 //!   `requestMetadata`) into the per-API option structs. The Rust generic
 //!   `StreamOptions` cannot express those extras, so dispatching through
-//!   `pi_core::ai::compat::stream` alone would silently drop them; the
+//!   `holt_core::ai::compat::stream` alone would silently drop them; the
 //!   dispatcher calls the same per-API stream functions the compat registry
 //!   wraps.
 //!
@@ -25,27 +25,27 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::anthropic_messages::{AnthropicEffort, AnthropicOptions};
-use pi_core::ai::api::azure_openai_responses::AzureOpenAIResponsesOptions;
-use pi_core::ai::api::bedrock_converse_stream::BedrockOptions;
-use pi_core::ai::api::google_generative_ai::{GoogleOptions, GoogleThinkingConfig};
-use pi_core::ai::api::google_vertex::GoogleVertexOptions;
-use pi_core::ai::api::mistral_conversations::MistralOptions;
-use pi_core::ai::api::openai_codex_responses::OpenAICodexResponsesOptions;
-use pi_core::ai::api::openai_completions::OpenAICompletionsOptions;
-use pi_core::ai::api::openai_responses::OpenAIResponsesOptions;
-use pi_core::ai::auth::types::Credential;
-use pi_core::ai::env_api_keys::get_env_api_key;
-use pi_core::ai::providers::builtin::{builtin_models, builtin_providers, get_builtin_model};
+use holt_core::ai::api::anthropic_messages::{AnthropicEffort, AnthropicOptions};
+use holt_core::ai::api::azure_openai_responses::AzureOpenAIResponsesOptions;
+use holt_core::ai::api::bedrock_converse_stream::BedrockOptions;
+use holt_core::ai::api::google_generative_ai::{GoogleOptions, GoogleThinkingConfig};
+use holt_core::ai::api::google_vertex::GoogleVertexOptions;
+use holt_core::ai::api::mistral_conversations::MistralOptions;
+use holt_core::ai::api::openai_codex_responses::OpenAICodexResponsesOptions;
+use holt_core::ai::api::openai_completions::OpenAICompletionsOptions;
+use holt_core::ai::api::openai_responses::OpenAIResponsesOptions;
+use holt_core::ai::auth::types::Credential;
+use holt_core::ai::env_api_keys::get_env_api_key;
+use holt_core::ai::providers::builtin::{builtin_models, builtin_providers, get_builtin_model};
 
 /// Re-export of the generated per-provider catalog read (`getModels`).
 #[allow(unused_imports)]
-pub use pi_core::ai::providers::builtin::get_builtin_models;
-use pi_core::ai::types::{
+pub use holt_core::ai::providers::builtin::get_builtin_models;
+use holt_core::ai::types::{
     AssistantMessage, CacheRetention, Context, FetchFunction, Model, OnPayloadCallback,
     ProviderHeaders, ProviderRequestOptions, StreamOptions, ThinkingLevel, Transport,
 };
-use pi_core::ai::utils::event_stream::AssistantMessageEventStream;
+use holt_core::ai::utils::event_stream::AssistantMessageEventStream;
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
@@ -65,15 +65,15 @@ pub fn live_env(name: &str) -> Option<String> {
 }
 
 /// Live suites are opt-in: they hit paid provider APIs, local model servers,
-/// and refresh OAuth credentials in `~/.pi/agent/auth.json`, so a plain
-/// `cargo test --workspace` must never reach them. `PI_TEST_LIVE=1` enables
+/// and refresh OAuth credentials in `~/.holt/live-auth.json`, so a plain
+/// `cargo test --workspace` must never reach them. `HOLT_TEST_LIVE=1` enables
 /// them for runs that have credentials configured.
 fn offline() -> bool {
-    !std::env::var("PI_TEST_LIVE").is_ok_and(|value| value == "1")
+    !std::env::var("HOLT_TEST_LIVE").is_ok_and(|value| value == "1")
 }
 
 /// Opt-in-aware `get_env_api_key`: gates that key on a resolved provider
-/// credential must stay closed without `PI_TEST_LIVE=1`, so they use this
+/// credential must stay closed without `HOLT_TEST_LIVE=1`, so they use this
 /// instead of the library function, which reads the process env directly.
 pub fn live_api_key(provider: &str) -> Option<String> {
     if offline() {
@@ -135,7 +135,7 @@ pub fn has_cloudflare_ai_gateway_credentials() -> bool {
 /// Prints the standard live-suite skip line and returns.
 pub fn skip(suite: &str, env: &str) {
     if offline() {
-        eprintln!("SKIP: {suite}: live suites run only with PI_TEST_LIVE=1");
+        eprintln!("SKIP: {suite}: live suites run only with HOLT_TEST_LIVE=1");
         return;
     }
     eprintln!("SKIP: {suite} requires {env}");
@@ -156,9 +156,8 @@ fn auth_storage_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(
         std::path::Path::new(&home)
-            .join(".pi")
-            .join("agent")
-            .join("auth.json"),
+            .join(".holt")
+            .join("live-auth.json"),
     )
 }
 
@@ -177,7 +176,7 @@ fn save_auth_storage(path: &std::path::Path, storage: &serde_json::Map<String, s
 }
 
 /// Port of `resolveApiKey(provider)` from `oauth.ts`: resolves an API key for
-/// a provider from `~/.pi/agent/auth.json`. API-key credentials return the
+/// a provider from `~/.holt/live-auth.json`. API-key credentials return the
 /// key directly; OAuth credentials refresh when expired (saving the rotated
 /// credential back) and return the derived request API key.
 pub async fn resolve_api_key(provider: &str) -> Option<String> {
@@ -368,7 +367,7 @@ pub fn live_stream(
     }
 
     match model.api.as_str() {
-        "anthropic-messages" => pi_core::ai::api::anthropic_messages::stream(
+        "anthropic-messages" => holt_core::ai::api::anthropic_messages::stream(
             model,
             context,
             Some(&AnthropicOptions {
@@ -385,7 +384,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "openai-completions" => pi_core::ai::api::openai_completions::stream(
+        "openai-completions" => holt_core::ai::api::openai_completions::stream(
             model,
             context,
             Some(&OpenAICompletionsOptions {
@@ -394,7 +393,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "openai-responses" => pi_core::ai::api::openai_responses::stream(
+        "openai-responses" => holt_core::ai::api::openai_responses::stream(
             model,
             context,
             Some(&OpenAIResponsesOptions {
@@ -403,7 +402,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "openai-codex-responses" => pi_core::ai::api::openai_codex_responses::stream(
+        "openai-codex-responses" => holt_core::ai::api::openai_codex_responses::stream(
             model,
             context,
             Some(&OpenAICodexResponsesOptions {
@@ -414,7 +413,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "azure-openai-responses" => pi_core::ai::api::azure_openai_responses::stream(
+        "azure-openai-responses" => holt_core::ai::api::azure_openai_responses::stream(
             model,
             context,
             Some(&AzureOpenAIResponsesOptions {
@@ -423,7 +422,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "google-generative-ai" => pi_core::ai::api::google_generative_ai::stream(
+        "google-generative-ai" => holt_core::ai::api::google_generative_ai::stream(
             model,
             context,
             Some(&GoogleOptions {
@@ -436,7 +435,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "google-vertex" => pi_core::ai::api::google_vertex::stream(
+        "google-vertex" => holt_core::ai::api::google_vertex::stream(
             model,
             context,
             Some(&GoogleVertexOptions {
@@ -451,7 +450,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "mistral-conversations" => pi_core::ai::api::mistral_conversations::stream(
+        "mistral-conversations" => holt_core::ai::api::mistral_conversations::stream(
             model,
             context,
             Some(&MistralOptions {
@@ -459,7 +458,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        "bedrock-converse-stream" => pi_core::ai::api::bedrock_converse_stream::stream(
+        "bedrock-converse-stream" => holt_core::ai::api::bedrock_converse_stream::stream(
             model,
             context,
             Some(&BedrockOptions {
@@ -470,7 +469,7 @@ pub fn live_stream(
                 ..Default::default()
             }),
         ),
-        _ => pi_core::ai::compat::stream(model, context, Some(&base)),
+        _ => holt_core::ai::compat::stream(model, context, Some(&base)),
     }
 }
 
@@ -504,8 +503,8 @@ pub fn as_openai_completions(model: &Model) -> Model {
 
 /// The calculator tool schema from `stream.test.ts` (`StringEnum` produces
 /// `{ type: "string", enum: [...] }` for Google compatibility).
-pub fn calculator_tool() -> pi_core::ai::types::Tool {
-    pi_core::ai::types::Tool {
+pub fn calculator_tool() -> holt_core::ai::types::Tool {
+    holt_core::ai::types::Tool {
         name: "math_operation".to_string(),
         description: "Perform basic arithmetic operations".to_string(),
         parameters: serde_json::json!({
@@ -586,12 +585,12 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
 }
 
 /// TS: `execSync("which ollama", { stdio: "ignore" })` succeeds, unless
-/// `PI_NO_LOCAL_LLM` is set.
+/// `HOLT_NO_LOCAL_LLM` is set.
 pub fn ollama_installed() -> bool {
     if offline() {
         return false;
     }
-    if live_env("PI_NO_LOCAL_LLM").is_some() {
+    if live_env("HOLT_NO_LOCAL_LLM").is_some() {
         return false;
     }
     command_succeeds("which", &["ollama"])
@@ -641,7 +640,7 @@ async fn wait_for_ollama_server() {
 /// The TS `beforeAll` for Ollama suites: pull `gpt-oss:20b` when missing,
 /// then start `ollama serve` and wait for readiness.
 pub enum OllamaSetup {
-    /// `which ollama` failed (or `PI_NO_LOCAL_LLM`): the describe is skipped.
+    /// `which ollama` failed (or `HOLT_NO_LOCAL_LLM`): the describe is skipped.
     NotInstalled,
     /// The model pull failed; TS warns "tests will be skipped" and leaves the
     /// suite's model undefined.
@@ -705,7 +704,7 @@ pub fn lm_studio_running() -> bool {
     if offline() {
         return false;
     }
-    if live_env("PI_NO_LOCAL_LLM").is_some() {
+    if live_env("HOLT_NO_LOCAL_LLM").is_some() {
         return false;
     }
     command_succeeds(
@@ -720,7 +719,7 @@ pub fn llama_cpp_running() -> bool {
     if offline() {
         return false;
     }
-    if live_env("PI_NO_LOCAL_LLM").is_some() {
+    if live_env("HOLT_NO_LOCAL_LLM").is_some() {
         return false;
     }
     if !command_succeeds(

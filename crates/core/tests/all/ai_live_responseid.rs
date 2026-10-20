@@ -16,10 +16,10 @@ use common::live::{
     self, LiveOptions, as_openai_completions, get_model_or_panic, live_complete, live_env,
     now_millis, skip,
 };
-use pi_core::ai::types::{Context, Model, RoleUser, StopReason, UserContent, UserMessage};
+use holt_core::ai::types::{Context, Model, RoleUser, StopReason, UserContent, UserMessage};
 
-fn user_message(content: &str) -> pi_core::ai::types::Message {
-    pi_core::ai::types::Message::User(UserMessage {
+fn user_message(content: &str) -> holt_core::ai::types::Message {
+    holt_core::ai::types::Message::User(UserMessage {
         role: RoleUser,
         content: UserContent::Text(content.to_string()),
         timestamp: now_millis(),
@@ -161,7 +161,7 @@ async fn response_id_oauth_providers() {
     if copilot_token.is_none() {
         skip(
             "GitHub Copilot Provider: responseId (OpenAI + Anthropic paths)",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
     } else {
         let options = LiveOptions::with_api_key(copilot_token.as_deref().unwrap_or_default());
@@ -186,7 +186,7 @@ async fn response_id_oauth_providers() {
     if codex_token.is_none() {
         skip(
             "OpenAI Codex Provider: should expose responseId",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
     } else {
         let llm = get_model_or_panic("openai-codex", "gpt-5.5");

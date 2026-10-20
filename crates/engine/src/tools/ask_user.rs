@@ -9,11 +9,11 @@
 //! restart-safe by construction.
 
 use futures::future::BoxFuture;
-use holt_doc::parts::{CardQuestion, ChoiceCardState, MessagePart};
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };
+use holt_doc::parts::{CardQuestion, ChoiceCardState, MessagePart};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;

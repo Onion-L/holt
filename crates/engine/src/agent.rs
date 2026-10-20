@@ -1,4 +1,4 @@
-//! The single-agent run loop over pi-core: per-chat runtime state and
+//! The single-agent run loop over holt-core: per-chat runtime state and
 //! history persistence. The provider-stream transport (idle watchdog,
 //! mid-stream retry) lives in [`crate::stream`]; the agent-event →
 //! transcript translation in [`crate::decode`].
@@ -11,13 +11,8 @@ use std::{
 };
 
 use chrono::Utc;
-use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
-use holt_proto::{
-    Chat, PermissionMode, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall,
-    WorkspaceScope,
-};
-use pi_core::agent::harness::messages::convert_to_llm as harness_convert_to_llm;
-use pi_core::{
+use holt_core::agent::harness::messages::convert_to_llm as harness_convert_to_llm;
+use holt_core::{
     agent::{
         agent_loop::{AgentEventSink, run_agent_loop, run_agent_loop_continue},
         types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentToolResult},
@@ -26,6 +21,11 @@ use pi_core::{
         CacheRetention, Model as PiModel, RoleUser, SimpleStreamOptions,
         ThinkingLevel as ProviderThinkingLevel, UserContent, UserMessage,
     },
+};
+use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+use holt_proto::{
+    Chat, PermissionMode, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall,
+    WorkspaceScope,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -183,7 +183,7 @@ pub(crate) struct ChatRuntime {
     /// exact pair.
     pub(crate) approved_key_destinations: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
-    pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
+    pub(crate) usage: Mutex<holt_core::ai::types::Usage>,
     /// The running Turn's captured usage records (the usage ledger): they
     /// accumulate here and land as ONE settlement append after queue
     /// completion — a crash before settlement loses the batch, by design.
@@ -739,7 +739,7 @@ pub(crate) struct AgentRuntime {
     /// requests go through it instead of the built-in transport, with the
     /// same stall protection. Production leaves it unset (and uses the
     /// guarded `default_stream_fn`).
-    pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
+    pub(crate) stream_fn: Option<holt_core::agent::types::StreamFn>,
     /// The app-scoped MCP connection pool (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): device-level server
     /// definitions plus the live connections Turns snapshot tools from.
     /// Connections start lazily — nothing spawns until a Turn needs tools.
@@ -797,7 +797,7 @@ impl AgentRuntime {
         workspace_scope: WorkspaceScope,
         data_dir: PathBuf,
         chats: Vec<Chat>,
-        stream_fn: Option<pi_core::agent::types::StreamFn>,
+        stream_fn: Option<holt_core::agent::types::StreamFn>,
         mcp: crate::mcp::McpPool,
     ) -> Self {
         let chats_value = serde_json::to_value(&chats).unwrap_or_else(|_| serde_json::json!([]));
@@ -1143,7 +1143,7 @@ pub(crate) struct AgentRun {
     /// change set is never captured anyway.
     pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     /// Test-injected provider transport; `None` means the built-in one.
-    pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
+    pub(crate) stream_fn: Option<holt_core::agent::types::StreamFn>,
 }
 
 /// The run's event-sink state: everything the agent-loop event → transcript
@@ -1206,7 +1206,7 @@ impl RunSink {
 
     /// Debug trace of the event cadence: answers "did the reply stream?"
     /// without a debugger — deltas arriving bunched here are an upstream
-    /// (provider/pi-core) shape, not a UI problem.
+    /// (provider/holt-core) shape, not a UI problem.
     fn trace(&self, kind: &str, chars: usize, published: bool) {
         tracing::debug!(
             target: "holt::agent",
@@ -1472,7 +1472,7 @@ fn explorer_tool_allowed(name: &str) -> bool {
 
 /// The retry budget for provider requests on a Turn's critical path (the
 /// Turn itself, its compaction, the gate reviewer): transient transport/HTTP
-/// failures retry at the request layer with pi-core-rs' SDK-shaped policy
+/// failures retry at the request layer with holt-core' SDK-shaped policy
 /// (408/409/429/5xx/network, retry-after aware, exponential backoff capped at
 /// 8s). Ten retries ride out roughly a minute of provider overload — the
 /// user is waiting and can cancel, so waiting beats failing the Turn.
@@ -1486,7 +1486,7 @@ fn ends_on_rejected_overflow(messages: &[AgentMessage], model: &PiModel) -> bool
         AgentMessage::Assistant(assistant) => Some(
             assistant.error_message.is_some()
                 && assistant.content.is_empty()
-                && pi_core::ai::utils::overflow::is_context_overflow(
+                && holt_core::ai::utils::overflow::is_context_overflow(
                     assistant,
                     Some(model.context_window),
                 ),
@@ -1501,7 +1501,7 @@ fn ends_on_rejected_overflow(messages: &[AgentMessage], model: &PiModel) -> bool
 fn on_retry_callback(
     retry_events: crate::retry_events::RetryEvents,
     chat_id: String,
-) -> pi_core::ai::types::OnRetryCallback {
+) -> holt_core::ai::types::OnRetryCallback {
     Arc::new(move |attempt, max_retries, delay_ms, error| {
         retry_events.publish(holt_rpc::retries::TurnRetryNotice {
             chat_id: chat_id.clone(),
@@ -1587,7 +1587,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
 
     let stream_fn = stream_fn.unwrap_or_else(default_stream_fn);
     let stream_cancel = cancel.clone();
-    let stream_fn: pi_core::agent::types::StreamFn = Arc::new(move |model, context, options| {
+    let stream_fn: holt_core::agent::types::StreamFn = Arc::new(move |model, context, options| {
         if stream_cancel.is_cancelled() {
             return Err("Turn interrupted".into());
         }
@@ -1615,7 +1615,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // The summary responses bill into the Turn's usage batch (a child run's
     // compaction books nothing here — its delegation's metered transport
     // sees the request).
-    let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+    let compaction_meter = |response: &holt_core::ai::types::AssistantMessage| {
         crate::usage::capture_compaction(&chat, response)
     };
     let turn_start_compaction = if overflow_recovery {
@@ -1699,7 +1699,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         ..Default::default()
     };
     stream_options.base.base.api_key = Some(api_key.clone());
-    // Transient provider failures retry at the request layer (pi-core-rs
+    // Transient provider failures retry at the request layer (holt-core
     // SDK-shaped policy: 408/409/429/5xx/network, retry-after aware). The
     // retry is invisible to the loop, so the on_retry callback fans each
     // scheduled attempt out to `WatchTurnRetry` for the UI's chip.
@@ -1726,8 +1726,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let hook_base_parts = Arc::clone(&base_parts);
     let hook_cancel = cancel.clone();
     let hook_on_retry = turn_on_retry.clone();
-    let prepare_next_turn: pi_core::agent::types::PrepareNextTurnFn = Arc::new(
-        move |last_turn: pi_core::agent::types::PrepareNextTurnContext| {
+    let prepare_next_turn: holt_core::agent::types::PrepareNextTurnFn = Arc::new(
+        move |last_turn: holt_core::agent::types::PrepareNextTurnContext| {
             let chat = hook_chat.clone();
             let model = hook_model.clone();
             let stream_fn = hook_stream_fn.clone();
@@ -1744,7 +1744,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 }
                 // Mid-Turn summaries bill into the batch like the Turn-start
                 // ones (a child run books nothing — see there).
-                let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+                let compaction_meter = |response: &holt_core::ai::types::AssistantMessage| {
                     crate::usage::capture_compaction(&chat, response)
                 };
                 let outcome = match crate::compaction::compact(
@@ -1792,7 +1792,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 guard.history = outcome.messages;
                 guard.consumed += consumed;
                 drop(guard);
-                Some(pi_core::agent::types::AgentLoopTurnUpdate {
+                Some(holt_core::agent::types::AgentLoopTurnUpdate {
                     context: Some(context),
                     model: None,
                     thinking_level: None,
@@ -1818,7 +1818,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         cancel: cancel.clone(),
         routines: runtime.routines.get().cloned(),
     });
-    let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
+    let allow_images = model
+        .input
+        .contains(&holt_core::ai::types::ModelInput::Image);
     let search_backend_present = search_backend.is_some();
     let mut tools = crate::tools::execution_tools_for_model(
         &cwd,
@@ -2060,10 +2062,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                             || (chat.child.is_some()
                                 && (matches!(
                                     message.stop_reason,
-                                    pi_core::ai::types::StopReason::Aborted
-                                        | pi_core::ai::types::StopReason::Error
-                                        | pi_core::ai::types::StopReason::Length
-                                ) || pi_core::ai::utils::overflow::is_context_overflow(
+                                    holt_core::ai::types::StopReason::Aborted
+                                        | holt_core::ai::types::StopReason::Error
+                                        | holt_core::ai::types::StopReason::Length
+                                ) || holt_core::ai::utils::overflow::is_context_overflow(
                                     message,
                                     Some(overflow_model.context_window),
                                 ))),
@@ -2121,7 +2123,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             // unconditionally — and say so readably.
             let overflowed = messages.iter().rev().find_map(|message| match message {
                 AgentMessage::Assistant(assistant) => {
-                    Some(pi_core::ai::utils::overflow::is_context_overflow(
+                    Some(holt_core::ai::utils::overflow::is_context_overflow(
                         assistant,
                         Some(overflow_model.context_window),
                     ))
@@ -2149,15 +2151,15 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             // blank reply must be visible, not a normal-looking Turn.
             let empty_reply = messages.iter().rev().find_map(|message| match message {
                 AgentMessage::Assistant(assistant) => Some(
-                    assistant.stop_reason == pi_core::ai::types::StopReason::Stop
+                    assistant.stop_reason == holt_core::ai::types::StopReason::Stop
                         && assistant.content.iter().all(|block| match block {
-                            pi_core::ai::types::AssistantContent::Text(text) => {
+                            holt_core::ai::types::AssistantContent::Text(text) => {
                                 text.text.trim().is_empty()
                             }
-                            pi_core::ai::types::AssistantContent::Thinking(thinking) => {
+                            holt_core::ai::types::AssistantContent::Thinking(thinking) => {
                                 thinking.thinking.trim().is_empty()
                             }
-                            pi_core::ai::types::AssistantContent::ToolCall(_) => false,
+                            holt_core::ai::types::AssistantContent::ToolCall(_) => false,
                         }),
                 ),
                 _ => None,

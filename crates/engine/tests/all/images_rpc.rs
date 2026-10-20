@@ -2,8 +2,8 @@ use crate::common;
 
 use base64::Engine as _;
 use common::{Fixture, ScriptedProvider, ScriptedReply};
+use holt_core::ai::types::{BlockContent, Message};
 use holt_rpc::{RpcReply, RpcService, methods};
-use pi_core::ai::types::{BlockContent, Message};
 use serde_json::json;
 
 fn png(width: u32, height: u32) -> Vec<u8> {
@@ -144,12 +144,12 @@ async fn read_resizes_model_input_and_replays_the_actual_image_after_restart() {
 }
 
 fn wire(request: &common::RecordedRequest) -> serde_json::Value {
-    let context = pi_core::ai::types::Context {
+    let context = holt_core::ai::types::Context {
         messages: request.messages.clone(),
         ..Default::default()
     };
     json!(
-        pi_core::ai::api::openai_responses_shared::convert_responses_messages(
+        holt_core::ai::api::openai_responses_shared::convert_responses_messages(
             &request.core_model,
             &context,
             &Default::default(),

@@ -14,27 +14,27 @@
 //! - `anthropic-eager-tool-input-compat.test.ts` (4 cases)
 //! - `anthropic-cache-write-1h-cost.test.ts` (2 cases)
 //! - `cache-retention.test.ts` (the Anthropic describe, 7 cases; the two
-//!   PI_CACHE_RETENTION env cases inject a scoped `ProviderEnv` instead of
+//!   HOLT_CACHE_RETENTION env cases inject a scoped `ProviderEnv` instead of
 //!   mutating process env)
 //! - `fireworks-models.test.ts` (only the Anthropic payload describe)
 //! - `github-copilot-anthropic.test.ts` (3 cases)
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::anthropic_messages::{
+use holt_core::ai::api::anthropic_messages::{
     AnthropicOptions, stream as stream_anthropic, stream_simple,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, CacheRetention, Context, Message, Model, ModelCompat,
     ModelCost, ModelInput, ModelThinkingLevel, ProviderEnv, ProviderRequestOptions, RoleUser,
     SimpleStreamOptions, StopReason, StreamOptions, ThinkingContent, ThinkingLevel, Tool,
     UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 fn builtin(provider: &str, id: &str) -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model(provider, id)
+    holt_core::ai::providers::builtin::get_builtin_model(provider, id)
         .unwrap_or_else(|| panic!("missing model {provider}/{id}"))
 }
 
@@ -232,19 +232,20 @@ fn marks_builtin_anthropic_messages_models_that_use_adaptive_thinking() {
         "vercel-ai-gateway/anthropic/claude-sonnet-5",
     ];
 
-    let mut flagged_models: Vec<String> = pi_core::ai::providers::builtin::get_builtin_providers()
-        .into_iter()
-        .flat_map(|provider| pi_core::ai::providers::builtin::get_builtin_models(&provider))
-        .filter(|model| model.api == "anthropic-messages")
-        .filter(|model| {
-            model
-                .compat
-                .as_ref()
-                .and_then(|compat| compat.force_adaptive_thinking)
-                == Some(true)
-        })
-        .map(|model| format!("{}/{}", model.provider, model.id))
-        .collect();
+    let mut flagged_models: Vec<String> =
+        holt_core::ai::providers::builtin::get_builtin_providers()
+            .into_iter()
+            .flat_map(|provider| holt_core::ai::providers::builtin::get_builtin_models(&provider))
+            .filter(|model| model.api == "anthropic-messages")
+            .filter(|model| {
+                model
+                    .compat
+                    .as_ref()
+                    .and_then(|compat| compat.force_adaptive_thinking)
+                    == Some(true)
+            })
+            .map(|model| format!("{}/{}", model.provider, model.id))
+            .collect();
     flagged_models.sort();
 
     for expected in expected_current_adaptive_thinking_models {
@@ -860,9 +861,9 @@ async fn only_sends_the_full_input_schema_for_strict_json_schema_tools() {
         "required": ["value"],
         "title": "StrictLookupInput",
     });
-    strict_tool.constrained_sampling = Some(pi_core::ai::types::ToolConstrainedSampling::Config(
-        pi_core::ai::types::ConstrainedSamplingConfig::JsonSchema {
-            strict: pi_core::ai::types::ConstrainedSamplingStrict::Prefer,
+    strict_tool.constrained_sampling = Some(holt_core::ai::types::ToolConstrainedSampling::Config(
+        holt_core::ai::types::ConstrainedSamplingConfig::JsonSchema {
+            strict: holt_core::ai::types::ConstrainedSamplingStrict::Prefer,
         },
     ));
     let strict_request = capture_eager_request(
@@ -952,7 +953,9 @@ fn cache_creation_events(cache_creation: Option<Value>) -> Vec<(String, String)>
 }
 
 /// Drives `stream` against a scripted cache-write SSE fixture.
-async fn cache_write_result(cache_creation: Option<Value>) -> pi_core::ai::types::AssistantMessage {
+async fn cache_write_result(
+    cache_creation: Option<Value>,
+) -> holt_core::ai::types::AssistantMessage {
     struct CacheWriteFetch {
         body: String,
     }
@@ -1036,7 +1039,7 @@ async fn falls_back_to_the_5m_rate_when_no_breakdown_is_reported() {
 }
 
 // ---------------------------------------------------------------------------
-// Cache Retention (PI_CACHE_RETENTION), Anthropic describe
+// Cache Retention (HOLT_CACHE_RETENTION), Anthropic describe
 // (cache-retention.test.ts)
 
 fn retention_context() -> Context {
@@ -1088,7 +1091,7 @@ async fn uses_the_1h_cache_ttl_when_pi_cache_retention_is_long() {
     let payload = capture_anthropic_payload(
         &model,
         &retention_context(),
-        retention_options(Some(scoped_env(&[("PI_CACHE_RETENTION", "long")])), None),
+        retention_options(Some(scoped_env(&[("HOLT_CACHE_RETENTION", "long")])), None),
     )
     .await;
 
@@ -1106,7 +1109,7 @@ async fn adds_ttl_for_non_api_anthropic_com_baseurl_by_default() {
     let payload = capture_anthropic_payload(
         &proxy_model,
         &retention_context(),
-        retention_options(Some(scoped_env(&[("PI_CACHE_RETENTION", "long")])), None),
+        retention_options(Some(scoped_env(&[("HOLT_CACHE_RETENTION", "long")])), None),
     )
     .await;
 
@@ -1205,7 +1208,7 @@ fn fireworks_anthropic_model() -> Model {
         reasoning: true,
         input: vec![ModelInput::Text, ModelInput::Image],
         cost: ModelCost {
-            rates: pi_core::ai::types::ModelCostRates {
+            rates: holt_core::ai::types::ModelCostRates {
                 input: 0.95.into(),
                 output: 4.0.into(),
                 cache_read: 0.16.into(),
@@ -1368,7 +1371,7 @@ fn applies_copilot_specific_adaptive_thinking_effort_overrides() {
         thinking_level_map(&opus47, ModelThinkingLevel::Max),
         Some(Some("max".to_string()))
     );
-    let levels = pi_core::ai::models::get_supported_thinking_levels(&opus47);
+    let levels = holt_core::ai::models::get_supported_thinking_levels(&opus47);
     assert!(levels.contains(&ModelThinkingLevel::Xhigh));
     assert!(levels.contains(&ModelThinkingLevel::Max));
 
@@ -1387,7 +1390,7 @@ fn applies_copilot_specific_adaptive_thinking_effort_overrides() {
         thinking_level_map(&opus5, ModelThinkingLevel::Max),
         Some(Some("max".to_string()))
     );
-    let levels = pi_core::ai::models::get_supported_thinking_levels(&opus5);
+    let levels = holt_core::ai::models::get_supported_thinking_levels(&opus5);
     assert!(levels.contains(&ModelThinkingLevel::Xhigh));
     assert!(levels.contains(&ModelThinkingLevel::Max));
 
@@ -1400,7 +1403,7 @@ fn applies_copilot_specific_adaptive_thinking_effort_overrides() {
         thinking_level_map(&sonnet46, ModelThinkingLevel::Max),
         Some(Some("max".to_string()))
     );
-    let levels = pi_core::ai::models::get_supported_thinking_levels(&sonnet46);
+    let levels = holt_core::ai::models::get_supported_thinking_levels(&sonnet46);
     assert!(levels.contains(&ModelThinkingLevel::Max));
     assert!(!levels.contains(&ModelThinkingLevel::Xhigh));
 }

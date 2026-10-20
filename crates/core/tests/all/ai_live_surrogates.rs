@@ -10,7 +10,7 @@
 //! the provider sanitizes it before sending. A Rust `String` is always valid
 //! UTF-8 and cannot hold an unpaired surrogate (the input the case depends on
 //! cannot be built; sanitization happens at a different layer — see
-//! `pi_core::ai::utils::sanitize_unicode`). Those 29 matrix items are
+//! `holt_core::ai::utils::sanitize_unicode`). Those 29 matrix items are
 //! therefore skipped with a printed reason instead of carrying a fake
 //! equivalent assertion.
 //!
@@ -25,11 +25,11 @@ use common::live::{
     self, LiveEffort, LiveOptions, as_openai_completions, empty_object_schema, get_model_or_panic,
     live_complete, live_env, now_millis, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, RoleAssistant, RoleToolResult,
     RoleUser, StopReason, Tool, ToolCall, ToolResultMessage, UserContent, UserMessage,
 };
-use pi_core::ai::types::{BlockContent, TextContent};
+use holt_core::ai::types::{BlockContent, TextContent};
 
 fn user_message(content: &str) -> Message {
     Message::User(UserMessage {
@@ -57,7 +57,7 @@ fn tool_call_assistant_message(
         api: llm.api.clone(),
         provider: llm.provider.clone(),
         model: llm.id.clone(),
-        usage: pi_core::ai::types::Usage::default(),
+        usage: holt_core::ai::types::Usage::default(),
         stop_reason: StopReason::ToolUse,
         timestamp: now_millis(),
         ..Default::default()
@@ -227,7 +227,7 @@ async fn run_surrogate_suite(suite: SurrogateSuite) {
     let gate_description;
     let gated = if let Some(oauth_provider) = suite.oauth {
         token = live::resolve_api_key(oauth_provider).await;
-        gate_description = format!("~/.pi/agent/auth.json {oauth_provider} credentials");
+        gate_description = format!("~/.holt/live-auth.json {oauth_provider} credentials");
         token.is_some()
     } else if suite.provider == "azure-openai-responses" {
         gate_description = suite.env.to_string();

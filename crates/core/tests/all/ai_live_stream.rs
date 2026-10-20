@@ -27,7 +27,7 @@ use common::live::{
     get_model_or_panic, js_number_to_string, live_complete, live_env, live_stream, now_millis,
     skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessageEvent, BlockContent, Context, ImageContent, Message, Model,
     ModelInput, RoleAssistant, RoleToolResult, RoleUser, StopReason, TextContent,
     ToolResultMessage, UserContent, UserMessage,
@@ -1700,7 +1700,7 @@ async fn anthropic_oauth_provider_claude_sonnet_4_6() {
     let Some(token) = live::resolve_api_key("anthropic").await else {
         skip(
             "Anthropic OAuth Provider (claude-sonnet-4-6)",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
         return;
     };
@@ -1752,7 +1752,7 @@ async fn anthropic_oauth_provider_claude_opus_4_6_adaptive_thinking() {
     let Some(token) = live::resolve_api_key("anthropic").await else {
         skip(
             "Anthropic OAuth Provider (claude-opus-4-6 with adaptive thinking)",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
         return;
     };
@@ -1815,7 +1815,7 @@ async fn github_copilot_provider_gpt_5_3_codex() {
     let Some(token) = live::resolve_api_key("github-copilot").await else {
         skip(
             "GitHub Copilot Provider (gpt-5.3-codex via OpenAI Completions)",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
         return;
     };
@@ -1876,7 +1876,7 @@ async fn github_copilot_provider_claude_sonnet_4() {
     let Some(token) = live::resolve_api_key("github-copilot").await else {
         skip(
             "GitHub Copilot Provider (claude-sonnet-4 via Anthropic Messages)",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
         return;
     };
@@ -1931,13 +1931,13 @@ async fn run_codex_suite(
 ) {
     // TS: it.skipIf(!openaiCodexToken) with resolveApiKey("openai-codex")
     let Some(token) = live::resolve_api_key("openai-codex").await else {
-        skip(suite, "~/.pi/agent/auth.json openai-codex credentials");
+        skip(suite, "~/.holt/live-auth.json openai-codex credentials");
         return;
     };
     let llm = get_model_or_panic("openai-codex", model_id);
     let mut options = LiveOptions::with_api_key(&token);
     if websocket {
-        options.transport = Some(pi_core::ai::types::Transport::Websocket);
+        options.transport = Some(holt_core::ai::types::Transport::Websocket);
     }
     let thinking_options = LiveOptions {
         reasoning_effort: Some(thinking_effort),
@@ -2058,7 +2058,7 @@ async fn amazon_bedrock_provider_claude_sonnet_4_5() {
             Case {
                 // { reasoning: "medium" }
                 options: LiveOptions {
-                    reasoning: Some(pi_core::ai::types::ThinkingLevel::Medium),
+                    reasoning: Some(holt_core::ai::types::ThinkingLevel::Medium),
                     ..Default::default()
                 },
                 ..case("should handle thinking", Scenario::Thinking)
@@ -2066,7 +2066,7 @@ async fn amazon_bedrock_provider_claude_sonnet_4_5() {
             Case {
                 // { reasoning: "high" }
                 options: LiveOptions {
-                    reasoning: Some(pi_core::ai::types::ThinkingLevel::High),
+                    reasoning: Some(holt_core::ai::types::ThinkingLevel::High),
                     ..Default::default()
                 },
                 ..case(
@@ -2097,7 +2097,7 @@ async fn amazon_bedrock_provider_claude_opus_4_6_interleaved_thinking() {
     {
         let (captured, on_payload) = live::payload_capture();
         let options = LiveOptions {
-            reasoning: Some(pi_core::ai::types::ThinkingLevel::Xhigh),
+            reasoning: Some(holt_core::ai::types::ThinkingLevel::Xhigh),
             interleaved_thinking: Some(true),
             on_payload: Some(on_payload),
             ..Default::default()
@@ -2260,7 +2260,7 @@ async fn ollama_provider_gpt_oss_20b() {
         input: vec![ModelInput::Text],
         context_window: 128_000,
         max_tokens: 16_000,
-        cost: pi_core::ai::types::ModelCost::default(),
+        cost: holt_core::ai::types::ModelCost::default(),
         name: "Ollama GPT-OSS 20B".to_string(),
         ..Default::default()
     };

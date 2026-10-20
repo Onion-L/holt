@@ -16,12 +16,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use holt_proto::{TITLE_CHAR_LIMIT, TitleSource};
-use pi_core::agent::types::StreamFn;
-use pi_core::ai::types::{
+use holt_core::agent::types::StreamFn;
+use holt_core::ai::types::{
     BlockContent, CacheRetention, Context, Message, Model, RoleUser, SimpleStreamOptions,
     StopReason, StreamOptions, TextContent, UserContent, UserMessage,
 };
+use holt_proto::{TITLE_CHAR_LIMIT, TitleSource};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentRuntime, ChatRuntime};
@@ -119,7 +119,7 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
         base: StreamOptions {
             max_tokens: Some(max_tokens),
             cache_retention: Some(CacheRetention::None),
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 signal: Some(cancel.clone()),
                 ..Default::default()
             },
@@ -173,7 +173,7 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
     crate::usage::record_title(&spec.chat, &response);
     match response.stop_reason {
         StopReason::Aborted | StopReason::Error => None,
-        _ => normalize_title(&pi_core::ai::utils::text::content_text(
+        _ => normalize_title(&holt_core::ai::utils::text::content_text(
             &response.content,
             "\n",
         )),

@@ -1,5 +1,5 @@
 //! Port of the observable behavior of `pi-core/ai/src/cli.ts` — the
-//! `pi-ai` bin entry. There is no TypeScript test suite for cli.ts, so the
+//! `holt-ai` bin entry. There is no TypeScript test suite for cli.ts, so the
 //! expected bytes come from goldens the TypeScript oracle produced by
 //! driving the real cli.ts (with a scripted `fetch` for the network-free
 //! GitHub Copilot login); the goldens are frozen (ADR-agent-core-is-a-holt-owned-workspace-crate).
@@ -33,14 +33,14 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::github_copilot::GitHubCopilotOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::github_copilot::GitHubCopilotOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, AuthPromptOption, AuthStorageError,
     OAuthAuth, OAuthCredential,
 };
-use pi_core::ai::cli::{self, CliIo, CliOAuthProvider, run_cli, run_cli_with};
-use pi_core::ai::types::FetchFunction;
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::cli::{self, CliIo, CliOAuthProvider, run_cli, run_cli_with};
+use holt_core::ai::types::FetchFunction;
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 
 fn golden(name: &str) -> String {
     let path = format!("{}/tests/goldens/ai/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -145,7 +145,7 @@ impl OAuthAuth for FakeFlow {
     fn login(
         &self,
         interaction: Arc<dyn AuthInteraction>,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
         let steps = self.steps.clone();
         let credential = self.credential.clone();
         let answers = Arc::clone(&self.answers);
@@ -169,7 +169,7 @@ impl OAuthAuth for FakeFlow {
         &self,
         _credential: &OAuthCredential,
         _signal: tokio_util::sync::CancellationToken,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
         Box::pin(std::future::ready(Err(AuthStorageError(
             "not supported".to_string(),
         ))))
@@ -178,8 +178,8 @@ impl OAuthAuth for FakeFlow {
     fn to_auth(
         &self,
         _credential: &OAuthCredential,
-    ) -> pi_core::ai::auth::types::AuthFuture<
-        Result<pi_core::ai::auth::types::ModelAuth, AuthStorageError>,
+    ) -> holt_core::ai::auth::types::AuthFuture<
+        Result<holt_core::ai::auth::types::ModelAuth, AuthStorageError>,
     > {
         Box::pin(std::future::ready(Err(AuthStorageError(
             "not supported".to_string(),
@@ -663,7 +663,7 @@ impl OAuthAuth for FailingFlow {
     fn login(
         &self,
         _interaction: Arc<dyn AuthInteraction>,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
         Box::pin(std::future::ready(Err(AuthStorageError(
             "device flow failed".to_string(),
         ))))
@@ -673,7 +673,7 @@ impl OAuthAuth for FailingFlow {
         &self,
         _credential: &OAuthCredential,
         _signal: tokio_util::sync::CancellationToken,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<OAuthCredential, AuthStorageError>> {
         Box::pin(std::future::ready(Err(AuthStorageError(
             "not supported".to_string(),
         ))))
@@ -682,8 +682,8 @@ impl OAuthAuth for FailingFlow {
     fn to_auth(
         &self,
         _credential: &OAuthCredential,
-    ) -> pi_core::ai::auth::types::AuthFuture<
-        Result<pi_core::ai::auth::types::ModelAuth, AuthStorageError>,
+    ) -> holt_core::ai::auth::types::AuthFuture<
+        Result<holt_core::ai::auth::types::ModelAuth, AuthStorageError>,
     > {
         Box::pin(std::future::ready(Err(AuthStorageError(
             "not supported".to_string(),

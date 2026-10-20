@@ -8,12 +8,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::openrouter::OpenRouterOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::openrouter::OpenRouterOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthStorageError, OAuthAuth, OAuthCredential,
 };
-use pi_core::ai::types::{FetchFunction, ProviderEnv};
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::{FetchFunction, ProviderEnv};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
@@ -82,7 +82,7 @@ impl AuthInteraction for LoginInteraction {
     fn prompt(
         &self,
         prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         if let Some(signal) = &prompt.signal {
             self.manual_signals.lock().unwrap().push(signal.clone());
         }
@@ -443,10 +443,10 @@ async fn mints_a_key_from_a_pasted_redirect_url_when_the_loopback_callback_never
         fn prompt(
             &self,
             prompt: AuthPrompt,
-        ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+        ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
             assert!(matches!(
                 prompt.kind,
-                pi_core::ai::auth::types::AuthPromptKind::ManualCode { .. }
+                holt_core::ai::auth::types::AuthPromptKind::ManualCode { .. }
             ));
             let callback_url = self
                 .callback_url
@@ -605,7 +605,7 @@ async fn rejects_before_opening_a_callback_server_when_login_is_already_cancelle
         fn prompt(
             &self,
             _prompt: AuthPrompt,
-        ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+        ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
             Box::pin(std::future::ready(Ok(String::new())))
         }
         fn notify(&self, _event: AuthEvent) {
@@ -648,7 +648,7 @@ async fn uses_the_configured_oauth_callback_host() {
             handler: Arc::new(|_| (200, serde_json::json!({"key": "unexpected"}))),
             requests: Mutex::new(Vec::new()),
         }),
-        env_with(&[("PI_OAUTH_CALLBACK_HOST", "localhost")]),
+        env_with(&[("HOLT_OAUTH_CALLBACK_HOST", "localhost")]),
     )
     .login(Arc::new(interaction))
     .await
@@ -664,8 +664,8 @@ async fn uses_the_configured_oauth_callback_host() {
 
 #[test]
 fn is_exposed_by_both_openrouter_providers_alongside_api_key_auth() {
-    let text = pi_core::ai::providers::builtin::openrouter_provider();
-    let images = pi_core::ai::providers::builtin::openrouter_images_provider();
+    let text = holt_core::ai::providers::builtin::openrouter_provider();
+    let images = holt_core::ai::providers::builtin::openrouter_images_provider();
     let text_auth = text.auth();
     let images_auth = images.auth();
     for (id, auth) in [("openrouter", text_auth), ("openrouter", images_auth)] {
@@ -677,11 +677,11 @@ fn is_exposed_by_both_openrouter_providers_alongside_api_key_auth() {
 
 #[tokio::test]
 async fn resolves_the_same_stored_oauth_key_for_text_and_image_providers() {
-    use pi_core::ai::auth::credential_store::InMemoryCredentialStore;
-    use pi_core::ai::auth::types::{AuthFuture, CredentialStore};
-    use pi_core::ai::images_models::ImagesModels;
-    use pi_core::ai::models::{CreateModelsOptions, Models};
-    use pi_core::ai::providers::builtin::{openrouter_images_provider, openrouter_provider};
+    use holt_core::ai::auth::credential_store::InMemoryCredentialStore;
+    use holt_core::ai::auth::types::{AuthFuture, CredentialStore};
+    use holt_core::ai::images_models::ImagesModels;
+    use holt_core::ai::models::{CreateModelsOptions, Models};
+    use holt_core::ai::providers::builtin::{openrouter_images_provider, openrouter_provider};
 
     let credentials = Arc::new(InMemoryCredentialStore::new());
     credentials
@@ -689,7 +689,7 @@ async fn resolves_the_same_stored_oauth_key_for_text_and_image_providers() {
             "openrouter",
             Box::new(|_| {
                 Box::pin(std::future::ready(Ok(Some(
-                    pi_core::ai::auth::types::Credential::OAuth(OAuthCredential {
+                    holt_core::ai::auth::types::Credential::OAuth(OAuthCredential {
                         access: "sk-or-stored".to_string(),
                         refresh: String::new(),
                         expires: MAX_SAFE_INTEGER,
@@ -698,8 +698,8 @@ async fn resolves_the_same_stored_oauth_key_for_text_and_image_providers() {
                 ))))
                     as AuthFuture<
                         Result<
-                            Option<pi_core::ai::auth::types::Credential>,
-                            pi_core::ai::auth::types::BoxedAuthError,
+                            Option<holt_core::ai::auth::types::Credential>,
+                            holt_core::ai::auth::types::BoxedAuthError,
                         >,
                     >
             }),

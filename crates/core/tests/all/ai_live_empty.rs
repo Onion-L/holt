@@ -24,7 +24,7 @@ use common::live::{
     self, LiveEffort, LiveOptions, as_openai_completions, get_model_or_panic, live_complete,
     live_env, now_millis, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantMessage, Context, Message, RoleAssistant, RoleUser, StopReason, Usage, UsageCost,
     UserContent, UserMessage,
 };
@@ -325,7 +325,11 @@ const EMPTY_SUITES: &[EmptySuite] = &[
 ];
 
 /// The four shared TS case bodies. `case` is "<suite> (<model>): <it name>".
-async fn test_empty_message(model: &pi_core::ai::types::Model, case: &str, options: &LiveOptions) {
+async fn test_empty_message(
+    model: &holt_core::ai::types::Model,
+    case: &str,
+    options: &LiveOptions,
+) {
     // Test with completely empty content array
     let context = Context {
         system_prompt: None,
@@ -349,7 +353,7 @@ async fn test_empty_message(model: &pi_core::ai::types::Model, case: &str, optio
 }
 
 async fn test_empty_string_message(
-    model: &pi_core::ai::types::Model,
+    model: &holt_core::ai::types::Model,
     case: &str,
     options: &LiveOptions,
 ) {
@@ -373,7 +377,7 @@ async fn test_empty_string_message(
 }
 
 async fn test_whitespace_only_message(
-    model: &pi_core::ai::types::Model,
+    model: &holt_core::ai::types::Model,
     case: &str,
     options: &LiveOptions,
 ) {
@@ -397,7 +401,7 @@ async fn test_whitespace_only_message(
 }
 
 async fn test_empty_assistant_message(
-    model: &pi_core::ai::types::Model,
+    model: &holt_core::ai::types::Model,
     case: &str,
     options: &LiveOptions,
 ) {
@@ -451,7 +455,7 @@ async fn test_empty_assistant_message(
     }
 }
 
-async fn run_empty_cases(model: &pi_core::ai::types::Model, label: &str, options: &LiveOptions) {
+async fn run_empty_cases(model: &holt_core::ai::types::Model, label: &str, options: &LiveOptions) {
     test_empty_message(
         model,
         &format!("{label}: should handle empty content array"),
@@ -478,7 +482,7 @@ async fn run_empty_cases(model: &pi_core::ai::types::Model, label: &str, options
     .await;
 }
 
-fn suite_options(suite: &EmptySuite, model: &pi_core::ai::types::Model) -> LiveOptions {
+fn suite_options(suite: &EmptySuite, model: &holt_core::ai::types::Model) -> LiveOptions {
     let mut options = LiveOptions::default();
     if suite.azure {
         options.azure_deployment_name = live::resolve_azure_deployment_name(&model.id);
@@ -515,7 +519,7 @@ async fn anthropic_oauth_provider_empty_messages() {
     let Some(token) = live::resolve_api_key("anthropic").await else {
         skip(
             "Anthropic OAuth Provider Empty Messages",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
         return;
     };
@@ -531,7 +535,7 @@ async fn github_copilot_provider_empty_messages() {
     let Some(token) = live::resolve_api_key("github-copilot").await else {
         skip(
             "GitHub Copilot Provider Empty Messages",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
         return;
     };
@@ -556,7 +560,7 @@ async fn openai_codex_provider_empty_messages() {
     let Some(token) = live::resolve_api_key("openai-codex").await else {
         skip(
             "OpenAI Codex Provider Empty Messages",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
         return;
     };

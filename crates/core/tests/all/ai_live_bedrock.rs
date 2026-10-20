@@ -6,7 +6,7 @@ use crate::common;
 use common::live::{
     LiveOptions, get_builtin_models, get_model_or_panic, live_complete, live_env, now_millis, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, Context, Message, RoleAssistant, RoleUser, StopReason, ThinkingLevel,
     UserContent, UserMessage,
 };

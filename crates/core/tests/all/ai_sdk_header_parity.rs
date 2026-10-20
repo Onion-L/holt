@@ -6,16 +6,16 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::azure_openai_responses::{
+use holt_core::ai::api::azure_openai_responses::{
     AzureOpenAIResponsesOptions, stream as stream_azure,
 };
-use pi_core::ai::api::openai_completions::{
+use holt_core::ai::api::openai_completions::{
     OpenAICompletionsOptions, stream as stream_completions,
 };
-use pi_core::ai::api::openai_responses::{OpenAIResponsesOptions, stream as stream_responses};
-use pi_core::ai::types::ProviderHeaders;
-use pi_core::ai::types::{Context, Message, Model, RoleUser, UserMessage};
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::api::openai_responses::{OpenAIResponsesOptions, stream as stream_responses};
+use holt_core::ai::types::ProviderHeaders;
+use holt_core::ai::types::{Context, Message, Model, RoleUser, UserMessage};
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 
 /// Mock transport capturing requests; a 400 reply is enough to terminate the
 /// stream in an error result without valid SSE.
@@ -49,8 +49,8 @@ fn model(api: &str) -> Model {
         provider: "openai".to_string(),
         base_url: "https://example.openai.azure.com/openai".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
-        cost: pi_core::ai::types::ModelCost::default(),
+        input: vec![holt_core::ai::types::ModelInput::Text],
+        cost: holt_core::ai::types::ModelCost::default(),
         context_window: 128_000,
         max_tokens: 4_096,
         ..Default::default()
@@ -61,7 +61,7 @@ fn context() -> Context {
     Context {
         messages: vec![Message::User(UserMessage {
             role: RoleUser,
-            content: pi_core::ai::types::UserContent::Text("hello".to_string()),
+            content: holt_core::ai::types::UserContent::Text("hello".to_string()),
             timestamp: 0,
         })],
         ..Default::default()
@@ -71,8 +71,8 @@ fn context() -> Context {
 fn provider_request_options(
     fetch: Arc<RecordingFetch>,
     headers: ProviderHeaders,
-) -> pi_core::ai::types::ProviderRequestOptions {
-    pi_core::ai::types::ProviderRequestOptions {
+) -> holt_core::ai::types::ProviderRequestOptions {
+    holt_core::ai::types::ProviderRequestOptions {
         api_key: Some("test".to_string()),
         fetch: Some(fetch),
         headers: Some(headers),
@@ -99,7 +99,7 @@ async fn completions_sdk_auth_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = OpenAICompletionsOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(Arc::clone(&fetch), Default::default()),
             ..Default::default()
         },
@@ -118,7 +118,7 @@ async fn completions_sdk_auth_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = OpenAICompletionsOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(
                 Arc::clone(&fetch),
                 [("authorization".to_string(), None)].into_iter().collect(),
@@ -140,7 +140,7 @@ async fn completions_sdk_auth_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = OpenAICompletionsOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(
                 Arc::clone(&fetch),
                 [(
@@ -169,7 +169,7 @@ async fn responses_sdk_auth_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = OpenAIResponsesOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(Arc::clone(&fetch), Default::default()),
             ..Default::default()
         },
@@ -187,7 +187,7 @@ async fn responses_sdk_auth_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = OpenAIResponsesOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(
                 Arc::clone(&fetch),
                 [("authorization".to_string(), None)].into_iter().collect(),
@@ -211,7 +211,7 @@ async fn azure_sdk_api_key_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = AzureOpenAIResponsesOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(Arc::clone(&fetch), Default::default()),
             ..Default::default()
         },
@@ -230,7 +230,7 @@ async fn azure_sdk_api_key_merge_semantics() {
         requests: Mutex::new(Vec::new()),
     });
     let options = AzureOpenAIResponsesOptions {
-        base: pi_core::ai::types::StreamOptions {
+        base: holt_core::ai::types::StreamOptions {
             base: provider_request_options(
                 Arc::clone(&fetch),
                 [("api-key".to_string(), None)].into_iter().collect(),

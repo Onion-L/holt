@@ -16,9 +16,9 @@ use common::live::{
     LiveOptions, get_builtin_models, get_model_or_panic, live_api_key, live_complete, live_env,
     now_millis, payload_capture, resolve_api_key, skip,
 };
-use pi_core::ai::compat::{complete_simple, stream_simple};
-use pi_core::ai::providers::builtin::builtin_providers;
-use pi_core::ai::types::{
+use holt_core::ai::compat::{complete_simple, stream_simple};
+use holt_core::ai::providers::builtin::builtin_providers;
+use holt_core::ai::types::{
     AssistantContent, BlockContent, CacheRetention, Context, Message, Model, ModelCompat,
     ProviderRequestOptions, RoleToolResult, RoleUser, SimpleStreamOptions, StopReason,
     StreamOptions, TextContent, ThinkingLevel, Tool, ToolResultMessage, UserContent, UserMessage,
@@ -339,9 +339,9 @@ async fn anthropic_opus_4_8_reasoning_smoke() {
     while let Some(event) = stream.next().await {
         saw_thinking |= matches!(
             event,
-            pi_core::ai::types::AssistantMessageEvent::ThinkingStart { .. }
-                | pi_core::ai::types::AssistantMessageEvent::ThinkingDelta { .. }
-                | pi_core::ai::types::AssistantMessageEvent::ThinkingEnd { .. }
+            holt_core::ai::types::AssistantMessageEvent::ThinkingStart { .. }
+                | holt_core::ai::types::AssistantMessageEvent::ThinkingDelta { .. }
+                | holt_core::ai::types::AssistantMessageEvent::ThinkingEnd { .. }
         );
     }
     let response = stream.result().await;

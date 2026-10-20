@@ -8,7 +8,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use futures::future::BoxFuture;
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };

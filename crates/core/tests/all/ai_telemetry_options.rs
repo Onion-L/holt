@@ -16,29 +16,29 @@
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
-use pi_core::ai::api::simple_options::build_base_options;
-use pi_core::ai::auth::resolve::ModelsError;
-use pi_core::ai::auth::types::{
+use holt_core::ai::api::simple_options::build_base_options;
+use holt_core::ai::auth::resolve::ModelsError;
+use holt_core::ai::auth::types::{
     ApiKeyAuth, ApiKeyAuthInput, AuthFuture, AuthResult, AuthStorageError, ModelAuth, ProviderAuth,
 };
-use pi_core::ai::images_models::{
+use holt_core::ai::images_models::{
     CreateImagesProviderOptions, ProviderImages, create_images_models, create_images_provider,
 };
-use pi_core::ai::models::{
+use holt_core::ai::models::{
     CreateProviderOptions, Models, ModelsDeferredCancelOptions, ModelsDeferredFetchOptions,
     ProviderApi, ProviderStreams, create_provider,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantImages, AssistantMessage, AssistantMessageEvent, BlockContent, Context,
     DeferredFetchOptions, DeferredHandle, DoneReason, ImagesContext, ImagesModel, ImagesOptions,
     ImagesStopReason, JsF64, Model, ModelCost, ModelCostRates, ModelInput, ProviderRequestOptions,
     SimpleStreamOptions, StopReason, StreamOptions, TextContent, Usage,
 };
-use pi_core::ai::utils::event_stream::{
+use holt_core::ai::utils::event_stream::{
     AssistantMessageEventStream, create_assistant_message_event_stream,
 };
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
-use pi_core::telemetry::{NoopTelemetryContext, TelemetryContext};
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::telemetry::{NoopTelemetryContext, TelemetryContext};
 
 type Observed = Arc<Mutex<Vec<Option<Arc<dyn TelemetryContext>>>>>;
 
@@ -130,7 +130,7 @@ fn completed_stream(request_model: &Model) -> AssistantMessageEventStream {
     let stream = create_assistant_message_event_stream();
     let producer = stream.clone();
     let message = AssistantMessage {
-        role: pi_core::ai::types::RoleAssistant,
+        role: holt_core::ai::types::RoleAssistant,
         content: Vec::new(),
         api: request_model.api.clone(),
         provider: request_model.provider.clone(),
@@ -456,7 +456,7 @@ async fn telemetry_context_survives_direct_and_images_models_image_dispatch() {
         telemetry_context: Some(Arc::clone(&telemetry)),
         ..Default::default()
     };
-    let output = pi_core::ai::images::generate_images(
+    let output = holt_core::ai::images::generate_images(
         &openrouter_model,
         &images_context(),
         Some(&direct_options),

@@ -7,7 +7,7 @@ use common::live::{
     LiveEffort, LiveOptions, LiveThinking, as_openai_completions, get_model_or_panic, live_env,
     live_stream, now_millis, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessageEvent, Context, Message, Model, RoleUser, StopReason,
     UserContent, UserMessage,
 };
@@ -204,7 +204,7 @@ fn math_context() -> Context {
     context("What is 37 + 68? Think step by step.")
 }
 
-async fn drain_xhigh(model: &Model) -> (bool, pi_core::ai::types::AssistantMessage) {
+async fn drain_xhigh(model: &Model) -> (bool, holt_core::ai::types::AssistantMessage) {
     let stream = live_stream(
         model,
         &math_context(),

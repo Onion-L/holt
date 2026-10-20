@@ -1,18 +1,14 @@
 [package]
-name = "pi-core-rs"
+name = "holt-core"
 version = "0.84.4"
 edition.workspace = true
 rust-version = "1.88"
 # MIT (ported from the MIT-licensed pi packages); do not inherit the
 # workspace license (GPL-3.0).
 license = "MIT"
-description = "Rust port of @earendil-works/pi-agent-core, pi-ai, and pi-telemetry v0.84.4"
+description = "Holt agent core, ported from @earendil-works/pi-agent-core, pi-ai, and pi-telemetry v0.84.4"
 repository = "https://github.com/Onion-L/holt"
 publish.workspace = true
-
-[lib]
-name = "pi_core"
-path = "src/lib.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -1,8 +1,8 @@
 //! Port of `pi-core/ai/test/overflow.test.ts`: context overflow and
 //! recoverable-length detection over assistant messages.
 
-use pi_core::ai::types::{AssistantMessage, RoleAssistant, StopReason, Usage, UsageCost};
-use pi_core::ai::utils::overflow::{is_context_overflow, is_recoverable_length};
+use holt_core::ai::types::{AssistantMessage, RoleAssistant, StopReason, Usage, UsageCost};
+use holt_core::ai::utils::overflow::{is_context_overflow, is_recoverable_length};
 
 /// Port of `createErrorMessage`.
 fn create_error_message(error_message: &str) -> AssistantMessage {

@@ -11,12 +11,12 @@
 //! (ADR-permission-modes-gate-mutations-no-os-sandbox).
 
 use futures::future::BoxFuture;
-use holt_doc::MessagePart;
-use holt_doc::parts::{TodoCardItem, TodoItemStatus};
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };
+use holt_doc::MessagePart;
+use holt_doc::parts::{TodoCardItem, TodoItemStatus};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;

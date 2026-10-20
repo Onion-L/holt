@@ -6,15 +6,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pi_core::ai::auth::oauth::github_copilot::{
+use holt_core::ai::auth::oauth::github_copilot::{
     GitHubCopilotOAuth, available_model_ids, github_copilot_oauth,
 };
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, AuthStorageError, CredentialStore,
     OAuthAuth, OAuthCredential,
 };
-use pi_core::ai::types::FetchFunction;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::FetchFunction;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 const TEST_COPILOT_ACCESS_TOKEN: &str =
@@ -99,7 +99,7 @@ impl AuthInteraction for LoginInteraction {
     fn prompt(
         &self,
         prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         assert!(matches!(prompt.kind, AuthPromptKind::Text { .. }));
         Box::pin(std::future::ready(Ok(String::new())))
     }
@@ -235,7 +235,7 @@ fn refresh_models_routes(
 /// come from the generated github-copilot catalog so upstream catalog
 /// refreshes do not break these tests.
 fn provider_model_id(index: usize) -> String {
-    pi_core::ai::models_generated::models_for_provider("github-copilot")[index]
+    holt_core::ai::models_generated::models_for_provider("github-copilot")[index]
         .id
         .clone()
 }
@@ -705,20 +705,20 @@ async fn to_auth_derives_the_proxy_endpoint_base_url() {
 
 async fn copilot_models_with_credential(
     credential: OAuthCredential,
-) -> Arc<pi_core::ai::models::Models> {
-    let store = pi_core::ai::auth::credential_store::InMemoryCredentialStore::new();
+) -> Arc<holt_core::ai::models::Models> {
+    let store = holt_core::ai::auth::credential_store::InMemoryCredentialStore::new();
     let for_store = credential;
     store
         .modify(
             "github-copilot",
             Box::new(move |_| {
                 Box::pin(std::future::ready(Ok(Some(
-                    pi_core::ai::auth::types::Credential::OAuth(for_store),
+                    holt_core::ai::auth::types::Credential::OAuth(for_store),
                 ))))
-                    as pi_core::ai::auth::types::AuthFuture<
+                    as holt_core::ai::auth::types::AuthFuture<
                         Result<
-                            Option<pi_core::ai::auth::types::Credential>,
-                            pi_core::ai::auth::types::BoxedAuthError,
+                            Option<holt_core::ai::auth::types::Credential>,
+                            holt_core::ai::auth::types::BoxedAuthError,
                         >,
                     >
             }),
@@ -726,13 +726,13 @@ async fn copilot_models_with_credential(
         )
         .await
         .unwrap();
-    let models = Arc::new(pi_core::ai::models::Models::new(
-        pi_core::ai::models::CreateModelsOptions {
+    let models = Arc::new(holt_core::ai::models::Models::new(
+        holt_core::ai::models::CreateModelsOptions {
             credentials: Some(Arc::new(store)),
             ..Default::default()
         },
     ));
-    models.set_provider(pi_core::ai::providers::builtin::github_copilot_provider());
+    models.set_provider(holt_core::ai::providers::builtin::github_copilot_provider());
     models
 }
 
@@ -824,30 +824,30 @@ async fn stops_policy_updates_and_persists_authentication_when_the_retry_delay_e
     // The provider is github-copilot's definition with the scripted flow;
     // the TS case achieves the same by stubbing the global fetch.
     let provider =
-        pi_core::ai::models::create_provider(pi_core::ai::models::CreateProviderOptions {
+        holt_core::ai::models::create_provider(holt_core::ai::models::CreateProviderOptions {
             id: "github-copilot".to_string(),
             organization_id: None,
             name: Some("GitHub Copilot".to_string()),
             base_url: Some("https://api.individual.githubcopilot.com".to_string()),
             headers: None,
-            auth: pi_core::ai::auth::types::ProviderAuth {
-                api_key: Some(pi_core::ai::auth::helpers::env_api_key_auth(
+            auth: holt_core::ai::auth::types::ProviderAuth {
+                api_key: Some(holt_core::ai::auth::helpers::env_api_key_auth(
                     "GitHub Copilot token",
                     &["COPILOT_GITHUB_TOKEN"],
                 )),
                 oauth: Some(Arc::new(injected_flow)),
             },
-            models: pi_core::ai::models_generated::models_for_provider("github-copilot"),
+            models: holt_core::ai::models_generated::models_for_provider("github-copilot"),
             fetch_models: None,
             filter_models: None,
-            api: pi_core::ai::models::ProviderApi::Single(
-                pi_core::ai::providers::apis::anthropic_messages_api(),
+            api: holt_core::ai::models::ProviderApi::Single(
+                holt_core::ai::providers::apis::anthropic_messages_api(),
             ),
         });
 
-    let store = Arc::new(pi_core::ai::auth::credential_store::InMemoryCredentialStore::new());
-    let models = Arc::new(pi_core::ai::models::Models::new(
-        pi_core::ai::models::CreateModelsOptions {
+    let store = Arc::new(holt_core::ai::auth::credential_store::InMemoryCredentialStore::new());
+    let models = Arc::new(holt_core::ai::models::Models::new(
+        holt_core::ai::models::CreateModelsOptions {
             credentials: Some(Arc::clone(&store) as Arc<dyn CredentialStore>),
             ..Default::default()
         },
@@ -857,7 +857,7 @@ async fn stops_policy_updates_and_persists_authentication_when_the_retry_delay_e
     let credential = models
         .login(
             "github-copilot",
-            pi_core::ai::auth::types::AuthType::OAuth,
+            holt_core::ai::auth::types::AuthType::OAuth,
             Arc::new(LoginInteraction {
                 events: Arc::new(Mutex::new(Vec::new())),
             }),
@@ -866,7 +866,7 @@ async fn stops_policy_updates_and_persists_authentication_when_the_retry_delay_e
         .unwrap();
 
     // TS asserts with toMatchObject: the OAuth type and access token.
-    let pi_core::ai::auth::types::Credential::OAuth(oauth) = &credential else {
+    let holt_core::ai::auth::types::Credential::OAuth(oauth) = &credential else {
         panic!("expected an OAuth credential, got {credential:?}");
     };
     assert_eq!(oauth.access, TEST_COPILOT_ACCESS_TOKEN);

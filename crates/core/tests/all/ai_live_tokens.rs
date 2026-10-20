@@ -22,7 +22,9 @@ use common::live::{
     self, LiveEffort, LiveOptions, LiveThinking, as_openai_completions, get_builtin_models,
     get_model_or_panic, js_length, live_complete, live_env, live_stream, now_millis, skip,
 };
-use pi_core::ai::types::{Context, Message, RoleUser, StopReason, Usage, UserContent, UserMessage};
+use holt_core::ai::types::{
+    Context, Message, RoleUser, StopReason, Usage, UserContent, UserMessage,
+};
 use tokio_util::sync::CancellationToken;
 
 fn user_message(content: &str) -> Message {
@@ -35,7 +37,7 @@ fn user_message(content: &str) -> Message {
 
 /// testTokensOnAbort from tokens.test.ts.
 async fn test_tokens_on_abort(
-    model: &pi_core::ai::types::Model,
+    model: &holt_core::ai::types::Model,
     case: &str,
     options: &LiveOptions,
 ) {
@@ -57,10 +59,10 @@ async fn test_tokens_on_abort(
     while let Some(event) = response.next().await {
         if !abort_fired {
             match &event {
-                pi_core::ai::types::AssistantMessageEvent::TextDelta { delta, .. } => {
+                holt_core::ai::types::AssistantMessageEvent::TextDelta { delta, .. } => {
                     text.push_str(delta)
                 }
-                pi_core::ai::types::AssistantMessageEvent::ThinkingDelta { delta, .. } => {
+                holt_core::ai::types::AssistantMessageEvent::ThinkingDelta { delta, .. } => {
                     text.push_str(delta)
                 }
                 _ => {}
@@ -367,7 +369,7 @@ async fn tokens_on_abort_oauth_providers() {
     if anthropic_token.is_none() {
         skip(
             "Anthropic OAuth Provider: should include token stats when aborted mid-stream",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
     } else {
         let llm = get_model_or_panic("anthropic", "claude-sonnet-4-6");
@@ -384,7 +386,7 @@ async fn tokens_on_abort_oauth_providers() {
     if copilot_token.is_none() {
         skip(
             "GitHub Copilot Provider: should include token stats when aborted mid-stream",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
     } else {
         for model_id in ["claude-haiku-4.5", "claude-sonnet-4.6"] {
@@ -405,7 +407,7 @@ async fn tokens_on_abort_oauth_providers() {
     if codex_token.is_none() {
         skip(
             "OpenAI Codex Provider: should include token stats when aborted mid-stream",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
     } else {
         let llm = get_model_or_panic("openai-codex", "gpt-5.5");
@@ -434,7 +436,7 @@ fn long_system_prompt() -> String {
 
 /// testTotalTokensWithCache from total-tokens.test.ts.
 async fn test_total_tokens_with_cache(
-    model: &pi_core::ai::types::Model,
+    model: &holt_core::ai::types::Model,
     case: &str,
     options: &LiveOptions,
 ) -> (Usage, Usage) {
@@ -832,7 +834,7 @@ async fn total_tokens_oauth_providers() {
     if anthropic_token.is_none() {
         skip(
             "Anthropic (OAuth): claude-sonnet-4 - should return totalTokens equal to sum of components",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
     } else {
         let llm = get_model_or_panic("anthropic", "claude-sonnet-4-6");
@@ -853,7 +855,7 @@ async fn total_tokens_oauth_providers() {
     if copilot_token.is_none() {
         skip(
             "GitHub Copilot (OAuth): totalTokens equal to sum of components",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
     } else {
         for model_id in ["claude-haiku-4.5", "claude-sonnet-4.6"] {
@@ -876,7 +878,7 @@ async fn total_tokens_oauth_providers() {
     if codex_token.is_none() {
         skip(
             "OpenAI Codex (OAuth): gpt-5.5 - should return totalTokens equal to sum of components",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
     } else {
         let llm = get_model_or_panic("openai-codex", "gpt-5.5");

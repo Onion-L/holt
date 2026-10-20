@@ -4,20 +4,20 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::providers::faux::{FauxContent, FauxMessageOptions, faux_assistant_message};
-use pi_core::ai::types::{AssistantContent, StopReason, TextContent, Usage};
-use pi_core::ai::utils::http::{
+use holt_core::ai::providers::faux::{FauxContent, FauxMessageOptions, faux_assistant_message};
+use holt_core::ai::types::{AssistantContent, StopReason, TextContent, Usage};
+use holt_core::ai::utils::http::{
     HttpBody, HttpFetch, HttpFetchError, HttpMethod, HttpRequest, HttpResponse,
 };
-use pi_core::ai::utils::provider_retry::{
+use holt_core::ai::utils::provider_retry::{
     ProviderHttpError, ProviderRetryOptions, retry_http_request, retry_provider_request,
 };
-use pi_core::ai::utils::retry::{
+use holt_core::ai::utils::retry::{
     RetryCallbacks, RetryPolicy, is_retryable_assistant_error, retry_assistant_call,
 };
 use tokio_util::sync::CancellationToken;
 
-fn error_message(message: &str) -> pi_core::ai::types::AssistantMessage {
+fn error_message(message: &str) -> holt_core::ai::types::AssistantMessage {
     faux_assistant_message(
         "",
         FauxMessageOptions {
@@ -99,7 +99,7 @@ fn provider_retry_classification() {
     )));
 }
 
-fn faux_text_message(text: &str) -> pi_core::ai::types::AssistantMessage {
+fn faux_text_message(text: &str) -> holt_core::ai::types::AssistantMessage {
     faux_assistant_message(
         FauxContent::Blocks(vec![AssistantContent::Text(TextContent {
             text: text.to_string(),
@@ -816,7 +816,7 @@ async fn http_retry(
             on_retry: notices.map(|sink| {
                 Arc::new(move |_: u32, _: u32, _: u64, error: &str| {
                     sink.lock().unwrap().push(error.to_string());
-                }) as pi_core::ai::types::OnRetryCallback
+                }) as holt_core::ai::types::OnRetryCallback
             }),
             ..Default::default()
         },

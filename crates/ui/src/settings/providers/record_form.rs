@@ -904,7 +904,7 @@ impl ProvidersPage {
     }
 
     /// The dialect dropdown's options: the engine's registered api
-    /// dialects (pi-core's registry), loaded once per page. Detached — a
+    /// dialects (holt-core's registry), loaded once per page. Detached — a
     /// cancelled load would wedge the list in Loading forever.
     pub(super) fn load_api_dialects(&mut self, cx: &mut Context<Self>) {
         if matches!(self.api_dialects, Loadable::Ready(_) | Loadable::Loading) {

@@ -1,13 +1,13 @@
 //! Tests for the auth port: credential store semantics, env-key auth
 //! resolution, and provider auth resolution precedence.
 
-use pi_core::ai::auth::context::default_provider_auth_context;
-use pi_core::ai::auth::credential_store::InMemoryCredentialStore;
-use pi_core::ai::auth::helpers::env_api_key_auth;
-use pi_core::ai::auth::resolve::{
+use holt_core::ai::auth::context::default_provider_auth_context;
+use holt_core::ai::auth::credential_store::InMemoryCredentialStore;
+use holt_core::ai::auth::helpers::env_api_key_auth;
+use holt_core::ai::auth::resolve::{
     AuthResolutionOverrides, ModelsError, ModelsErrorCode, resolve_provider_auth,
 };
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::types::{
     ApiKeyCredential, AuthResult, Credential, CredentialStore, OAuthCredential, ProviderAuth,
 };
 
@@ -27,8 +27,8 @@ async fn in_memory_credential_store_reads_writes_and_deletes() {
             "anthropic",
             Box::new(move |_| {
                 Box::pin(async move { Ok(Some(credential_for_store)) })
-                    as pi_core::ai::auth::types::AuthFuture<
-                        Result<Option<Credential>, pi_core::ai::auth::types::BoxedAuthError>,
+                    as holt_core::ai::auth::types::AuthFuture<
+                        Result<Option<Credential>, holt_core::ai::auth::types::BoxedAuthError>,
                     >
             }),
             None,
@@ -62,8 +62,8 @@ async fn credential_store_modify_propagates_caller_errors() {
                         ModelsError::new(ModelsErrorCode::OAuth, "refresh exploded").into_boxed(),
                     )
                 })
-                    as pi_core::ai::auth::types::AuthFuture<
-                        Result<Option<Credential>, pi_core::ai::auth::types::BoxedAuthError>,
+                    as holt_core::ai::auth::types::AuthFuture<
+                        Result<Option<Credential>, holt_core::ai::auth::types::BoxedAuthError>,
                     >
             }),
             None,
@@ -81,7 +81,7 @@ fn oauth_credential(expires_in_ms: i64) -> Credential {
     Credential::OAuth(OAuthCredential {
         refresh: "refresh-token".to_string(),
         access: "access-token".to_string(),
-        expires: pi_core::ai::auth::resolve::now_millis() + expires_in_ms,
+        expires: holt_core::ai::auth::resolve::now_millis() + expires_in_ms,
         extra: Default::default(),
     })
 }
@@ -132,8 +132,8 @@ async fn resolve_provider_auth_uses_stored_credential_before_env() {
                         env: None,
                     })))
                 })
-                    as pi_core::ai::auth::types::AuthFuture<
-                        Result<Option<Credential>, pi_core::ai::auth::types::BoxedAuthError>,
+                    as holt_core::ai::auth::types::AuthFuture<
+                        Result<Option<Credential>, holt_core::ai::auth::types::BoxedAuthError>,
                     >
             }),
             None,
@@ -191,8 +191,8 @@ async fn resolve_provider_auth_fails_for_oauth_without_handler() {
             "anthropic",
             Box::new(|_| {
                 Box::pin(async move { Ok(Some(oauth_credential(60 * 60 * 1000))) })
-                    as pi_core::ai::auth::types::AuthFuture<
-                        Result<Option<Credential>, pi_core::ai::auth::types::BoxedAuthError>,
+                    as holt_core::ai::auth::types::AuthFuture<
+                        Result<Option<Credential>, holt_core::ai::auth::types::BoxedAuthError>,
                     >
             }),
             None,

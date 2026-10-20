@@ -1,4 +1,4 @@
-//! `pi-ai` binary — thin wrapper around `pi_core::ai::cli` (the port of
+//! `holt-ai` binary — thin wrapper around `holt_core::ai::cli` (the port of
 //! `pi-core/ai/src/cli.ts`, the package's `bin` entry). Wires real stdio,
 //! the real builtin OAuth flows, and the cwd-relative `auth.json`, then
 //! maps the result onto the observable process behavior: errors print
@@ -8,7 +8,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pi_core::ai::cli::{self, CliIo};
+use holt_core::ai::cli::{self, CliIo};
 
 /// Real-console [`CliIo`]: stdin lines, flushed stdout/stderr writes, and
 /// `auth.json` in the current working directory.

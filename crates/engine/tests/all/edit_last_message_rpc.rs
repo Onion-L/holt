@@ -86,7 +86,9 @@ async fn editing_the_latest_message_cancels_its_turn_and_reruns_on_the_repaired_
         .messages
         .iter()
         .filter_map(|message| match message {
-            pi_core::ai::types::Message::User(message) => Some(message.content.text().to_string()),
+            holt_core::ai::types::Message::User(message) => {
+                Some(message.content.text().to_string())
+            }
             _ => None,
         });
     assert_eq!(user_texts.next_back().as_deref(), Some("edited prompt"));

@@ -607,7 +607,7 @@ fn build_mistral_headers(
     let mut headers: Vec<(String, String)> = vec![
         (
             "User-Agent".to_string(),
-            crate::ai::session_resources::get_pi_user_agent(),
+            crate::ai::session_resources::get_user_agent(),
         ),
         ("accept".to_string(), "text/event-stream".to_string()),
         ("authorization".to_string(), format!("Bearer {api_key}")),

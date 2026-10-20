@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use pi_core::telemetry::testing::{
+use holt_core::telemetry::testing::{
     TelemetryAdapterFixture, TelemetryAdapterFixtureFactory, create_telemetry_adapter_conformance,
 };
-use pi_core::telemetry::{
+use holt_core::telemetry::{
     BoxSpanFuture, InMemoryTelemetryContext, RecordedTelemetrySpan, SpanAttributes, SpanOptions,
     TelemetryContext, TelemetryContextExt,
 };
@@ -74,7 +74,7 @@ fn returns_detached_snapshots_without_exposing_mutable_recording_state() {
     );
     assert_eq!(
         second.events,
-        vec![pi_core::telemetry::RecordedTelemetryEvent {
+        vec![holt_core::telemetry::RecordedTelemetryEvent {
             name: "event".to_string(),
             attributes: SpanAttributes::new().with("value", 1.0),
         }]

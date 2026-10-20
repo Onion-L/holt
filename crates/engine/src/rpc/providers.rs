@@ -1,10 +1,10 @@
 //! The provider/model catalog surface (ADR-three-layer-provider-catalog/0031/0037): keys, probes,
 //! records, logos, proposals, and the settle cards.
 
+use holt_core::ai::auth::types::CredentialStore;
+use holt_core::ai::types::Model as CoreModel;
 use holt_proto::RunOutcome;
 use holt_rpc::{RpcError, RpcReply};
-use pi_core::ai::auth::types::CredentialStore;
-use pi_core::ai::types::Model as CoreModel;
 
 use super::{optional_string, required_string, required_string_list};
 use crate::EngineService;
@@ -448,7 +448,7 @@ impl EngineService {
     }
 
     pub(super) fn list_api_dialects(&self) -> Result<RpcReply, RpcError> {
-        let ids: Vec<String> = pi_core::ai::compat::get_api_providers()
+        let ids: Vec<String> = holt_core::ai::compat::get_api_providers()
             .iter()
             .map(|provider| provider.api.clone())
             .collect();

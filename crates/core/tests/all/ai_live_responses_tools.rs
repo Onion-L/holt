@@ -7,7 +7,7 @@ use common::live::{
     LiveEffort, LiveOptions, get_model_or_panic, live_complete, live_env, now_millis,
     payload_capture, red_circle_base64, resolve_api_key, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, BlockContent, Context, ImageContent, Message, Model, ModelInput,
     RoleToolResult, RoleUser, StopReason, TextContent, Tool, ToolResultMessage, UserContent,
     UserMessage,

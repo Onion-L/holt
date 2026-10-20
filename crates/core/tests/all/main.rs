@@ -1,4 +1,4 @@
-//! Single integration test target for pi-core: every former `tests/*.rs`
+//! Single integration test target for holt-core: every former `tests/*.rs`
 //! file is a module here, so the crate links one test binary instead of 90.
 //! Module names and file names match the original targets one to one.
 

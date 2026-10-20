@@ -14,8 +14,8 @@ use crate::common;
 use std::time::Duration;
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
+use holt_core::ai::types::{Usage, UsageCost};
 use holt_rpc::{RpcService as _, methods};
-use pi_core::ai::types::{Usage, UsageCost};
 use serde_json::{Value, json};
 
 /// Distinctive usage so a record's origin is unambiguous — every scripted
@@ -28,7 +28,7 @@ fn pinned_usage() -> Usage {
         cache_write: 3,
         total_tokens: 780,
         cost: UsageCost {
-            input: pi_core::ai::types::JsF64(0.01),
+            input: holt_core::ai::types::JsF64(0.01),
             ..Default::default()
         },
         ..Default::default()

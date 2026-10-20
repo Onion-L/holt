@@ -1,6 +1,6 @@
 <div align="center">
 
-# pi-core-rs
+# holt-core
 
 **Holt's Rust runtime for the agent, AI, and telemetry core**
 
@@ -12,7 +12,7 @@
 
 </div>
 
-`pi-core-rs` is a Rust port of `@earendil-works/pi-agent-core`, `pi-ai`, and
+`holt-core` is a Rust port of `@earendil-works/pi-agent-core`, `pi-ai`, and
 `pi-telemetry` v0.84.4. It provides the same core building blocks as a native
 Rust library, plus a small `pi-ai` command-line binary for OAuth credentials.
 
@@ -27,11 +27,11 @@ Rust library, plus a small `pi-ai` command-line binary for OAuth credentials.
 
 | Layer | Capabilities | Rust entry point |
 | --- | --- | --- |
-| **Telemetry** | Nested spans, attributes, events, status, typed schemas, in-memory and no-op backends | `pi_core::telemetry` |
-| **AI** | Provider-neutral streaming, normalized events, tool calls, images, reasoning, usage and cost accounting | `pi_core::ai` |
-| **Authentication** | Environment-based API keys, credential stores, OAuth flows, provider-specific auth resolution | `pi_core::ai::auth` |
-| **Agent** | Async prompt loop, mutable state, lifecycle events, tool execution, steering, follow-ups, cancellation, and continuation | `pi_core::agent::agent::Agent` |
-| **Harness** | Memory and JSONL sessions, branches and lanes, reduction, compaction, summaries, skills, templates, search, and filesystem tools | `pi_core::agent::harness` |
+| **Telemetry** | Nested spans, attributes, events, status, typed schemas, in-memory and no-op backends | `holt_core::telemetry` |
+| **AI** | Provider-neutral streaming, normalized events, tool calls, images, reasoning, usage and cost accounting | `holt_core::ai` |
+| **Authentication** | Environment-based API keys, credential stores, OAuth flows, provider-specific auth resolution | `holt_core::ai::auth` |
+| **Agent** | Async prompt loop, mutable state, lifecycle events, tool execution, steering, follow-ups, cancellation, and continuation | `holt_core::agent::agent::Agent` |
+| **Harness** | Memory and JSONL sessions, branches and lanes, reduction, compaction, summaries, skills, templates, search, and filesystem tools | `holt_core::agent::harness` |
 | **CLI** | List OAuth providers and save OAuth credentials to `auth.json` | `pi-ai` |
 
 The crate is designed to run without Node.js at build time or runtime.
@@ -75,11 +75,11 @@ cargo build
 ## Use it as a library
 
 For a Holt workspace consumer, add the crate as a path dependency. The package
-is named `pi-core-rs`, while the Rust crate is imported as `pi_core`.
+is named `holt-core`, while the Rust crate is imported as `holt_core`.
 
 ```toml
 [dependencies]
-pi-core-rs = { path = "crates/core" }
+holt-core = { path = "crates/core" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -89,9 +89,9 @@ no credentials or network access:
 ```rust
 use std::sync::Arc;
 
-use pi_core::agent::agent::{Agent, AgentOptions};
-use pi_core::ai::compat::{register_faux_provider, stream_simple};
-use pi_core::ai::providers::faux::{
+use holt_core::agent::agent::{Agent, AgentOptions};
+use holt_core::ai::compat::{register_faux_provider, stream_simple};
+use holt_core::ai::providers::faux::{
     faux_assistant_message, FauxMessageOptions, FauxResponseStep,
     RegisterFauxProviderOptions,
 };
@@ -100,7 +100,7 @@ use pi_core::ai::providers::faux::{
 async fn main() -> Result<(), String> {
     let faux = register_faux_provider(RegisterFauxProviderOptions::default());
     faux.set_responses(vec![FauxResponseStep::Message(Box::new(
-        faux_assistant_message("Hello from pi-core-rs", FauxMessageOptions::default()),
+        faux_assistant_message("Hello from holt-core", FauxMessageOptions::default()),
     ))]);
 
     let agent = Agent::new(AgentOptions {
@@ -121,7 +121,7 @@ For a real provider, replace the faux stream with a `Models` or compatibility
 stream and select a model from the generated catalog:
 
 ```rust
-use pi_core::ai::providers::builtin::get_builtin_models;
+use holt_core::ai::providers::builtin::get_builtin_models;
 
 let model = get_builtin_models("anthropic")
     .into_iter()
@@ -199,14 +199,14 @@ Run the focused test suites while developing, then the full checks from the
 workspace root:
 
 ```bash
-cargo test -p pi-core-rs
+cargo test -p holt-core
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The default run is deterministic: live API calls, OAuth credential reads or
 refreshes, and local model servers are skipped and stay visible as skipped
-cases. Use `PI_TEST_LIVE=1 cargo test -p pi-core-rs` to exercise them with
+cases. Use `HOLT_TEST_LIVE=1 cargo test -p holt-core` to exercise them with
 configured credentials.
 
 ## License

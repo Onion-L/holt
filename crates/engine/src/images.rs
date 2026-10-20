@@ -377,11 +377,11 @@ fn write_durably(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()>
     result
 }
 
-/// Magic-byte sniffing over pi-core's detector (the same judgment the read
+/// Magic-byte sniffing over holt-core's detector (the same judgment the read
 /// tool applies), narrowed to the formats this feature supports — BMP is
 /// detected upstream but carries no preview/read promise here.
 pub(crate) fn sniff_mime_type(bytes: &[u8]) -> Option<&'static str> {
-    let mime = pi_core::agent::harness::tools::image::detect_supported_image_mime_type(bytes)?;
+    let mime = holt_core::agent::harness::tools::image::detect_supported_image_mime_type(bytes)?;
     SUPPORTED_MIME_TYPES
         .into_iter()
         .find(|supported| *supported == mime)

@@ -6,15 +6,15 @@
 
 use std::sync::Arc;
 
-use pi_core::ai::api::anthropic_messages::{AnthropicOptions, stream as stream_anthropic};
-use pi_core::ai::auth::types::{ApiKeyAuthInput, AuthContext, AuthFuture, AuthResult};
-use pi_core::ai::models::{CreateModelsOptions, Models};
-use pi_core::ai::providers::anthropic::anthropic_provider;
-use pi_core::ai::types::{
+use holt_core::ai::api::anthropic_messages::{AnthropicOptions, stream as stream_anthropic};
+use holt_core::ai::auth::types::{ApiKeyAuthInput, AuthContext, AuthFuture, AuthResult};
+use holt_core::ai::models::{CreateModelsOptions, Models};
+use holt_core::ai::providers::anthropic::anthropic_provider;
+use holt_core::ai::types::{
     Context, Model, ModelInput, ProviderEnv, ProviderHeaders, SimpleStreamOptions, StreamOptions,
     UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpRequest, HttpResponse};
 
 fn test_model() -> Model {
     Model {
@@ -34,8 +34,8 @@ fn test_model() -> Model {
 fn context() -> Context {
     Context {
         system_prompt: Some("System prompt.".to_string()),
-        messages: vec![pi_core::ai::types::Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+        messages: vec![holt_core::ai::types::Message::User(UserMessage {
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
         })],
@@ -53,7 +53,7 @@ impl HttpFetch for SseMockFetch {
         request: HttpRequest,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<HttpResponse, pi_core::ai::utils::http::HttpFetchError>,
+        Result<HttpResponse, holt_core::ai::utils::http::HttpFetchError>,
     > {
         self.requests.lock().unwrap().push(request);
         let body = [
@@ -130,7 +130,7 @@ fn simple_options(
 ) -> SimpleStreamOptions {
     SimpleStreamOptions {
         base: StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 fetch: Some(fetch),
                 headers,
                 ..Default::default()
@@ -166,7 +166,7 @@ async fn resolves_anthropic_auth_token_as_a_bearer_authorization_header() {
     assert_eq!(
         auth,
         AuthResult {
-            auth: pi_core::ai::auth::types::ModelAuth {
+            auth: holt_core::ai::auth::types::ModelAuth {
                 headers: Some(expected_headers),
                 ..Default::default()
             },
@@ -195,7 +195,7 @@ async fn preserves_anthropic_oauth_token_as_oauth_shaped_api_auth() {
     assert_eq!(
         auth,
         AuthResult {
-            auth: pi_core::ai::auth::types::ModelAuth {
+            auth: holt_core::ai::auth::types::ModelAuth {
                 api_key: Some("oauth-token".to_string()),
                 ..Default::default()
             },
@@ -217,7 +217,7 @@ async fn uses_authorization_headers_without_oauth_mode_request_shaping() {
     );
     let options = AnthropicOptions {
         base: StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 fetch: Some(fetch.clone()),
                 headers: Some(headers),
                 ..Default::default()
@@ -230,7 +230,7 @@ async fn uses_authorization_headers_without_oauth_mode_request_shaping() {
     let result = stream_anthropic(&test_model(), &context(), Some(&options))
         .result()
         .await;
-    assert_eq!(result.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(result.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let requests = fetch.requests.lock().unwrap();
     let request = &requests[0];
@@ -276,7 +276,7 @@ async fn threads_auth_context_anthropic_auth_token_through_request_headers() {
         )
         .result()
         .await;
-    assert_eq!(result.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(result.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let requests = fetch.requests.lock().unwrap();
     let request = &requests[0];
@@ -319,7 +319,7 @@ async fn preserves_oauth_request_shaping_for_anthropic_oauth_token() {
         )
         .result()
         .await;
-    assert_eq!(result.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(result.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let requests = fetch.requests.lock().unwrap();
     let request = &requests[0];
@@ -361,7 +361,7 @@ async fn lets_explicit_request_headers_override_anthropic_auth_token() {
         )
         .result()
         .await;
-    assert_eq!(result.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(result.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let requests = fetch.requests.lock().unwrap();
     assert_eq!(
@@ -371,13 +371,13 @@ async fn lets_explicit_request_headers_override_anthropic_auth_token() {
 }
 
 #[tokio::test]
-async fn uses_pi_user_agent_by_default_for_anthropic_messages_requests() {
+async fn uses_holt_user_agent_by_default_for_anthropic_messages_requests() {
     let fetch = Arc::new(SseMockFetch {
         requests: std::sync::Mutex::new(Vec::new()),
     });
     let options = AnthropicOptions {
         base: StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("anthropic-key".to_string()),
                 fetch: Some(fetch.clone()),
                 ..Default::default()
@@ -390,12 +390,12 @@ async fn uses_pi_user_agent_by_default_for_anthropic_messages_requests() {
     let result = stream_anthropic(&test_model(), &context(), Some(&options))
         .result()
         .await;
-    assert_eq!(result.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(result.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let requests = fetch.requests.lock().unwrap();
     assert_eq!(
         header(&requests[0], "User-Agent"),
-        Some(pi_core::ai::session_resources::get_pi_user_agent().as_str())
+        Some(holt_core::ai::session_resources::get_user_agent().as_str())
     );
 }
 
@@ -413,7 +413,7 @@ async fn lets_explicit_headers_override_the_default_user_agent() {
     headers.insert("User-Agent".to_string(), Some("custom-client".to_string()));
     let options = AnthropicOptions {
         base: StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("kimi-key".to_string()),
                 fetch: Some(fetch.clone()),
                 headers: Some(headers),
@@ -427,7 +427,7 @@ async fn lets_explicit_headers_override_the_default_user_agent() {
     let result = stream_anthropic(&kimi_model, &context(), Some(&options))
         .result()
         .await;
-    assert_eq!(result.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(result.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let requests = fetch.requests.lock().unwrap();
     assert_eq!(header(&requests[0], "User-Agent"), Some("custom-client"));

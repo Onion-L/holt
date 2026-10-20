@@ -29,7 +29,7 @@ holt-rpc = { path = "crates/rpc" }
 holt-ui = { path = "crates/ui" }
 holt-syntax = { path = "crates/syntax" }
 holt-theme = { path = "crates/theme" }
-pi-core-rs = { path = "crates/core" }
+holt-core = { path = "crates/core" }
 
 # CRDT
 loro = "1.13"
@@ -124,8 +124,8 @@ opt-level = 0
 [profile.dev.package."*"]
 opt-level = 2
 
-# pi-core is edited in-tree; full debuginfo on its 63.5k lines inflates
+# holt-core is edited in-tree; full debuginfo on its 63.5k lines inflates
 # incremental artifacts for no debugger gain. Line tables keep backtraces
 # readable.
-[profile.dev.package.pi-core-rs]
+[profile.dev.package.holt-core]
 debug = "line-tables-only"

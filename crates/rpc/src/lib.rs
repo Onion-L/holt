@@ -57,7 +57,7 @@ pub mod methods {
     /// Live catalog writes (ADR-three-layer-provider-catalog's top layer). `SaveCustomProvider`
     /// params are `{id, name, baseUrl, defaultApi, headers?}` (upsert);
     /// `SaveModelRecord` params are `{providerId, record}` with `record` a
-    /// `pi-core-rs` model record that replaces a same-id entry outright;
+    /// `holt-core` model record that replaces a same-id entry outright;
     /// a record without `baseUrl` inherits the provider's default endpoint
     /// (custom definition, else catalog entry, else first model).
     /// `SetHiddenModels` params are `{providerId, modelIds}` and
@@ -109,7 +109,7 @@ pub mod methods {
     /// model reads the unanswered card next Turn. Reply `{dismissed:
     /// true}`.
     pub const DISMISS_QUESTION: &str = "DismissQuestion";
-    /// The registered API dialect ids (pi-core's compat registry) →
+    /// The registered API dialect ids (holt-core's compat registry) →
     /// `[String]`. The record form's dialect dropdown reads it — the set
     /// is the engine's, never the UI's.
     pub const LIST_API_DIALECTS: &str = "ListApiDialects";

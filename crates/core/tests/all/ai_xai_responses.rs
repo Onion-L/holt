@@ -4,20 +4,20 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::openai_completions::{
+use holt_core::ai::api::openai_completions::{
     OpenAICompletionsOptions, stream as stream_completions,
 };
-use pi_core::ai::api::openai_responses::{OpenAIResponsesOptions, stream as stream_responses};
-use pi_core::ai::models::get_supported_thinking_levels;
-use pi_core::ai::models_generated::models_for_provider;
-use pi_core::ai::providers::builtin::xai_provider;
-use pi_core::ai::session_resources::get_pi_user_agent;
-use pi_core::ai::types::{
+use holt_core::ai::api::openai_responses::{OpenAIResponsesOptions, stream as stream_responses};
+use holt_core::ai::models::get_supported_thinking_levels;
+use holt_core::ai::models_generated::models_for_provider;
+use holt_core::ai::providers::builtin::xai_provider;
+use holt_core::ai::session_resources::get_user_agent;
+use holt_core::ai::types::{
     CacheRetention, Context, Message, Model, ModelCost, ModelInput, ModelThinkingLevel,
     ProviderHeaders, ProviderRequestOptions, RoleUser, StopReason, StreamOptions, ThinkingLevel,
     UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 // The TS suite pins `pi (${platform()} ${release()}; ${arch()})` from
@@ -26,24 +26,24 @@ use serde_json::{Value, json};
 // the port reads, and the release segment comes from the OS itself
 // (node reads the kernel release, the Rust port reads the product version),
 // so the helper's exact value is the source of truth for the tail.
-fn pi_user_agent() -> String {
-    get_pi_user_agent()
+fn user_agent() -> String {
+    get_user_agent()
 }
 
-/// Guard mirroring the user agent shape `pi-core-rs (<platform> <release>;
-/// <arch>)` (deliberately prefixed `pi-core-rs` instead of upstream `pi`),
+/// Guard mirroring the user agent shape `holt (<platform> <release>;
+/// <arch>)` (deliberately prefixed `holt` instead of upstream `pi`),
 /// then equality with the helper's value.
-fn assert_is_pi_user_agent(value: Option<&str>) {
+fn assert_is_holt_user_agent(value: Option<&str>) {
     let value = value.expect("user-agent header present");
     assert!(
-        value.starts_with(&format!("pi-core-rs ({} ", std::env::consts::OS)),
+        value.starts_with(&format!("holt ({} ", std::env::consts::OS)),
         "unexpected user-agent shape: {value}"
     );
     assert!(
         value.ends_with(&format!("; {})", std::env::consts::ARCH)),
         "unexpected user-agent shape: {value}"
     );
-    assert_eq!(value, pi_user_agent());
+    assert_eq!(value, user_agent());
 }
 
 /// The generated xAI catalog — the Rust equivalent of `XAI_MODELS`.
@@ -350,10 +350,7 @@ async fn uses_responses_with_bearer_auth_and_xai_compatible_request_fields() {
         captured.header("authorization"),
         Some("Bearer xai-test-token")
     );
-    assert_eq!(
-        captured.header("user-agent"),
-        Some(pi_user_agent().as_str())
-    );
+    assert_eq!(captured.header("user-agent"), Some(user_agent().as_str()));
     assert_eq!(captured.header("session_id"), Some("pi-session-123"));
 
     let body = &captured.body;
@@ -420,7 +417,7 @@ async fn uses_responses_for_grok_4_3() {
 }
 
 #[tokio::test]
-async fn uses_pi_user_agent_by_default_for_responses_requests() {
+async fn uses_holt_user_agent_by_default_for_responses_requests() {
     let mut openai_model = xai_model("grok-4.5");
     openai_model.provider = "openai".to_string();
     openai_model.base_url = "https://api.openai.com/v1".to_string();
@@ -441,7 +438,7 @@ async fn uses_pi_user_agent_by_default_for_responses_requests() {
 
     let requests = fetch.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_is_pi_user_agent(header_value(&requests[0].headers, "user-agent"));
+    assert_is_holt_user_agent(header_value(&requests[0].headers, "user-agent"));
 }
 
 #[tokio::test]
@@ -459,9 +456,9 @@ async fn lets_explicit_headers_override_the_default_responses_user_agent() {
 }
 
 #[tokio::test]
-async fn uses_pi_user_agent_by_default_for_completions_requests() {
+async fn uses_holt_user_agent_by_default_for_completions_requests() {
     let user_agent = capture_completions_user_agent(None).await;
-    assert_is_pi_user_agent(user_agent.as_deref());
+    assert_is_holt_user_agent(user_agent.as_deref());
 }
 
 #[tokio::test]

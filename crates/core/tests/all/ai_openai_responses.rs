@@ -10,7 +10,7 @@
 //! - `openai-responses-partial-json-cleanup.test.ts` (1 case)
 //! - `openai-responses-terminal-event.test.ts` (9 cases)
 //! - `cache-retention.test.ts` (the OpenAI Responses describe; the two
-//!   PI_CACHE_RETENTION env cases inject a scoped `ProviderEnv` instead of
+//!   HOLT_CACHE_RETENTION env cases inject a scoped `ProviderEnv` instead of
 //!   mutating process env)
 //! - `provider-error-body-regression.test.ts` (the openai-responses case)
 //!
@@ -22,14 +22,14 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::openai_responses::{
+use holt_core::ai::api::openai_responses::{
     OpenAIResponsesOptions, stream as stream_openai_responses,
 };
-use pi_core::ai::api::openai_responses_shared::{
+use holt_core::ai::api::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ResponsesStreamOptions, convert_responses_messages,
     process_responses_stream,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, CacheRetention,
     ConstrainedSamplingConfig, ConstrainedSamplingStrict, Context, Message, Model, ModelCompat,
     ModelInput, ProviderEnv, ProviderRequestOptions, RoleAssistant, RoleToolResult, RoleUser,
@@ -37,9 +37,9 @@ use pi_core::ai::types::{
     TextSignatureV1, Tool, ToolCall, ToolConstrainedSampling, ToolResultMessage, Usage,
     UserContent, UserMessage,
 };
-use pi_core::ai::utils::event_stream::{collect_events, create_assistant_message_event_stream};
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
-use pi_core::ai::utils::text::short_hash;
+use holt_core::ai::utils::event_stream::{collect_events, create_assistant_message_event_stream};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::text::short_hash;
 use serde_json::{Value, json};
 
 #[test]
@@ -56,7 +56,7 @@ fn text_signature_v1_matches_the_public_json_shape() {
 }
 
 fn builtin(provider: &str, id: &str) -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model(provider, id)
+    holt_core::ai::providers::builtin::get_builtin_model(provider, id)
         .unwrap_or_else(|| panic!("missing model {provider}/{id}"))
 }
 
@@ -259,7 +259,7 @@ fn openai_tool_call_providers() -> BTreeSet<String> {
         .collect()
 }
 
-fn tool_arguments(value: Value) -> pi_core::ai::types::ToolCallArguments {
+fn tool_arguments(value: Value) -> holt_core::ai::types::ToolCallArguments {
     value.as_object().expect("object").clone()
 }
 
@@ -1646,7 +1646,7 @@ async fn rejects_failed_terminal_events_with_the_provider_error() {
 }
 
 // ---------------------------------------------------------------------------
-// cache-retention.test.ts — "Cache Retention (PI_CACHE_RETENTION)", the
+// cache-retention.test.ts — "Cache Retention (HOLT_CACHE_RETENTION)", the
 // OpenAI Responses describe
 
 fn retention_context() -> Context {
@@ -1710,7 +1710,7 @@ async fn sets_prompt_cache_retention_to_24h_when_pi_cache_retention_is_long() {
     let payload = capture_retention_payload(
         &model,
         retention_options(
-            Some(scoped_env(&[("PI_CACHE_RETENTION", "long")])),
+            Some(scoped_env(&[("HOLT_CACHE_RETENTION", "long")])),
             None,
             None,
         ),
@@ -1727,7 +1727,7 @@ async fn sets_prompt_cache_retention_for_non_api_openai_com_baseurl_by_default()
     let payload = capture_retention_payload(
         &proxy_model,
         retention_options(
-            Some(scoped_env(&[("PI_CACHE_RETENTION", "long")])),
+            Some(scoped_env(&[("HOLT_CACHE_RETENTION", "long")])),
             None,
             None,
         ),

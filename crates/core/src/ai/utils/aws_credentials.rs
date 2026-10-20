@@ -422,7 +422,8 @@ mod tests {
     }
 
     fn write_token_file(contents: &str) -> String {
-        let path = std::env::temp_dir().join(format!("pi-aws-web-identity-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("holt-aws-web-identity-{}", std::process::id()));
         let mut unique = path.into_os_string();
         unique.push(format!("-{:?}", std::time::SystemTime::now()));
         let path = std::path::PathBuf::from(unique);
@@ -545,7 +546,7 @@ mod tests {
         let env = scoped_env(&[
             ("AWS_WEB_IDENTITY_TOKEN_FILE", &token_file),
             ("AWS_ROLE_ARN", "arn:aws:iam::123:role/bedrock"),
-            ("AWS_ROLE_SESSION_NAME", "pi-session"),
+            ("AWS_ROLE_SESSION_NAME", "holt-session"),
         ]);
         let fetch = CannedFetch::new(vec![sts_body()]);
         let credentials = web_identity_credentials(&coerce(&fetch), Some(&env), "us-west-2")
@@ -572,7 +573,7 @@ mod tests {
         for expected in [
             "Action=AssumeRoleWithWebIdentity",
             "Version=2011-06-15",
-            "RoleSessionName=pi-session",
+            "RoleSessionName=holt-session",
             "RoleArn=arn%3Aaws%3Aiam%3A%3A123%3Arole%2Fbedrock",
             "WebIdentityToken=projected-service-account-token",
         ] {

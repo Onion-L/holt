@@ -42,7 +42,7 @@ use crate::ai::utils::sanitize_unicode::sanitize_surrogates;
 use crate::ai::utils::sse::SseStream;
 
 /// Resolve cache retention preference. Defaults to "short" and uses
-/// PI_CACHE_RETENTION for backward compatibility.
+/// HOLT_CACHE_RETENTION for backward compatibility.
 fn resolve_cache_retention(
     cache_retention: Option<CacheRetention>,
     env: Option<&ProviderEnv>,
@@ -50,7 +50,7 @@ fn resolve_cache_retention(
     if let Some(retention) = cache_retention {
         return retention;
     }
-    if get_provider_env_value("PI_CACHE_RETENTION", env).as_deref() == Some("long") {
+    if get_provider_env_value("HOLT_CACHE_RETENTION", env).as_deref() == Some("long") {
         return CacheRetention::Long;
     }
     CacheRetention::Short
@@ -331,7 +331,7 @@ fn merge_client_headers(sources: Vec<Option<&ProviderHeaders>>) -> ProviderHeade
     let mut merged = ProviderHeaders::new();
     merged.insert(
         "User-Agent".to_string(),
-        Some(crate::ai::session_resources::get_pi_user_agent()),
+        Some(crate::ai::session_resources::get_user_agent()),
     );
     for headers in sources.into_iter().flatten() {
         for (name, value) in headers {

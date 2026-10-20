@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use pi_core::ai::images::{
+use holt_core::ai::images::{
     ImagesApiFunction, ImagesApiProvider, generate_images, get_images_api_provider,
     register_built_in_images_api_providers, register_images_api_provider,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantImages, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason,
 };
 
@@ -33,7 +33,7 @@ fn images_model(api: &str) -> ImagesModel {
         base_url: "https://example.test/v1".to_string(),
         input: vec![],
         output: vec![],
-        cost: pi_core::ai::types::ModelCost::default(),
+        cost: holt_core::ai::types::ModelCost::default(),
         headers: None,
         extra: BTreeMap::new(),
     }

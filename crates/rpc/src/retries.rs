@@ -1,7 +1,7 @@
 //! The provider-retry notice contract: a live-only, transient signal that a
 //! chat's provider request hit a retryable transport/HTTP failure and is
 //! backing off before the next attempt. Published from inside the provider
-//! retry loop (pi-core-rs `on_retry` callback) while the Turn is still
+//! retry loop (holt-core `on_retry` callback) while the Turn is still
 //! running — the transcript stays quiet during a retry, so this stream is
 //! the only channel a UI can render "Retrying…" from. Live-only: notices are
 //! never persisted or replayed across restart, and a UI must drop the chip

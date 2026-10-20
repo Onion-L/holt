@@ -1,4 +1,4 @@
-Usage: npx @earendil-works/pi-ai <command> [provider]
+Usage: holt-ai <command> [provider]
 
 Commands:
   login [provider]  Login to an OAuth provider

@@ -4,13 +4,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::anthropic::AnthropicOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::anthropic::AnthropicOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, AuthStorageError, OAuthAuth,
     OAuthCredential,
 };
-use pi_core::ai::types::{FetchFunction, ProviderEnv};
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::{FetchFunction, ProviderEnv};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 const FROZEN_NOW_MS: i64 = 1_784_524_800_000;
@@ -80,7 +80,7 @@ impl AuthInteraction for ManualLoginInteraction {
     fn prompt(
         &self,
         prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         assert!(matches!(prompt.kind, AuthPromptKind::ManualCode { .. }));
         if let Some(signal) = &prompt.signal {
             self.manual_signals.lock().unwrap().push(signal.clone());

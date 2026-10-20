@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use pi_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
-use pi_core::agent::harness::types::{FileSystem, WriteContent};
+use holt_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
+use holt_core::agent::harness::types::{FileSystem, WriteContent};
 
 use crate::common;
 

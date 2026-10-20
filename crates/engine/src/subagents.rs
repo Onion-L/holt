@@ -11,14 +11,14 @@ use std::{
 };
 
 use futures::FutureExt as _;
-use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
-use holt_proto::{PermissionMode, ReasoningLevel};
-use pi_core::{
+use holt_core::{
     agent::types::{
         AfterToolCallFn, AfterToolCallResult, AgentMessage, AgentTool, AgentToolResult, StreamFn,
     },
     ai::types::{BlockContent, Model, TextContent, Usage},
 };
+use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
+use holt_proto::{PermissionMode, ReasoningLevel};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -461,7 +461,7 @@ async fn execute(
         .rev()
         .find_map(|m| match m {
             AgentMessage::Assistant(m) => {
-                let text = pi_core::ai::utils::text::content_text(&m.content, "\n");
+                let text = holt_core::ai::utils::text::content_text(&m.content, "\n");
                 (!text.trim().is_empty()).then_some(text)
             }
             _ => None,
