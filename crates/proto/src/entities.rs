@@ -1176,6 +1176,53 @@ pub struct TurnRestoreReply {
     pub overlaps: Vec<TurnRestoreOverlap>,
 }
 
+/// What a rewind does to one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RewindAction {
+    /// Written back to its content at the rewind point.
+    Restore,
+    /// Created after the rewind point: removed.
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindFile {
+    pub path: String,
+    pub action: RewindAction,
+}
+
+/// Why a file blocks a rewind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RewindConflictReason {
+    /// The file no longer holds what the last rewound step left.
+    Changed,
+    /// The checkpoint kept only the path (over the size cap, or not a
+    /// regular file).
+    NotStored,
+    /// The path would leave the work tree.
+    Unsafe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindConflict {
+    pub path: String,
+    pub reason: RewindConflictReason,
+}
+
+/// `RewindToStep` reply. `applied` is false for a dry run and for any
+/// rewind a conflict refused — then nothing was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindReply {
+    pub files: Vec<RewindFile>,
+    pub conflicts: Vec<RewindConflict>,
+    pub applied: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {

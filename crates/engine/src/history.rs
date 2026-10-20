@@ -596,19 +596,46 @@ pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str, cut: Cut) -> Result<
         intents,
         prompts,
     } = replay(data_dir, chat_id)?;
-    let repaired = repair_history(&replayed, cut, &intents);
-    let answered: Vec<&str> = replayed
+    let mut repaired = repair_history(&replayed, cut, &intents);
+    let answered: HashSet<&str> = replayed
         .iter()
         .filter_map(|message| match message {
             AgentMessage::ToolResult(result) => Some(result.tool_call_id.as_str()),
             _ => None,
         })
         .collect();
+    let cut_off: HashSet<String> = repaired
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult(result)
+                if !answered.contains(result.tool_call_id.as_str())
+                    && intents.contains(&result.tool_call_id) =>
+            {
+                Some(result.tool_call_id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    // What a cut-off call changed, from its step checkpoint
+    // (ADR-step-checkpoints-in-a-chat-owned-object-store).
+    if !cut_off.is_empty() {
+        let notes = crate::checkpoints::change_notes(data_dir, chat_id, &cut_off);
+        for message in &mut repaired {
+            if let AgentMessage::ToolResult(result) = message
+                && cut_off.contains(&result.tool_call_id)
+                && let Some(note) = notes.get(&result.tool_call_id)
+                && let Some(BlockContent::Text(text)) = result.content.first_mut()
+            {
+                text.text.push(' ');
+                text.text.push_str(note);
+            }
+        }
+    }
     for message in &repaired {
         let AgentMessage::ToolResult(result) = message else {
             continue;
         };
-        if answered.contains(&result.tool_call_id.as_str()) {
+        if answered.contains(result.tool_call_id.as_str()) {
             continue;
         }
         if let Err(error) = append_message(data_dir, chat_id, message) {

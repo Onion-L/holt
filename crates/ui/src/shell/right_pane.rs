@@ -556,6 +556,12 @@ impl Shell {
             TranscriptEvent::OpenRoutine { routine_id } => {
                 self.open_routine(routine_id.clone(), cx);
             }
+            TranscriptEvent::RewindToStep {
+                chat_id,
+                tool_call_id,
+            } => {
+                self.plan_rewind(chat_id.clone(), tool_call_id.clone(), cx);
+            }
             TranscriptEvent::EditLastMessage {
                 chat_id,
                 message_id,
@@ -612,6 +618,77 @@ impl Shell {
                     }
                 });
                 this.push_holt_notice(kind, message.into(), cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Ask the engine what a rewind to `tool_call_id` would do, then show
+    /// the confirm dialog with that plan.
+    pub(super) fn plan_rewind(
+        &mut self,
+        chat_id: String,
+        tool_call_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.push_holt_notice(
+                HoltNoticeKind::Error,
+                "The engine is not connected.".into(),
+                cx,
+            );
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let planned =
+                crate::rewind::rewind_call(engine, chat_id.clone(), tool_call_id.clone(), true)
+                    .await;
+            let _ = this.update(cx, |this, cx| match planned {
+                Ok(plan) => {
+                    this.rewind_confirm = Some(crate::rewind::RewindConfirm {
+                        chat_id,
+                        tool_call_id,
+                        plan,
+                    });
+                    cx.notify();
+                }
+                Err(message) => this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Apply a confirmed rewind. The engine re-plans and refuses if a file
+    /// moved on since the dialog opened.
+    pub(super) fn apply_rewind(
+        &mut self,
+        chat_id: String,
+        tool_call_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let applied =
+                crate::rewind::rewind_call(engine, chat_id.clone(), tool_call_id.clone(), false)
+                    .await;
+            let _ = this.update(cx, |this, cx| match applied {
+                Ok(reply) if reply.applied => this.push_holt_notice(
+                    HoltNoticeKind::Success,
+                    crate::rewind::rewind_summary(&reply).into(),
+                    cx,
+                ),
+                // Something moved on since the plan: show why instead.
+                Ok(plan) => {
+                    this.rewind_confirm = Some(crate::rewind::RewindConfirm {
+                        chat_id,
+                        tool_call_id,
+                        plan,
+                    });
+                    cx.notify();
+                }
+                Err(message) => this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx),
             });
         })
         .detach();

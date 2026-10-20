@@ -446,6 +446,8 @@ pub struct Shell {
     delete_confirm: Option<String>,
     /// The Turn card's pending restore: `(chat_id, message_id)`.
     restore_confirm: Option<(String, String)>,
+    /// A planned rewind awaiting confirmation (ADR-rewind-to-a-step-is-all-or-nothing).
+    rewind_confirm: Option<crate::rewind::RewindConfirm>,
     /// The app-update dialog is open (download confirm / progress / restart).
     update_dialog: bool,
     /// The About Holt dialog (app menu) is open.
@@ -822,6 +824,7 @@ impl Shell {
             rename_dialog: None,
             delete_confirm: None,
             restore_confirm: None,
+            rewind_confirm: None,
             update_dialog: false,
             about_dialog: false,
             archive_confirm: None,
@@ -1667,6 +1670,34 @@ impl Shell {
                 }
                 None => self.restore_confirm = None,
             }
+        }
+
+        if let Some(confirm) = self.rewind_confirm.clone() {
+            let (title, question, can_confirm) = crate::rewind::rewind_question(&confirm.plan);
+            overlays.push(crate::rewind::rewind_dialog(
+                &theme,
+                viewport,
+                title,
+                question,
+                cx.listener(|this, _, _, cx| {
+                    this.rewind_confirm = None;
+                    cx.notify();
+                }),
+                cx.listener(|this, _, _, cx| {
+                    this.rewind_confirm = None;
+                    cx.notify();
+                }),
+                can_confirm.then(|| {
+                    cx.listener(move |this, _, _, cx| {
+                        this.rewind_confirm = None;
+                        this.apply_rewind(
+                            confirm.chat_id.clone(),
+                            confirm.tool_call_id.clone(),
+                            cx,
+                        );
+                    })
+                }),
+            ));
         }
 
         if let Some(dialog) = self.render_update_dialog(&theme, viewport, cx) {

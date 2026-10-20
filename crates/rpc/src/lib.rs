@@ -201,6 +201,15 @@ pub mod methods {
     /// user entry when submitted; the old Turn is cancelled and its later
     /// conversation is removed before the replacement runs.
     pub const EDIT_LAST_MESSAGE: &str = "EditLastMessage";
+    /// Rewind a chat to just after one tool step
+    /// (ADR-step-checkpoints-in-a-chat-owned-object-store): params `{chatId,
+    /// toolCallId, dryRun?}`; replies `holt_proto::RewindReply`. The
+    /// conversation is cut after the results of the assistant message that
+    /// made the call, and every file a later step changed goes back to its
+    /// bytes at that point. All or nothing: any conflict (a file that moved
+    /// on, or content never stored) refuses the whole rewind and writes
+    /// nothing. Refused while a Turn runs.
+    pub const REWIND_TO_STEP: &str = "RewindToStep";
     /// Remove a pending ordinary message from the queue: params
     /// `{chatId, messageId}`; replies with the accepted `MessageQueue`
     /// snapshot. Remaining items keep their order; a started item fails

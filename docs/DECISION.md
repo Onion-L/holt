@@ -22,7 +22,7 @@ in the same commit.
 | Page | Entries |
 | --- | --- |
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
-| [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
+| [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) |
@@ -30,9 +30,9 @@ in the same commit.
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
-| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
+| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
-| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) |
+| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) |
 | UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) |
@@ -479,3 +479,77 @@ nothing from replaying code, and model and tool calls cannot be made
 deterministic); resuming a half-received provider stream (no provider supports
 it). Workspace snapshots per step are deferred to their own entry — they
 reopen turn-diff-net-change-baseline.
+
+## step-checkpoints-in-a-chat-owned-object-store
+
+`f3d4a58`, `b69fbaa`. Each tool call that changes files in a Git working tree
+records a step checkpoint: every changed path's exact before and after bytes,
+as blobs in a bare Git object store owned by the chat
+(`checkpoints/<chatId>/objects`), listed in an append-only step log beside it.
+The store holds only what the agent's own calls changed: write and edit read
+their target around the call; bash stores every uncommitted file's bytes
+before the command (identical content is stored once) and takes clean files
+from HEAD, so a step's before side is exact bytes — never content rebuilt from
+patch text, which loses CRLF and a missing final newline. Files above 10 MiB,
+and anything but a regular file, are recorded by path only. A non-Git working
+tree records nothing, as its Turn change set answers `Unsupported`. Deleting a
+chat deletes the directory; libgit2 has no gc, and per-chat stores need none.
+Step ids in the log are opaque to every consumer, so the storage can change
+behind them. While a call runs, its start (the before sides) waits on disk; a
+crash leaves it there, and the next load measures it against the working tree,
+records an interrupted step, and adds the changed files to the cut-off call's
+"may have partly run" result — the model still decides, nothing is re-run (see
+turns-resume-from-an-intent-journal). This does not reopen
+turn-diff-net-change-baseline: the Turn diff keeps its baseline; checkpoints
+are a separate per-step record.
+Rejected: a Holt-specific blob format now (it rebuilds Git's content
+addressing and compression before it can improve on them; revisit for chunked
+dedup of large binaries, dedup across workspaces, non-Git folders, or
+multi-agent branching); objects in the user's `.git` under a private ref
+(grows the user's repository); a whole-tree snapshot per step (the `git
+add`-everything disk blowups in OpenCode, Codex, Roo and Cline; libgit2 takes
+120–660 ms per scan); APFS `clonefile` (cost grows with file count, ignored
+trees included: 38 s on a 141 GB tree); borrowing the user's objects through
+alternates (nothing unchanged is stored, and a user's history rewrite plus gc
+could prune what a checkpoint points at).
+
+## rewind-to-a-step-is-all-or-nothing
+
+`10cfe6d`, `4b5447b`, `399608d`. A chat rewinds to just after any tool step of
+a settled Turn, conversation and files together, in one action
+(`RewindToStep`). The History is cut after the results of the assistant
+message that made the call — parallel siblings stay, so no call is left
+without its result. The files are put back from the step checkpoints (see
+step-checkpoints-in-a-chat-owned-object-store): every step recorded after the
+kept tail's newest timestamp, by a call the kept History does not hold, is
+undone; subagent steps carry the child's call ids, so only the clock places
+them. One file that moved on since its last undone step, whose content was
+never stored, or that would leave the work tree refuses the whole rewind
+before anything is written — the never-merge stance of
+turn-restore-from-change-records, applied to the set. A confirmed rewind is
+written down whole and synced first, then carried out: files, the step log
+dropping the undone steps (a later rewind would otherwise see them as
+conflicts), History, transcript, and the cut Turns' change sets, retracted as
+an edit-last prune's are. Every part is idempotent, so the chat's next load
+finishes a rewind a crash cut off. The chat stays idle afterwards.
+Rejected: rewinding only to a user message (a long Turn could not be entered);
+separate conversation-only and files-only rewinds (two states that disagree);
+restoring what can be and skipping conflicts (a conversation that no longer
+describes the files); continuing the run from the step automatically (the user
+rewinds to change course, so the next word is theirs).
+
+## step-checkpoints-are-bounded-per-chat
+
+`b59bc27`. A chat's step checkpoints are bounded where they are used, not only
+when the chat is deleted: at each Turn's admission, under the execution lock,
+the oldest steps go past 1200 (down to 1000) and, while the store exceeds 1
+GiB, the oldest fifth goes at a time. The store is then repacked: the blobs
+the remaining steps reference are copied into a new store that replaces the
+old one (a crash between the two renames is completed on the next run). A
+rewind marks the store for the same repack, since the steps it undid leave
+blobs nothing references. The newest dropped step's timestamp is kept, and a
+rewind to a point before it is refused — it could not undo everything after
+its point. Maintenance waits while a rewind is still to finish.
+Rejected: growth until the chat is deleted (a long task's chat is exactly the
+one that keeps running); libgit2 garbage collection (it has none); age-based
+expiry (an idle chat would lose its checkpoints while nothing happens in it).

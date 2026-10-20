@@ -186,9 +186,9 @@ fn restore_file(
 
     let result = match (&source, &content.old_text) {
         (Some(source), Some(text)) => {
-            write_atomic(source, text).and_then(|()| std::fs::remove_file(&dest))
+            write_atomic(source, text.as_bytes()).and_then(|()| std::fs::remove_file(&dest))
         }
-        (None, Some(text)) => write_atomic(&dest, text),
+        (None, Some(text)) => write_atomic(&dest, text.as_bytes()),
         (_, None) => match std::fs::remove_file(&dest) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -205,7 +205,7 @@ fn restore_file(
 /// `root` joined with a record path, or `None` when the path could leave
 /// the work tree: non-normal components, `.git`, a symlinked target, or an
 /// existing ancestor that canonicalizes outside the root.
-fn safe_target(root: &Path, relative: &str) -> Option<PathBuf> {
+pub(crate) fn safe_target(root: &Path, relative: &str) -> Option<PathBuf> {
     let relative = Path::new(relative);
     let mut clean = PathBuf::new();
     for component in relative.components() {
@@ -231,7 +231,7 @@ fn safe_target(root: &Path, relative: &str) -> Option<PathBuf> {
 
 /// Write via a sibling temp file + rename so a crash never leaves a
 /// half-written file, keeping the target's permissions when it exists.
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().expect("target has a parent");
     std::fs::create_dir_all(parent)?;
     let name = path
@@ -244,7 +244,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
             .create_new(true)
             .write(true)
             .open(&temp)?;
-        file.write_all(text.as_bytes())?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         if let Ok(meta) = std::fs::metadata(path) {
             std::fs::set_permissions(&temp, meta.permissions())?;

@@ -272,7 +272,9 @@ impl ChatRuntime {
     pub(crate) fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
         let persistence = Arc::new(Mutex::new(()));
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
-        // A call still unanswered on load was cut off by a restart.
+        // A call still unanswered on load was cut off by a restart; what it
+        // changed is measured first, so the repair can say.
+        crate::checkpoints::settle_interrupted(data_dir, chat_id);
         let replayed =
             crate::history::load_repaired(data_dir, chat_id, crate::history::Cut::Restart);
         let mut intents = Default::default();
@@ -315,6 +317,11 @@ impl ChatRuntime {
                  fresh after it."
                     .into(),
             );
+        }
+        // A rewind a crash cut off finishes before anything reads the
+        // conversation (ADR-rewind-to-a-step-is-all-or-nothing).
+        if notice.is_none() {
+            crate::rewind::finish_pending(data_dir, chat_id, &mut history, &mut transcript);
         }
         // A damaged or missing record cannot carry a Turn forward.
         let history_readable = notice.is_none();
@@ -1005,6 +1012,7 @@ impl AgentRuntime {
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
         crate::turn_change_store::delete_chat(&self.data_dir, chat_id);
+        crate::checkpoints::delete_chat(&self.data_dir, chat_id);
         crate::provider_mode::delete(&self.data_dir, chat_id);
         self.subagents.remove_parent(&self.data_dir, chat_id);
         // The usage ledger archives before it dies: the chat's records move

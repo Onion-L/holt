@@ -6,6 +6,10 @@
 //! serializes operations against the same repository while different
 //! repositories proceed in parallel.
 
+mod checkpoints;
+
+pub(crate) use checkpoints::{CallStart, CheckpointFile, CheckpointSide, WindowStart};
+
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -433,27 +437,7 @@ impl Git {
         let repo_root = repo_path.to_string();
         let path = path.to_string();
         self.with_repo(repo_path, move |repo| -> Result<Option<String>, String> {
-            let Some(workdir) = repo.workdir() else {
-                return Ok(None);
-            };
-            let candidate = Path::new(&path);
-            let absolute = if candidate.is_absolute() {
-                normalize_path(candidate)
-            } else {
-                normalize_path(&Path::new(&repo_root).join(candidate))
-            };
-            // The workdir git reports is a realpath (macOS /var → /private/var
-            // and every other symlink below tmp), while the tool's path rides
-            // the chat's cwd spelling. Resolve through the symlinks — the
-            // target may not exist yet (a write tool creating it), so take
-            // the deepest existing ancestor and re-attach the tail.
-            let Some(resolved) = resolve_existing(&absolute) else {
-                return Ok(None);
-            };
-            Ok(resolved
-                .strip_prefix(workdir)
-                .ok()
-                .map(|relative| relative.to_string_lossy().replace('\\', "/")))
+            Ok(relative_path(&repo, &repo_root, &path))
         })
         .await
         .ok()
@@ -465,10 +449,65 @@ impl Git {
     /// the same shape the net-change filter compares. A failed scan yields
     /// an empty map — the command then attributes nothing, never wrongly
     /// everything.
+    ///
+    /// With `store`, the window also keeps every uncommitted path's before
+    /// side in the chat's checkpoint store
+    /// (ADR-step-checkpoints-in-a-chat-owned-object-store).
+    pub(crate) async fn window_start(
+        &self,
+        repo_path: &str,
+        store: Option<PathBuf>,
+    ) -> WindowStart {
+        self.with_repo(repo_path, move |repo| -> Result<WindowStart, String> {
+            let sections = workdir_sections(&repo).map_err(GitFault::into_string)?;
+            Ok(checkpoints::window_start(&repo, sections, store.as_deref()))
+        })
+        .await
+        .unwrap_or_else(|_| WindowStart::empty())
+    }
+
+    /// The changed sections now — a bash window's end.
     pub(crate) async fn changed_sections(&self, repo_path: &str) -> HashMap<String, String> {
         self.with_repo(repo_path, move |repo| workdir_sections(&repo))
             .await
             .unwrap_or_default()
+    }
+
+    /// A bash window's step files: `paths` (the window's attributed delta)
+    /// with their before side from the window start and their after side
+    /// stored now. `None` when the window has no trustworthy before side.
+    pub(crate) async fn window_checkpoint(
+        &self,
+        repo_path: &str,
+        store: PathBuf,
+        window: WindowStart,
+        paths: Vec<String>,
+    ) -> Result<Option<Vec<CheckpointFile>>, String> {
+        self.with_repo(repo_path, move |repo| {
+            checkpoints::window_files(&repo, &store, &window, &paths).map_err(git_message)
+        })
+        .await
+    }
+
+    /// A write/edit target's repo-relative path and its current side,
+    /// stored; `None` when the path is outside the work tree.
+    pub(crate) async fn path_checkpoint(
+        &self,
+        repo_path: &str,
+        store: PathBuf,
+        path: &str,
+    ) -> Result<Option<(String, CheckpointSide)>, String> {
+        let repo_root = repo_path.to_string();
+        let path = path.to_string();
+        self.with_repo(repo_path, move |repo| {
+            let Some(relative) = relative_path(&repo, &repo_root, &path) else {
+                return Ok(None);
+            };
+            Ok(checkpoints::path_side(&repo, &store, &relative)
+                .map_err(git_message)?
+                .map(|side| (relative, side)))
+        })
+        .await
     }
 
     /// The immutable per-file before/after content of a frozen change set
@@ -1767,6 +1806,81 @@ fn workdir_sections(repo: &Repository) -> Result<HashMap<String, String>, GitFau
         .into_iter()
         .map(|section| (section.path, section.text))
         .collect())
+}
+
+/// What a call a crash cut off changed since its start
+/// (ADR-step-checkpoints-in-a-chat-owned-object-store). Blocking, outside
+/// the per-checkout lock: it runs once, when a chat loads after a restart,
+/// before any of that chat's work. `None` when `repo_path` is no longer a
+/// work tree.
+pub(crate) fn files_since(
+    repo_path: &str,
+    store: &Path,
+    start: &CallStart,
+) -> Result<Option<Vec<CheckpointFile>>, String> {
+    let repo = Repository::discover(repo_path).map_err(git_message)?;
+    let sections = workdir_sections(&repo).map_err(GitFault::into_string)?;
+    checkpoints::files_since(&repo, store, start, &sections).map_err(git_message)
+}
+
+/// A checkpoint blob's bytes; `None` when the store or the blob is gone.
+pub(crate) fn checkpoint_blob(store: &Path, id: &str) -> Option<Vec<u8>> {
+    let store = Repository::open_bare(store).ok()?;
+    let blob = store.find_blob(git2::Oid::from_str(id).ok()?).ok()?;
+    Some(blob.content().to_vec())
+}
+
+/// Copy the blobs `ids` names from one checkpoint store into a new one at
+/// `to` — the repack that reclaims what no step references any more. A
+/// blob already gone is skipped.
+pub(crate) fn copy_checkpoint_blobs(
+    from: &Path,
+    to: &Path,
+    ids: &HashSet<String>,
+) -> Result<(), String> {
+    let from = Repository::open_bare(from).map_err(git_message)?;
+    let to = Repository::init_bare(to).map_err(git_message)?;
+    for id in ids {
+        let Ok(oid) = git2::Oid::from_str(id) else {
+            continue;
+        };
+        if let Ok(blob) = from.find_blob(oid) {
+            to.blob(blob.content()).map_err(git_message)?;
+        }
+    }
+    Ok(())
+}
+
+/// Store `bytes` as a checkpoint blob — a test's way to fill a store.
+#[cfg(test)]
+pub(crate) fn put_checkpoint_blob(store: &Path, bytes: &[u8]) -> String {
+    checkpoints::open_store(store)
+        .unwrap()
+        .blob(bytes)
+        .unwrap()
+        .to_string()
+}
+
+/// `path` (absolute, or relative to `repo_root`) as a repo-root-relative
+/// path; `None` when it escapes the work tree.
+fn relative_path(repo: &Repository, repo_root: &str, path: &str) -> Option<String> {
+    let workdir = repo.workdir()?;
+    let candidate = Path::new(path);
+    let absolute = if candidate.is_absolute() {
+        normalize_path(candidate)
+    } else {
+        normalize_path(&Path::new(repo_root).join(candidate))
+    };
+    // The workdir git reports is a realpath (macOS /var → /private/var
+    // and every other symlink below tmp), while the tool's path rides
+    // the chat's cwd spelling. Resolve through the symlinks — the
+    // target may not exist yet (a write tool creating it), so take
+    // the deepest existing ancestor and re-attach the tail.
+    let resolved = resolve_existing(&absolute)?;
+    resolved
+        .strip_prefix(workdir)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
 
 /// Lexical normalization — resolve `.` and `..` without touching the
