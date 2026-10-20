@@ -1820,3 +1820,84 @@ async fn a_non_git_workspace_records_no_steps() {
     );
     assert!(!fixture.data_dir.path().join("checkpoints").exists());
 }
+
+/// Wait for `path` to exist (a running call's visible effect).
+async fn wait_for_file(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{path:?} never appeared"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_call_a_crash_cut_off_tells_the_resumed_model_what_it_changed() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        tool_bash(
+            "b-1",
+            "printf partial > half.txt && rm movable.txt && sleep 30",
+        ),
+        ScriptedReply::text("resumed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "long command").await;
+
+    // The command is mid-run: its start is on disk. A hard kill runs no
+    // destructor, so keep a copy to put back after the drop.
+    let running = fixture
+        .data_dir
+        .path()
+        .join("checkpoints/chat-1/running/b-1.json");
+    wait_for_file(&running).await;
+    wait_for_file(&fixture.path("half.txt")).await;
+    while fixture.path("movable.txt").exists() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let start = std::fs::read(&running).unwrap();
+    drop(engine);
+    std::fs::write(&running, start).unwrap();
+
+    let engine = fixture.engine(&provider);
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
+    common::wait_for_transcript_text(&mut transcript, "resumed").await;
+
+    let requests = provider.requests();
+    let result = common::summarize(&requests[1].messages)
+        .into_iter()
+        .find(|line| line.starts_with("toolresult:b-1:"))
+        .unwrap();
+    assert!(result.contains("may have partly run"), "{result}");
+    assert!(
+        result.contains(
+            "Since it started, these files in the working tree changed: \
+             half.txt (created), movable.txt (deleted)."
+        ),
+        "{result}"
+    );
+    assert!(!running.exists());
+    let steps = steps(&fixture);
+    let interrupted = steps
+        .iter()
+        .find(|step| step["toolCallId"] == "b-1")
+        .unwrap();
+    assert_eq!(interrupted["interrupted"], true);
+    let mut files = step_files(&fixture, interrupted);
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            ("half.txt".into(), None, Some(b"partial".to_vec())),
+            (
+                "movable.txt".into(),
+                Some(movable_body().into_bytes()),
+                None
+            ),
+        ]
+    );
+}

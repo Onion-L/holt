@@ -495,8 +495,13 @@ regular file, are recorded by path only. A non-Git working tree records
 nothing, as its Turn change set answers `Unsupported`. Deleting a chat
 deletes the directory; libgit2 has no gc, and per-chat stores need none. Step
 ids in the log are opaque to every consumer, so the storage can change behind
-them. This does not reopen turn-diff-net-change-baseline: the Turn diff keeps
-its baseline; checkpoints are a separate per-step record.
+them. While a call runs, its start (the before sides) waits on disk; a crash
+leaves it there, and the next load measures it against the working tree,
+records an interrupted step, and adds the changed files to the cut-off call's
+"may have partly run" result — the model still decides, nothing is re-run
+(see turns-resume-from-an-intent-journal). This does not reopen
+turn-diff-net-change-baseline: the Turn diff keeps its baseline; checkpoints
+are a separate per-step record.
 Rejected: a Holt-specific blob format now (it rebuilds Git's content
 addressing and compression before it can improve on them; revisit for chunked
 dedup of large binaries, dedup across workspaces, non-Git folders, or

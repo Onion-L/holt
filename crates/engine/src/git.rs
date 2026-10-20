@@ -8,7 +8,7 @@
 
 mod checkpoints;
 
-pub(crate) use checkpoints::{CheckpointFile, CheckpointSide, WindowStart};
+pub(crate) use checkpoints::{CallStart, CheckpointFile, CheckpointSide, WindowStart};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -1806,6 +1806,21 @@ fn workdir_sections(repo: &Repository) -> Result<HashMap<String, String>, GitFau
         .into_iter()
         .map(|section| (section.path, section.text))
         .collect())
+}
+
+/// What a call a crash cut off changed since its start
+/// (ADR-step-checkpoints-in-a-chat-owned-object-store). Blocking, outside
+/// the per-checkout lock: it runs once, when a chat loads after a restart,
+/// before any of that chat's work. `None` when `repo_path` is no longer a
+/// work tree.
+pub(crate) fn files_since(
+    repo_path: &str,
+    store: &Path,
+    start: &CallStart,
+) -> Result<Option<Vec<CheckpointFile>>, String> {
+    let repo = Repository::discover(repo_path).map_err(git_message)?;
+    let sections = workdir_sections(&repo).map_err(GitFault::into_string)?;
+    checkpoints::files_since(&repo, store, start, &sections).map_err(git_message)
 }
 
 /// `path` (absolute, or relative to `repo_root`) as a repo-root-relative

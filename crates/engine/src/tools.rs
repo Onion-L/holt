@@ -21,7 +21,8 @@ pub(crate) mod todo;
 mod web_fetch;
 pub(crate) mod web_search;
 
-use crate::git::{CheckpointFile, CheckpointSide, Git, WindowStart};
+use crate::checkpoints::RunningCall;
+use crate::git::{CallStart, CheckpointFile, CheckpointSide, Git, WindowStart};
 use crate::shell_env::login_shell;
 use crate::turn_changes::Attribution;
 use std::{
@@ -862,14 +863,42 @@ impl ChangeAttribution {
     }
 
     /// A write/edit target's side before the call, when the Turn
-    /// checkpoints. Best-effort: a failed read records no step.
-    async fn before_write(&self, cwd: &str, path: &str) -> Option<(String, CheckpointSide)> {
+    /// checkpoints, kept on disk while the call runs. Best-effort: a failed
+    /// read records no step.
+    async fn before_write(
+        &self,
+        cwd: &str,
+        path: &str,
+        call: (&str, &str),
+    ) -> Option<(String, CheckpointSide, Option<RunningCall>)> {
         let steps = self.steps.as_ref()?;
-        self.git
+        let (relative, before) = self
+            .git
             .path_checkpoint(cwd, steps.store(), path)
             .await
             .ok()
-            .flatten()
+            .flatten()?;
+        let running = steps.begin(
+            call.0,
+            call.1,
+            cwd,
+            CallStart::Path {
+                path: relative.clone(),
+                before: before.clone(),
+            },
+        );
+        Some((relative, before, running))
+    }
+
+    /// Keep a bash window's start on disk while the command runs.
+    fn begin_window(
+        &self,
+        cwd: &str,
+        call: (&str, &str),
+        window: &WindowStart,
+    ) -> Option<RunningCall> {
+        let start = window.start.clone()?;
+        self.steps.as_ref()?.begin(call.0, call.1, cwd, start)
     }
 
     /// A write/edit target's path, resolved to the repo-root-relative
@@ -881,12 +910,12 @@ impl ChangeAttribution {
         cwd: &str,
         path: &str,
         call: (&str, &str),
-        before: Option<(String, CheckpointSide)>,
+        before: Option<(String, CheckpointSide, Option<RunningCall>)>,
     ) {
         if let Some(relative) = self.git.repo_relative(cwd, path).await {
             self.set.record([relative]);
         }
-        let (Some(steps), Some((relative, before))) = (&self.steps, before) else {
+        let (Some(steps), Some((relative, before, _running))) = (&self.steps, before) else {
             return;
         };
         if let Ok(Some((_, after))) = self.git.path_checkpoint(cwd, steps.store(), path).await
@@ -976,7 +1005,7 @@ fn attribute_tool(
         let future = execute(id, params, signal, update);
         Box::pin(async move {
             let before = match path.as_deref() {
-                Some(path) => attribution.before_write(&cwd, path).await,
+                Some(path) => attribution.before_write(&cwd, path, (&call, &name)).await,
                 None => None,
             };
             let result = future.await;
@@ -1014,6 +1043,7 @@ fn attribute_bash(
         let future = execute(id, params, signal, update);
         Box::pin(async move {
             let before = attribution.window_start(&cwd).await;
+            let _running = attribution.begin_window(&cwd, (&call, &name), &before);
             let result = future.await;
             attribution
                 .record_bash_delta(&cwd, (&call, &name), before)

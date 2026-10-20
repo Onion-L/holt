@@ -272,7 +272,9 @@ impl ChatRuntime {
     pub(crate) fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
         let persistence = Arc::new(Mutex::new(()));
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
-        // A call still unanswered on load was cut off by a restart.
+        // A call still unanswered on load was cut off by a restart; what it
+        // changed is measured first, so the repair can say.
+        crate::checkpoints::settle_interrupted(data_dir, chat_id);
         let replayed =
             crate::history::load_repaired(data_dir, chat_id, crate::history::Cut::Restart);
         let mut intents = Default::default();
