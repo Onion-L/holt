@@ -14,7 +14,7 @@
 
 `holt-core` is a Rust port of `@earendil-works/pi-agent-core`, `pi-ai`, and
 `pi-telemetry` v0.84.4. It provides the same core building blocks as a native
-Rust library, plus a small `pi-ai` command-line binary for OAuth credentials.
+Rust library, plus a small `holt-ai` command-line binary for OAuth credentials.
 
 > **Project status — Holt-owned, actively maintained**
 >
@@ -32,7 +32,7 @@ Rust library, plus a small `pi-ai` command-line binary for OAuth credentials.
 | **Authentication** | Environment-based API keys, credential stores, OAuth flows, provider-specific auth resolution | `holt_core::ai::auth` |
 | **Agent** | Async prompt loop, mutable state, lifecycle events, tool execution, steering, follow-ups, cancellation, and continuation | `holt_core::agent::agent::Agent` |
 | **Harness** | Memory and JSONL sessions, branches and lanes, reduction, compaction, summaries, skills, templates, search, and filesystem tools | `holt_core::agent::harness` |
-| **CLI** | List OAuth providers and save OAuth credentials to `auth.json` | `pi-ai` |
+| **CLI** | List OAuth providers and save OAuth credentials to `auth.json` | `holt-ai` |
 
 The crate is designed to run without Node.js at build time or runtime.
 
@@ -144,20 +144,20 @@ export GEMINI_API_KEY="..."
 The provider registry contains the complete provider-to-environment-variable
 mapping. API keys can also be supplied through the Rust request/auth types.
 
-The `pi-ai` binary handles the built-in OAuth flows:
+The `holt-ai` binary handles the built-in OAuth flows:
 
 ```bash
 # Show the available OAuth commands and providers
-cargo run --bin pi-ai -- help
-cargo run --bin pi-ai -- list
+cargo run --bin holt-ai -- help
+cargo run --bin holt-ai -- list
 
 # Start an interactive OAuth flow
-cargo run --bin pi-ai -- login openai-codex
+cargo run --bin holt-ai -- login openai-codex
 ```
 
 OAuth credentials are merged into `auth.json` in the current working
 directory. Keep that file out of version control. The exact provider list is
-available from `pi-ai list`; it currently includes Anthropic, GitHub Copilot,
+available from `holt-ai list`; it currently includes Anthropic, GitHub Copilot,
 Kimi For Coding, OpenAI Codex, OpenRouter, Radius, and xAI.
 
 ## Sessions, tools, and compaction
@@ -187,7 +187,7 @@ src/
 ├── telemetry/                 # pi-telemetry port
 ├── ai/                        # providers, streaming, models, auth, images
 ├── agent/                     # agent loop and harness
-└── bin/pi-ai.rs               # OAuth helper binary
+└── bin/holt-ai.rs             # OAuth helper binary
 tests/all/                     # single integration target: parity,
                                # conformance, and live-gated suites
 tests/goldens/                 # serialized-output fixtures from the port

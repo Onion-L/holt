@@ -22,7 +22,7 @@ Keep the crate free of Holt domain concepts (Space, Turn change set, …):
 
 - `src/` — implementation. Module paths mirror the former TypeScript
   packages (`telemetry`, `ai`, `agent`).
-- `src/bin/pi-ai.rs` — OAuth helper binary (`pi-ai`).
+- `src/bin/holt-ai.rs` — OAuth helper binary (`holt-ai`).
 - `tests/all/` — the single integration test target: one module per former
   `tests/*.rs` file, shared helpers in `tests/all/common/`. Add new
   integration tests as a module there, never as a new top-level `tests/*.rs`
