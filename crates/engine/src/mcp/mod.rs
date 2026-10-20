@@ -28,7 +28,7 @@ use std::{
 
 use chrono::Utc;
 use futures::future::BoxFuture;
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{
         AssistantContent, AssistantMessage, BlockContent, Message, Model, TextContent, ToolCall,
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn the_bootstrap_pair_defers_mounted_tools_until_called() {
-        use pi_core::ai::{
+        use holt_core::ai::{
             types::{Context, Tool},
             utils::deferred_tools::split_deferred_tools,
         };

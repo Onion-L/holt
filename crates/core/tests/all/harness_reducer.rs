@@ -4,13 +4,13 @@
 //! derivation, tool-batch derivation, deferred handling, and overflow
 //! guard are each pinned).
 
-use pi_core::agent::harness::reducer::{
+use holt_core::agent::harness::reducer::{
     EffectiveLaneConfiguration, EffectiveModel, LaneReductionInput, RecordLogCorruptionReason,
     RecordLogSlice, reduce_lane_state, validate_record_log,
 };
-use pi_core::agent::harness::session::types::{Entry, LaneRecord, OperationIntent, UsageCause};
-use pi_core::agent::types::AgentMessage;
-use pi_core::ai::types::{
+use holt_core::agent::harness::session::types::{Entry, LaneRecord, OperationIntent, UsageCause};
+use holt_core::agent::types::AgentMessage;
+use holt_core::ai::types::{
     AssistantContent, BlockContent, DeferredHandle, RoleAssistant, RoleUser, StopReason,
     TextContent, ToolCall, Usage, UserContent, UserMessage,
 };
@@ -33,7 +33,7 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_message(content: Vec<AssistantContent>, stop_reason: StopReason) -> AgentMessage {
-    AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content,
         api: "openai-responses".to_string(),
@@ -69,7 +69,7 @@ fn tool_call(id: &str, name: &str) -> AssistantContent {
 }
 
 fn tool_result_message(tool_call_id: &str, tool_name: &str) -> AgentMessage {
-    AgentMessage::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
+    AgentMessage::ToolResult(Box::new(holt_core::ai::types::ToolResultMessage {
         role: Default::default(),
         tool_call_id: tool_call_id.to_string(),
         tool_name: tool_name.to_string(),
@@ -731,7 +731,7 @@ fn applies_committed_operation_owned_configuration_after_the_anchor() {
         {
             let mut entry = message_entry(
                 "assistant-config",
-                AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+                AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
                     role: RoleAssistant,
                     content: vec![text_content("response")],
                     api: "openai-responses".to_string(),

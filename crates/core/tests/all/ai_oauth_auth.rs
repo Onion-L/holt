@@ -5,19 +5,19 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::anthropic::anthropic_oauth;
-use pi_core::ai::auth::oauth::github_copilot::github_copilot_oauth;
-use pi_core::ai::auth::oauth::kimi_coding::kimi_coding_oauth;
-use pi_core::ai::auth::oauth::load::{
+use holt_core::ai::auth::oauth::anthropic::anthropic_oauth;
+use holt_core::ai::auth::oauth::github_copilot::github_copilot_oauth;
+use holt_core::ai::auth::oauth::kimi_coding::kimi_coding_oauth;
+use holt_core::ai::auth::oauth::load::{
     load_anthropic_oauth, load_github_copilot_oauth, load_kimi_coding_oauth,
     load_open_router_oauth, load_openai_codex_oauth, load_xai_oauth,
 };
-use pi_core::ai::auth::oauth::openai_codex::openai_codex_oauth;
-use pi_core::ai::auth::oauth::openrouter::open_router_oauth;
-use pi_core::ai::auth::oauth::xai::xai_oauth;
-use pi_core::ai::auth::types::{CredentialStore, OAuthAuth, OAuthCredential};
-use pi_core::ai::types::FetchFunction;
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::auth::oauth::openai_codex::openai_codex_oauth;
+use holt_core::ai::auth::oauth::openrouter::open_router_oauth;
+use holt_core::ai::auth::oauth::xai::xai_oauth;
+use holt_core::ai::auth::types::{CredentialStore, OAuthAuth, OAuthCredential};
+use holt_core::ai::types::FetchFunction;
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
@@ -130,10 +130,10 @@ impl AnthropicFlow {
         &self,
         credential: &OAuthCredential,
         signal: CancellationToken,
-    ) -> Result<OAuthCredential, pi_core::ai::auth::types::AuthStorageError> {
-        pi_core::ai::auth::oauth::anthropic::AnthropicOAuth::new(
+    ) -> Result<OAuthCredential, holt_core::ai::auth::types::AuthStorageError> {
+        holt_core::ai::auth::oauth::anthropic::AnthropicOAuth::new(
             Arc::clone(&self.0),
-            Arc::new(pi_core::ai::auth::resolve::now_millis),
+            Arc::new(holt_core::ai::auth::resolve::now_millis),
             Default::default(),
         )
         .refresh(credential, signal)
@@ -168,9 +168,9 @@ async fn github_copilot_refresh_preserves_the_enterprise_domain() {
         .collect(),
     };
 
-    let refreshed = pi_core::ai::auth::oauth::github_copilot::GitHubCopilotOAuth::new(
+    let refreshed = holt_core::ai::auth::oauth::github_copilot::GitHubCopilotOAuth::new(
         Arc::clone(&fetch) as FetchFunction,
-        Arc::new(pi_core::ai::auth::resolve::now_millis),
+        Arc::new(holt_core::ai::auth::resolve::now_millis),
     )
     .refresh(&credential, CancellationToken::new())
     .await
@@ -224,25 +224,25 @@ async fn github_copilot_to_auth_derives_urls_from_tokens() {
 
 #[tokio::test]
 async fn resolves_stored_anthropic_oauth_credentials_via_the_lazy_flow_import() {
-    let credentials = pi_core::ai::auth::credential_store::InMemoryCredentialStore::new();
+    let credentials = holt_core::ai::auth::credential_store::InMemoryCredentialStore::new();
     // Keep the expiry beyond getAuth()'s refresh window.
-    let expires = pi_core::ai::auth::resolve::now_millis() + 10 * 60_000;
+    let expires = holt_core::ai::auth::resolve::now_millis() + 10 * 60_000;
     credentials
         .modify(
             "anthropic",
             Box::new(move |_| {
                 Box::pin(std::future::ready(Ok(Some(
-                    pi_core::ai::auth::types::Credential::OAuth(OAuthCredential {
+                    holt_core::ai::auth::types::Credential::OAuth(OAuthCredential {
                         access: "oauth-access-token".to_string(),
                         refresh: "r".to_string(),
                         expires,
                         ..Default::default()
                     }),
                 ))))
-                    as pi_core::ai::auth::types::AuthFuture<
+                    as holt_core::ai::auth::types::AuthFuture<
                         Result<
-                            Option<pi_core::ai::auth::types::Credential>,
-                            pi_core::ai::auth::types::BoxedAuthError,
+                            Option<holt_core::ai::auth::types::Credential>,
+                            holt_core::ai::auth::types::BoxedAuthError,
                         >,
                     >
             }),
@@ -251,13 +251,13 @@ async fn resolves_stored_anthropic_oauth_credentials_via_the_lazy_flow_import() 
         .await
         .unwrap();
 
-    let models = Arc::new(pi_core::ai::models::Models::new(
-        pi_core::ai::models::CreateModelsOptions {
+    let models = Arc::new(holt_core::ai::models::Models::new(
+        holt_core::ai::models::CreateModelsOptions {
             credentials: Some(Arc::new(credentials)),
             ..Default::default()
         },
     ));
-    models.set_provider(pi_core::ai::providers::anthropic::anthropic_provider());
+    models.set_provider(holt_core::ai::providers::anthropic::anthropic_provider());
 
     let model = models.get_models(Some("anthropic"))[0].clone();
     let result = models
@@ -272,24 +272,24 @@ async fn resolves_stored_anthropic_oauth_credentials_via_the_lazy_flow_import() 
 #[tokio::test]
 async fn resolves_stored_github_copilot_oauth_credentials_including_per_credential_base_url() {
     let access = "tid=abc;exp=123;proxy-ep=proxy.business.githubcopilot.com;rest";
-    let credentials = pi_core::ai::auth::credential_store::InMemoryCredentialStore::new();
-    let expires = pi_core::ai::auth::resolve::now_millis() + 10 * 60_000;
+    let credentials = holt_core::ai::auth::credential_store::InMemoryCredentialStore::new();
+    let expires = holt_core::ai::auth::resolve::now_millis() + 10 * 60_000;
     credentials
         .modify(
             "github-copilot",
             Box::new(move |_| {
                 Box::pin(std::future::ready(Ok(Some(
-                    pi_core::ai::auth::types::Credential::OAuth(OAuthCredential {
+                    holt_core::ai::auth::types::Credential::OAuth(OAuthCredential {
                         access: access.to_string(),
                         refresh: "r".to_string(),
                         expires,
                         ..Default::default()
                     }),
                 ))))
-                    as pi_core::ai::auth::types::AuthFuture<
+                    as holt_core::ai::auth::types::AuthFuture<
                         Result<
-                            Option<pi_core::ai::auth::types::Credential>,
-                            pi_core::ai::auth::types::BoxedAuthError,
+                            Option<holt_core::ai::auth::types::Credential>,
+                            holt_core::ai::auth::types::BoxedAuthError,
                         >,
                     >
             }),
@@ -298,13 +298,13 @@ async fn resolves_stored_github_copilot_oauth_credentials_including_per_credenti
         .await
         .unwrap();
 
-    let models = Arc::new(pi_core::ai::models::Models::new(
-        pi_core::ai::models::CreateModelsOptions {
+    let models = Arc::new(holt_core::ai::models::Models::new(
+        holt_core::ai::models::CreateModelsOptions {
             credentials: Some(Arc::new(credentials)),
             ..Default::default()
         },
     ));
-    models.set_provider(pi_core::ai::providers::builtin::github_copilot_provider());
+    models.set_provider(holt_core::ai::providers::builtin::github_copilot_provider());
 
     let model = models.get_models(Some("github-copilot"))[0].clone();
     let result = models

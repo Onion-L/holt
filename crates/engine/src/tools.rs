@@ -1,6 +1,6 @@
-//! The agent's execution tools: the pi-core built-ins (read/write/edit/
+//! The agent's execution tools: the holt-core built-ins (read/write/edit/
 //! bash) mounted onto the local machine — a [`LocalExecutionEnv`] satisfying
-//! pi-core's `FileSystem + Shell` contract, and the assembly that hands each
+//! holt-core's `FileSystem + Shell` contract, and the assembly that hands each
 //! harness tool the shared [`ExecutionToolContext`] its `execute` downcasts
 //! for — plus holt's own content search (ADR-in-process-ripgrep-for-content-search) in [`grep`], directory
 //! listing (ADR-plan-mode-is-an-independent-approval-checkpoint's read-only surface) in [`ls`], web fetch (ADR-web-tools-full-text-ungated-pluggable-search) in
@@ -33,7 +33,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use pi_core::agent::{
+use holt_core::agent::{
     harness::{
         tools::{
             bash::{BashToolOptions, create_bash_tool},
@@ -82,7 +82,7 @@ pub(crate) fn clamp_utf8(text: &str, max_bytes: usize) -> (&str, bool) {
 }
 
 /// The host filesystem and shell, rooted at the chat's working directory.
-/// Blocking std filesystem calls run inline — the pi-core tools only issue
+/// Blocking std filesystem calls run inline — the holt-core tools only issue
 /// small reads/writes, and `exec` (the long-running case) is fully async.
 /// Content search, the one long-running local operation that is not an env
 /// method, runs its walk on `spawn_blocking` instead (see [`grep`]).
@@ -770,7 +770,7 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
     }
 }
 
-/// The toolset handed to the agent loop: pi-core's built-in read/write/
+/// The toolset handed to the agent loop: holt-core's built-in read/write/
 /// edit/bash, all running against one environment rooted at `cwd`, plus
 /// holt's own content-search and web-fetch tools, exposed to the agent as
 /// `grep` and `web_fetch` — and `web_search` when a backend is configured
@@ -930,12 +930,12 @@ pub(crate) use todo::create_todo_tool;
 pub use web_search::{SearchBackend, SearchHit, SearchResults};
 
 /// Foreground commands get a bounded wait. The engine applies no timeout of
-/// its own (pi-core leaves it optional by design), so a runaway command — a
+/// its own (holt-core leaves it optional by design), so a runaway command — a
 /// recursive scan over `target/`, a server process inheriting the output
 /// pipe — would otherwise hang the tool until the user aborts.
 const DEFAULT_BASH_TIMEOUT_SECONDS: f64 = 300.0;
 
-/// Injected at the params level, not the exec layer, so pi-core's timeout
+/// Injected at the params level, not the exec layer, so holt-core's timeout
 /// validation and its "timed out after N seconds" message report the
 /// effective value.
 fn apply_default_bash_timeout(params: &mut serde_json::Value) {
@@ -946,7 +946,7 @@ fn apply_default_bash_timeout(params: &mut serde_json::Value) {
     }
 }
 
-/// The pi-core bash tool, retargeted to the user's login shell. The harness
+/// The holt-core bash tool, retargeted to the user's login shell. The harness
 /// fixes the tool *name* as `bash`; the executable choice is holt's (see
 /// [`LocalExecutionEnv::exec`]) and so is the description — the user's shell
 /// may be zsh or anything else, so the model must not assume bash syntax.
@@ -1461,7 +1461,7 @@ mod tests {
         .await
         .unwrap();
         let text = match result.content.first().unwrap() {
-            pi_core::ai::types::BlockContent::Text(text) => text.text.clone(),
+            holt_core::ai::types::BlockContent::Text(text) => text.text.clone(),
             other => panic!("expected text block, got {other:?}"),
         };
         assert!(text.contains("from-bash"), "unexpected output: {text}");

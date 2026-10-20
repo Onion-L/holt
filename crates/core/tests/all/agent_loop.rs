@@ -9,20 +9,20 @@ use std::sync::{Arc, Mutex};
 use futures::future::BoxFuture;
 use serde_json::json;
 
-use pi_core::agent::agent_loop::{
+use holt_core::agent::agent_loop::{
     agent_loop, agent_loop_continue, pass_through_llm_messages, run_agent_loop,
     run_agent_loop_continue,
 };
-use pi_core::agent::stream_fn::set_default_stream_fn;
-use pi_core::agent::types::{
+use holt_core::agent::stream_fn::set_default_stream_fn;
+use holt_core::agent::types::{
     AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig, AgentLoopTurnUpdate,
     AgentMessage, AgentTool, AgentToolResult, BeforeToolCallResult, StreamFn, ToolExecutionMode,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, DoneReason, Message,
     Model, ModelInput, RoleUser, StopReason, TextContent, ToolCall, Usage,
 };
-use pi_core::ai::utils::event_stream::{EventStream, collect_events};
+use holt_core::ai::utils::event_stream::{EventStream, collect_events};
 
 fn create_usage() -> Usage {
     Usage::default()
@@ -61,9 +61,9 @@ fn create_assistant_message(
 }
 
 fn create_user_message(text: &str) -> AgentMessage {
-    AgentMessage::User(pi_core::ai::types::UserMessage {
+    AgentMessage::User(holt_core::ai::types::UserMessage {
         role: RoleUser,
-        content: pi_core::ai::types::UserContent::Text(text.to_string()),
+        content: holt_core::ai::types::UserContent::Text(text.to_string()),
         timestamp: 0,
     })
 }
@@ -87,7 +87,8 @@ fn scripted_stream_fn(
                 *calls += 1;
                 index
             };
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             for message in script(index) {
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::Stop,
@@ -211,11 +212,11 @@ async fn uses_the_configured_default_when_a_legacy_caller_omits_stream_fn() {
         let calls = Arc::clone(&calls);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
-                  _options: Option<&pi_core::ai::types::SimpleStreamOptions>| {
+                  _context: &holt_core::ai::types::Context,
+                  _options: Option<&holt_core::ai::types::SimpleStreamOptions>| {
                 *calls.lock().unwrap() += 1;
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::Stop,
                     message: create_assistant_message(
@@ -283,7 +284,7 @@ async fn emits_events_with_agent_message_types() {
 
 #[tokio::test]
 async fn handles_custom_message_types_via_convert_to_llm() {
-    let notification = AgentMessage::Custom(pi_core::agent::types::CustomAgentMessage::new(
+    let notification = AgentMessage::Custom(holt_core::agent::types::CustomAgentMessage::new(
         "notification",
         json!({ "text": "This is a notification", "timestamp": 0 }),
     ));
@@ -395,7 +396,7 @@ async fn handles_tool_calls_and_results() {
         cache_read: 3,
         cache_write: 4,
         total_tokens: 10,
-        cost: pi_core::ai::types::UsageCost {
+        cost: holt_core::ai::types::UsageCost {
             input: 0.1.into(),
             output: 0.2.into(),
             cache_read: 0.3.into(),
@@ -410,7 +411,7 @@ async fn handles_tool_calls_and_results() {
         cache_read: 7,
         cache_write: 8,
         total_tokens: 26,
-        cost: pi_core::ai::types::UsageCost {
+        cost: holt_core::ai::types::UsageCost {
             input: 0.5.into(),
             output: 0.6.into(),
             cache_read: 0.7.into(),
@@ -827,7 +828,8 @@ async fn emits_tool_execution_end_in_completion_order_persisting_results_in_sour
                 *calls += 1;
                 index
             };
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             if index == 0 {
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::ToolUse,
@@ -946,12 +948,13 @@ async fn injects_queued_messages_after_all_tool_calls_complete() {
                     matches!(
                         message,
                         Message::User(user)
-                            if matches!(&user.content, pi_core::ai::types::UserContent::Text(text) if text == "interrupt")
+                            if matches!(&user.content, holt_core::ai::types::UserContent::Text(text) if text == "interrupt")
                     )
                 });
                 *saw_interrupt_in_context.lock().unwrap() = saw;
             }
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             if index == 0 {
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::ToolUse,
@@ -1005,7 +1008,7 @@ async fn injects_queued_messages_after_all_tool_calls_complete() {
             AgentEvent::MessageStart { message } => match &**message {
                 AgentMessage::ToolResult(result) => Some(format!("tool:{}", result.tool_call_id)),
                 AgentMessage::User(user) => match &user.content {
-                    pi_core::ai::types::UserContent::Text(text) => Some(text.clone()),
+                    holt_core::ai::types::UserContent::Text(text) => Some(text.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -1139,7 +1142,8 @@ async fn forces_sequential_execution_when_one_of_multiple_tools_is_sequential() 
                 *calls += 1;
                 index
             };
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             if index == 0 {
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::ToolUse,
@@ -1223,7 +1227,7 @@ async fn uses_prepare_next_turn_snapshot_before_continuing() {
                     return Box::pin(async move { None });
                 }
                 *prepared.lock().unwrap() = true;
-                let context = pi_core::agent::types::AgentContext {
+                let context = holt_core::agent::types::AgentContext {
                     system_prompt: "second prompt".to_string(),
                     messages: turn.context.messages.clone(),
                     tools: turn.context.tools.clone(),
@@ -1252,7 +1256,8 @@ async fn uses_prepare_next_turn_snapshot_before_continuing() {
             if call == 2 {
                 *converted.lock().unwrap() = context.system_prompt.clone().unwrap_or_default();
             }
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             if call == 1 {
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::ToolUse,
@@ -1794,7 +1799,7 @@ async fn continues_from_existing_context_without_emitting_user_message_events() 
 
 #[tokio::test]
 async fn allows_custom_message_types_as_last_message() {
-    let custom = AgentMessage::Custom(pi_core::agent::types::CustomAgentMessage::new(
+    let custom = AgentMessage::Custom(holt_core::agent::types::CustomAgentMessage::new(
         "custom",
         json!({ "text": "Hook content", "timestamp": 0 }),
     ));
@@ -1813,9 +1818,9 @@ async fn allows_custom_message_types_as_last_message() {
                         AgentMessage::Assistant(assistant) => Message::Assistant(assistant),
                         AgentMessage::ToolResult(tool_result) => Message::ToolResult(tool_result),
                         AgentMessage::Custom(custom) => {
-                            Message::User(pi_core::ai::types::UserMessage {
+                            Message::User(holt_core::ai::types::UserMessage {
                                 role: RoleUser,
-                                content: pi_core::ai::types::UserContent::Text(
+                                content: holt_core::ai::types::UserContent::Text(
                                     custom
                                         .value
                                         .get("text")
@@ -1848,7 +1853,7 @@ async fn allows_custom_message_types_as_last_message() {
 /// used by the `Agent` wrapper (emit sink instead of an event stream).
 fn sink() -> (
     Arc<Mutex<Vec<AgentEvent>>>,
-    pi_core::agent::agent_loop::AgentEventSink,
+    holt_core::agent::agent_loop::AgentEventSink,
 ) {
     let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = {

@@ -4,19 +4,19 @@ use std::sync::Arc;
 
 use futures::FutureExt as _;
 
-use pi_core::agent::harness::agent_harness::{
+use holt_core::agent::harness::agent_harness::{
     AgentHarness, AgentHarnessOptions, HarnessScaffoldError, PromptInput, QueueInput, Resources,
     ToolReplay,
 };
-use pi_core::agent::harness::events::HarnessEventType;
-use pi_core::agent::harness::session::memory::{InMemorySessionStorage, Session};
-use pi_core::agent::harness::session::types::{LaneRecord, OperationIntent, SessionMetadata};
-use pi_core::agent::harness::tools::write::create_write_tool;
-use pi_core::agent::harness::types::{PromptTemplate, Skill};
-use pi_core::agent::types::{QueueMode, ThinkingLevel};
-use pi_core::ai::compat::get_model;
-use pi_core::ai::models::Models;
-use pi_core::ai::utils::retry::RetryPolicy;
+use holt_core::agent::harness::events::HarnessEventType;
+use holt_core::agent::harness::session::memory::{InMemorySessionStorage, Session};
+use holt_core::agent::harness::session::types::{LaneRecord, OperationIntent, SessionMetadata};
+use holt_core::agent::harness::tools::write::create_write_tool;
+use holt_core::agent::harness::types::{PromptTemplate, Skill};
+use holt_core::agent::types::{QueueMode, ThinkingLevel};
+use holt_core::ai::compat::get_model;
+use holt_core::ai::models::Models;
+use holt_core::ai::utils::retry::RetryPolicy;
 
 fn create_session(id: &str) -> Session {
     Session::new(Arc::new(InMemorySessionStorage::new(SessionMetadata {
@@ -235,7 +235,7 @@ async fn keeps_scaffold_safe_configuration_as_defensive_copies() {
 
     harness
         .set_compaction_settings(
-            pi_core::agent::harness::compaction::compaction::CompactionSettings {
+            holt_core::agent::harness::compaction::compaction::CompactionSettings {
                 enabled: false,
                 reserve_tokens: 1,
                 keep_recent_tokens: 2,
@@ -244,7 +244,7 @@ async fn keeps_scaffold_safe_configuration_as_defensive_copies() {
         .await;
     assert_eq!(
         harness.get_compaction_settings().await,
-        pi_core::agent::harness::compaction::compaction::CompactionSettings {
+        holt_core::agent::harness::compaction::compaction::CompactionSettings {
             enabled: false,
             reserve_tokens: 1,
             keep_recent_tokens: 2,

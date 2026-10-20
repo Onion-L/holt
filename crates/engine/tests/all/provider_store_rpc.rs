@@ -168,7 +168,7 @@ async fn an_override_rides_the_model_handed_to_the_stream_seam() {
 
     // The merged model is exactly what the transport receives: its baseUrl,
     // api, context window, and cost are the file's. In the real (unscripted)
-    // request path that model is also what pi-core's calculate_cost bills
+    // request path that model is also what holt-core's calculate_cost bills
     // from, so the file's rates are what the usage ledger records.
     let model = &provider.requests()[0].core_model;
     assert_eq!(model.id, "gpt-5.4");

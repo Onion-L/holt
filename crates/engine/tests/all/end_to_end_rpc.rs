@@ -13,8 +13,8 @@ use crate::common;
 
 use common::{ScriptedProvider, ScriptedReply};
 use futures::StreamExt as _;
+use holt_core::ai::types::{Message, Usage};
 use holt_rpc::{RpcReply, RpcService as _, methods};
-use pi_core::ai::types::{Message, Usage};
 
 fn big_text() -> String {
     let mut text = String::new();
@@ -37,11 +37,11 @@ fn near_window_usage() -> Usage {
 fn user_text(message: &Message) -> &str {
     match message {
         Message::User(user) => match &user.content {
-            pi_core::ai::types::UserContent::Text(text) => text,
-            pi_core::ai::types::UserContent::Blocks(blocks) => blocks
+            holt_core::ai::types::UserContent::Text(text) => text,
+            holt_core::ai::types::UserContent::Blocks(blocks) => blocks
                 .iter()
                 .find_map(|block| match block {
-                    pi_core::ai::types::BlockContent::Text(text) => Some(text.text.as_str()),
+                    holt_core::ai::types::BlockContent::Text(text) => Some(text.text.as_str()),
                     _ => None,
                 })
                 .unwrap_or(""),

@@ -1,10 +1,10 @@
 use std::{collections::HashMap, collections::HashSet, sync::Arc};
 
+use holt_core::ai::models::get_supported_thinking_levels;
+use holt_core::ai::types::{Model as CoreModel, ModelInput, ModelThinkingLevel};
 use holt_proto::{
     Model as HoltModel, Provider as HoltProvider, ProviderId, ProviderVariant, ReasoningLevel,
 };
-use pi_core::ai::models::get_supported_thinking_levels;
-use pi_core::ai::types::{Model as CoreModel, ModelInput, ModelThinkingLevel};
 
 use crate::{
     credentials::HoltCredentialStore,

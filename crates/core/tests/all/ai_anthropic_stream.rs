@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use pi_core::ai::api::anthropic_messages::{AnthropicOptions, stream};
-use pi_core::ai::types::{
+use holt_core::ai::api::anthropic_messages::{AnthropicOptions, stream};
+use holt_core::ai::types::{
     AssistantContent, Context, Message, Model, RoleUser, StopReason, Tool, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 
 fn model() -> Model {
     Model {
@@ -19,10 +19,10 @@ fn model() -> Model {
         base_url: "https://api.anthropic.com".to_string(),
         reasoning: true,
         input: vec![
-            pi_core::ai::types::ModelInput::Text,
-            pi_core::ai::types::ModelInput::Image,
+            holt_core::ai::types::ModelInput::Text,
+            holt_core::ai::types::ModelInput::Image,
         ],
-        cost: pi_core::ai::types::ModelCost::default(),
+        cost: holt_core::ai::types::ModelCost::default(),
         context_window: 200_000,
         max_tokens: 64_000,
         ..Default::default()
@@ -65,8 +65,8 @@ impl HttpFetch for SseMockFetch {
 
 fn sse_options(fetch: Arc<SseMockFetch>) -> AnthropicOptions {
     AnthropicOptions {
-        base: pi_core::ai::types::StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+        base: holt_core::ai::types::StreamOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("sk-ant-test".to_string()),
                 fetch: Some(fetch),
                 ..Default::default()
@@ -268,8 +268,8 @@ async fn retries_an_overloaded_response_before_streaming() {
         calls: std::sync::atomic::AtomicU32::new(0),
     });
     let mut options = AnthropicOptions {
-        base: pi_core::ai::types::StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+        base: holt_core::ai::types::StreamOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("sk-ant-test".to_string()),
                 fetch: Some(fetch.clone()),
                 max_retries: Some(1),
@@ -377,11 +377,11 @@ async fn preserves_content_from_content_block_start_events() {
     assert_eq!(
         result.content,
         vec![
-            AssistantContent::Text(pi_core::ai::types::TextContent {
+            AssistantContent::Text(holt_core::ai::types::TextContent {
                 text: "Initial text plus delta".to_string(),
                 ..Default::default()
             }),
-            AssistantContent::Thinking(pi_core::ai::types::ThinkingContent {
+            AssistantContent::Thinking(holt_core::ai::types::ThinkingContent {
                 thinking: "Initial thinking plus delta".to_string(),
                 thinking_signature: Some("initial signature plus delta".to_string()),
                 ..Default::default()
@@ -395,7 +395,7 @@ async fn preserves_content_from_content_block_start_events() {
 
 #[tokio::test]
 async fn preserves_refusal_stop_details_from_message_delta() {
-    let model = pi_core::ai::providers::builtin::get_builtin_model("anthropic", "claude-fable-5")
+    let model = holt_core::ai::providers::builtin::get_builtin_model("anthropic", "claude-fable-5")
         .expect("claude-fable-5 model");
     let context = Context {
         messages: vec![Message::User(UserMessage {
@@ -542,7 +542,7 @@ async fn treats_message_delta_without_usage_as_a_no_op_for_usage_accumulation() 
     assert!(result.error_message.is_none());
     assert_eq!(
         result.content,
-        vec![AssistantContent::Text(pi_core::ai::types::TextContent {
+        vec![AssistantContent::Text(holt_core::ai::types::TextContent {
             text: "Hello".to_string(),
             ..Default::default()
         })]
@@ -570,7 +570,7 @@ async fn ignores_unknown_sse_events_after_message_stop() {
     assert!(result.error_message.is_none());
     assert_eq!(
         result.content,
-        vec![AssistantContent::Text(pi_core::ai::types::TextContent {
+        vec![AssistantContent::Text(holt_core::ai::types::TextContent {
             text: "Hello".to_string(),
             ..Default::default()
         })]

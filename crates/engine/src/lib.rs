@@ -3,7 +3,7 @@
 //! - [`LocalEngine`] — the [`RpcService`] the UI speaks to over the
 //!   in-memory RPC transport: space/chat persistence, watch streams,
 //!   provider discovery and credentials, folder browsing, and a
-//!   single-agent LLM run loop over pi-core. Another backend can replace it
+//!   single-agent LLM run loop over holt-core. Another backend can replace it
 //!   behind the same trait: implement the methods in its `handle`, keep
 //!   the reply shapes, and the whole UI keeps working.
 //! - [`InstanceLock`] — single-instance guard on the data dir.
@@ -119,7 +119,7 @@ pub struct EngineConfig {
     /// through it instead of the built-in provider transport, so
     /// integration tests script model replies and assert on the message
     /// lists the "model" receives. Production assembly leaves it unset.
-    pub stream_fn: Option<pi_core::agent::types::StreamFn>,
+    pub stream_fn: Option<holt_core::agent::types::StreamFn>,
     /// Injectable search-backend resolver, set only by tests (like
     /// `stream_fn`): when present, it stands in for the built-in adapter
     /// table when the engine resolves the configured backend at Turn
@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(
             store["sourceGeneratedAt"],
             serde_json::json!(
-                pi_core::ai::providers::builtin::get_builtin_model_data_generated_at()
+                holt_core::ai::providers::builtin::get_builtin_model_data_generated_at()
             )
         );
         assert!(
@@ -1385,7 +1385,7 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_run_settles_the_queue_and_keeps_the_driver_alive() {
         let dir = tempfile::tempdir().unwrap();
-        let stream_fn: pi_core::agent::types::StreamFn =
+        let stream_fn: holt_core::agent::types::StreamFn =
             Arc::new(|_, _, _| panic!("injected provider panic"));
         let config = EngineConfig {
             data_dir: dir.path().into(),

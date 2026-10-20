@@ -130,7 +130,9 @@ fn user_text(request: &common::RecordedRequest) -> String {
         .messages
         .iter()
         .filter_map(|message| match message {
-            pi_core::ai::types::Message::User(message) => Some(message.content.text().to_string()),
+            holt_core::ai::types::Message::User(message) => {
+                Some(message.content.text().to_string())
+            }
             _ => None,
         })
         .next_back()

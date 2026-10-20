@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
 use futures::StreamExt as _;
+use holt_core::ai::types::{JsF64, Usage, UsageCost};
 use holt_rpc::{RpcReply, RpcService as _, methods};
-use pi_core::ai::types::{JsF64, Usage, UsageCost};
 use serde_json::{Value, json};
 
 /// How long "no event arrives" waits before passing.

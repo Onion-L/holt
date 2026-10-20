@@ -27,17 +27,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::openai_completions::stream_simple;
-use pi_core::ai::env_api_keys::{find_env_keys, get_env_api_key};
-use pi_core::ai::models::get_supported_thinking_levels;
-use pi_core::ai::types::{
+use holt_core::ai::api::openai_completions::stream_simple;
+use holt_core::ai::env_api_keys::{find_env_keys, get_env_api_key};
+use holt_core::ai::models::get_supported_thinking_levels;
+use holt_core::ai::types::{
     CacheControlFormat, CacheRetention, ChatTemplateKwargValue, ChatTemplateKwargs, Context,
     DeferredToolsMode, MaxTokensField, Message, Model, ModelCompat, ModelCost, ModelCostRates,
     ModelInput, ModelThinkingLevel, ProviderEnv, ProviderRequestOptions, SimpleStreamOptions,
     StreamOptions, ThinkingFormat, ThinkingLevel, ThinkingLevelMap, ThinkingVariable, UserContent,
     UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -47,13 +47,13 @@ use serde_json::{Value, json};
 /// Port of the TS `getModel`/`getBuiltinModel` catalog lookups (both collapse
 /// to the same built-in catalog read in Rust).
 fn get_model(provider: &str, model_id: &str) -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model(provider, model_id)
+    holt_core::ai::providers::builtin::get_builtin_model(provider, model_id)
         .unwrap_or_else(|| panic!("missing model {provider}/{model_id}"))
 }
 
 /// Port of the TS `getModels(provider)` catalog read.
 fn get_models(provider: &str) -> Vec<Model> {
-    pi_core::ai::providers::builtin::get_builtin_models(provider)
+    holt_core::ai::providers::builtin::get_builtin_models(provider)
 }
 
 /// The `cost: { input, output, cacheRead, cacheWrite }` fixture shape.
@@ -106,7 +106,7 @@ fn test_context() -> Context {
         messages: vec![Message::User(UserMessage {
             content: UserContent::Text("test".to_string()),
             timestamp: 0,
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
         })],
         ..Default::default()
     }
@@ -815,7 +815,7 @@ fn embedded_catalog_models_match_their_group() {
 
     // The whole embedded file also parses into the typed catalog (unknown
     // api/group values would fail deserialization).
-    let typed = pi_core::ai::models_generated::models();
+    let typed = holt_core::ai::models_generated::models();
     for (provider, entries) in &models {
         let typed_entries = typed
             .get(provider)

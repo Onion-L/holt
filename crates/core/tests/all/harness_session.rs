@@ -5,15 +5,15 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use pi_core::agent::harness::session::context::{
+use holt_core::agent::harness::session::context::{
     SessionContextBuildOptions, build_session_context,
 };
-use pi_core::agent::harness::session::memory::{
+use holt_core::agent::harness::session::memory::{
     InMemorySessionRepo, InMemorySessionStorage, Session,
 };
-use pi_core::agent::harness::session::types::{Entry, EntryType, SessionMetadata};
-use pi_core::agent::types::AgentMessage;
-use pi_core::ai::types::{
+use holt_core::agent::harness::session::types::{Entry, EntryType, SessionMetadata};
+use holt_core::agent::types::AgentMessage;
+use holt_core::ai::types::{
     AssistantContent, BlockContent, DeferredHandle, RoleAssistant, RoleUser, StopReason,
     TextContent, UserContent, UserMessage,
 };
@@ -30,7 +30,7 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_message(text: &str) -> AgentMessage {
-    AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content: vec![AssistantContent::Text(TextContent {
             text: text.to_string(),
@@ -193,7 +193,7 @@ async fn projects_custom_entries_and_omits_deferred_assistant_handles() {
                     .unwrap_or_default();
                 Some(vec![user_message(&format!("note: {text}"))])
             })
-                as pi_core::agent::harness::session::context::CustomEntryContextMessageProjector,
+                as holt_core::agent::harness::session::context::CustomEntryContextMessageProjector,
         )]
         .into_iter()
         .collect(),
@@ -218,7 +218,7 @@ async fn session_uses_one_injectable_id_generator_across_lane_views() {
     let next_id = AtomicU32::new(0);
     let id_generator =
         Arc::new(move || format!("generated-{}", next_id.fetch_add(1, Ordering::SeqCst) + 1))
-            as pi_core::agent::harness::session::memory::IdGenerator;
+            as holt_core::agent::harness::session::memory::IdGenerator;
     let storage = Arc::new(InMemorySessionStorage::new(SessionMetadata {
         id: "session".to_string(),
         created_at: 1,
@@ -280,7 +280,7 @@ async fn in_memory_repo_create_open_list_delete_fork() {
     let forked = repo
         .fork(
             metadata.clone(),
-            pi_core::agent::harness::session::types::ForkOptions::Tree,
+            holt_core::agent::harness::session::types::ForkOptions::Tree,
             Default::default(),
         )
         .await

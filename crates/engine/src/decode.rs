@@ -1,4 +1,4 @@
-//! The agent-event → transcript translation: pi-core tool calls and
+//! The agent-event → transcript translation: holt-core tool calls and
 //! assistant messages decode into `MessagePart`s, completed results stamp
 //! onto their chips wherever they sit, and every completed unit lands its
 //! incremental line in the log (ADR-transcript-append-only-log-per-chat-lock).
@@ -9,20 +9,20 @@ use std::{
 };
 
 use chrono::Utc;
-use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
-use holt_proto::ToolCall as TranscriptToolCall;
-use pi_core::{
+use holt_core::{
     agent::{
         harness::tools::path_utils::normalize_tool_path,
         types::{AgentMessage, AgentToolResult},
     },
     ai::types::{AssistantContent, BlockContent},
 };
+use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
+use holt_proto::ToolCall as TranscriptToolCall;
 
 use crate::agent::ChatRuntime;
 use crate::history::CompactionRecord;
 
-/// Decode a pi-core tool call into the transcript's decoded shape. Heavy
+/// Decode a holt-core tool call into the transcript's decoded shape. Heavy
 /// inputs (write content, edit strings) decode here and are stripped by the
 /// render-only policy below; unknown tools keep their raw input so the chip
 /// can still name them.
@@ -124,12 +124,12 @@ fn decode_tool_call(
     }
 }
 
-fn transcript_tool_call(tool_call: &pi_core::ai::types::ToolCall) -> TranscriptToolCall {
+fn transcript_tool_call(tool_call: &holt_core::ai::types::ToolCall) -> TranscriptToolCall {
     sanitize_tool_call(&decode_tool_call(&tool_call.name, &tool_call.arguments))
 }
 
 /// The full tool output persisted on the resolved tool part — a Read's file
-/// content, the whole command transcript. pi-core bounds its builtins (read
+/// content, the whole command transcript. holt-core bounds its builtins (read
 /// truncates by lines/bytes), so results ride verbatim; the defensive ceiling
 /// only keeps an unbounded MCP payload from flooding the doc.
 pub(crate) fn tool_output_full(result: &AgentToolResult) -> Option<String> {
@@ -453,7 +453,7 @@ pub(crate) fn assistant_parts(
     }
     if let Some(error) = message.error_message.as_ref() {
         let user_aborted =
-            cancelled && message.stop_reason == pi_core::ai::types::StopReason::Aborted;
+            cancelled && message.stop_reason == holt_core::ai::types::StopReason::Aborted;
         if !user_aborted {
             parts.push(MessagePart::Error {
                 id: format!("e{}", id_base + parts.len()),
@@ -469,7 +469,7 @@ pub(crate) fn assistant_parts(
 /// cwd; any other file — including other `.md` files inside a skill's
 /// directory — decodes as an ordinary read.
 fn skill_read_part(
-    tool_call: &pi_core::ai::types::ToolCall,
+    tool_call: &holt_core::ai::types::ToolCall,
     cwd: &str,
     skill_files: &HashMap<String, String>,
 ) -> Option<MessagePart> {
@@ -532,7 +532,7 @@ pub(crate) fn update_assistant_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_core::ai::types::{
+    use holt_core::ai::types::{
         AssistantContent, AssistantMessage, TextContent, ThinkingContent, ToolCall,
     };
 
@@ -659,7 +659,7 @@ mod tests {
                     text: "partial".into(),
                     ..Default::default()
                 })],
-                stop_reason: pi_core::ai::types::StopReason::Aborted,
+                stop_reason: holt_core::ai::types::StopReason::Aborted,
                 error_message: Some("The operation was aborted".into()),
                 ..Default::default()
             }))

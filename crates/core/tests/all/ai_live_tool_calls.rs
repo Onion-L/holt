@@ -24,7 +24,7 @@ use common::live::{
     self, LiveEffort, LiveOptions, as_openai_completions, empty_object_schema, get_model_or_panic,
     live_complete, live_env, now_millis, red_circle_base64, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, BlockContent, Context, ImageContent, Message, Model, ModelInput,
     RoleToolResult, RoleUser, StopReason, TextContent, Tool, ToolResultMessage, UserContent,
     UserMessage,
@@ -630,7 +630,7 @@ async fn tool_call_without_result_oauth_providers() {
     if anthropic_token.is_none() {
         skip(
             "Anthropic OAuth Provider: should filter out tool calls without corresponding tool results",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
     } else {
         let model = get_model_or_panic("anthropic", "claude-haiku-4-5");
@@ -648,7 +648,7 @@ async fn tool_call_without_result_oauth_providers() {
     if copilot_token.is_none() {
         skip(
             "GitHub Copilot Provider: should filter out tool calls without corresponding tool results",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
     } else {
         for (label, model_id) in [
@@ -673,7 +673,7 @@ async fn tool_call_without_result_oauth_providers() {
     if codex_token.is_none() {
         skip(
             "OpenAI Codex Provider: should filter out tool calls without corresponding tool results",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
     } else {
         let model = get_model_or_panic("openai-codex", "gpt-5.5");
@@ -877,7 +877,7 @@ async fn image_tool_result_oauth_providers() {
     if anthropic_token.is_none() {
         skip(
             "Anthropic OAuth Provider (claude-sonnet-4-5): tool result images",
-            "~/.pi/agent/auth.json anthropic credentials",
+            "~/.holt/live-auth.json anthropic credentials",
         );
     } else {
         let model = get_model_or_panic("anthropic", "claude-sonnet-4-5");
@@ -901,7 +901,7 @@ async fn image_tool_result_oauth_providers() {
     if copilot_token.is_none() {
         skip(
             "GitHub Copilot Provider: tool result images",
-            "~/.pi/agent/auth.json github-copilot credentials",
+            "~/.holt/live-auth.json github-copilot credentials",
         );
     } else {
         let options = LiveOptions::with_api_key(copilot_token.as_deref().unwrap_or_default());
@@ -934,7 +934,7 @@ async fn image_tool_result_oauth_providers() {
     if codex_token.is_none() {
         skip(
             "OpenAI Codex Provider (gpt-5.5): tool result images",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
     } else {
         let model = get_model_or_panic("openai-codex", "gpt-5.5");

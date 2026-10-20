@@ -2,8 +2,8 @@
 
 use serde_json::{Value, json};
 
-use pi_core::ai::types::{Tool, ToolCall};
-use pi_core::ai::utils::validation::validate_tool_arguments;
+use holt_core::ai::types::{Tool, ToolCall};
+use holt_core::ai::utils::validation::validate_tool_arguments;
 
 fn create_tool_call_with_plain_schema(schema: Value, value: Value) -> (Tool, ToolCall) {
     let tool = Tool {
@@ -227,7 +227,7 @@ fn rejects_invalid_coercions_for_serialized_plain_json_schemas() {
 
 #[test]
 fn validate_tool_call_reports_missing_tools() {
-    use pi_core::ai::utils::validation::validate_tool_call;
+    use holt_core::ai::utils::validation::validate_tool_call;
     let tools = vec![Tool {
         name: "echo".to_string(),
         description: "Echo".to_string(),

@@ -12,12 +12,12 @@ use crate::common;
 
 use std::sync::Arc;
 
-use pi_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
-use pi_core::agent::harness::types::{
+use holt_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
+use holt_core::agent::harness::types::{
     CreateDirOptions, CreateTempFileOptions, FileKind, FileSystem, ReadTextLinesOptions,
     RemoveOptions, Shell, ShellExecOptions, WriteContent,
 };
-use pi_core::agent::harness::utils::shell_output::execute_shell_with_capture;
+use holt_core::agent::harness::utils::shell_output::execute_shell_with_capture;
 
 fn env_for(cwd: &str) -> NodeExecutionEnv {
     NodeExecutionEnv::new(NodeExecutionEnvOptions {
@@ -232,7 +232,7 @@ async fn returns_file_error_for_missing_paths() {
     let error = env.file_info("missing.txt", None).await.unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::FileErrorCode::NotFound
+        holt_core::agent::harness::types::FileErrorCode::NotFound
     );
     assert_eq!(error.path, Some(format!("{root}/missing.txt")));
     assert!(!env.exists("missing.txt", None).await.unwrap());
@@ -248,7 +248,7 @@ async fn returns_file_error_for_listing_non_directories() {
     let error = env.list_dir("file.txt", None).await.unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::FileErrorCode::NotDirectory
+        holt_core::agent::harness::types::FileErrorCode::NotDirectory
     );
 }
 
@@ -322,7 +322,7 @@ async fn reports_the_source_path_when_rename_fails_because_the_source_is_missing
         .unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::FileErrorCode::NotFound
+        holt_core::agent::harness::types::FileErrorCode::NotFound
     );
     assert_eq!(error.path, Some(format!("{root}/missing-source.txt")));
     assert_eq!(
@@ -367,7 +367,7 @@ async fn honors_create_dir_recursive_false_and_remove_options() {
         .unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::FileErrorCode::NotFound
+        holt_core::agent::harness::types::FileErrorCode::NotFound
     );
 
     env.write_file(
@@ -435,7 +435,7 @@ async fn returns_aborted_results_for_pre_aborted_cancellable_file_operations() {
     let signal = tokio_util::sync::CancellationToken::new();
     signal.cancel();
 
-    let results: Vec<pi_core::agent::harness::types::FileErrorCode> = vec![
+    let results: Vec<holt_core::agent::harness::types::FileErrorCode> = vec![
         env.read_text_file("file.txt", Some(signal.clone()))
             .await
             .map(|_| ())
@@ -474,7 +474,10 @@ async fn returns_aborted_results_for_pre_aborted_cancellable_file_operations() {
             .code,
     ];
     for code in results {
-        assert_eq!(code, pi_core::agent::harness::types::FileErrorCode::Aborted);
+        assert_eq!(
+            code,
+            holt_core::agent::harness::types::FileErrorCode::Aborted
+        );
     }
 }
 
@@ -526,12 +529,12 @@ async fn applies_string_shell_environment_overrides() {
         ),
         (
             "an empty override shadows the base value",
-            Some(vec![("PI_SESSION_FILE", "")]),
+            Some(vec![("HOLT_SESSION_FILE", "")]),
             "x:",
         ),
         (
             "a string override replaces the base value",
-            Some(vec![("PI_SESSION_FILE", "/sessions/current.jsonl")]),
+            Some(vec![("HOLT_SESSION_FILE", "/sessions/current.jsonl")]),
             "x:/sessions/current.jsonl",
         ),
     ];
@@ -540,9 +543,9 @@ async fn applies_string_shell_environment_overrides() {
         let env = shell_env_for(
             &root,
             vec![
-                ("PI_SESSION_FILE", "/stale/parent.jsonl"),
-                ("PI_CODING_AGENT", "true"),
-                ("PI_NODE_ENV_PRESERVED_TEST", "preserved"),
+                ("HOLT_SESSION_FILE", "/stale/parent.jsonl"),
+                ("HOLT_CODING_AGENT", "true"),
+                ("HOLT_NODE_ENV_PRESERVED_TEST", "preserved"),
             ],
         );
         let overrides = overrides.map(|pairs| {
@@ -553,7 +556,7 @@ async fn applies_string_shell_environment_overrides() {
         });
         let result = env
             .exec(
-                "printf '%s:%s|%s|%s' \"${PI_SESSION_FILE+x}\" \"${PI_SESSION_FILE-}\" \"$PI_CODING_AGENT\" \"$PI_NODE_ENV_PRESERVED_TEST\"",
+                "printf '%s:%s|%s|%s' \"${HOLT_SESSION_FILE+x}\" \"${HOLT_SESSION_FILE-}\" \"$HOLT_CODING_AGENT\" \"$HOLT_NODE_ENV_PRESERVED_TEST\"",
                 Some(&ShellExecOptions {
                     env: overrides,
                     ..Default::default()
@@ -571,9 +574,9 @@ async fn applies_string_shell_environment_overrides() {
 #[tokio::test]
 async fn can_replace_rather_than_inherit_the_default_shell_environment() {
     let root = common::create_temp_dir();
-    let inherited_key = "PI_NODE_ENV_INHERITED_TEST";
-    let configured_key = "PI_NODE_ENV_CONFIGURED_TEST";
-    let explicit_key = "PI_NODE_ENV_EXPLICIT_TEST";
+    let inherited_key = "HOLT_NODE_ENV_INHERITED_TEST";
+    let configured_key = "HOLT_NODE_ENV_CONFIGURED_TEST";
+    let explicit_key = "HOLT_NODE_ENV_EXPLICIT_TEST";
 
     let env = shell_env_for(&root, vec![(configured_key, "configured")]);
     let mut explicit = std::collections::BTreeMap::new();
@@ -629,14 +632,14 @@ async fn streams_stdout_and_stderr_chunks() {
     let env = env_for(&root);
     let stdout = Arc::new(std::sync::Mutex::new(String::new()));
     let stderr = Arc::new(std::sync::Mutex::new(String::new()));
-    let stdout_listener: pi_core::agent::harness::types::ChunkListener = {
+    let stdout_listener: holt_core::agent::harness::types::ChunkListener = {
         let stdout = Arc::clone(&stdout);
         Arc::new(move |chunk: &str| {
             stdout.lock().unwrap().push_str(chunk);
             Ok(())
         })
     };
-    let stderr_listener: pi_core::agent::harness::types::ChunkListener = {
+    let stderr_listener: holt_core::agent::harness::types::ChunkListener = {
         let stderr = Arc::clone(&stderr);
         Arc::new(move |chunk: &str| {
             stderr.lock().unwrap().push_str(chunk);
@@ -668,7 +671,7 @@ async fn reports_a_missing_working_directory_before_spawning() {
     let error = env.exec("printf ok", None).await.unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::ExecutionErrorCode::SpawnError
+        holt_core::agent::harness::types::ExecutionErrorCode::SpawnError
     );
     assert!(
         error.message.contains("Working directory does not exist"),
@@ -703,7 +706,7 @@ async fn returns_timeout_errors_for_commands_exceeding_the_timeout() {
         .unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::ExecutionErrorCode::Timeout
+        holt_core::agent::harness::types::ExecutionErrorCode::Timeout
     );
 }
 
@@ -711,7 +714,7 @@ async fn returns_timeout_errors_for_commands_exceeding_the_timeout() {
 async fn returns_callback_errors_from_exec_stream_handlers() {
     let root = common::create_temp_dir();
     let env = env_for(&root);
-    let failing: pi_core::agent::harness::types::ChunkListener =
+    let failing: holt_core::agent::harness::types::ChunkListener =
         Arc::new(|_chunk: &str| Err("callback failed".to_string()));
     let error = env
         .exec(
@@ -725,7 +728,7 @@ async fn returns_callback_errors_from_exec_stream_handlers() {
         .unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::ExecutionErrorCode::CallbackError
+        holt_core::agent::harness::types::ExecutionErrorCode::CallbackError
     );
     assert_eq!(error.message, "callback failed");
 }
@@ -741,7 +744,7 @@ async fn returns_shell_unavailable_and_spawn_errors() {
     let missing_shell = missing_shell_env.exec("printf ok", None).await.unwrap_err();
     assert_eq!(
         missing_shell.code,
-        pi_core::agent::harness::types::ExecutionErrorCode::ShellUnavailable
+        holt_core::agent::harness::types::ExecutionErrorCode::ShellUnavailable
     );
 
     let env = env_for(&root);
@@ -761,7 +764,7 @@ async fn returns_shell_unavailable_and_spawn_errors() {
     let spawn_error = spawn_error_env.exec("printf ok", None).await.unwrap_err();
     assert_eq!(
         spawn_error.code,
-        pi_core::agent::harness::types::ExecutionErrorCode::SpawnError
+        holt_core::agent::harness::types::ExecutionErrorCode::SpawnError
     );
 }
 
@@ -779,7 +782,7 @@ async fn returns_an_aborted_result_for_aborted_commands() {
     let error = execution.await.unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::agent::harness::types::ExecutionErrorCode::Aborted
+        holt_core::agent::harness::types::ExecutionErrorCode::Aborted
     );
 }
 

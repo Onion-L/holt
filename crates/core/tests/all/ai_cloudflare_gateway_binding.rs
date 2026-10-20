@@ -10,15 +10,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::cloudflare_gateway_binding::{
+use holt_core::ai::api::cloudflare_gateway_binding::{
     AiGatewayBinding, AiGatewayBindingGateway, AiGatewayRunOptions, AiGatewayUniversalRequest,
     CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL, GatewayBindingFetchOptions,
     create_gateway_binding_fetch,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     Context, FetchFunction, Message, Model, RoleUser, StopReason, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetchError, HttpMethod, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetchError, HttpMethod, HttpRequest, HttpResponse};
 use serde_json::json;
 
 const BASE_URL: &str = "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway";
@@ -452,8 +452,8 @@ async fn keeps_sdk_placeholder_auth_out_of_entries_when_paired_with_null_auth_he
         provider: "openai".to_string(),
         base_url: format!("{BASE_URL}/openai"),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
-        cost: pi_core::ai::types::ModelCost::default(),
+        input: vec![holt_core::ai::types::ModelInput::Text],
+        cost: holt_core::ai::types::ModelCost::default(),
         context_window: 10_000,
         max_tokens: 1_000,
         ..Default::default()
@@ -461,14 +461,14 @@ async fn keeps_sdk_placeholder_auth_out_of_entries_when_paired_with_null_auth_he
     let context = Context {
         messages: vec![Message::User(UserMessage {
             role: RoleUser,
-            content: pi_core::ai::types::UserContent::Text("hello".to_string()),
+            content: holt_core::ai::types::UserContent::Text("hello".to_string()),
             timestamp: 1,
         })],
         ..Default::default()
     };
-    let options = pi_core::ai::api::openai_completions::OpenAICompletionsOptions {
-        base: pi_core::ai::types::StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+    let options = holt_core::ai::api::openai_completions::OpenAICompletionsOptions {
+        base: holt_core::ai::types::StreamOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 fetch: Some(fetch),
                 headers: Some(
                     [
@@ -490,7 +490,7 @@ async fn keeps_sdk_placeholder_auth_out_of_entries_when_paired_with_null_auth_he
         ..Default::default()
     };
 
-    let result = pi_core::ai::api::openai_completions::stream(&model, &context, Some(&options))
+    let result = holt_core::ai::api::openai_completions::stream(&model, &context, Some(&options))
         .result()
         .await;
 

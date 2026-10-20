@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use pi_core::ai::auth::oauth::device_code::{
+use holt_core::ai::auth::oauth::device_code::{
     OAuthDeviceCodePollOptions, OAuthDeviceCodePollResult, poll_oauth_device_code_flow,
 };
 use tokio_util::sync::CancellationToken;

@@ -44,8 +44,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use pi_core::agent::types::StreamFn;
-use pi_core::ai::types::{AssistantMessage, ToolResultMessage, Usage, UsageCost};
+use holt_core::agent::types::StreamFn;
+use holt_core::ai::types::{AssistantMessage, ToolResultMessage, Usage, UsageCost};
 
 use crate::agent::ChatRuntime;
 use crate::store::id_is_path_safe;
@@ -381,7 +381,7 @@ pub(crate) fn watch_snapshot(chat: &ChatRuntime) -> holt_proto::ChatUsage {
     let estimated = report.is_none();
     let tokens = report.map_or_else(
         || {
-            pi_core::agent::harness::compaction::compaction::estimate_context_tokens(
+            holt_core::agent::harness::compaction::compaction::estimate_context_tokens(
                 &chat.history.read().unwrap_or_else(|e| e.into_inner()),
             )
             .tokens as u64
@@ -820,7 +820,7 @@ fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
 /// round-trip finished. Streams that never finished (a cancelled or hung
 /// request the provider never reported on) stay pending and book nothing.
 pub(crate) type Billing =
-    Arc<Mutex<Vec<pi_core::ai::utils::event_stream::AssistantMessageEventStream>>>;
+    Arc<Mutex<Vec<holt_core::ai::utils::event_stream::AssistantMessageEventStream>>>;
 
 /// Wrap a transport so every request it serves is observed: the stream is
 /// cloned into the billing vector before it flows back, results included —
@@ -883,7 +883,7 @@ pub(crate) fn archive_and_delete(data_dir: &Path, chat_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_core::ai::types::{JsF64, ToolResultMessage, Usage};
+    use holt_core::ai::types::{JsF64, ToolResultMessage, Usage};
 
     fn record(kind: UsageKind, input: u64, output: u64) -> UsageRecord {
         UsageRecord {

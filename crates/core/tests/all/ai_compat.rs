@@ -3,9 +3,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::compat::{ApiProvider, complete, register_api_provider, reset_api_providers};
-use pi_core::ai::types::{AssistantMessage, Context, Model, ProviderRequestOptions, StreamOptions};
-use pi_core::ai::utils::event_stream::create_assistant_message_event_stream;
+use holt_core::ai::compat::{ApiProvider, complete, register_api_provider, reset_api_providers};
+use holt_core::ai::types::{
+    AssistantMessage, Context, Model, ProviderRequestOptions, StreamOptions,
+};
+use holt_core::ai::utils::event_stream::create_assistant_message_event_stream;
 
 /// Serializes access to the global api-provider registry.
 async fn registry_lock() -> tokio::sync::MutexGuard<'static, ()> {
@@ -23,7 +25,7 @@ fn compat_model() -> Model {
         provider: "custom-openai".to_string(),
         base_url: "https://example.test/v1".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
+        input: vec![holt_core::ai::types::ModelInput::Text],
         context_window: 128_000,
         max_tokens: 4096,
         ..Default::default()
@@ -35,7 +37,7 @@ fn terminal_message() -> AssistantMessage {
         api: "openai-responses".to_string(),
         provider: "custom-openai".to_string(),
         model: "test-model".to_string(),
-        stop_reason: pi_core::ai::types::StopReason::Stop,
+        stop_reason: holt_core::ai::types::StopReason::Stop,
         ..Default::default()
     }
 }
@@ -57,11 +59,11 @@ async fn dispatches_unknown_providers_through_the_legacy_api_registry() {
                     .push(options.and_then(|options| options.base.api_key.clone()));
                 let stream = create_assistant_message_event_stream();
                 let output = terminal_message();
-                stream.push(pi_core::ai::types::AssistantMessageEvent::Start {
+                stream.push(holt_core::ai::types::AssistantMessageEvent::Start {
                     partial: output.clone(),
                 });
-                stream.push(pi_core::ai::types::AssistantMessageEvent::Done {
-                    reason: pi_core::ai::types::DoneReason::Stop,
+                stream.push(holt_core::ai::types::AssistantMessageEvent::Done {
+                    reason: holt_core::ai::types::DoneReason::Stop,
                     message: output.clone(),
                 });
                 stream.end(Some(output));
@@ -87,7 +89,7 @@ async fn dispatches_unknown_providers_through_the_legacy_api_registry() {
         ..Default::default()
     };
     let message = complete(&compat_model(), &context, Some(options)).await;
-    assert_eq!(message.stop_reason, pi_core::ai::types::StopReason::Stop);
+    assert_eq!(message.stop_reason, holt_core::ai::types::StopReason::Stop);
 
     let captured = captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
@@ -105,7 +107,7 @@ fn legacy_stream_aliases_delegate_to_the_api_modules() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // The anthropic alias rejects non-anthropic models (mismatched api),
         // proving it delegates into the anthropic implementation.
-        pi_core::ai::compat::stream_anthropic(&model, &context, None);
+        holt_core::ai::compat::stream_anthropic(&model, &context, None);
     }));
     assert!(result.is_err());
 }
@@ -114,7 +116,7 @@ fn legacy_stream_aliases_delegate_to_the_api_modules() {
 // explicit registration never clobbers an existing entry and stays idempotent.
 #[tokio::test]
 async fn register_built_in_api_providers_preserves_overrides_and_is_idempotent() {
-    use pi_core::ai::compat::{get_api_provider, get_api_providers};
+    use holt_core::ai::compat::{get_api_provider, get_api_providers};
 
     let _guard = registry_lock().await;
     reset_api_providers();
@@ -123,7 +125,7 @@ async fn register_built_in_api_providers_preserves_overrides_and_is_idempotent()
     assert!(builtin_count >= 10, "builtin apis are registered");
 
     // Idempotent: no duplicate registrations.
-    pi_core::ai::compat::register_built_in_api_providers();
+    holt_core::ai::compat::register_built_in_api_providers();
     assert_eq!(get_api_providers().len(), builtin_count);
 
     // An override for a builtin api id survives the explicit registration.
@@ -142,7 +144,7 @@ async fn register_built_in_api_providers_preserves_overrides_and_is_idempotent()
     assert_eq!(override_api.api, "openai-completions");
     assert_eq!(get_api_providers().len(), builtin_count);
 
-    pi_core::ai::compat::register_built_in_api_providers();
+    holt_core::ai::compat::register_built_in_api_providers();
     assert_eq!(
         get_api_providers().len(),
         builtin_count,

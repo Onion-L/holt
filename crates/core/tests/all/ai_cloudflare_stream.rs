@@ -2,13 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::models::ProviderStreams;
-use pi_core::ai::providers::cloudflare_stream::cloudflare_streams;
-use pi_core::ai::types::{
+use holt_core::ai::models::ProviderStreams;
+use holt_core::ai::providers::cloudflare_stream::cloudflare_streams;
+use holt_core::ai::types::{
     Context, Model, ModelInput, ProviderEnv, ProviderRequestOptions, SimpleStreamOptions,
     StreamOptions,
 };
-use pi_core::ai::utils::event_stream::{
+use holt_core::ai::utils::event_stream::{
     AssistantMessageEventStream, create_assistant_message_event_stream,
 };
 
@@ -150,7 +150,7 @@ fn keeps_missing_env_entries_as_placeholders() {
 // returns the model untouched.
 #[test]
 fn resolve_cloudflare_model_substitutes_env_placeholders() {
-    use pi_core::ai::providers::cloudflare_stream::resolve_cloudflare_model;
+    use holt_core::ai::providers::cloudflare_stream::resolve_cloudflare_model;
 
     let model = test_model();
 

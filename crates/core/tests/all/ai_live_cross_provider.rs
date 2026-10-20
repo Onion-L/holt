@@ -9,7 +9,7 @@
 //! TS `beforeAll` fixture generation becomes a helper both tests call (the TS
 //! source notes fixtures are generated fresh on each run).
 //!
-//! Requests run through `pi_core::ai::compat::complete_simple` — the same
+//! Requests run through `holt_core::ai::compat::complete_simple` — the same
 //! global entry the TypeScript suite uses; `SimpleStreamOptions` carries all
 //! the options the suite passes (apiKey, reasoning, headers, onPayload).
 //!
@@ -21,9 +21,9 @@
 use crate::common;
 
 use common::live::{self, now_millis, skip};
-use pi_core::ai::compat::complete_simple;
-use pi_core::ai::providers::builtin::get_builtin_model;
-use pi_core::ai::types::{
+use holt_core::ai::compat::complete_simple;
+use holt_core::ai::providers::builtin::get_builtin_model;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, ProviderHeaders,
     ProviderRequestOptions, RoleToolResult, RoleUser, SimpleStreamOptions, StopReason,
     StreamOptions, TextContent, Tool, ToolResultMessage, UserContent, UserMessage,
@@ -457,7 +457,7 @@ fn simple_options(
     api_key: &str,
     headers: Option<ProviderHeaders>,
     supports_reasoning: bool,
-    on_payload: Option<pi_core::ai::types::OnPayloadCallback>,
+    on_payload: Option<holt_core::ai::types::OnPayloadCallback>,
 ) -> SimpleStreamOptions {
     SimpleStreamOptions {
         base: StreamOptions {
@@ -469,7 +469,7 @@ fn simple_options(
             },
             ..Default::default()
         },
-        reasoning: supports_reasoning.then_some(pi_core::ai::types::ThinkingLevel::High),
+        reasoning: supports_reasoning.then_some(holt_core::ai::types::ThinkingLevel::High),
         ..Default::default()
     }
 }
@@ -558,7 +558,7 @@ async fn generate_context(
         role: RoleToolResult,
         tool_call_id: tool_call.id.clone(),
         tool_name: tool_call.name.clone(),
-        content: vec![pi_core::ai::types::BlockContent::Text(TextContent {
+        content: vec![holt_core::ai::types::BlockContent::Text(TextContent {
             text: "42".to_string(),
             ..Default::default()
         })],
@@ -660,7 +660,7 @@ async fn should_have_at_least_2_fixtures_to_test_handoffs() {
     if !has_any_api_key() {
         skip(
             "Cross-Provider Handoff: should have at least 2 fixtures to test handoffs",
-            "any provider API key (env or ~/.pi/agent/auth.json is not consulted by the sync gate)",
+            "any provider API key (env or ~/.holt/live-auth.json is not consulted by the sync gate)",
         );
         return;
     }
@@ -678,7 +678,7 @@ async fn should_handle_cross_provider_handoffs_for_each_target() {
     if !has_any_api_key() {
         skip(
             "Cross-Provider Handoff: should handle cross-provider handoffs for each target",
-            "any provider API key (env or ~/.pi/agent/auth.json is not consulted by the sync gate)",
+            "any provider API key (env or ~/.holt/live-auth.json is not consulted by the sync gate)",
         );
         return;
     }

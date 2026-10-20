@@ -7,17 +7,17 @@ use futures::future::BoxFuture;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use pi_core::agent::agent::{
+use holt_core::agent::agent::{
     Agent, AgentEventListener, AgentInitialState, AgentOptions, AgentPromptInput,
     AgentShouldStopAfterTurnFn, LegacyPrepareNextTurnFn,
 };
-use pi_core::agent::stream_fn::set_default_stream_fn;
-use pi_core::agent::types::{
+use holt_core::agent::stream_fn::set_default_stream_fn;
+use holt_core::agent::types::{
     AgentEvent, AgentLoopTurnUpdate, AgentMessage, AgentTool, AgentToolResult,
     AgentToolUpdateCallback, CustomAgentMessage, StreamFn, ThinkingLevel,
 };
-use pi_core::ai::compat::get_model;
-use pi_core::ai::types::{
+use holt_core::ai::compat::get_model;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, DoneReason,
     ErrorReason, Model, RoleAssistant, RoleUser, SimpleStreamOptions, StopReason, TextContent,
     ToolCall, Usage,
@@ -73,7 +73,7 @@ fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
 /// A stream function that replies with a scripted assistant message.
 fn done_stream_fn(message: AssistantMessage) -> StreamFn {
     Arc::new(move |_model, _context, _options| {
-        let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+        let stream = holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
         stream.push(AssistantMessageEvent::Done {
             reason: DoneReason::Stop,
             message: message.clone(),
@@ -151,9 +151,9 @@ fn message_roles(agent: &Agent) -> Vec<String> {
 }
 
 fn user_text_message(text: &str) -> AgentMessage {
-    AgentMessage::User(pi_core::ai::types::UserMessage {
+    AgentMessage::User(holt_core::ai::types::UserMessage {
         role: RoleUser,
-        content: pi_core::ai::types::UserContent::Text(text.to_string()),
+        content: holt_core::ai::types::UserContent::Text(text.to_string()),
         timestamp: 0,
     })
 }
@@ -186,11 +186,11 @@ async fn uses_the_configured_default_when_a_legacy_caller_omits_stream_fn() {
         let calls = Arc::clone(&calls);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   _options: Option<&SimpleStreamOptions>| {
                 *calls.lock().unwrap() += 1;
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::Stop,
                     message: create_assistant_message("fallback"),
@@ -431,10 +431,11 @@ async fn wait_for_idle_waits_for_async_subscribers() {
 fn abortable_stream_fn() -> StreamFn {
     Arc::new(
         move |_model: &Model,
-              _context: &pi_core::ai::types::Context,
+              _context: &holt_core::ai::types::Context,
               options: Option<&SimpleStreamOptions>| {
             let signal = options.and_then(|options| options.base.base.signal.clone());
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             stream.push(AssistantMessageEvent::Start {
                 partial: create_assistant_message(""),
             });
@@ -815,12 +816,12 @@ async fn rejects_reset_while_processing_without_corrupting_the_transcript() {
         let release_response = Arc::clone(&release_response);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   _options: Option<&SimpleStreamOptions>| {
                 let stream_started = Arc::clone(&stream_started);
                 let release_response = Arc::clone(&release_response);
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 stream.push(AssistantMessageEvent::Start {
                     partial: create_assistant_message(""),
                 });
@@ -922,7 +923,7 @@ async fn continue_processes_queued_follow_up_messages_after_an_assistant_turn() 
         let response_count = Arc::clone(&response_count);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   _options: Option<&SimpleStreamOptions>| {
                 let count = {
                     let mut response_count = response_count.lock().unwrap();
@@ -930,7 +931,7 @@ async fn continue_processes_queued_follow_up_messages_after_an_assistant_turn() 
                     *response_count
                 };
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::Stop,
                     message: create_assistant_message(&format!("Processed {count}")),
@@ -946,9 +947,9 @@ async fn continue_processes_queued_follow_up_messages_after_an_assistant_turn() 
     });
 
     agent.set_messages(vec![
-        AgentMessage::User(pi_core::ai::types::UserMessage {
+        AgentMessage::User(holt_core::ai::types::UserMessage {
             role: RoleUser,
-            content: pi_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
+            content: holt_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
                 TextContent {
                     text: "Initial".to_string(),
                     ..Default::default()
@@ -959,9 +960,9 @@ async fn continue_processes_queued_follow_up_messages_after_an_assistant_turn() 
         AgentMessage::Assistant(Box::new(create_assistant_message("Initial response"))),
     ]);
 
-    agent.follow_up(AgentMessage::User(pi_core::ai::types::UserMessage {
+    agent.follow_up(AgentMessage::User(holt_core::ai::types::UserMessage {
         role: RoleUser,
-        content: pi_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(TextContent {
+        content: holt_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(TextContent {
             text: "Queued follow-up".to_string(),
             ..Default::default()
         })]),
@@ -974,8 +975,8 @@ async fn continue_processes_queued_follow_up_messages_after_an_assistant_turn() 
     let has_queued_follow_up = messages.iter().any(|message| {
         match message {
         AgentMessage::User(user) => match &user.content {
-            pi_core::ai::types::UserContent::Text(text) => text == "Queued follow-up",
-            pi_core::ai::types::UserContent::Blocks(blocks) => blocks.iter().any(|block| {
+            holt_core::ai::types::UserContent::Text(text) => text == "Queued follow-up",
+            holt_core::ai::types::UserContent::Blocks(blocks) => blocks.iter().any(|block| {
                 matches!(block, BlockContent::Text(text) if text.text == "Queued follow-up")
             }),
         },
@@ -993,7 +994,7 @@ async fn continue_keeps_one_at_a_time_steering_semantics_from_assistant_tail() {
         let response_count = Arc::clone(&response_count);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   _options: Option<&SimpleStreamOptions>| {
                 let count = {
                     let mut response_count = response_count.lock().unwrap();
@@ -1001,7 +1002,7 @@ async fn continue_keeps_one_at_a_time_steering_semantics_from_assistant_tail() {
                     *response_count
                 };
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::Stop,
                     message: create_assistant_message(&format!("Processed {count}")),
@@ -1017,9 +1018,9 @@ async fn continue_keeps_one_at_a_time_steering_semantics_from_assistant_tail() {
     });
 
     agent.set_messages(vec![
-        AgentMessage::User(pi_core::ai::types::UserMessage {
+        AgentMessage::User(holt_core::ai::types::UserMessage {
             role: RoleUser,
-            content: pi_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
+            content: holt_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
                 TextContent {
                     text: "Initial".to_string(),
                     ..Default::default()
@@ -1031,9 +1032,9 @@ async fn continue_keeps_one_at_a_time_steering_semantics_from_assistant_tail() {
     ]);
 
     for text in ["Steering 1", "Steering 2"] {
-        agent.steer(AgentMessage::User(pi_core::ai::types::UserMessage {
+        agent.steer(AgentMessage::User(holt_core::ai::types::UserMessage {
             role: RoleUser,
-            content: pi_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
+            content: holt_core::ai::types::UserContent::Blocks(vec![BlockContent::Text(
                 TextContent {
                     text: text.to_string(),
                     ..Default::default()
@@ -1073,7 +1074,7 @@ async fn keeps_legacy_prepare_next_turn_signal_callback_behavior() {
         let request_count = Arc::clone(&request_count);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   _options: Option<&SimpleStreamOptions>| {
                 let count = {
                     let mut request_count = request_count.lock().unwrap();
@@ -1081,7 +1082,7 @@ async fn keeps_legacy_prepare_next_turn_signal_callback_behavior() {
                     *request_count
                 };
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 if count == 1 {
                     stream.push(AssistantMessageEvent::Done {
                         reason: DoneReason::ToolUse,
@@ -1142,7 +1143,7 @@ async fn forwards_should_stop_after_turn_through_agent_options() {
         let request_count = Arc::clone(&request_count);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   _options: Option<&SimpleStreamOptions>| {
                 let count = {
                     let mut request_count = request_count.lock().unwrap();
@@ -1150,7 +1151,7 @@ async fn forwards_should_stop_after_turn_through_agent_options() {
                     *request_count
                 };
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 if count == 1 {
                     stream.push(AssistantMessageEvent::Done {
                         reason: DoneReason::ToolUse,
@@ -1198,12 +1199,12 @@ async fn forwards_session_id_to_stream_function_options() {
         let received_session_id = Arc::clone(&received_session_id);
         Arc::new(
             move |_model: &Model,
-                  _context: &pi_core::ai::types::Context,
+                  _context: &holt_core::ai::types::Context,
                   options: Option<&SimpleStreamOptions>| {
                 *received_session_id.lock().unwrap() =
                     options.and_then(|options| options.base.session_id.clone());
                 let stream =
-                    pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+                    holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
                 stream.push(AssistantMessageEvent::Done {
                     reason: DoneReason::Stop,
                     message: create_assistant_message("ok"),

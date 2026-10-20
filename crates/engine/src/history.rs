@@ -11,8 +11,8 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use pi_core::agent::types::AgentMessage;
-use pi_core::ai::types::{
+use holt_core::agent::types::AgentMessage;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, StopReason, TextContent, ToolResultMessage,
 };
 
@@ -261,7 +261,7 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                         // stands in for (issue #37).
                         messages.clear();
                         messages.push(
-                            pi_core::agent::harness::messages::create_compaction_summary_message(
+                            holt_core::agent::harness::messages::create_compaction_summary_message(
                                 record.summary,
                                 record.tokens_before,
                                 record.timestamp,
@@ -496,7 +496,7 @@ pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentM
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_core::ai::types::{AssistantMessage, RoleUser, UserContent, UserMessage};
+    use holt_core::ai::types::{AssistantMessage, RoleUser, UserContent, UserMessage};
 
     fn user(text: &str) -> AgentMessage {
         AgentMessage::User(UserMessage {
@@ -508,8 +508,8 @@ mod tests {
 
     fn assistant(text: &str) -> AgentMessage {
         AgentMessage::Assistant(Box::new(AssistantMessage {
-            content: vec![pi_core::ai::types::AssistantContent::Text(
-                pi_core::ai::types::TextContent {
+            content: vec![holt_core::ai::types::AssistantContent::Text(
+                holt_core::ai::types::TextContent {
                     text: text.into(),
                     ..Default::default()
                 },
@@ -532,7 +532,7 @@ mod tests {
     }
 
     fn tool_call_block(id: &str, name: &str) -> AssistantContent {
-        AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+        AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
             id: id.into(),
             name: name.into(),
             ..Default::default()
@@ -1008,7 +1008,7 @@ mod tests {
         let dir = temp_dir();
         append_message(&dir, "chat-1", &user("the start")).unwrap();
         append_message(&dir, "chat-1", &assistant("the long middle")).unwrap();
-        let summary = pi_core::agent::harness::messages::create_compaction_summary_message(
+        let summary = holt_core::agent::harness::messages::create_compaction_summary_message(
             "the checkpoint",
             246_535,
             1_791_356_819,
@@ -1044,7 +1044,7 @@ mod tests {
         // as plain messages: the summary first, then the tail. Replay keeps
         // it exactly as written (the drop rule hits an empty prefix).
         let dir = temp_dir();
-        let summary = pi_core::agent::harness::messages::create_compaction_summary_message(
+        let summary = holt_core::agent::harness::messages::create_compaction_summary_message(
             "the checkpoint",
             246_535,
             1_791_356_819,
@@ -1068,12 +1068,12 @@ mod tests {
         // The second summary's prefix was already shaped by the first, so
         // the drop rule must NOT fire and eat it.
         let dir = temp_dir();
-        let first = pi_core::agent::harness::messages::create_compaction_summary_message(
+        let first = holt_core::agent::harness::messages::create_compaction_summary_message(
             "first checkpoint",
             246_535,
             1,
         );
-        let second = pi_core::agent::harness::messages::create_compaction_summary_message(
+        let second = holt_core::agent::harness::messages::create_compaction_summary_message(
             "second checkpoint",
             53_700,
             2,

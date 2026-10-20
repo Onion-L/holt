@@ -11,14 +11,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::compat::get_models;
-use pi_core::ai::compat::stream_simple as compat_stream_simple;
-use pi_core::ai::env_api_keys::find_env_keys;
-use pi_core::ai::types::{
+use holt_core::ai::compat::get_models;
+use holt_core::ai::compat::stream_simple as compat_stream_simple;
+use holt_core::ai::env_api_keys::find_env_keys;
+use holt_core::ai::types::{
     Context, Message, Model, ModelThinkingLevel, ProviderEnv, ProviderRequestOptions, RoleUser,
     SimpleStreamOptions, StreamOptions, ThinkingLevel, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 const TEXT_MODELS: &[&str] = &[

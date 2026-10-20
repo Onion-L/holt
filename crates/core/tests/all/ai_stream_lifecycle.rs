@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::StreamExt;
-use pi_core::ai::compat;
-use pi_core::ai::types::{
+use holt_core::ai::compat;
+use holt_core::ai::types::{
     AssistantMessageEvent, Context, Model, ProviderRequestOptions, StopReason, StreamOptions,
 };
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -42,7 +42,7 @@ impl HttpFetch for ChannelFetch {
 fn start(
     api: &str,
 ) -> (
-    pi_core::ai::utils::event_stream::AssistantMessageEventStream,
+    holt_core::ai::utils::event_stream::AssistantMessageEventStream,
     mpsc::UnboundedSender<Result<Bytes, HttpFetchError>>,
     Arc<ChannelFetch>,
     CancellationToken,
@@ -72,19 +72,19 @@ fn start(
         ..Default::default()
     };
     let stream = match api {
-        "google-generative-ai" => pi_core::ai::api::google_generative_ai::stream_with_transport(
+        "google-generative-ai" => holt_core::ai::api::google_generative_ai::stream_with_transport(
             &model,
             &Context::default(),
-            Some(&pi_core::ai::api::google_generative_ai::GoogleOptions {
+            Some(&holt_core::ai::api::google_generative_ai::GoogleOptions {
                 base: options,
                 ..Default::default()
             }),
             Some(fetch.clone()),
         ),
-        "google-vertex" => pi_core::ai::api::google_vertex::stream_with_transport(
+        "google-vertex" => holt_core::ai::api::google_vertex::stream_with_transport(
             &model,
             &Context::default(),
-            Some(&pi_core::ai::api::google_vertex::GoogleVertexOptions {
+            Some(&holt_core::ai::api::google_vertex::GoogleVertexOptions {
                 base: options,
                 ..Default::default()
             }),
@@ -140,7 +140,7 @@ async fn assert_incremental(api: &str) {
     assert!(result.error_message.unwrap().contains("connection lost"));
     if api != "pi-messages" {
         assert!(
-            matches!(result.content.first(), Some(pi_core::ai::types::AssistantContent::Text(text)) if text.text == "hello")
+            matches!(result.content.first(), Some(holt_core::ai::types::AssistantContent::Text(text)) if text.text == "hello")
         );
     }
 }
@@ -194,7 +194,7 @@ async fn pending_body_can_be_cancelled() {
 
 #[tokio::test]
 async fn default_transport_cancels_a_pending_body() {
-    use pi_core::ai::utils::http::{HttpBody, HttpMethod};
+    use holt_core::ai::utils::http::{HttpBody, HttpMethod};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -214,7 +214,7 @@ async fn default_transport_cancels_a_pending_body() {
         std::future::pending::<()>().await;
     });
     let signal = CancellationToken::new();
-    let response = pi_core::ai::utils::reqwest_fetch::default_fetch()
+    let response = holt_core::ai::utils::reqwest_fetch::default_fetch()
         .fetch(HttpRequest {
             method: HttpMethod::Get,
             url: format!("http://{address}"),
@@ -242,7 +242,7 @@ async fn pi_preserves_split_utf8_and_flushes_the_terminal_tail() {
         json!({"type":"text_start","contentIndex":0}),
         json!({"type":"text_delta","contentIndex":0,"delta":text}),
         json!({"type":"text_end","contentIndex":0,"content":text}),
-        json!({"type":"done","reason":"stop","usage":pi_core::ai::types::Usage::default()}),
+        json!({"type":"done","reason":"stop","usage":holt_core::ai::types::Usage::default()}),
     ];
     let body = events
         .iter()
@@ -259,6 +259,6 @@ async fn pi_preserves_split_utf8_and_flushes_the_terminal_tail() {
         .unwrap();
     assert_eq!(result.stop_reason, StopReason::Stop);
     assert!(
-        matches!(result.content.first(), Some(pi_core::ai::types::AssistantContent::Text(content)) if content.text == text)
+        matches!(result.content.first(), Some(holt_core::ai::types::AssistantContent::Text(content)) if content.text == text)
     );
 }

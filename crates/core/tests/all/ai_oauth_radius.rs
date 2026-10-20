@@ -3,13 +3,13 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::radius::RadiusOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::radius::RadiusOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, AuthStorageError, OAuthAuth,
     OAuthCredential,
 };
-use pi_core::ai::types::FetchFunction;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::FetchFunction;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 const GATEWAY: &str = "https://radius.example";
@@ -70,7 +70,7 @@ impl AuthInteraction for SelectInteraction {
     fn prompt(
         &self,
         prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         assert!(matches!(prompt.kind, AuthPromptKind::Select { .. }));
         Box::pin(std::future::ready(Ok(self.login_method.to_string())))
     }

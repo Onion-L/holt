@@ -5,13 +5,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pi_core::ai::auth::oauth::openai_codex::OpenAICodexOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::openai_codex::OpenAICodexOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, AuthStorageError, OAuthAuth,
     OAuthCredential,
 };
-use pi_core::ai::types::{FetchFunction, ProviderEnv};
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::{FetchFunction, ProviderEnv};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 const BASE_NOW_MS: i64 = 1_778_476_800_000; // 2026-05-20T00:00:00Z
@@ -107,7 +107,7 @@ impl AuthInteraction for DeviceLoginInteraction {
     fn prompt(
         &self,
         prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         assert!(matches!(prompt.kind, AuthPromptKind::Select { .. }));
         Box::pin(std::future::ready(Ok("device_code".to_string())))
     }
@@ -174,7 +174,7 @@ async fn logs_in_with_the_openai_codex_device_code_flow() {
         requests: Mutex::new(Vec::new()),
     });
     let events = Arc::new(Mutex::new(Vec::new()));
-    let now_ms: pi_core::ai::auth::oauth::NowMs =
+    let now_ms: holt_core::ai::auth::oauth::NowMs =
         Arc::new(move || BASE_NOW_MS + start.elapsed().as_millis() as i64);
     let flow = OpenAICodexOAuth::new(
         Arc::clone(&fetch) as FetchFunction,
@@ -238,7 +238,7 @@ async fn offers_browser_login_first_and_uses_the_selected_device_code_flow() {
         fn prompt(
             &self,
             prompt: AuthPrompt,
-        ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+        ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
             self.select_prompts.lock().unwrap().push(prompt.kind);
             Box::pin(std::future::ready(Ok("device_code".to_string())))
         }
@@ -338,7 +338,7 @@ async fn cancels_when_login_method_selection_is_cancelled() {
         fn prompt(
             &self,
             _prompt: AuthPrompt,
-        ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+        ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
             Box::pin(std::future::ready(Err(AuthStorageError(
                 "Login cancelled".to_string(),
             ))))

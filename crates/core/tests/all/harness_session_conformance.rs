@@ -7,9 +7,9 @@ use crate::common;
 
 use std::sync::Arc;
 
-use pi_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
-use pi_core::agent::harness::session::memory::InMemorySessionRepo;
-use pi_core::agent::harness::session::testing::{
+use holt_core::agent::harness::env::nodejs::{NodeExecutionEnv, NodeExecutionEnvOptions};
+use holt_core::agent::harness::session::memory::InMemorySessionRepo;
+use holt_core::agent::harness::session::testing::{
     SessionBackendFixture, create_session_backend_conformance, jsonl_fixture,
     run_in_memory_conformance,
 };

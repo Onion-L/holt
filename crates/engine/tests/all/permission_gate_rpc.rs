@@ -482,7 +482,7 @@ async fn two_mutating_calls_in_one_message_gate_independently() {
     let _ = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
 
-    // pi-core prepares a batch's calls one at a time even in the parallel
+    // holt-core prepares a batch's calls one at a time even in the parallel
     // path, so the gates open sequentially: deny the bash with a note, and
     // only then does the write's gate open — allow it.
     let a = common::wait_for_gate(&engine, "chat-1", "call-a", "pending").await;

@@ -3,8 +3,8 @@
 use crate::common;
 
 use common::live::{get_model_or_panic, live_env, now_millis, resolve_api_key, skip};
-use pi_core::ai::compat::complete_simple;
-use pi_core::ai::types::{
+use holt_core::ai::compat::complete_simple;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, Context, Message, ProviderRequestOptions,
     RoleAssistant, RoleToolResult, RoleUser, SimpleStreamOptions, StopReason, StreamOptions,
     TextContent, Tool, ToolCall, ToolResultMessage, UserContent, UserMessage,

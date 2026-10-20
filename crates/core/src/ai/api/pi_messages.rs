@@ -171,7 +171,7 @@ fn resolve_cache_retention(
     if let Some(retention) = cache_retention {
         return Some(retention);
     }
-    (get_provider_env_value("PI_CACHE_RETENTION", env).as_deref() == Some("long"))
+    (get_provider_env_value("HOLT_CACHE_RETENTION", env).as_deref() == Some("long"))
         .then_some(crate::ai::types::CacheRetention::Long)
 }
 

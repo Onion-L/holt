@@ -1,8 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
+use holt_core::ai::types::Message;
 use holt_rpc::{RpcReply, RpcService, methods};
-use pi_core::ai::types::Message;
 use serde_json::{Value, json};
 
 use crate::common;
@@ -393,7 +393,7 @@ async fn long_child_results_have_a_token_budget_and_a_readable_full_file() {
         .content
         .iter()
         .filter_map(|b| match b {
-            pi_core::ai::types::BlockContent::Text(t) => Some(t.text.as_str()),
+            holt_core::ai::types::BlockContent::Text(t) => Some(t.text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -470,7 +470,7 @@ async fn child_compaction_is_independent_and_its_usage_is_included() {
     .unwrap();
     let mut args = brief("explorer");
     args["prompt"] = json!("Child task context. ".repeat(6500));
-    let high_usage = pi_core::ai::types::Usage {
+    let high_usage = holt_core::ai::types::Usage {
         input: 260_000,
         output: 500,
         total_tokens: 260_500,

@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-use pi_core::ai::types::{AssistantMessage, AssistantMessageEvent, ErrorReason, StopReason};
-use pi_core::ai::utils::event_stream::{EventStream, create_assistant_message_event_stream};
+use holt_core::ai::types::{AssistantMessage, AssistantMessageEvent, ErrorReason, StopReason};
+use holt_core::ai::utils::event_stream::{EventStream, create_assistant_message_event_stream};
 
 fn pending_message() -> AssistantMessage {
     AssistantMessage {
@@ -33,11 +33,11 @@ async fn yields_events_in_order_and_resolves_result_on_done() {
     let producer_task = tokio::spawn(async move {
         let mut message = pending_message();
         message.stop_reason = StopReason::Stop;
-        message.content = vec![pi_core::ai::types::AssistantContent::Text(
-            pi_core::ai::types::TextContent::default(),
+        message.content = vec![holt_core::ai::types::AssistantContent::Text(
+            holt_core::ai::types::TextContent::default(),
         )];
         producer.push(AssistantMessageEvent::Done {
-            reason: pi_core::ai::types::DoneReason::Stop,
+            reason: holt_core::ai::types::DoneReason::Stop,
             message: message.clone(),
         });
         message
@@ -143,7 +143,7 @@ async fn result_waits_for_the_terminal_event() {
     let mut message = pending_message();
     message.stop_reason = StopReason::Length;
     stream.push(AssistantMessageEvent::Done {
-        reason: pi_core::ai::types::DoneReason::Length,
+        reason: holt_core::ai::types::DoneReason::Length,
         message: message.clone(),
     });
 

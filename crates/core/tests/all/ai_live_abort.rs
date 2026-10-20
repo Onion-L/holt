@@ -24,7 +24,9 @@ use common::live::{
     self, LiveEffort, LiveOptions, LiveThinking, as_openai_completions, get_model_or_panic,
     js_length, live_complete, live_env, live_stream, now_millis, skip,
 };
-use pi_core::ai::types::{Context, Message, Model, RoleUser, StopReason, UserContent, UserMessage};
+use holt_core::ai::types::{
+    Context, Message, Model, RoleUser, StopReason, UserContent, UserMessage,
+};
 use tokio_util::sync::CancellationToken;
 
 fn user_message(content: &str) -> Message {
@@ -64,10 +66,10 @@ async fn test_abort_signal(model: &Model, case: &str, options: LiveOptions) {
             return;
         }
         match &event {
-            pi_core::ai::types::AssistantMessageEvent::TextDelta { delta, .. } => {
+            holt_core::ai::types::AssistantMessageEvent::TextDelta { delta, .. } => {
                 text.push_str(delta)
             }
-            pi_core::ai::types::AssistantMessageEvent::ThinkingDelta { delta, .. } => {
+            holt_core::ai::types::AssistantMessageEvent::ThinkingDelta { delta, .. } => {
                 text.push_str(delta)
             }
             _ => {}
@@ -446,7 +448,7 @@ async fn abort_env_provider_matrix() {
             azure: false,
             // "should abort mid-stream" passes { reasoning: "medium" }
             mid: LiveOptions {
-                reasoning: Some(pi_core::ai::types::ThinkingLevel::Medium),
+                reasoning: Some(holt_core::ai::types::ThinkingLevel::Medium),
                 ..Default::default()
             },
             rest: default,
@@ -465,7 +467,7 @@ async fn openai_codex_provider_abort() {
     let Some(token) = live::resolve_api_key("openai-codex").await else {
         skip(
             "OpenAI Codex Provider Abort",
-            "~/.pi/agent/auth.json openai-codex credentials",
+            "~/.holt/live-auth.json openai-codex credentials",
         );
         return;
     };

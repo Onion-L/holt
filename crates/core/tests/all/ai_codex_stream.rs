@@ -33,17 +33,17 @@ use base64::Engine as _;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::future::BoxFuture;
-use pi_core::ai::api::openai_codex_responses::{
+use holt_core::ai::api::openai_codex_responses::{
     OpenAICodexResponsesOptions, stream as stream_codex, stream_simple as stream_simple_codex,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantMessage, AssistantMessageEvent, BlockContent, CacheRetention,
     ConstrainedSamplingConfig, ConstrainedSamplingStrict, Context, JsF64, Message, Model,
     ModelCost, ModelCostRates, ModelInput, ProviderRequestOptions, RoleUser, SimpleStreamOptions,
     StopReason, StreamOptions, ThinkingLevel, Tool, ToolConstrainedSampling, Transport,
     UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -341,7 +341,7 @@ fn text_of(message: &AssistantMessage) -> String {
         .content
         .iter()
         .find_map(|block| match block {
-            pi_core::ai::types::AssistantContent::Text(text) => Some(text.text.clone()),
+            holt_core::ai::types::AssistantContent::Text(text) => Some(text.text.clone()),
             _ => None,
         })
         .unwrap_or_default()
@@ -431,7 +431,7 @@ async fn streams_sse_responses_into_assistant_message_event_stream() {
     // port builds the same shape from the Rust target.
     assert_eq!(
         header(&request, "User-Agent"),
-        Some(pi_core::ai::session_resources::get_pi_user_agent().as_str())
+        Some(holt_core::ai::session_resources::get_user_agent().as_str())
     );
     assert_eq!(header(&request, "accept"), Some("text/event-stream"));
     assert!(header(&request, "x-api-key").is_none());
@@ -683,7 +683,7 @@ async fn preserves_gpt_5_5_xhigh_reasoning_effort_from_simple_options() {
     let mut model = codex_model("gpt-5.5", "GPT-5.5");
     model.thinking_level_map = Some(
         [(
-            pi_core::ai::types::ModelThinkingLevel::Xhigh,
+            holt_core::ai::types::ModelThinkingLevel::Xhigh,
             Some("xhigh".to_string()),
         )]
         .into_iter()
@@ -829,7 +829,7 @@ async fn clamps_minimal_reasoning_effort_to_low() {
         let mut model = codex_model(model_id, model_id);
         model.thinking_level_map = Some(
             [(
-                pi_core::ai::types::ModelThinkingLevel::Minimal,
+                holt_core::ai::types::ModelThinkingLevel::Minimal,
                 Some("low".to_string()),
             )]
             .into_iter()
@@ -1143,7 +1143,7 @@ async fn sends_max_to_the_codex_responses_api() {
     ))]);
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
 
-    let model = pi_core::ai::providers::builtin::get_builtin_model("openai-codex", "gpt-5.6-sol")
+    let model = holt_core::ai::providers::builtin::get_builtin_model("openai-codex", "gpt-5.6-sol")
         .expect("gpt-5.6-sol model");
     let context = context("You are a helpful assistant.", "Hello");
 
@@ -1204,10 +1204,10 @@ async fn ws_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
 }
 
 async fn ws_test_cleanup() {
-    pi_core::ai::api::openai_codex_responses::set_websocket_factory_for_tests(None);
-    pi_core::ai::api::openai_codex_responses::set_websocket_clock_for_tests(None);
-    pi_core::ai::api::openai_codex_responses::close_openai_codex_websocket_sessions(None);
-    pi_core::ai::api::openai_codex_responses::reset_openai_codex_websocket_debug_stats(None);
+    holt_core::ai::api::openai_codex_responses::set_websocket_factory_for_tests(None);
+    holt_core::ai::api::openai_codex_responses::set_websocket_clock_for_tests(None);
+    holt_core::ai::api::openai_codex_responses::close_openai_codex_websocket_sessions(None);
+    holt_core::ai::api::openai_codex_responses::reset_openai_codex_websocket_debug_stats(None);
 }
 
 /// The send-time context handed to a scripted socket's response behavior.
@@ -1216,7 +1216,7 @@ struct SendContext {
     /// The 1-based global send index (the TS `sentBodies.length`).
     send_index: usize,
     frame: Value,
-    queue: pi_core::ai::api::openai_codex_websocket::WebSocketEventQueue,
+    queue: holt_core::ai::api::openai_codex_websocket::WebSocketEventQueue,
 }
 
 type MockSendBehavior = Box<dyn Fn(&SendContext) + Send>;
@@ -1239,8 +1239,8 @@ struct MockWebSocketShared {
 impl MockWebSocketShared {
     fn install(self: &Arc<Self>) {
         let shared = Arc::clone(self);
-        pi_core::ai::api::openai_codex_responses::set_websocket_factory_for_tests(Some(Arc::new(
-            move |_url, headers| {
+        holt_core::ai::api::openai_codex_responses::set_websocket_factory_for_tests(Some(
+            Arc::new(move |_url, headers| {
                 let shared = Arc::clone(&shared);
                 Box::pin(async move {
                     let connection = shared.connections.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1248,19 +1248,23 @@ impl MockWebSocketShared {
                     let socket = Arc::new(MockWebSocket {
                         connection,
                         queue:
-                            pi_core::ai::api::openai_codex_websocket::WebSocketEventQueue::default(),
+                            holt_core::ai::api::openai_codex_websocket::WebSocketEventQueue::default(
+                            ),
                         reusable: AtomicBool::new(true),
                         shared: Arc::clone(&shared),
                     });
                     if shared.opens_on_connect.load(Ordering::SeqCst) {
                         socket
                             .queue
-                            .push(pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Open);
+                            .push(holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Open);
                     }
-                    Ok(socket as Arc<dyn pi_core::ai::api::openai_codex_websocket::WebSocketLike>)
+                    Ok(
+                        socket
+                            as Arc<dyn holt_core::ai::api::openai_codex_websocket::WebSocketLike>,
+                    )
                 })
-            },
-        )));
+            }),
+        ));
     }
 
     fn sent_frames(&self) -> Vec<Value> {
@@ -1278,12 +1282,12 @@ impl MockWebSocketShared {
 /// The mock socket standing in for the TS `MockWebSocket` classes.
 struct MockWebSocket {
     connection: usize,
-    queue: pi_core::ai::api::openai_codex_websocket::WebSocketEventQueue,
+    queue: holt_core::ai::api::openai_codex_websocket::WebSocketEventQueue,
     reusable: AtomicBool,
     shared: Arc<MockWebSocketShared>,
 }
 
-impl pi_core::ai::api::openai_codex_websocket::WebSocketLike for MockWebSocket {
+impl holt_core::ai::api::openai_codex_websocket::WebSocketLike for MockWebSocket {
     fn send_text(&self, data: &str) {
         if !self.reusable.load(Ordering::SeqCst) {
             self.shared.sends_before_open.fetch_add(1, Ordering::SeqCst);
@@ -1317,7 +1321,8 @@ impl pi_core::ai::api::openai_codex_websocket::WebSocketLike for MockWebSocket {
 
     fn next_event(
         &self,
-    ) -> BoxFuture<'static, Option<pi_core::ai::api::openai_codex_websocket::WebSocketEvent>> {
+    ) -> BoxFuture<'static, Option<holt_core::ai::api::openai_codex_websocket::WebSocketEvent>>
+    {
         let queue = self.queue.clone();
         Box::pin(async move { queue.next().await })
     }
@@ -1378,7 +1383,7 @@ async fn forwards_auto_transport_and_uses_cached_websocket_context() {
             }),
         ] {
             context.queue.push(
-                pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+                holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                     event.to_string(),
                 ),
             );
@@ -1427,7 +1432,7 @@ async fn forwards_auto_transport_and_uses_cached_websocket_context() {
         Some("session-auto")
     );
     assert_eq!(fetch.request_count(), 0);
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         "session-auto",
     )
     .expect("stats recorded");
@@ -1449,7 +1454,7 @@ async fn scopes_cached_websockets_to_the_authenticated_account() {
     shared.set_on_send(move |context| {
         let id = counter.fetch_add(1, Ordering::SeqCst) + 1;
         context.queue.push(
-            pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+            holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                 json!({
                     "type": "response.completed",
                     "response": {
@@ -1527,7 +1532,7 @@ async fn scopes_cached_websockets_to_the_authenticated_account() {
         vec![format!("Bearer {token_a}"), format!("Bearer {token_b}"),]
     );
     assert_eq!(fetch.request_count(), 0);
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         "shared-session",
     )
     .expect("stats recorded");
@@ -1544,7 +1549,7 @@ async fn closes_one_shot_websockets_when_cache_retention_is_none() {
     shared.opens_on_connect.store(true, Ordering::SeqCst);
     shared.set_on_send(|context| {
         context.queue.push(
-            pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+            holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                 completed_event(&format!("resp_{}", context.connection)).to_string(),
             ),
         );
@@ -1590,7 +1595,7 @@ async fn closes_one_shot_websockets_when_cache_retention_is_none() {
             .all(|frame| frame.get("prompt_cache_key").is_none())
     );
     assert!(
-        pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+        holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
             "one-off-summary"
         )
         .is_none()
@@ -1623,7 +1628,7 @@ async fn falls_back_to_sse_when_websocket_connect_times_out() {
 
     assert_eq!(text_of(&result), "Hello");
     assert_eq!(fetch.request_count(), 1);
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         "ws-connect-timeout",
     )
     .expect("stats recorded");
@@ -1652,7 +1657,7 @@ async fn reconnects_once_when_the_connection_limit_is_reached() {
             completed_event("resp_1")
         };
         context.queue.push(
-            pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(event.to_string()),
+            holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(event.to_string()),
         );
     });
     shared.install();
@@ -1706,7 +1711,7 @@ async fn falls_back_to_sse_when_idle_before_the_first_event() {
     assert_eq!(text_of(&result), "Hello");
     assert_eq!(shared.sent_frames().len(), 1);
     assert_eq!(fetch.request_count(), 1);
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         "ws-idle-before-start",
     )
     .expect("stats recorded");
@@ -1724,7 +1729,7 @@ async fn errors_when_a_websocket_is_idle_after_the_stream_started() {
     shared.opens_on_connect.store(true, Ordering::SeqCst);
     shared.set_on_send(|context| {
         context.queue.push(
-            pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+            holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                 output_item_added().to_string(),
             ),
         );
@@ -1763,7 +1768,7 @@ async fn opens_a_fresh_cached_websocket_before_the_age_limit() {
     shared.opens_on_connect.store(true, Ordering::SeqCst);
     shared.set_on_send(|context| {
         context.queue.push(
-            pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+            holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                 completed_event(&format!("resp_{}", context.connection)).to_string(),
             ),
         );
@@ -1777,7 +1782,7 @@ async fn opens_a_fresh_cached_websocket_before_the_age_limit() {
         let clock_ms = Arc::clone(&clock_ms);
         Arc::new(move || clock_ms.load(Ordering::SeqCst)) as Arc<dyn Fn() -> i64 + Send + Sync>
     };
-    pi_core::ai::api::openai_codex_responses::set_websocket_clock_for_tests(Some(ws_clock));
+    holt_core::ai::api::openai_codex_responses::set_websocket_clock_for_tests(Some(ws_clock));
 
     let fetch = CodexFetch::new(vec![ScriptedResponse::Error(
         500,
@@ -1824,7 +1829,7 @@ async fn opens_a_fresh_cached_websocket_before_the_age_limit() {
 
     assert_eq!(shared.connections.load(Ordering::SeqCst), 2);
     assert_eq!(shared.sent_connections.lock().unwrap().clone(), vec![1, 2]);
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         session_id,
     )
     .expect("stats recorded");
@@ -1861,7 +1866,7 @@ async fn sends_only_response_input_deltas_in_websocket_cached_mode() {
         events.push(completed_event(&format!("resp_{}", context.send_index)));
         for event in events {
             context.queue.push(
-                pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+                holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                     event.to_string(),
                 ),
             );
@@ -1875,7 +1880,7 @@ async fn sends_only_response_input_deltas_in_websocket_cached_mode() {
         Vec::new(),
     )]);
     let mut model = codex_model("gpt-5.1-codex", "GPT-5.1 Codex");
-    model.compat = Some(pi_core::ai::types::ModelCompat {
+    model.compat = Some(holt_core::ai::types::ModelCompat {
         supports_open_ai_grammar_tools: Some(true),
         ..Default::default()
     });
@@ -1889,7 +1894,7 @@ async fn sends_only_response_input_deltas_in_websocket_cached_mode() {
             constrained_sampling: Some(ToolConstrainedSampling::Config(
                 ConstrainedSamplingConfig::Grammar {
                     variants: [(
-                        pi_core::ai::types::GrammarFormat::OpenaiLark,
+                        holt_core::ai::types::GrammarFormat::OpenaiLark,
                         "start: /[a-z]+/".to_string(),
                     )]
                     .into_iter()
@@ -1916,11 +1921,11 @@ async fn sends_only_response_input_deltas_in_websocket_cached_mode() {
         messages: vec![
             user_message("Use the tool"),
             Message::Assistant(Box::new(first)),
-            Message::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
-                role: pi_core::ai::types::RoleToolResult,
+            Message::ToolResult(Box::new(holt_core::ai::types::ToolResultMessage {
+                role: holt_core::ai::types::RoleToolResult,
                 tool_call_id: "call_1|ctc_1".to_string(),
                 tool_name: "sample_tool".to_string(),
-                content: vec![BlockContent::Text(pi_core::ai::types::TextContent {
+                content: vec![BlockContent::Text(holt_core::ai::types::TextContent {
                     text: "real result".to_string(),
                     ..Default::default()
                 })],
@@ -1968,7 +1973,7 @@ async fn sends_only_response_input_deltas_in_websocket_cached_mode() {
             {"role": "user", "content": [{"type": "input_text", "text": "Now finish"}]},
         ]))
     );
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         "session-1",
     )
     .expect("stats recorded");
@@ -2030,7 +2035,7 @@ async fn recover_missing_cached_websocket_continuation(recovery_transport: &'sta
                     }),
                 ] {
                     queue.push(
-                        pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+                        holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                             event.to_string(),
                         ),
                     );
@@ -2040,7 +2045,7 @@ async fn recover_missing_cached_websocket_continuation(recovery_transport: &'sta
             }
             if send_index == 3 && recovery_transport == "sse" {
                 queue.push(
-                    pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Error(
+                    holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Error(
                         "retry websocket failed".to_string(),
                     ),
                 );
@@ -2070,7 +2075,7 @@ async fn recover_missing_cached_websocket_continuation(recovery_transport: &'sta
                 completed_event(response_id),
             ] {
                 queue.push(
-                    pi_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
+                    holt_core::ai::api::openai_codex_websocket::WebSocketEvent::Message(
                         event.to_string(),
                     ),
                 );
@@ -2167,7 +2172,7 @@ async fn recover_missing_cached_websocket_continuation(recovery_transport: &'sta
         fetch.request_count(),
         if recovery_transport == "sse" { 1 } else { 0 }
     );
-    let stats = pi_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
+    let stats = holt_core::ai::api::openai_codex_responses::get_openai_codex_websocket_debug_stats(
         &session_id,
     )
     .expect("stats recorded");

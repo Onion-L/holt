@@ -1,6 +1,6 @@
 # crates/core
 
-Holt's agent core (package `pi-core-rs`, lib `pi_core`): a Rust port of
+Holt's agent core (package `holt-core`, lib `holt_core`): a Rust port of
 `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-telemetry` v0.84.4,
 originally developed as the standalone `pi-core-rs` repository and merged
 into this workspace (ADR-agent-core-is-a-holt-owned-workspace-crate). MIT-licensed: keep `LICENSE` and the explicit
@@ -22,7 +22,7 @@ Keep the crate free of Holt domain concepts (Space, Turn change set, …):
 
 - `src/` — implementation. Module paths mirror the former TypeScript
   packages (`telemetry`, `ai`, `agent`).
-- `src/bin/pi-ai.rs` — OAuth helper binary (`pi-ai`).
+- `src/bin/holt-ai.rs` — OAuth helper binary (`holt-ai`).
 - `tests/all/` — the single integration test target: one module per former
   `tests/*.rs` file, shared helpers in `tests/all/common/`. Add new
   integration tests as a module there, never as a new top-level `tests/*.rs`
@@ -34,8 +34,8 @@ Keep the crate free of Holt domain concepts (Space, Turn change set, …):
 ## Testing
 
 Credential-gated live suites (`ai_live_*`) are opt-in: they skip unless
-`PI_TEST_LIVE=1` is exported, whatever credentials the shell or
-`~/.pi/agent/auth.json` holds. With `PI_TEST_LIVE=1` they fire real provider
+`HOLT_TEST_LIVE=1` is exported, whatever credentials the shell or
+`~/.holt/live-auth.json` holds. With `HOLT_TEST_LIVE=1` they fire real provider
 requests (and may refresh OAuth tokens in `auth.json`) for every provider
 whose credentials exist.
 
@@ -46,7 +46,7 @@ never depend on the developer's process environment.
 Verify from the workspace root:
 
 ```bash
-cargo test -p pi-core-rs
+cargo test -p holt-core
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```

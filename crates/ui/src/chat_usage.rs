@@ -946,7 +946,7 @@ mod tests {
             .unwrap();
         let fixture = Fixture::new();
         let provider = ScriptedProvider::new(vec![ScriptedReply::text("done")]).with_usage(
-            pi_core::ai::types::Usage {
+            holt_core::ai::types::Usage {
                 input: 700,
                 output: 70,
                 cache_read: 7,

@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use pi_core::ai::{compat, types::Model as CoreModel};
+use holt_core::ai::{compat, types::Model as CoreModel};
 use serde::{Deserialize, Serialize};
 
 use crate::{EngineError, provider_logos::ProviderLogoStore, provider_store};

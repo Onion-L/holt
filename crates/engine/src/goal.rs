@@ -15,11 +15,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use holt_core::agent::types::AgentMessage;
 use holt_proto::{
     Chat, ChatGoalState, GoalEvent, GoalRoundKind, GoalStatus, GoalStep, TurnChangeSet,
 };
 use holt_rpc::RpcError;
-use pi_core::agent::types::AgentMessage;
 use tokio_util::sync::CancellationToken;
 
 use crate::EngineService;
@@ -293,11 +293,11 @@ fn evidence_tail(chat: &ChatRuntime) -> String {
         let line = match message {
             AgentMessage::User(user) => {
                 let text = match &user.content {
-                    pi_core::ai::types::UserContent::Text(text) => text.clone(),
-                    pi_core::ai::types::UserContent::Blocks(blocks) => blocks
+                    holt_core::ai::types::UserContent::Text(text) => text.clone(),
+                    holt_core::ai::types::UserContent::Blocks(blocks) => blocks
                         .iter()
                         .filter_map(|block| match block {
-                            pi_core::ai::types::BlockContent::Text(text) => {
+                            holt_core::ai::types::BlockContent::Text(text) => {
                                 Some(text.text.as_str())
                             }
                             _ => None,
@@ -311,10 +311,10 @@ fn evidence_tail(chat: &ChatRuntime) -> String {
                 .content
                 .iter()
                 .filter_map(|part| match part {
-                    pi_core::ai::types::AssistantContent::Text(text) => {
+                    holt_core::ai::types::AssistantContent::Text(text) => {
                         Some(format!("Assistant: {}", truncate(&text.text, 800)))
                     }
-                    pi_core::ai::types::AssistantContent::ToolCall(call) => Some(format!(
+                    holt_core::ai::types::AssistantContent::ToolCall(call) => Some(format!(
                         "Tool call: {} {}",
                         call.name,
                         truncate(
@@ -322,7 +322,7 @@ fn evidence_tail(chat: &ChatRuntime) -> String {
                             200,
                         )
                     )),
-                    pi_core::ai::types::AssistantContent::Thinking(_) => None,
+                    holt_core::ai::types::AssistantContent::Thinking(_) => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -331,7 +331,7 @@ fn evidence_tail(chat: &ChatRuntime) -> String {
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        pi_core::ai::types::BlockContent::Text(text) => Some(text.text.as_str()),
+                        holt_core::ai::types::BlockContent::Text(text) => Some(text.text.as_str()),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -403,7 +403,7 @@ fn turn_called_tools(chat: &ChatRuntime) -> bool {
             AgentMessage::Assistant(assistant) => assistant
                 .content
                 .iter()
-                .any(|part| matches!(part, pi_core::ai::types::AssistantContent::ToolCall(_))),
+                .any(|part| matches!(part, holt_core::ai::types::AssistantContent::ToolCall(_))),
             AgentMessage::ToolResult(_) => true,
             _ => false,
         })
@@ -579,7 +579,7 @@ pub(crate) fn cancel_check(chat: &ChatRuntime) {
 async fn check_transport(
     service: &EngineService,
     chat_id: &str,
-) -> Result<(pi_core::ai::types::Model, String, String), String> {
+) -> Result<(holt_core::ai::types::Model, String, String), String> {
     let (provider, model_id, cwd) = {
         let chats = service
             .runtime
@@ -630,9 +630,9 @@ async fn check_transport(
 /// usage snapshot a cut-short pass has (terminal events carry the full
 /// message; `run_check` books those on the completed path instead).
 fn partial_message(
-    event: &pi_core::ai::types::AssistantMessageEvent,
-) -> Option<&pi_core::ai::types::AssistantMessage> {
-    use pi_core::ai::types::AssistantMessageEvent as Event;
+    event: &holt_core::ai::types::AssistantMessageEvent,
+) -> Option<&holt_core::ai::types::AssistantMessage> {
+    use holt_core::ai::types::AssistantMessageEvent as Event;
     Some(match event {
         Event::Start { partial }
         | Event::TextStart { partial, .. }
@@ -652,7 +652,7 @@ fn partial_message(
 /// a snapshot with no tokens at all would only add noise to the ledger.
 fn book_burned_usage(
     chat: &Arc<ChatRuntime>,
-    partial: &std::sync::Mutex<Option<pi_core::ai::types::AssistantMessage>>,
+    partial: &std::sync::Mutex<Option<holt_core::ai::types::AssistantMessage>>,
 ) {
     let Some(message) = partial.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
@@ -694,23 +694,23 @@ async fn run_check(
             evidence
         }
     );
-    let mut options = pi_core::ai::types::SimpleStreamOptions::default();
+    let mut options = holt_core::ai::types::SimpleStreamOptions::default();
     // The judge doesn't solve, it checks: pin the lowest reasoning level
     // (pi maps Minimal to each provider's floor) and leave headroom for the
     // verdict plus the card's name/steps block beside whatever minimal
     // thinking the level emits — a tight cap let reasoning eat the whole
     // budget and garble the reply.
     options.base.max_tokens = Some(3072);
-    options.reasoning = Some(pi_core::ai::types::ThinkingLevel::Minimal);
+    options.reasoning = Some(holt_core::ai::types::ThinkingLevel::Minimal);
     options.base.base.api_key = Some(api_key);
     options.base.base.signal = Some(cancel.clone());
     options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);
-    let context = pi_core::ai::types::Context {
+    let context = holt_core::ai::types::Context {
         system_prompt: Some(verifier_system_prompt(&cwd)),
-        messages: vec![pi_core::ai::types::Message::User(
-            pi_core::ai::types::UserMessage {
-                role: pi_core::ai::types::RoleUser,
-                content: pi_core::ai::types::UserContent::Text(prompt),
+        messages: vec![holt_core::ai::types::Message::User(
+            holt_core::ai::types::UserMessage {
+                role: holt_core::ai::types::RoleUser,
+                content: holt_core::ai::types::UserContent::Text(prompt),
                 timestamp: 0,
             },
         )],
@@ -755,7 +755,7 @@ async fn run_check(
         .content
         .iter()
         .filter_map(|part| match part {
-            pi_core::ai::types::AssistantContent::Text(text) => Some(text.text.as_str()),
+            holt_core::ai::types::AssistantContent::Text(text) => Some(text.text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()

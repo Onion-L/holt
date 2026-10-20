@@ -2,11 +2,11 @@
 //! from `pi-core/ai/test/max-thinking.test.ts` ("exposes xhigh and max for
 //! openai-codex/%s"). Every assertion is a pure built-in catalog lookup —
 //! the TS `getModel(provider, id)` reads become
-//! `pi_core::ai::providers::builtin::get_builtin_model`.
+//! `holt_core::ai::providers::builtin::get_builtin_model`.
 
-use pi_core::ai::models::get_supported_thinking_levels;
-use pi_core::ai::providers::builtin::get_builtin_model;
-use pi_core::ai::types::{Model, ModelThinkingLevel};
+use holt_core::ai::models::get_supported_thinking_levels;
+use holt_core::ai::providers::builtin::get_builtin_model;
+use holt_core::ai::types::{Model, ModelThinkingLevel};
 
 /// `getModel(...)` + `expect(model).toBeDefined()`.
 fn catalog_model(provider: &str, model_id: &str) -> Model {

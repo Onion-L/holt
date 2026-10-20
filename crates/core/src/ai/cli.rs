@@ -3,7 +3,7 @@
 //!
 //! The console/filesystem surface (stdin lines, stdout/stderr writes, and
 //! the location of `auth.json`) sits behind the [`CliIo`] seam so tests can
-//! drive the CLI with scripted input and captured output; the `pi-ai`
+//! drive the CLI with scripted input and captured output; the `holt-ai`
 //! binary in `src/bin/` wires real stdio and the cwd-relative `auth.json`.
 //!
 //! Observable strings (usage text, menu numbering, prompt/notify formats,
@@ -111,7 +111,7 @@ where
             log(
                 &io,
                 format!(
-                    "Usage: npx @earendil-works/pi-ai <command> [provider]\n\nCommands:\n  login [provider]  Login to an OAuth provider\n  list              List available providers\n\nProviders:\n{provider_list}"
+                    "Usage: holt-ai <command> [provider]\n\nCommands:\n  login [provider]  Login to an OAuth provider\n  list              List available providers\n\nProviders:\n{provider_list}"
                 ),
             );
         }

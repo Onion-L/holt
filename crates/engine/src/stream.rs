@@ -7,7 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
-use pi_core::ai::{
+use holt_core::ai::{
     compat,
     types::{
         AssistantMessage, AssistantMessageEvent, Context as PiContext, ErrorReason,
@@ -33,8 +33,8 @@ const STREAM_CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
 /// `EngineConfig::stream_fn` and get the same guard at
 /// `AgentRuntime::new`, so every engine-owned request path — Turns,
 /// subagents, compaction, title tasks — runs exactly one watchdog.
-pub(crate) fn default_stream_fn() -> pi_core::agent::types::StreamFn {
-    let raw: pi_core::agent::types::StreamFn = Arc::new(
+pub(crate) fn default_stream_fn() -> holt_core::agent::types::StreamFn {
+    let raw: holt_core::agent::types::StreamFn = Arc::new(
         |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
             Ok(compat::stream_simple(model, context, options))
         },
@@ -53,9 +53,9 @@ pub(crate) fn default_stream_fn() -> pi_core::agent::types::StreamFn {
 /// authority. Every terminal branch cancels the child and drops the
 /// upstream stream, so nothing keeps consuming the provider afterwards.
 pub(crate) fn guard_stream_fn(
-    raw: pi_core::agent::types::StreamFn,
+    raw: holt_core::agent::types::StreamFn,
     idle: Duration,
-) -> pi_core::agent::types::StreamFn {
+) -> holt_core::agent::types::StreamFn {
     Arc::new(
         move |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
             let parent = options.and_then(|options| options.base.base.signal.clone());
@@ -256,13 +256,13 @@ const STREAM_MAX_RETRIES: u32 = 2;
 /// Re-send a request whose stream failed after the provider accepted it
 /// (`Start` seen) but before any content reached the consumer — an SSE
 /// `overloaded_error`, a dropped body, a stall — since nothing has to be
-/// taken back. A failure before `Start` already went through pi-core's HTTP
+/// taken back. A failure before `Start` already went through holt-core's HTTP
 /// retries, and one after content surfaces as-is. Each scheduled retry
 /// reports through `on_retry`, like the request layer's.
 pub(crate) fn retry_stream_fn(
-    inner: pi_core::agent::types::StreamFn,
-    on_retry: pi_core::ai::types::OnRetryCallback,
-) -> pi_core::agent::types::StreamFn {
+    inner: holt_core::agent::types::StreamFn,
+    on_retry: holt_core::ai::types::OnRetryCallback,
+) -> holt_core::agent::types::StreamFn {
     Arc::new(
         move |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
             let upstream = inner(model, context, options)?;
@@ -287,11 +287,11 @@ pub(crate) fn retry_stream_fn(
 async fn forward_with_stream_retry(
     mut upstream: AssistantMessageEventStream,
     output: AssistantMessageEventStream,
-    inner: pi_core::agent::types::StreamFn,
+    inner: holt_core::agent::types::StreamFn,
     model: PiModel,
     context: PiContext,
     options: Option<SimpleStreamOptions>,
-    on_retry: pi_core::ai::types::OnRetryCallback,
+    on_retry: holt_core::ai::types::OnRetryCallback,
 ) {
     let signal = options
         .as_ref()
@@ -330,7 +330,7 @@ async fn forward_with_stream_retry(
             || content
             || retries >= STREAM_MAX_RETRIES
             || signal.as_ref().is_some_and(CancellationToken::is_cancelled)
-            || !pi_core::ai::utils::retry::is_retryable_assistant_error(message)
+            || !holt_core::ai::utils::retry::is_retryable_assistant_error(message)
         {
             output.push(failed);
             return;
@@ -382,7 +382,7 @@ fn stream_event_partial(event: &AssistantMessageEvent) -> Option<&AssistantMessa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_core::ai::types::{AssistantContent, DoneReason, TextContent};
+    use holt_core::ai::types::{AssistantContent, DoneReason, TextContent};
     use std::sync::Mutex;
 
     // -----------------------------------------------------------------------
@@ -428,7 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_that_never_emits_fails_after_the_idle_deadline() {
-        let raw: pi_core::agent::types::StreamFn =
+        let raw: holt_core::agent::types::StreamFn =
             Arc::new(|_, _, _| Ok(create_assistant_message_event_stream()));
         let guarded = guard_stream_fn(raw, Duration::from_millis(50));
         let stream = guarded(&PiModel::default(), &PiContext::default(), None).unwrap();
@@ -445,7 +445,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_that_stalls_between_events_fails_and_keeps_the_partial() {
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
+        let raw: holt_core::agent::types::StreamFn = Arc::new(|_, _, _| {
             let stream = create_assistant_message_event_stream();
             stream.push(AssistantMessageEvent::Start {
                 partial: watchdog_partial("streamed so far"),
@@ -468,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_idle_deadline_resets_on_every_event() {
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
+        let raw: holt_core::agent::types::StreamFn = Arc::new(|_, _, _| {
             let stream = create_assistant_message_event_stream();
             let publisher = stream.clone();
             tokio::spawn(async move {
@@ -505,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn parent_cancellation_aborts_without_a_timeout() {
         let parent = CancellationToken::new();
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
+        let raw: holt_core::agent::types::StreamFn = Arc::new(|_, _, _| {
             // A transport that emits one event and then goes silent: only
             // the parent token can end this stream.
             let stream = create_assistant_message_event_stream();
@@ -549,7 +549,7 @@ mod tests {
         let mut done = watchdog_partial("all good");
         done.stop_reason = StopReason::Stop;
         let expected = done.clone();
-        let raw: pi_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
+        let raw: holt_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
             let stream = create_assistant_message_event_stream();
             stream.push(AssistantMessageEvent::Done {
                 reason: DoneReason::Stop,
@@ -570,7 +570,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_that_ends_without_a_terminal_event_settles_as_an_error() {
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
+        let raw: holt_core::agent::types::StreamFn = Arc::new(|_, _, _| {
             let stream = create_assistant_message_event_stream();
             stream.push(AssistantMessageEvent::Start {
                 partial: watchdog_partial("cut off"),
@@ -615,13 +615,13 @@ mod tests {
     fn scripted_retry_stream(
         attempts: Vec<Attempt>,
     ) -> (
-        pi_core::agent::types::StreamFn,
+        holt_core::agent::types::StreamFn,
         Arc<std::sync::atomic::AtomicUsize>,
         RetryNotices,
     ) {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
-        let raw: pi_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
+        let raw: holt_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
             let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let (started, text, error) = attempts[index.min(attempts.len() - 1)];
             let stream = create_assistant_message_event_stream();
@@ -652,7 +652,7 @@ mod tests {
         });
         let notices = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&notices);
-        let on_retry: pi_core::ai::types::OnRetryCallback =
+        let on_retry: holt_core::ai::types::OnRetryCallback =
             Arc::new(move |attempt, _, delay_ms, error| {
                 sink.lock()
                     .unwrap()

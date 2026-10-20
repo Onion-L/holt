@@ -10,18 +10,18 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::google_generative_ai::{
+use holt_core::ai::api::google_generative_ai::{
     GoogleOptions, stream_with_transport as stream_google_generative_ai,
 };
-use pi_core::ai::api::google_vertex::{
+use holt_core::ai::api::google_vertex::{
     GoogleVertexOptions, stream_with_transport as stream_google_vertex,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, Context, Message, Model, ProviderHeaders, ProviderRequestOptions, RoleUser,
     StopReason, StreamOptions, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
-use pi_core::ai::utils::provider_retry::{
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::provider_retry::{
     ProviderHttpError, ProviderRetryOptions, retry_provider_request,
 };
 use serde_json::{Value, json};
@@ -31,12 +31,12 @@ use serde_json::{Value, json};
 // ---------------------------------------------------------------------------
 
 fn generative_ai_model() -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model("google", "gemini-2.5-flash")
+    holt_core::ai::providers::builtin::get_builtin_model("google", "gemini-2.5-flash")
         .expect("catalog model google/gemini-2.5-flash")
 }
 
 fn vertex_model() -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model("google-vertex", "gemini-3-flash-preview")
+    holt_core::ai::providers::builtin::get_builtin_model("google-vertex", "gemini-3-flash-preview")
         .expect("catalog model google-vertex/gemini-3-flash-preview")
 }
 
@@ -317,11 +317,11 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
 }
 
 #[tokio::test]
-async fn uses_pi_user_agent_by_default() {
+async fn uses_holt_user_agent_by_default() {
     let headers = capture_google_headers(None).await;
     assert_eq!(
         header_value(&headers, "User-Agent"),
-        Some(pi_core::ai::session_resources::get_pi_user_agent().as_str())
+        Some(holt_core::ai::session_resources::get_user_agent().as_str())
     );
 }
 
@@ -429,9 +429,10 @@ async fn rejects_custom_fetch_for_google_adapters() {
     // so a bypass would hang the test.
     let options = google_options(google_sse_fetch("STOP", false));
 
-    let message = pi_core::ai::api::google_generative_ai::stream(&model, &context, Some(&options))
-        .result()
-        .await;
+    let message =
+        holt_core::ai::api::google_generative_ai::stream(&model, &context, Some(&options))
+            .result()
+            .await;
     assert!(
         message
             .error_message
@@ -445,7 +446,7 @@ async fn rejects_custom_fetch_for_google_adapters() {
     let model = vertex_model();
     let options = vertex_options(google_sse_fetch("STOP", false));
     let _ = &options;
-    let message = pi_core::ai::api::google_vertex::stream(&model, &context, Some(&options))
+    let message = holt_core::ai::api::google_vertex::stream(&model, &context, Some(&options))
         .result()
         .await;
     assert!(

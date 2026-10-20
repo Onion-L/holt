@@ -17,17 +17,17 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::pi_messages::{
+use holt_core::ai::api::pi_messages::{
     PiMessagesDoneReason, PiMessagesEvent, PiMessagesOptions, stream, stream_simple,
 };
-use pi_core::ai::compat;
-use pi_core::ai::types::{
+use holt_core::ai::compat;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, Context, Message, Model, ModelCost,
     ModelCostRates, ModelInput, OnResponseCallback, ProviderHeaders, ProviderRequestOptions,
     ProviderResponse, RoleUser, SimpleStreamOptions, StopReason, StreamOptions, TextContent,
     ToolCall, Usage, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{
+use holt_core::ai::utils::http::{
     HttpBody, HttpFetch, HttpFetchError, HttpMethod, HttpRequest, HttpResponse,
 };
 use serde_json::{Value, json};
@@ -159,10 +159,10 @@ fn create_model(base_url: &str) -> Model {
         input: vec![ModelInput::Text],
         cost: ModelCost {
             rates: ModelCostRates {
-                input: pi_core::ai::types::JsF64(1.0),
-                output: pi_core::ai::types::JsF64(2.0),
-                cache_read: pi_core::ai::types::JsF64(0.1),
-                cache_write: pi_core::ai::types::JsF64(0.2),
+                input: holt_core::ai::types::JsF64(1.0),
+                output: holt_core::ai::types::JsF64(2.0),
+                cache_read: holt_core::ai::types::JsF64(0.1),
+                cache_write: holt_core::ai::types::JsF64(0.2),
             },
             tiers: None,
         },
@@ -595,10 +595,10 @@ async fn uses_fetch_for_pi_messages_http_requests() {
         input: vec![ModelInput::Text],
         cost: ModelCost {
             rates: ModelCostRates {
-                input: pi_core::ai::types::JsF64(0.0),
-                output: pi_core::ai::types::JsF64(0.0),
-                cache_read: pi_core::ai::types::JsF64(0.0),
-                cache_write: pi_core::ai::types::JsF64(0.0),
+                input: holt_core::ai::types::JsF64(0.0),
+                output: holt_core::ai::types::JsF64(0.0),
+                cache_read: holt_core::ai::types::JsF64(0.0),
+                cache_write: holt_core::ai::types::JsF64(0.0),
             },
             tiers: None,
         },

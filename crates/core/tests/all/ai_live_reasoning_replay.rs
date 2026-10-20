@@ -7,7 +7,7 @@ use common::live::{
     LiveEffort, LiveOptions, get_model_or_panic, live_complete, live_env, now_millis,
     payload_capture, skip,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, BlockContent, Context, Message, RoleToolResult, RoleUser, StopReason,
     TextContent, Tool, ToolResultMessage, UserContent, UserMessage,
 };
@@ -33,7 +33,7 @@ fn tool() -> Tool {
     }
 }
 
-fn tool_result(call: &pi_core::ai::types::ToolCall) -> Message {
+fn tool_result(call: &holt_core::ai::types::ToolCall) -> Message {
     Message::ToolResult(Box::new(ToolResultMessage {
         role: RoleToolResult,
         tool_call_id: call.id.clone(),
@@ -48,7 +48,7 @@ fn tool_result(call: &pi_core::ai::types::ToolCall) -> Message {
     }))
 }
 
-fn response_text(message: &pi_core::ai::types::AssistantMessage) -> String {
+fn response_text(message: &holt_core::ai::types::AssistantMessage) -> String {
     message
         .content
         .iter()

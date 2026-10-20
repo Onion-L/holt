@@ -409,7 +409,7 @@ async fn run_stream(
     let mut merged: crate::ai::types::ProviderHeaders = Default::default();
     merged.insert(
         "User-Agent".to_string(),
-        Some(crate::ai::session_resources::get_pi_user_agent()),
+        Some(crate::ai::session_resources::get_user_agent()),
     );
     if let Some(model_headers) = &model.headers {
         for (name, value) in model_headers {

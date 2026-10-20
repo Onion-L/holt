@@ -1,6 +1,6 @@
 # Run loop
 
-The single-agent Turn execution engine over pi-core: how one admitted run becomes LLM requests and tool rounds, what transport every request rides, how streaming reaches the transcript, and when a Turn ends. This is the machinery every engine-owned model call shares — Turns, subagents, compaction summaries, title tasks, gate reviews.
+The single-agent Turn execution engine over holt-core: how one admitted run becomes LLM requests and tool rounds, what transport every request rides, how streaming reaches the transcript, and when a Turn ends. This is the machinery every engine-owned model call shares — Turns, subagents, compaction summaries, title tasks, gate reviews.
 
 Not here: what the model is told (see prompts-skills), how work is admitted and paced (see conversation-policy), what audits tool calls (see permission-gate), how events persist (see persistence), and the child-run harness (see subagents).
 
@@ -8,11 +8,11 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 
 | Part | Responsibility | Source |
 | --- | --- | --- |
-| The loop | `run_agent_command` drives one Turn: system prompt, the chat's History converted to the LLM view, tool rounds through pi-core's loop, cancellation races throughout. A Turn ends `Succeeded`, `Failed { reason }`, or `Interrupted` | [`crates/engine/src/agent.rs`](../../crates/engine/src/agent.rs) |
+| The loop | `run_agent_command` drives one Turn: system prompt, the chat's History converted to the LLM view, tool rounds through holt-core's loop, cancellation races throughout. A Turn ends `Succeeded`, `Failed { reason }`, or `Interrupted` | [`crates/engine/src/agent.rs`](../../crates/engine/src/agent.rs) |
 | Transport guard | Every engine-owned request runs behind exactly one guard: the built-in compat stream wrapped with an idle watchdog. Tests inject a scripted provider through `EngineConfig::stream_fn` and get the same watchdog | [`crates/engine/src/stream.rs`](../../crates/engine/src/stream.rs) (`default_stream_fn`, `guard_stream_fn`) |
 | Idle watchdog | 300 s bounds the time between events — never total request duration. Five silent minutes means the connection is gone; without it a Turn or child stays `streaming` until an app restart | `stream.rs` (`STREAM_IDLE_TIMEOUT`) |
 | Mid-stream retry | A failure arriving after the provider's `Start` but before any content re-dials in place (a small retry budget, seconds of backoff); a failure after content surfaces as-is. Cancellation gives a provider a 1 s window to emit its own terminal abort before the engine synthesizes one | `stream.rs` |
-| Request-layer retry | Ten retries on a Turn's critical path (the Turn, its compaction, the gate reviewer) under pi-core's SDK-shaped policy — retryable statuses and network errors, retry-after-aware, backoff capped — riding out roughly a minute of provider overload: the user is waiting and can cancel, so waiting beats failing the Turn | `agent.rs` (`PROVIDER_MAX_RETRIES`) |
+| Request-layer retry | Ten retries on a Turn's critical path (the Turn, its compaction, the gate reviewer) under holt-core's SDK-shaped policy — retryable statuses and network errors, retry-after-aware, backoff capped — riding out roughly a minute of provider overload: the user is waiting and can cancel, so waiting beats failing the Turn | `agent.rs` (`PROVIDER_MAX_RETRIES`) |
 | Retry notices | Every scheduled retry fans out through `on_retry` to `WatchTurnRetry` — live-only, fire-and-forget, a lagging consumer is the consumer's failure | `agent.rs` (`on_retry_callback`), [`retry_events.rs`](../../crates/engine/src/retry_events.rs) |
 | Streaming to the transcript | Agent events are translated into transcript parts in decode and published on a throttled cadence; session status beats on a heartbeat while work runs | `agent.rs` (`STREAM_PUBLISH_INTERVAL`, `SESSION_HEARTBEAT_INTERVAL`), [`decode.rs`](../../crates/engine/src/decode.rs) |
 | Terminal events | `WatchTurnTerminalEvents` carries one typed event per real main-chat Turn, published only after the Turn's transcript, History, and queue completion are durably settled — fire-and-forget, live-only, never able to fail the Turn or delay the queue | [`turn_events.rs`](../../crates/engine/src/turn_events.rs) |

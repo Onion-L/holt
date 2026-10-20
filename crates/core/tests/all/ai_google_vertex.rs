@@ -16,15 +16,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::google_vertex::{
+use holt_core::ai::api::google_vertex::{
     GoogleVertexOptions, base_url_includes_api_version, resolve_api_key,
     stream_with_transport as stream_google_vertex,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     Context, Message, Model, ProviderEnv, ProviderHeaders, ProviderRequestOptions, RoleUser,
     StopReason, StreamOptions, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::json;
 
 const REAL_API_KEY: &str = "AIzaSyExampleRealisticLookingApiKey123456";
@@ -40,7 +40,7 @@ const PROXY_URL: &str = "https://proxy.example.com/v1/publishers/google/models/g
 const VERSIONED_PROXY_URL: &str = "https://proxy.example.com/v1/projects/test-project/locations/global/publishers/google/models/gemini-3-flash-preview:streamGenerateContent?alt=sse";
 
 fn vertex_model() -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model("google-vertex", MODEL_ID)
+    holt_core::ai::providers::builtin::get_builtin_model("google-vertex", MODEL_ID)
         .unwrap_or_else(|| panic!("catalog model google-vertex/{MODEL_ID}"))
 }
 
@@ -115,7 +115,7 @@ fn adc_options() -> GoogleVertexOptions {
 async fn run_vertex(
     model: &Model,
     options: GoogleVertexOptions,
-) -> (pi_core::ai::types::AssistantMessage, Vec<HttpRequest>) {
+) -> (holt_core::ai::types::AssistantMessage, Vec<HttpRequest>) {
     let fetch = Arc::new(VertexMockFetch {
         requests: Mutex::new(Vec::new()),
     });
@@ -132,8 +132,8 @@ async fn run_vertex(
     (message, requests)
 }
 
-fn pi_user_agent() -> String {
-    pi_core::ai::session_resources::get_pi_user_agent()
+fn user_agent() -> String {
+    holt_core::ai::session_resources::get_user_agent()
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ async fn falls_back_to_adc_when_options_api_key_is_a_placeholder_marker() {
     assert_eq!(requests[0].url, ADC_URL);
     assert_eq!(
         requests[0].headers,
-        vec![("User-Agent".to_string(), pi_user_agent())]
+        vec![("User-Agent".to_string(), user_agent())]
     );
 }
 
@@ -168,7 +168,7 @@ async fn falls_back_to_adc_when_options_api_key_is_the_gcp_vertex_credentials_ma
     assert_eq!(requests[0].url, ADC_URL);
     assert_eq!(
         requests[0].headers,
-        vec![("User-Agent".to_string(), pi_user_agent())]
+        vec![("User-Agent".to_string(), user_agent())]
     );
 }
 
@@ -187,7 +187,7 @@ async fn falls_back_to_adc_when_google_cloud_api_key_is_a_placeholder_marker() {
     assert_eq!(requests[0].url, ADC_URL);
     assert_eq!(
         requests[0].headers,
-        vec![("User-Agent".to_string(), pi_user_agent())]
+        vec![("User-Agent".to_string(), user_agent())]
     );
 }
 
@@ -208,7 +208,7 @@ async fn still_uses_the_api_key_client_for_real_api_keys() {
         requests[0].headers,
         vec![
             ("x-goog-api-key".to_string(), REAL_API_KEY.to_string()),
-            ("User-Agent".to_string(), pi_user_agent()),
+            ("User-Agent".to_string(), user_agent()),
         ]
     );
 }
@@ -224,7 +224,7 @@ async fn does_not_forward_generated_vertex_base_url_placeholders() {
     assert_eq!(requests[0].url, ADC_URL);
     assert_eq!(
         requests[0].headers,
-        vec![("User-Agent".to_string(), pi_user_agent())]
+        vec![("User-Agent".to_string(), user_agent())]
     );
 }
 
@@ -260,7 +260,7 @@ async fn forwards_custom_base_url_to_the_adc_client() {
     assert_eq!(requests[0].url, PROXY_URL);
     assert_eq!(
         requests[0].headers,
-        vec![("User-Agent".to_string(), pi_user_agent())]
+        vec![("User-Agent".to_string(), user_agent())]
     );
 }
 
@@ -280,7 +280,7 @@ async fn forwards_custom_base_url_to_the_api_key_client() {
         requests[0].headers,
         vec![
             ("x-goog-api-key".to_string(), REAL_API_KEY.to_string()),
-            ("User-Agent".to_string(), pi_user_agent()),
+            ("User-Agent".to_string(), user_agent()),
         ]
     );
 }
@@ -298,6 +298,6 @@ async fn does_not_append_api_version_when_custom_base_url_already_includes_one()
     assert_eq!(requests[0].url, VERSIONED_PROXY_URL);
     assert_eq!(
         requests[0].headers,
-        vec![("User-Agent".to_string(), pi_user_agent())]
+        vec![("User-Agent".to_string(), user_agent())]
     );
 }

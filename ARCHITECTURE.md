@@ -1,13 +1,13 @@
 # Holt — Architecture
 
-A desktop-only UI shell. The frontend talks to a small in-process engine over a typed RPC contract; its first real capability is the `pi-core-rs` agent loop. README.md covers the project overview and quick start.
+A desktop-only UI shell. The frontend talks to a small in-process engine over a typed RPC contract; its first real capability is the `holt-core` agent loop. README.md covers the project overview and quick start.
 
 This file owns topology, the hard boundaries, and the maps between them. How the system runs today lives in [docs/subsystems](docs/subsystems/README.md).
 
 ## Topology
 
 ```
-gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + pi-core agent loop
+gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + holt-core agent loop
 ```
 
 One binary, headed only. The UI links `crates/engine` for exactly one thing — assembling the local backend at bootstrap (`EngineHandle::bootstrap` in `ui/state.rs`). No feature code in `crates/ui` calls backend logic: it talks the typed RPC contract in `crates/rpc` over an in-process duplex (`holt_rpc::memory_client`). The local backend implements the `RpcService` contract; a different backend can slot in behind the same trait.
@@ -24,7 +24,7 @@ One binary, headed only. The UI links `crates/engine` for exactly one thing — 
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), view derivations, usage frames. |
 | `crates/doc` | Wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame` — plus transcript-frame diffing. Persistence itself is engine-owned (see persistence). The crate's Loro session/workspace schemas and HLC registry port are dormant — nothing outside `crates/doc` links them. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
-| `crates/core` | The agent core (package `pi-core-rs`, lib `pi_core`): provider adapters and streaming, the agent loop, the harness. Free of Holt domain concepts — `crates/engine` is the only adapter. MIT-licensed (decision: agent-core-is-a-holt-owned-workspace-crate). |
+| `crates/core` | The agent core (package `holt-core`, lib `holt_core`): provider adapters and streaming, the agent loop, the harness. Free of Holt domain concepts — `crates/engine` is the only adapter. MIT-licensed (decision: agent-core-is-a-holt-owned-workspace-crate). |
 
 ## Hard boundaries
 

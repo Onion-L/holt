@@ -1,12 +1,12 @@
 //! Port of `pi-core/ai/test/context-estimate.test.ts`: context token
 //! estimation with stale assistant usage after out-of-order inserts.
 
-use pi_core::ai::api::simple_options::build_base_options;
-use pi_core::ai::types::{
+use holt_core::ai::api::simple_options::build_base_options;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, ModelCost, ModelInput,
     RoleAssistant, RoleUser, StopReason, TextContent, Usage, UsageCost, UserContent, UserMessage,
 };
-use pi_core::ai::utils::estimate::{ContextUsageEstimate, estimate_context_tokens};
+use holt_core::ai::utils::estimate::{ContextUsageEstimate, estimate_context_tokens};
 
 /// Port of `createUsage`.
 fn create_usage(total_tokens: u64) -> Usage {

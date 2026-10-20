@@ -22,17 +22,17 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::anthropic_messages::stream_simple as stream_simple_anthropic;
-use pi_core::ai::api::openai_completions::{OpenAICompletionsOptions, stream, stream_simple};
-use pi_core::ai::compat::stream_simple as compat_stream_simple;
-use pi_core::ai::types::{
+use holt_core::ai::api::anthropic_messages::stream_simple as stream_simple_anthropic;
+use holt_core::ai::api::openai_completions::{OpenAICompletionsOptions, stream, stream_simple};
+use holt_core::ai::compat::stream_simple as compat_stream_simple;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, CacheControlFormat, CacheRetention, ChatTemplateKwargValue,
     ChatTemplateKwargs, Context, MaxTokensField, Message, Model, ModelCompat, ModelInput,
     ProviderEnv, ProviderHeaders, ProviderRequestOptions, SessionAffinityFormat,
     SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets, ThinkingFormat, ThinkingLevel,
     ThinkingTokenBudgetField, ThinkingVariable, Tool, ToolCall, UserContent, UserMessage,
 };
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 fn model() -> Model {
@@ -43,8 +43,8 @@ fn model() -> Model {
         provider: "openai".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
-        cost: pi_core::ai::types::ModelCost::default(),
+        input: vec![holt_core::ai::types::ModelInput::Text],
+        cost: holt_core::ai::types::ModelCost::default(),
         context_window: 128_000,
         max_tokens: 4_096,
         ..Default::default()
@@ -54,7 +54,7 @@ fn model() -> Model {
 fn context() -> Context {
     Context {
         messages: vec![Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Text("hello".to_string()),
             timestamp: 0,
         })],
@@ -149,8 +149,8 @@ impl HttpFetch for ErroringFetch {
 
 fn options_with(fetch: Arc<RecordingFetch>, session_id: Option<&str>) -> OpenAICompletionsOptions {
     OpenAICompletionsOptions {
-        base: pi_core::ai::types::StreamOptions {
-            base: pi_core::ai::types::ProviderRequestOptions {
+        base: holt_core::ai::types::StreamOptions {
+            base: holt_core::ai::types::ProviderRequestOptions {
                 api_key: Some("test".to_string()),
                 fetch: Some(fetch),
                 ..Default::default()
@@ -167,7 +167,7 @@ fn options_with(fetch: Arc<RecordingFetch>, session_id: Option<&str>) -> OpenAIC
 // ---------------------------------------------------------------------------
 
 fn builtin(provider: &str, id: &str) -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model(provider, id)
+    holt_core::ai::providers::builtin::get_builtin_model(provider, id)
         .unwrap_or_else(|| panic!("missing model {provider}/{id}"))
 }
 
@@ -175,7 +175,7 @@ fn user_message(text: &str) -> Message {
     Message::User(UserMessage {
         content: UserContent::Text(text.to_string()),
         timestamp: 0,
-        role: pi_core::ai::types::RoleUser,
+        role: holt_core::ai::types::RoleUser,
     })
 }
 
@@ -434,19 +434,19 @@ async fn empty_tools_with_tool_history_sends_empty_tools_param() {
         system_prompt: None,
         messages: vec![
             Message::Assistant(Box::new(
-                pi_core::ai::providers::faux::faux_assistant_message(
+                holt_core::ai::providers::faux::faux_assistant_message(
                     "",
-                    pi_core::ai::providers::faux::FauxMessageOptions {
+                    holt_core::ai::providers::faux::FauxMessageOptions {
                         stop_reason: Some(StopReason::ToolUse),
                         ..Default::default()
                     },
                 ),
             )),
-            Message::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
+            Message::ToolResult(Box::new(holt_core::ai::types::ToolResultMessage {
                 tool_call_id: "call_1".to_string(),
                 tool_name: "echo".to_string(),
-                content: vec![pi_core::ai::types::BlockContent::Text(
-                    pi_core::ai::types::TextContent {
+                content: vec![holt_core::ai::types::BlockContent::Text(
+                    holt_core::ai::types::TextContent {
                         text: "done".to_string(),
                         ..Default::default()
                     },
@@ -491,11 +491,11 @@ async fn streaming_text_deltas_produce_text_blocks() {
     let mut saw_text_end = false;
     while let Some(event) = stream.next().await {
         match event {
-            pi_core::ai::types::AssistantMessageEvent::TextDelta { delta, .. } => {
+            holt_core::ai::types::AssistantMessageEvent::TextDelta { delta, .. } => {
                 saw_text_delta = true;
                 assert!(!delta.is_empty());
             }
-            pi_core::ai::types::AssistantMessageEvent::TextEnd { .. } => saw_text_end = true,
+            holt_core::ai::types::AssistantMessageEvent::TextEnd { .. } => saw_text_end = true,
             _ => {}
         }
     }
@@ -504,7 +504,7 @@ async fn streaming_text_deltas_produce_text_blocks() {
     assert!(saw_text_end);
     assert_eq!(
         message.content[0],
-        pi_core::ai::types::AssistantContent::Text(pi_core::ai::types::TextContent {
+        holt_core::ai::types::AssistantContent::Text(holt_core::ai::types::TextContent {
             text: "Hello world".to_string(),
             ..Default::default()
         })
@@ -608,11 +608,11 @@ async fn moves_the_conversation_cache_marker_to_a_tool_result() {
             timestamp: 0,
             ..Default::default()
         })),
-        Message::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
+        Message::ToolResult(Box::new(holt_core::ai::types::ToolResultMessage {
             tool_call_id: "call_1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![pi_core::ai::types::BlockContent::Text(
-                pi_core::ai::types::TextContent {
+            content: vec![holt_core::ai::types::BlockContent::Text(
+                holt_core::ai::types::TextContent {
                     text: "file contents".to_string(),
                     ..Default::default()
                 },
@@ -744,10 +744,10 @@ async fn omits_prompt_cache_fields_for_non_openai_base_urls_without_compatible_l
 
 #[tokio::test]
 async fn uses_pi_cache_retention_for_direct_openai_requests() {
-    // TS sets process.env.PI_CACHE_RETENTION; the port injects a scoped
+    // TS sets process.env.HOLT_CACHE_RETENTION; the port injects a scoped
     // ProviderEnv instead of mutating process env.
     let mut options = direct_options();
-    options.base.base.env = Some(env_from(&[("PI_CACHE_RETENTION", "long")]));
+    options.base.base.env = Some(env_from(&[("HOLT_CACHE_RETENTION", "long")]));
     options.base.session_id = Some("session-env".to_string());
 
     let body = capture_direct_body(&prompt_cache_model(), &prompt_cache_context(), options).await;
@@ -1186,7 +1186,7 @@ async fn includes_tool_choice_when_no_tools_are_provided() {
         ..Default::default()
     };
     let mut options = simple_test_options();
-    options.tool_choice = Some(pi_core::ai::types::ToolChoice::None);
+    options.tool_choice = Some(holt_core::ai::types::ToolChoice::None);
 
     let body = capture_simple_body(&model, &context, options).await;
 
@@ -1584,7 +1584,7 @@ async fn uses_configurable_chat_template_effort_kwargs_with_static_kwargs() {
         "http://localhost:8000/v1",
     );
     model.thinking_level_map = Some(BTreeMap::from([(
-        pi_core::ai::types::ModelThinkingLevel::Xhigh,
+        holt_core::ai::types::ModelThinkingLevel::Xhigh,
         Some("max".to_string()),
     )]));
     model.compat = Some(ModelCompat {
@@ -2115,7 +2115,7 @@ async fn is_ignored_by_non_openai_compatible_apis() {
 // ---------------------------------------------------------------------------
 
 fn openrouter_reasoning_model(
-    thinking_level_map: Option<pi_core::ai::types::ThinkingLevelMap>,
+    thinking_level_map: Option<holt_core::ai::types::ThinkingLevelMap>,
 ) -> Model {
     Model {
         id: "stealth/ox-alpha".to_string(),
@@ -2139,8 +2139,8 @@ fn openrouter_reasoning_model(
 
 /// `getOpenRouterThinkingLevelMap({ mandatory: true, supported_efforts:
 /// ["max","high","low"] })`.
-fn mandatory_reasoning_map() -> pi_core::ai::types::ThinkingLevelMap {
-    use pi_core::ai::types::ModelThinkingLevel as Level;
+fn mandatory_reasoning_map() -> holt_core::ai::types::ThinkingLevelMap {
+    use holt_core::ai::types::ModelThinkingLevel as Level;
     BTreeMap::from([
         (Level::Off, None),
         (Level::Minimal, None),
@@ -2227,14 +2227,14 @@ fn error_regression_context() -> Context {
     Context {
         system_prompt: Some(String::new()),
         messages: vec![Message::User(UserMessage {
-            content: UserContent::Blocks(vec![pi_core::ai::types::BlockContent::Text(
-                pi_core::ai::types::TextContent {
+            content: UserContent::Blocks(vec![holt_core::ai::types::BlockContent::Text(
+                holt_core::ai::types::TextContent {
                     text: "hi".to_string(),
                     ..Default::default()
                 },
             )]),
             timestamp: 0,
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
         })],
         tools: Some(Vec::new()),
     }

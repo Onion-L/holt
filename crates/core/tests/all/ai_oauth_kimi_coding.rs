@@ -4,12 +4,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::kimi_coding::KimiCodingOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::kimi_coding::KimiCodingOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthStorageError, OAuthAuth, OAuthCredential,
 };
-use pi_core::ai::types::{FetchFunction, ProviderEnv};
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::{FetchFunction, ProviderEnv};
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 const CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
@@ -89,7 +89,7 @@ impl AuthInteraction for RecordingInteraction {
     fn prompt(
         &self,
         _prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         unreachable!("Kimi Code login should not prompt")
     }
 

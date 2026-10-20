@@ -10,8 +10,8 @@ use crate::common;
 
 use common::{ScriptedProvider, ScriptedReply};
 use futures::StreamExt as _;
+use holt_core::ai::types::Usage;
 use holt_rpc::{RpcReply, RpcService as _, methods};
-use pi_core::ai::types::Usage;
 
 /// The chat row's flag, read off a fresh chats snapshot.
 async fn compact_flag(engine: &holt_engine::LocalEngine) -> bool {

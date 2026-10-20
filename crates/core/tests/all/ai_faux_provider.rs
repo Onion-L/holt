@@ -5,16 +5,16 @@
 
 use std::sync::Arc;
 
-use pi_core::ai::compat::{complete, register_faux_provider, stream};
-use pi_core::ai::providers::faux::{
+use holt_core::ai::compat::{complete, register_faux_provider, stream};
+use holt_core::ai::providers::faux::{
     FauxMessageOptions, FauxModelDefinition, FauxResponseStep, FauxTokenSize,
     RegisterFauxProviderOptions, faux_assistant_message, faux_text, faux_thinking, faux_tool_call,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantMessageEvent, CacheRetention, Context, Message, ProviderRequestOptions, RoleUser,
     SimpleStreamOptions, StreamOptions, ToolResultMessage, UserContent, UserMessage,
 };
-use pi_core::ai::utils::event_stream::AssistantMessageEventStream;
+use holt_core::ai::utils::event_stream::AssistantMessageEventStream;
 
 async fn registry_lock() -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -35,7 +35,7 @@ fn user_context(content: &str) -> Context {
 }
 
 async fn collect_events(stream: &AssistantMessageEventStream) -> Vec<AssistantMessageEvent> {
-    pi_core::ai::utils::event_stream::collect_events(stream).await
+    holt_core::ai::utils::event_stream::collect_events(stream).await
 }
 
 fn event_kind(event: &AssistantMessageEvent) -> &'static str {
@@ -55,7 +55,7 @@ fn event_kind(event: &AssistantMessageEvent) -> &'static str {
     }
 }
 
-fn default_registration() -> pi_core::ai::compat::CompatFauxRegistration {
+fn default_registration() -> holt_core::ai::compat::CompatFauxRegistration {
     register_faux_provider(RegisterFauxProviderOptions::default())
 }
 
@@ -79,7 +79,7 @@ async fn registers_a_custom_provider_and_estimates_usage() {
 
     let response = complete(&registration.get_model(), &context, None).await;
     match &response.content[0] {
-        pi_core::ai::types::AssistantContent::Text(text) => {
+        holt_core::ai::types::AssistantContent::Text(text) => {
             assert_eq!(text.text, "hello world")
         }
         other => panic!("expected text, got {other:?}"),
@@ -106,7 +106,7 @@ async fn supports_helper_blocks_for_text_thinking_and_tool_calls() {
                 faux_text("done"),
             ],
             FauxMessageOptions {
-                stop_reason: Some(pi_core::ai::types::StopReason::ToolUse),
+                stop_reason: Some(holt_core::ai::types::StopReason::ToolUse),
                 ..Default::default()
             },
         ),
@@ -115,11 +115,11 @@ async fn supports_helper_blocks_for_text_thinking_and_tool_calls() {
     let response = complete(&registration.get_model(), &user_context("hi"), None).await;
     let thinking = matches!(
         &response.content[0],
-        pi_core::ai::types::AssistantContent::Thinking(t) if t.thinking == "think"
+        holt_core::ai::types::AssistantContent::Thinking(t) if t.thinking == "think"
     );
     assert!(thinking);
     match &response.content[1] {
-        pi_core::ai::types::AssistantContent::ToolCall(call) => {
+        holt_core::ai::types::AssistantContent::ToolCall(call) => {
             assert_eq!(call.name, "echo");
             assert_eq!(
                 serde_json::Value::Object(call.arguments.clone()),
@@ -129,12 +129,12 @@ async fn supports_helper_blocks_for_text_thinking_and_tool_calls() {
         other => panic!("expected tool call, got {other:?}"),
     }
     match &response.content[2] {
-        pi_core::ai::types::AssistantContent::Text(text) => assert_eq!(text.text, "done"),
+        holt_core::ai::types::AssistantContent::Text(text) => assert_eq!(text.text, "done"),
         other => panic!("expected text, got {other:?}"),
     }
     assert_eq!(
         response.stop_reason,
-        pi_core::ai::types::StopReason::ToolUse
+        holt_core::ai::types::StopReason::ToolUse
     );
     registration.unregister();
 }
@@ -161,8 +161,8 @@ async fn supports_multiple_models_with_per_model_reasoning_and_model_aware_facto
     });
     let factory = |_context: &Context,
                    _options: Option<&SimpleStreamOptions>,
-                   _state: &pi_core::ai::providers::faux::FauxProviderState,
-                   model: &pi_core::ai::types::Model| {
+                   _state: &holt_core::ai::providers::faux::FauxProviderState,
+                   model: &holt_core::ai::types::Model| {
         Ok(faux_assistant_message(
             format!("{}:{}", model.id, model.reasoning),
             FauxMessageOptions::default(),
@@ -246,7 +246,10 @@ async fn consumes_queued_responses_in_order_and_errors_when_exhausted() {
 
     assert_eq!(text_of(&first), "first");
     assert_eq!(text_of(&second), "second");
-    assert_eq!(exhausted.stop_reason, pi_core::ai::types::StopReason::Error);
+    assert_eq!(
+        exhausted.stop_reason,
+        holt_core::ai::types::StopReason::Error
+    );
     assert_eq!(
         exhausted.error_message.as_deref(),
         Some("No more faux responses queued")
@@ -310,7 +313,7 @@ async fn supports_model_aware_factories_with_context_and_state() {
     registration.set_responses(vec![FauxResponseStep::Factory(Arc::new(
         |context: &Context,
          _options: Option<&SimpleStreamOptions>,
-         state: &pi_core::ai::providers::faux::FauxProviderState,
+         state: &holt_core::ai::providers::faux::FauxProviderState,
          _model| {
             Ok(faux_assistant_message(
                 format!("{}:{}", context.messages.len(), state.call_count),
@@ -343,7 +346,7 @@ async fn emits_an_error_when_a_response_factory_fails() {
     assert_eq!(events.len(), 1);
     match &events[0] {
         AssistantMessageEvent::Error { error, .. } => {
-            assert_eq!(error.stop_reason, pi_core::ai::types::StopReason::Error);
+            assert_eq!(error.stop_reason, holt_core::ai::types::StopReason::Error);
             assert_eq!(error.error_message.as_deref(), Some("boom"));
         }
         other => panic!("expected error event, got {}", event_kind(other)),
@@ -359,7 +362,7 @@ async fn rejects_a_queued_response_without_a_terminal_stop_reason() {
         faux_assistant_message(
             "partial",
             FauxMessageOptions {
-                stop_reason: Some(pi_core::ai::types::StopReason::Pending),
+                stop_reason: Some(holt_core::ai::types::StopReason::Pending),
                 ..Default::default()
             },
         ),
@@ -379,7 +382,7 @@ async fn rejects_a_queued_response_without_a_terminal_stop_reason() {
     );
     match events.last() {
         Some(AssistantMessageEvent::Error { error, .. }) => {
-            assert_eq!(error.stop_reason, pi_core::ai::types::StopReason::Error);
+            assert_eq!(error.stop_reason, holt_core::ai::types::StopReason::Error);
             assert_eq!(
                 error.error_message.as_deref(),
                 Some("Faux response ended without a stop reason")
@@ -398,7 +401,7 @@ async fn estimates_prompt_and_output_tokens_from_serialized_context() {
         faux_assistant_message("done", FauxMessageOptions::default()),
     ))]);
 
-    let tool = pi_core::ai::types::Tool {
+    let tool = holt_core::ai::types::Tool {
         name: "echo".to_string(),
         description: "Echo back text".to_string(),
         parameters: serde_json::json!({
@@ -408,14 +411,14 @@ async fn estimates_prompt_and_output_tokens_from_serialized_context() {
         }),
         constrained_sampling: None,
     };
-    let mut blocks = vec![pi_core::ai::types::BlockContent::Text(
-        pi_core::ai::types::TextContent {
+    let mut blocks = vec![holt_core::ai::types::BlockContent::Text(
+        holt_core::ai::types::TextContent {
             text: "hello".to_string(),
             ..Default::default()
         },
     )];
-    blocks.push(pi_core::ai::types::BlockContent::Image(
-        pi_core::ai::types::ImageContent {
+    blocks.push(holt_core::ai::types::BlockContent::Image(
+        holt_core::ai::types::ImageContent {
             data: "abcd".to_string(),
             mime_type: "image/png".to_string(),
             ..Default::default()
@@ -434,11 +437,11 @@ async fn estimates_prompt_and_output_tokens_from_serialized_context() {
                 FauxMessageOptions::default(),
             ))),
             Message::ToolResult(Box::new(ToolResultMessage {
-                role: pi_core::ai::types::RoleToolResult,
+                role: holt_core::ai::types::RoleToolResult,
                 tool_call_id: "tool-1".to_string(),
                 tool_name: "echo".to_string(),
-                content: vec![pi_core::ai::types::BlockContent::Text(
-                    pi_core::ai::types::TextContent {
+                content: vec![holt_core::ai::types::BlockContent::Text(
+                    holt_core::ai::types::TextContent {
                         text: "tool out".to_string(),
                         ..Default::default()
                     },
@@ -645,7 +648,7 @@ async fn streams_thinking_text_and_partial_tool_call_deltas() {
                 ),
             ],
             FauxMessageOptions {
-                stop_reason: Some(pi_core::ai::types::StopReason::ToolUse),
+                stop_reason: Some(holt_core::ai::types::StopReason::ToolUse),
                 ..Default::default()
             },
         ),
@@ -703,7 +706,7 @@ async fn streams_an_exact_event_order_for_fixed_size_chunks() {
                 faux_tool_call("echo", serde_json::json!({}), None),
             ],
             FauxMessageOptions {
-                stop_reason: Some(pi_core::ai::types::StopReason::ToolUse),
+                stop_reason: Some(holt_core::ai::types::StopReason::ToolUse),
                 ..Default::default()
             },
         ),
@@ -747,7 +750,7 @@ async fn streams_multiple_tool_calls_in_one_message() {
                 faux_tool_call("echo", serde_json::json!({ "text": "two" }), None),
             ],
             FauxMessageOptions {
-                stop_reason: Some(pi_core::ai::types::StopReason::ToolUse),
+                stop_reason: Some(holt_core::ai::types::StopReason::ToolUse),
                 ..Default::default()
             },
         ),
@@ -774,9 +777,9 @@ async fn streams_multiple_tool_calls_in_one_message() {
 
 fn explicit_message(
     text: &str,
-    stop_reason: pi_core::ai::types::StopReason,
+    stop_reason: holt_core::ai::types::StopReason,
     error: &str,
-) -> pi_core::ai::types::AssistantMessage {
+) -> holt_core::ai::types::AssistantMessage {
     let mut message = faux_assistant_message(text, FauxMessageOptions::default());
     message.stop_reason = stop_reason;
     message.error_message = Some(error.to_string());
@@ -795,7 +798,7 @@ async fn streams_an_explicit_assistant_error_message_as_a_terminal_error() {
     });
     registration.set_responses(vec![FauxResponseStep::Message(Box::new(explicit_message(
         "partial",
-        pi_core::ai::types::StopReason::Error,
+        holt_core::ai::types::StopReason::Error,
         "upstream failed",
     )))]);
 
@@ -812,8 +815,8 @@ async fn streams_an_explicit_assistant_error_message_as_a_terminal_error() {
     );
     match events.last() {
         Some(AssistantMessageEvent::Error { reason, error, .. }) => {
-            assert!(matches!(reason, pi_core::ai::types::ErrorReason::Error));
-            assert_eq!(error.stop_reason, pi_core::ai::types::StopReason::Error);
+            assert!(matches!(reason, holt_core::ai::types::ErrorReason::Error));
+            assert_eq!(error.stop_reason, holt_core::ai::types::StopReason::Error);
             assert_eq!(error.error_message.as_deref(), Some("upstream failed"));
         }
         other => panic!("expected terminal error, got {other:?}"),
@@ -833,7 +836,7 @@ async fn streams_an_explicit_assistant_aborted_message_as_a_terminal_error() {
     });
     registration.set_responses(vec![FauxResponseStep::Message(Box::new(explicit_message(
         "partial",
-        pi_core::ai::types::StopReason::Aborted,
+        holt_core::ai::types::StopReason::Aborted,
         "Request was aborted",
     )))]);
 
@@ -850,8 +853,8 @@ async fn streams_an_explicit_assistant_aborted_message_as_a_terminal_error() {
     );
     match events.last() {
         Some(AssistantMessageEvent::Error { reason, error, .. }) => {
-            assert!(matches!(reason, pi_core::ai::types::ErrorReason::Aborted));
-            assert_eq!(error.stop_reason, pi_core::ai::types::StopReason::Aborted);
+            assert!(matches!(reason, holt_core::ai::types::ErrorReason::Aborted));
+            assert_eq!(error.stop_reason, holt_core::ai::types::StopReason::Aborted);
             assert_eq!(error.error_message.as_deref(), Some("Request was aborted"));
         }
         other => panic!("expected terminal error, got {other:?}"),
@@ -893,8 +896,8 @@ async fn supports_aborting_before_the_first_chunk() {
     assert_eq!(events.len(), 1);
     match &events[0] {
         AssistantMessageEvent::Error { reason, error, .. } => {
-            assert!(matches!(reason, pi_core::ai::types::ErrorReason::Aborted));
-            assert_eq!(error.stop_reason, pi_core::ai::types::StopReason::Aborted);
+            assert!(matches!(reason, holt_core::ai::types::ErrorReason::Aborted));
+            assert_eq!(error.stop_reason, holt_core::ai::types::StopReason::Aborted);
         }
         other => panic!("expected error event, got {}", event_kind(other)),
     }
@@ -902,7 +905,7 @@ async fn supports_aborting_before_the_first_chunk() {
 }
 
 async fn collect_until_abort(
-    registration: &pi_core::ai::compat::CompatFauxRegistration,
+    registration: &holt_core::ai::compat::CompatFauxRegistration,
     abort_kind: &str,
 ) -> Vec<String> {
     let signal = tokio_util::sync::CancellationToken::new();
@@ -967,8 +970,8 @@ async fn supports_aborting_mid_thinking_stream_when_paced() {
         ..Default::default()
     });
     let mut message = faux_assistant_message("ignored", FauxMessageOptions::default());
-    message.content = vec![pi_core::ai::types::AssistantContent::Thinking(
-        pi_core::ai::types::ThinkingContent {
+    message.content = vec![holt_core::ai::types::AssistantContent::Thinking(
+        holt_core::ai::types::ThinkingContent {
             thinking: "abcdefghijklmnopqrstuvwxyz".to_string(),
             ..Default::default()
         },
@@ -997,12 +1000,12 @@ async fn supports_aborting_mid_toolcall_stream_when_paced() {
     let mut message = faux_assistant_message(
         "done",
         FauxMessageOptions {
-            stop_reason: Some(pi_core::ai::types::StopReason::ToolUse),
+            stop_reason: Some(holt_core::ai::types::StopReason::ToolUse),
             ..Default::default()
         },
     );
-    message.content = vec![pi_core::ai::types::AssistantContent::ToolCall(
-        pi_core::ai::types::ToolCall {
+    message.content = vec![holt_core::ai::types::AssistantContent::ToolCall(
+        holt_core::ai::types::ToolCall {
             id: "tool-1".to_string(),
             name: "echo".to_string(),
             arguments: json_args(&serde_json::json!({
@@ -1056,9 +1059,9 @@ fn json_args(value: &serde_json::Value) -> serde_json::Map<String, serde_json::V
     value.as_object().cloned().unwrap_or_default()
 }
 
-fn text_of(message: &pi_core::ai::types::AssistantMessage) -> String {
+fn text_of(message: &holt_core::ai::types::AssistantMessage) -> String {
     match &message.content[0] {
-        pi_core::ai::types::AssistantContent::Text(text) => text.text.clone(),
+        holt_core::ai::types::AssistantContent::Text(text) => text.text.clone(),
         other => panic!("expected text, got {other:?}"),
     }
 }

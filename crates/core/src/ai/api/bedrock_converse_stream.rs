@@ -301,7 +301,7 @@ fn map_thinking_level_to_effort(model: &Model, level: Option<ThinkingLevel>) -> 
     }
 }
 
-/// Port of `resolveCacheRetention`: defaults to "short", `PI_CACHE_RETENTION`
+/// Port of `resolveCacheRetention`: defaults to "short", `HOLT_CACHE_RETENTION`
 /// selects "long" for compatibility.
 fn resolve_cache_retention(
     cache_retention: Option<CacheRetention>,
@@ -310,7 +310,7 @@ fn resolve_cache_retention(
     if let Some(cache_retention) = cache_retention {
         return cache_retention;
     }
-    if get_provider_env_value("PI_CACHE_RETENTION", env).as_deref() == Some("long") {
+    if get_provider_env_value("HOLT_CACHE_RETENTION", env).as_deref() == Some("long") {
         return CacheRetention::Long;
     }
     CacheRetention::Short
@@ -2113,7 +2113,7 @@ mod tests {
         [
             ("AWS_WEB_IDENTITY_TOKEN_FILE", token_file),
             ("AWS_ROLE_ARN", "arn:aws:iam::123:role/bedrock"),
-            ("AWS_ROLE_SESSION_NAME", "pi-session"),
+            ("AWS_ROLE_SESSION_NAME", "holt-session"),
         ]
         .iter()
         .map(|(name, value)| (name.to_string(), value.to_string()))
@@ -2122,7 +2122,7 @@ mod tests {
 
     fn write_web_identity_token() -> String {
         let path = std::env::temp_dir().join(format!(
-            "pi-bedrock-irsa-{}-{}",
+            "holt-bedrock-irsa-{}-{}",
             std::process::id(),
             crate::ai::utils::uuid::uuidv7()
         ));

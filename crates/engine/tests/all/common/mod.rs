@@ -18,13 +18,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
-use holt_engine::{EngineConfig, LocalEngine};
-use holt_rpc::{RpcReply, RpcService, methods};
-use pi_core::agent::types::StreamFn;
-use pi_core::ai::types::{
+use holt_core::agent::types::StreamFn;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, Context, DoneReason,
     ErrorReason, Message, Model, StopReason, TextContent, ToolCall, Usage,
 };
+use holt_engine::{EngineConfig, LocalEngine};
+use holt_rpc::{RpcReply, RpcService, methods};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -138,7 +138,7 @@ impl ScriptedReply {
     }
 }
 
-/// A pi-core `ToolCall` with the fields the engine's tools read (the rest
+/// A holt-core `ToolCall` with the fields the engine's tools read (the rest
 /// default).
 pub fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
     ToolCall {
@@ -315,7 +315,8 @@ impl ScriptedProvider {
             .unwrap_or_else(|| {
                 ScriptedReply::Failed("scripted provider ran out of replies".into())
             });
-            let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream =
+                holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
             push_reply(
                 &stream,
                 reply,
@@ -374,7 +375,7 @@ pub struct RecordedRequest {
 /// the same event shape the real transports terminate with, so the loop's
 /// finalize path sees an authentic message.
 fn push_reply(
-    stream: &pi_core::ai::utils::event_stream::AssistantMessageEventStream,
+    stream: &holt_core::ai::utils::event_stream::AssistantMessageEventStream,
     reply: ScriptedReply,
     model: &Model,
     usage: &Usage,

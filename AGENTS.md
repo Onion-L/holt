@@ -76,7 +76,7 @@ does not run.
 - Check / lint: `cargo check --workspace`, `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`.
 - Test: `cargo test --workspace`; focus with `-p`. `crates/core` live
-  provider suites skip unless `PI_TEST_LIVE=1`. CI (macOS) gates on
+  provider suites skip unless `HOLT_TEST_LIVE=1`. CI (macOS) gates on
   `cargo test --workspace` only.
 
 ## Facts with no other home

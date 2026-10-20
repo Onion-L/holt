@@ -10,21 +10,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
-use pi_core::ai::api::constrained_sampling::{
+use holt_core::ai::api::constrained_sampling::{
     GrammarToolInputJsonBuffer, append_grammar_tool_input_json_delta, make_strict_json_schema,
     resolve_json_schema_strict_sampling,
 };
-use pi_core::ai::api::openai_responses_shared::{
+use holt_core::ai::api::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamOptions,
     convert_responses_messages, convert_responses_tools, process_responses_stream,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent,
     ConstrainedSamplingConfig, ConstrainedSamplingStrict, Context, GrammarFormat, Message, Model,
     ModelCost, ModelInput, RoleAssistant, RoleToolResult, StopReason, TextContent, Tool, ToolCall,
     ToolCallArguments, ToolConstrainedSampling, ToolResultMessage, Usage, UsageCost,
 };
-use pi_core::ai::utils::event_stream::{collect_events, create_assistant_message_event_stream};
+use holt_core::ai::utils::event_stream::{collect_events, create_assistant_message_event_stream};
 
 /// Port of `makeModel`.
 fn make_model() -> Model {

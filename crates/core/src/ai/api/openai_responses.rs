@@ -88,7 +88,7 @@ fn resolve_cache_retention(
     if let Some(retention) = cache_retention {
         return retention;
     }
-    if get_provider_env_value("PI_CACHE_RETENTION", env).as_deref() == Some("long") {
+    if get_provider_env_value("HOLT_CACHE_RETENTION", env).as_deref() == Some("long") {
         return CacheRetention::Long;
     }
     CacheRetention::Short
@@ -168,7 +168,7 @@ fn build_request_headers(
     let mut headers: ProviderHeaders = ProviderHeaders::new();
     headers.insert(
         "User-Agent".to_string(),
-        Some(crate::ai::session_resources::get_pi_user_agent()),
+        Some(crate::ai::session_resources::get_user_agent()),
     );
     if let Some(model_headers) = &model.headers {
         for (name, value) in model_headers {

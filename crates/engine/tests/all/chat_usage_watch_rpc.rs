@@ -17,8 +17,8 @@ use common::{
     wait_for_requests, wait_for_session_status,
 };
 use futures::StreamExt;
+use holt_core::ai::types::Usage;
 use holt_rpc::{RpcReply, RpcService as _, methods};
-use pi_core::ai::types::Usage;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 

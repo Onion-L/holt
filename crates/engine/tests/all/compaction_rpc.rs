@@ -13,8 +13,8 @@
 use crate::common;
 
 use common::{RecordedRequest, ScriptedProvider, ScriptedReply};
+use holt_core::ai::types::{Message, Usage};
 use holt_rpc::RpcService as _;
-use pi_core::ai::types::{Message, Usage};
 
 /// Past the compaction threshold for openai/gpt-5.4 (272k window − 16384
 /// reserve) but still UNDER the window, so the silent-overflow detector
@@ -43,11 +43,11 @@ fn big_text(tokens: usize) -> String {
 fn user_text(message: &Message) -> &str {
     match message {
         Message::User(user) => match &user.content {
-            pi_core::ai::types::UserContent::Text(text) => text,
-            pi_core::ai::types::UserContent::Blocks(blocks) => blocks
+            holt_core::ai::types::UserContent::Text(text) => text,
+            holt_core::ai::types::UserContent::Blocks(blocks) => blocks
                 .iter()
                 .find_map(|block| match block {
-                    pi_core::ai::types::BlockContent::Text(text) => Some(text.text.as_str()),
+                    holt_core::ai::types::BlockContent::Text(text) => Some(text.text.as_str()),
                     _ => None,
                 })
                 .unwrap_or(""),

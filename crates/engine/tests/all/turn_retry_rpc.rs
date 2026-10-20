@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
 use futures::StreamExt as _;
+use holt_core::agent::types::StreamFn;
 use holt_rpc::{RpcReply, RpcService as _, methods};
-use pi_core::agent::types::StreamFn;
 use serde_json::{Value, json};
 
 async fn subscribe_notices(

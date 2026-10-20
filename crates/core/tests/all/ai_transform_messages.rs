@@ -1,8 +1,8 @@
 //! Port of `pi-core/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts`:
 //! OpenAI to Anthropic session migration for Copilot Claude.
 
-use pi_core::ai::api::transform_messages::{ToolCallIdNormalizer, transform_messages};
-use pi_core::ai::types::{
+use holt_core::ai::api::transform_messages::{ToolCallIdNormalizer, transform_messages};
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, Message, Model, ModelInput, RoleAssistant,
     RoleToolResult, RoleUser, StopReason, TextContent, ThinkingContent, ToolCall,
     ToolResultMessage, UserContent, UserMessage,

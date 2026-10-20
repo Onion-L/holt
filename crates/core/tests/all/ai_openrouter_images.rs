@@ -5,12 +5,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::openrouter_images::{ImagesOptions, generate_images};
-use pi_core::ai::types::{
+use holt_core::ai::api::openrouter_images::{ImagesOptions, generate_images};
+use holt_core::ai::types::{
     BlockContent, ImagesContext, ImagesModel, ImagesStopReason, JsF64, ModelCost, ModelCostRates,
     ModelInput, TextContent,
 };
-use pi_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::Value;
 
 const RESPONSE_BODY: &str = r#"{
@@ -126,7 +126,7 @@ fn captured_body(fetch: &RecordingFetch) -> Value {
     let requests = fetch.requests.lock().unwrap();
     let request = requests.last().expect("expected a captured request");
     match &request.body {
-        pi_core::ai::utils::http::HttpBody::Json(value) => value.clone(),
+        holt_core::ai::utils::http::HttpBody::Json(value) => value.clone(),
         other => panic!("expected JSON request body, got {other:?}"),
     }
 }
@@ -156,7 +156,7 @@ async fn returns_text_plus_images_in_final_output() {
     );
     assert_eq!(
         output.output[1],
-        BlockContent::Image(pi_core::ai::types::ImageContent {
+        BlockContent::Image(holt_core::ai::types::ImageContent {
             content_type: Default::default(),
             data: "ZmFrZS1wbmc=".to_string(),
             mime_type: "image/png".to_string(),
@@ -246,7 +246,7 @@ async fn generate_images_resolves_the_final_assistant_images_result() {
     let requests = fetch.requests.lock().unwrap();
     let request = requests.last().unwrap();
     match &request.body {
-        pi_core::ai::utils::http::HttpBody::Json(value) => {
+        holt_core::ai::utils::http::HttpBody::Json(value) => {
             assert_eq!(value["modalities"], serde_json::json!(["image"]));
         }
         other => panic!("expected JSON request body, got {other:?}"),
@@ -296,7 +296,7 @@ async fn surfaces_the_http_body_reason_instead_of_the_opaque_sdk_message() {
     };
 
     let output =
-        pi_core::ai::images::generate_images(&image_only_model(), &context(), Some(&options))
+        holt_core::ai::images::generate_images(&image_only_model(), &context(), Some(&options))
             .await
             .expect("dispatch resolves");
 

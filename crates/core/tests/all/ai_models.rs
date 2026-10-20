@@ -10,36 +10,36 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use pi_core::ai::auth::credential_store::InMemoryCredentialStore;
-use pi_core::ai::auth::resolve::{
+use holt_core::ai::auth::credential_store::InMemoryCredentialStore;
+use holt_core::ai::auth::resolve::{
     AuthResolutionOverrides, ModelsError, ModelsErrorCode, ResolveError,
 };
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::types::{
     ApiKeyAuth, ApiKeyAuthInput, ApiKeyCredential, AuthCheck, AuthEvent, AuthFuture,
     AuthInteraction, AuthOperationOptions, AuthPrompt, AuthResult, AuthStorageError, AuthType,
     BoxedAuthError, Credential, CredentialInfo, CredentialStore, ModelAuth, OAuthAuth,
     OAuthCredential, ProviderAuth,
 };
-use pi_core::ai::models::{
+use holt_core::ai::models::{
     CreateModelsOptions, CreateProviderOptions, FetchModelsFn, Models, ModelsPublication,
     ModelsRefreshOptions, Provider, ProviderApi, ProviderStreams, RefreshModelsContext,
     calculate_cost, clamp_thinking_level, create_provider, get_supported_thinking_levels,
     models_are_equal,
 };
-use pi_core::ai::models_store::{
+use holt_core::ai::models_store::{
     InMemoryModelsStore, ModelsStore, ModelsStoreEntry, ModelsStoreError,
 };
-use pi_core::ai::providers::faux::{
+use holt_core::ai::providers::faux::{
     FauxContent, FauxMessageOptions, FauxResponseStep, faux_assistant_message, faux_provider,
     faux_text, faux_thinking, faux_tool_call,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, Context, DoneReason, Message, Model, ModelCost, ModelCostRates,
     ModelCostTier, ModelInput, ModelThinkingLevel, ProviderHeaders, ProviderRequestOptions,
     SimpleStreamOptions, StopReason, StreamOptions, TextContent, ThinkingContent, ToolCall,
     TransformHeadersFn, Usage, UserContent, UserMessage,
 };
-use pi_core::ai::utils::event_stream::{
+use holt_core::ai::utils::event_stream::{
     AssistantMessageEventStream, create_assistant_message_event_stream,
 };
 
@@ -47,7 +47,7 @@ fn user_context(content: &str) -> Context {
     Context {
         system_prompt: None,
         messages: vec![Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Text(content.to_string()),
             timestamp: 1_735_689_600_000,
         })],
@@ -67,7 +67,7 @@ async fn faux_provider_registers_and_estimates_usage() {
     let context = Context {
         system_prompt: Some("Be concise.".to_string()),
         messages: vec![Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Text("hi there".to_string()),
             timestamp: 1_735_689_600_000,
         })],
@@ -139,23 +139,25 @@ async fn faux_provider_supports_helper_blocks() {
 
 #[tokio::test]
 async fn faux_provider_supports_multiple_models_and_factories() {
-    let faux = faux_provider(pi_core::ai::providers::faux::RegisterFauxProviderOptions {
-        models: vec![
-            pi_core::ai::providers::faux::FauxModelDefinition {
-                id: "faux-fast".to_string(),
-                name: Some("Faux Fast".to_string()),
-                reasoning: Some(false),
-                ..Default::default()
-            },
-            pi_core::ai::providers::faux::FauxModelDefinition {
-                id: "faux-thinker".to_string(),
-                name: Some("Faux Thinker".to_string()),
-                reasoning: Some(true),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    });
+    let faux = faux_provider(
+        holt_core::ai::providers::faux::RegisterFauxProviderOptions {
+            models: vec![
+                holt_core::ai::providers::faux::FauxModelDefinition {
+                    id: "faux-fast".to_string(),
+                    name: Some("Faux Fast".to_string()),
+                    reasoning: Some(false),
+                    ..Default::default()
+                },
+                holt_core::ai::providers::faux::FauxModelDefinition {
+                    id: "faux-thinker".to_string(),
+                    name: Some("Faux Thinker".to_string()),
+                    reasoning: Some(true),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    );
     let models = Arc::new(Models::new(Default::default()));
     models.set_provider(Arc::clone(&faux.provider));
     faux.set_responses(vec![
@@ -217,15 +219,17 @@ async fn faux_provider_supports_multiple_models_and_factories() {
 
 #[tokio::test]
 async fn faux_provider_rewrites_api_provider_and_model() {
-    let faux = faux_provider(pi_core::ai::providers::faux::RegisterFauxProviderOptions {
-        api: Some("faux:test".to_string()),
-        provider: Some("faux-provider".to_string()),
-        models: vec![pi_core::ai::providers::faux::FauxModelDefinition {
-            id: "faux-model".to_string(),
+    let faux = faux_provider(
+        holt_core::ai::providers::faux::RegisterFauxProviderOptions {
+            api: Some("faux:test".to_string()),
+            provider: Some("faux-provider".to_string()),
+            models: vec![holt_core::ai::providers::faux::FauxModelDefinition {
+                id: "faux-model".to_string(),
+                ..Default::default()
+            }],
             ..Default::default()
-        }],
-        ..Default::default()
-    });
+        },
+    );
     let models = Arc::new(Models::new(Default::default()));
     models.set_provider(Arc::clone(&faux.provider));
     faux.set_responses(vec![FauxResponseStep::Message(Box::new(
@@ -272,7 +276,7 @@ async fn faux_provider_consumes_responses_in_order_and_errors_when_exhausted() {
     assert_eq!(faux.get_pending_response_count(), 0);
 }
 
-fn first_text(message: &pi_core::ai::types::AssistantMessage) -> String {
+fn first_text(message: &holt_core::ai::types::AssistantMessage) -> String {
     match &message.content[0] {
         AssistantContent::Text(text) => text.text.clone(),
         other => panic!("expected text, got {other:?}"),
@@ -293,18 +297,18 @@ async fn faux_provider_streams_events_in_protocol_order() {
     let mut kinds = Vec::new();
     while let Some(event) = stream.next().await {
         kinds.push(match event {
-            pi_core::ai::types::AssistantMessageEvent::Start { .. } => "start",
-            pi_core::ai::types::AssistantMessageEvent::TextStart { .. } => "text_start",
-            pi_core::ai::types::AssistantMessageEvent::TextDelta { .. } => "text_delta",
-            pi_core::ai::types::AssistantMessageEvent::TextEnd { .. } => "text_end",
-            pi_core::ai::types::AssistantMessageEvent::ThinkingStart { .. } => "thinking_start",
-            pi_core::ai::types::AssistantMessageEvent::ThinkingDelta { .. } => "thinking_delta",
-            pi_core::ai::types::AssistantMessageEvent::ThinkingEnd { .. } => "thinking_end",
-            pi_core::ai::types::AssistantMessageEvent::ToolcallStart { .. } => "toolcall_start",
-            pi_core::ai::types::AssistantMessageEvent::ToolcallDelta { .. } => "toolcall_delta",
-            pi_core::ai::types::AssistantMessageEvent::ToolcallEnd { .. } => "toolcall_end",
-            pi_core::ai::types::AssistantMessageEvent::Done { .. } => "done",
-            pi_core::ai::types::AssistantMessageEvent::Error { .. } => "error",
+            holt_core::ai::types::AssistantMessageEvent::Start { .. } => "start",
+            holt_core::ai::types::AssistantMessageEvent::TextStart { .. } => "text_start",
+            holt_core::ai::types::AssistantMessageEvent::TextDelta { .. } => "text_delta",
+            holt_core::ai::types::AssistantMessageEvent::TextEnd { .. } => "text_end",
+            holt_core::ai::types::AssistantMessageEvent::ThinkingStart { .. } => "thinking_start",
+            holt_core::ai::types::AssistantMessageEvent::ThinkingDelta { .. } => "thinking_delta",
+            holt_core::ai::types::AssistantMessageEvent::ThinkingEnd { .. } => "thinking_end",
+            holt_core::ai::types::AssistantMessageEvent::ToolcallStart { .. } => "toolcall_start",
+            holt_core::ai::types::AssistantMessageEvent::ToolcallDelta { .. } => "toolcall_delta",
+            holt_core::ai::types::AssistantMessageEvent::ToolcallEnd { .. } => "toolcall_end",
+            holt_core::ai::types::AssistantMessageEvent::Done { .. } => "done",
+            holt_core::ai::types::AssistantMessageEvent::Error { .. } => "error",
         });
     }
     let result = stream.result().await;
@@ -432,7 +436,7 @@ fn provider_test_model(api: &str, id: &str) -> Model {
 #[derive(Default)]
 struct NoopStreams;
 
-impl pi_core::ai::models::ProviderStreams for NoopStreams {
+impl holt_core::ai::models::ProviderStreams for NoopStreams {
     fn stream(
         &self,
         _model: &Model,
@@ -454,22 +458,22 @@ impl pi_core::ai::models::ProviderStreams for NoopStreams {
 
 struct TestApiKeyAuth;
 
-impl pi_core::ai::auth::types::ApiKeyAuth for TestApiKeyAuth {
+impl holt_core::ai::auth::types::ApiKeyAuth for TestApiKeyAuth {
     fn name(&self) -> &str {
         "Test"
     }
 
     fn resolve(
         &self,
-        _input: pi_core::ai::auth::types::ApiKeyAuthInput,
-    ) -> pi_core::ai::auth::types::AuthFuture<
+        _input: holt_core::ai::auth::types::ApiKeyAuthInput,
+    ) -> holt_core::ai::auth::types::AuthFuture<
         Result<
-            Option<pi_core::ai::auth::types::AuthResult>,
-            pi_core::ai::auth::types::AuthStorageError,
+            Option<holt_core::ai::auth::types::AuthResult>,
+            holt_core::ai::auth::types::AuthStorageError,
         >,
     > {
         Box::pin(std::future::ready(Ok(Some(
-            pi_core::ai::auth::types::AuthResult::default(),
+            holt_core::ai::auth::types::AuthResult::default(),
         ))))
     }
 }
@@ -479,20 +483,20 @@ async fn produces_a_stream_error_for_a_model_whose_api_has_no_implementation() {
     let mut by_api = std::collections::BTreeMap::new();
     by_api.insert(
         "api-a".to_string(),
-        Arc::new(NoopStreams) as Arc<dyn pi_core::ai::models::ProviderStreams>,
+        Arc::new(NoopStreams) as Arc<dyn holt_core::ai::models::ProviderStreams>,
     );
     let provider =
-        pi_core::ai::models::create_provider(pi_core::ai::models::CreateProviderOptions {
+        holt_core::ai::models::create_provider(holt_core::ai::models::CreateProviderOptions {
             id: "mixed".to_string(),
             organization_id: None,
             name: None,
             base_url: None,
             headers: None,
-            auth: pi_core::ai::auth::types::ProviderAuth::api_key(Arc::new(TestApiKeyAuth)),
+            auth: holt_core::ai::auth::types::ProviderAuth::api_key(Arc::new(TestApiKeyAuth)),
             models: vec![provider_test_model("api-a", "model-a")],
             fetch_models: None,
             filter_models: None,
-            api: pi_core::ai::models::ProviderApi::ByApi(by_api),
+            api: holt_core::ai::models::ProviderApi::ByApi(by_api),
         });
 
     let context = Context::default();
@@ -544,9 +548,9 @@ fn runtime_test_model(provider: &str, id: &str) -> Model {
 }
 
 /// The `doneMessage(model, text)` fixture from models-runtime.test.ts.
-fn runtime_done_message(model: &Model, text: &str) -> pi_core::ai::types::AssistantMessage {
-    pi_core::ai::types::AssistantMessage {
-        role: pi_core::ai::types::RoleAssistant,
+fn runtime_done_message(model: &Model, text: &str) -> holt_core::ai::types::AssistantMessage {
+    holt_core::ai::types::AssistantMessage {
+        role: holt_core::ai::types::RoleAssistant,
         content: vec![AssistantContent::Text(TextContent {
             text: text.to_string(),
             ..Default::default()
@@ -556,7 +560,7 @@ fn runtime_done_message(model: &Model, text: &str) -> pi_core::ai::types::Assist
         model: model.id.clone(),
         usage: Usage::default(),
         stop_reason: StopReason::Stop,
-        timestamp: pi_core::ai::auth::resolve::now_millis(),
+        timestamp: holt_core::ai::auth::resolve::now_millis(),
         ..Default::default()
     }
 }
@@ -625,10 +629,10 @@ fn respond(
     }
     let stream = create_assistant_message_event_stream();
     let message = runtime_done_message(model, "ok");
-    stream.push(pi_core::ai::types::AssistantMessageEvent::Start {
+    stream.push(holt_core::ai::types::AssistantMessageEvent::Start {
         partial: message.clone(),
     });
-    stream.push(pi_core::ai::types::AssistantMessageEvent::Done {
+    stream.push(holt_core::ai::types::AssistantMessageEvent::Done {
         reason: DoneReason::Stop,
         message: message.clone(),
     });
@@ -1002,7 +1006,7 @@ impl ModelsStore for SharedEntryStore {
     fn read(
         &self,
         _provider_id: &str,
-        _options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>,
+        _options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>,
     ) -> AuthFuture<Result<Option<ModelsStoreEntry>, ModelsStoreError>> {
         let entry = self.entry.lock().unwrap().clone();
         Box::pin(std::future::ready(Ok(entry)))
@@ -1012,7 +1016,7 @@ impl ModelsStore for SharedEntryStore {
         &self,
         _provider_id: &str,
         entry: ModelsStoreEntry,
-        _options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>,
+        _options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>,
     ) -> AuthFuture<Result<(), ModelsStoreError>> {
         *self.entry.lock().unwrap() = Some(entry);
         Box::pin(std::future::ready(Ok(())))
@@ -1021,7 +1025,7 @@ impl ModelsStore for SharedEntryStore {
     fn delete(
         &self,
         _provider_id: &str,
-        _options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>,
+        _options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>,
     ) -> AuthFuture<Result<(), ModelsStoreError>> {
         *self.entry.lock().unwrap() = None;
         Box::pin(std::future::ready(Ok(())))
@@ -1035,7 +1039,7 @@ struct SignalRecordingStore {
 }
 
 impl SignalRecordingStore {
-    fn record(&self, options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>) {
+    fn record(&self, options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>) {
         self.signals
             .lock()
             .unwrap()
@@ -1047,7 +1051,7 @@ impl ModelsStore for SignalRecordingStore {
     fn read(
         &self,
         _provider_id: &str,
-        options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>,
+        options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>,
     ) -> AuthFuture<Result<Option<ModelsStoreEntry>, ModelsStoreError>> {
         self.record(options);
         Box::pin(std::future::ready(Ok(None)))
@@ -1057,7 +1061,7 @@ impl ModelsStore for SignalRecordingStore {
         &self,
         _provider_id: &str,
         _entry: ModelsStoreEntry,
-        options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>,
+        options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>,
     ) -> AuthFuture<Result<(), ModelsStoreError>> {
         self.record(options);
         Box::pin(std::future::ready(Ok(())))
@@ -1066,7 +1070,7 @@ impl ModelsStore for SignalRecordingStore {
     fn delete(
         &self,
         _provider_id: &str,
-        options: Option<&pi_core::ai::models_store::ModelsStoreOperationOptions>,
+        options: Option<&holt_core::ai::models_store::ModelsStoreOperationOptions>,
     ) -> AuthFuture<Result<(), ModelsStoreError>> {
         self.record(options);
         Box::pin(std::future::ready(Ok(())))
@@ -1098,7 +1102,7 @@ impl CredentialStore for CountingCredentialStore {
     fn modify(
         &self,
         provider_id: &str,
-        modify: pi_core::ai::auth::types::ModifyFn,
+        modify: holt_core::ai::auth::types::ModifyFn,
         options: Option<&AuthOperationOptions>,
     ) -> AuthFuture<Result<Option<Credential>, BoxedAuthError>> {
         self.modifies.fetch_add(1, Ordering::SeqCst);
@@ -1138,7 +1142,7 @@ impl CredentialStore for ReadFailingCredentialStore {
     fn modify(
         &self,
         _provider_id: &str,
-        _modify: pi_core::ai::auth::types::ModifyFn,
+        _modify: holt_core::ai::auth::types::ModifyFn,
         _options: Option<&AuthOperationOptions>,
     ) -> AuthFuture<Result<Option<Credential>, BoxedAuthError>> {
         Box::pin(std::future::ready(Ok(None)))
@@ -1181,7 +1185,7 @@ impl CredentialStore for ModifyFailingCredentialStore {
     fn modify(
         &self,
         _provider_id: &str,
-        _modify: pi_core::ai::auth::types::ModifyFn,
+        _modify: holt_core::ai::auth::types::ModifyFn,
         _options: Option<&AuthOperationOptions>,
     ) -> AuthFuture<Result<Option<Credential>, BoxedAuthError>> {
         Box::pin(std::future::ready(Err(
@@ -1737,7 +1741,7 @@ async fn refreshes_expired_oauth_before_refreshing_models() {
                         Ok(OAuthCredential {
                             access: "fresh".to_string(),
                             refresh: "rotated".to_string(),
-                            expires: pi_core::ai::auth::resolve::now_millis() + 60_000,
+                            expires: holt_core::ai::auth::resolve::now_millis() + 60_000,
                             ..credential
                         })
                     }) as AuthFuture<Result<OAuthCredential, AuthStorageError>>
@@ -2258,7 +2262,7 @@ async fn passes_cancellation_to_oauth_refresh_and_preserves_the_previous_credent
         other => panic!("expected an oauth credential, got {other:?}"),
     };
     rotated.access = "new".to_string();
-    rotated.expires = pi_core::ai::auth::resolve::now_millis() + 60_000;
+    rotated.expires = holt_core::ai::auth::resolve::now_millis() + 60_000;
     let _ = finish_refresh_tx.send(rotated);
     tokio::task::yield_now().await;
     assert_eq!(credentials.read("p1", None).await.unwrap(), Some(previous));
@@ -2400,7 +2404,7 @@ async fn refreshes_expired_oauth_credentials_and_persists_the_rotated_credential
                     Box::pin(async move {
                         Ok(OAuthCredential {
                             access: "new-token".to_string(),
-                            expires: pi_core::ai::auth::resolve::now_millis() + 60 * 60_000,
+                            expires: holt_core::ai::auth::resolve::now_millis() + 60 * 60_000,
                             ..credential
                         })
                     }) as AuthFuture<Result<OAuthCredential, AuthStorageError>>
@@ -2443,7 +2447,7 @@ async fn refreshes_oauth_credentials_with_less_than_five_minutes_remaining() {
                             refreshes.fetch_add(1, Ordering::SeqCst);
                             Ok(OAuthCredential {
                                 access: "new-token".to_string(),
-                                expires: pi_core::ai::auth::resolve::now_millis() + 60 * 60_000,
+                                expires: holt_core::ai::auth::resolve::now_millis() + 60 * 60_000,
                                 ..credential
                             })
                         })
@@ -2460,7 +2464,7 @@ async fn refreshes_oauth_credentials_with_less_than_five_minutes_remaining() {
         oauth_credential(
             "old-token",
             "r",
-            pi_core::ai::auth::resolve::now_millis() + 60_000,
+            holt_core::ai::auth::resolve::now_millis() + 60_000,
         ),
     )
     .await;
@@ -2494,7 +2498,7 @@ async fn honors_a_callers_longer_oauth_minimum_validity() {
                             refreshes.fetch_add(1, Ordering::SeqCst);
                             Ok(OAuthCredential {
                                 access: "new-token".to_string(),
-                                expires: pi_core::ai::auth::resolve::now_millis() + 60 * 60_000,
+                                expires: holt_core::ai::auth::resolve::now_millis() + 60 * 60_000,
                                 ..credential
                             })
                         })
@@ -2511,7 +2515,7 @@ async fn honors_a_callers_longer_oauth_minimum_validity() {
         oauth_credential(
             "old-token",
             "r",
-            pi_core::ai::auth::resolve::now_millis() + 10 * 60_000,
+            holt_core::ai::auth::resolve::now_millis() + 10 * 60_000,
         ),
     )
     .await;
@@ -2590,7 +2594,7 @@ async fn serializes_concurrent_oauth_refreshes_through_store_modify() {
                             Ok(OAuthCredential {
                                 access: format!("new-{count}"),
                                 refresh: "r2".to_string(),
-                                expires: pi_core::ai::auth::resolve::now_millis() + 60 * 60_000,
+                                expires: holt_core::ai::auth::resolve::now_millis() + 60 * 60_000,
                                 extra: Default::default(),
                             })
                         })
@@ -2625,7 +2629,7 @@ async fn valid_oauth_tokens_resolve_without_touching_modify() {
         oauth_credential(
             "valid",
             "r",
-            pi_core::ai::auth::resolve::now_millis() + 10 * 60_000,
+            holt_core::ai::auth::resolve::now_millis() + 10 * 60_000,
         ),
     )
     .await;

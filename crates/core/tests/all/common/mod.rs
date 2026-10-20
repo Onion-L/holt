@@ -43,7 +43,7 @@ impl Drop for TempDirGuard {
 /// Creates a unique temp directory removed when the returned guard drops.
 pub fn create_temp_dir() -> TempDirGuard {
     let dir = std::env::temp_dir().join(format!(
-        "pi-agent-session-{}-{}",
+        "holt-agent-session-{}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis())

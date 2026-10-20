@@ -13,11 +13,11 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::openai_completions::{
+use holt_core::ai::api::openai_completions::{
     OpenAICompletionsOptions, ResolvedCompletionsCompat, convert_messages, stream, stream_simple,
 };
-use pi_core::ai::providers::builtin::get_builtin_model;
-use pi_core::ai::types::{
+use holt_core::ai::providers::builtin::get_builtin_model;
+use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, CacheControlFormat,
     ChatTemplateKwargs, Context, ImageContent, MaxTokensField, Message, Model, ModelCompat,
     ModelCost, ModelInput, OpenRouterRouting, ProviderRequestOptions, RoleToolResult, RoleUser,
@@ -25,8 +25,8 @@ use pi_core::ai::types::{
     ThinkingContent, ThinkingFormat, ThinkingLevel, Tool, ToolCall, ToolCallArguments,
     ToolResultMessage, UserContent, UserMessage, VercelGatewayRouting,
 };
-use pi_core::ai::utils::event_stream::collect_events;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::utils::event_stream::collect_events;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -229,8 +229,8 @@ fn openai_builtin(provider: &str, id: &str) -> Model {
     model
 }
 
-fn empty_usage() -> pi_core::ai::types::Usage {
-    pi_core::ai::types::Usage::default()
+fn empty_usage() -> holt_core::ai::types::Usage {
+    holt_core::ai::types::Usage::default()
 }
 
 // ---------------------------------------------------------------------------

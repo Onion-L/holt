@@ -5,12 +5,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::oauth::xai::XaiOAuth;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::oauth::xai::XaiOAuth;
+use holt_core::ai::auth::types::{
     AuthEvent, AuthInteraction, AuthPrompt, AuthStorageError, OAuthAuth, OAuthCredential,
 };
-use pi_core::ai::types::FetchFunction;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
+use holt_core::ai::types::FetchFunction;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use tokio_util::sync::CancellationToken;
 
 /// Frozen wall clock, standing in for `vi.setSystemTime`.
@@ -116,7 +116,7 @@ impl AuthInteraction for RecordingInteraction {
     fn prompt(
         &self,
         _prompt: AuthPrompt,
-    ) -> pi_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
+    ) -> holt_core::ai::auth::types::AuthFuture<Result<String, AuthStorageError>> {
         unreachable!("the xAI flow never prompts")
     }
 

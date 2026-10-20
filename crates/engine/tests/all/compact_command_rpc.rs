@@ -9,8 +9,8 @@ use crate::common;
 
 use common::{ScriptedProvider, ScriptedReply};
 use futures::StreamExt;
+use holt_core::ai::types::Usage;
 use holt_rpc::{RpcError, RpcReply, RpcService as _, methods};
-use pi_core::ai::types::Usage;
 use serde_json::json;
 
 /// Queue a `/compact` exactly as the composer serializes it.

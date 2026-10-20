@@ -821,7 +821,7 @@ impl EngineService {
         // A manual Compaction runs outside the Turn model: its summary
         // responses bill IMMEDIATELY (kind `compaction`), failed and
         // aborted ones included, never waiting for a Turn's batch.
-        let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+        let compaction_meter = |response: &holt_core::ai::types::AssistantMessage| {
             crate::usage::record_compaction(chat, response)
         };
         let outcome = crate::compaction::compact_now(

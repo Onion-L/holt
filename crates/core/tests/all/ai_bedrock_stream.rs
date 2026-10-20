@@ -11,17 +11,17 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::api::bedrock_converse_stream::{
+use holt_core::ai::api::bedrock_converse_stream::{
     BedrockDispatchResponse, BedrockError, BedrockOptions, stream_from_items,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, CacheRetention, Context, Message, Model, ProviderRequestOptions, StopReason,
     StreamOptions, ThinkingLevel, Tool, UserContent, UserMessage,
 };
 use serde_json::{Value, json};
 
 fn base_model(id: &str) -> Model {
-    pi_core::ai::providers::builtin::get_builtin_model("amazon-bedrock", id)
+    holt_core::ai::providers::builtin::get_builtin_model("amazon-bedrock", id)
         .unwrap_or_else(|| panic!("missing bedrock model {id}"))
 }
 
@@ -51,7 +51,7 @@ async fn capture_payload(model: &Model, options: BedrockOptions) -> Value {
     signal.cancel();
     let mut options = options;
     options.base.base.signal = Some(signal);
-    let on_payload: pi_core::ai::types::OnPayloadCallback = {
+    let on_payload: holt_core::ai::types::OnPayloadCallback = {
         let captured = Arc::clone(&captured);
         Arc::new(move |payload, _model| {
             *captured.lock().unwrap() = Some(payload);
@@ -62,7 +62,7 @@ async fn capture_payload(model: &Model, options: BedrockOptions) -> Value {
 
     let context = Context {
         messages: vec![Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
         })],
@@ -220,14 +220,14 @@ async fn injects_cache_points_when_model_name_identifies_a_supported_claude_mode
     let context = Context {
         system_prompt: Some("You are helpful.".to_string()),
         messages: vec![Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Text("Hello".to_string()),
             timestamp: 0,
         })],
         ..Default::default()
     };
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
-    let on_payload: pi_core::ai::types::OnPayloadCallback = {
+    let on_payload: holt_core::ai::types::OnPayloadCallback = {
         let captured = Arc::clone(&captured);
         Arc::new(move |payload, _model| {
             *captured.lock().unwrap() = Some(payload);
@@ -283,12 +283,15 @@ fn stop_reason_items(stop_reason: &str) -> Vec<Value> {
     ]
 }
 
-async fn run_stop_reason(model: &Model, stop_reason: &str) -> pi_core::ai::types::AssistantMessage {
+async fn run_stop_reason(
+    model: &Model,
+    stop_reason: &str,
+) -> holt_core::ai::types::AssistantMessage {
     stream_from_items(
         model,
         &Context {
             messages: vec![Message::User(UserMessage {
-                role: pi_core::ai::types::RoleUser,
+                role: holt_core::ai::types::RoleUser,
                 content: UserContent::Text("hello".to_string()),
                 timestamp: 0,
             })],
@@ -351,7 +354,7 @@ fn gpt_model() -> Model {
         provider: "amazon-bedrock".to_string(),
         base_url: "https://bedrock-runtime.ap-northeast-1.amazonaws.com".to_string(),
         reasoning: true,
-        input: vec![pi_core::ai::types::ModelInput::Text],
+        input: vec![holt_core::ai::types::ModelInput::Text],
         context_window: 400_000,
         max_tokens: 128_000,
         ..Default::default()
@@ -374,12 +377,12 @@ fn redacted_reasoning_events() -> Vec<Value> {
     ]
 }
 
-async fn run_events(model: &Model, items: Vec<Value>) -> pi_core::ai::types::AssistantMessage {
+async fn run_events(model: &Model, items: Vec<Value>) -> holt_core::ai::types::AssistantMessage {
     stream_from_items(
         model,
         &Context {
             messages: vec![Message::User(UserMessage {
-                role: pi_core::ai::types::RoleUser,
+                role: holt_core::ai::types::RoleUser,
                 content: UserContent::Text("hello".to_string()),
                 timestamp: 0,
             })],
@@ -399,8 +402,8 @@ async fn run_events(model: &Model, items: Vec<Value>) -> pi_core::ai::types::Ass
 }
 
 fn thinking_of(
-    message: &pi_core::ai::types::AssistantMessage,
-) -> Option<&pi_core::ai::types::ThinkingContent> {
+    message: &holt_core::ai::types::AssistantMessage,
+) -> Option<&holt_core::ai::types::ThinkingContent> {
     message.content.iter().find_map(|c| match c {
         AssistantContent::Thinking(thinking) => Some(thinking),
         _ => None,
@@ -423,7 +426,7 @@ async fn does_not_fail_the_stream_when_reasoning_arrives_as_redacted_content() {
     assert_eq!(types, vec!["thinking", "text"]);
     assert_eq!(
         response.content[1],
-        AssistantContent::Text(pi_core::ai::types::TextContent {
+        AssistantContent::Text(holt_core::ai::types::TextContent {
             text: "done".to_string(),
             ..Default::default()
         })
@@ -498,7 +501,7 @@ async fn capture_messages_payload(messages: Vec<Message>) -> Value {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let signal = tokio_util::sync::CancellationToken::new();
     signal.cancel();
-    let on_payload: pi_core::ai::types::OnPayloadCallback = {
+    let on_payload: holt_core::ai::types::OnPayloadCallback = {
         let captured = Arc::clone(&captured);
         Arc::new(move |payload, _model| {
             *captured.lock().unwrap() = Some(payload);
@@ -533,14 +536,14 @@ async fn capture_messages_payload(messages: Vec<Message>) -> Value {
 
 fn user_message(text: &str) -> Message {
     Message::User(UserMessage {
-        role: pi_core::ai::types::RoleUser,
+        role: holt_core::ai::types::RoleUser,
         content: UserContent::Text(text.to_string()),
         timestamp: 0,
     })
 }
 
 fn assistant_message(content: Vec<AssistantContent>) -> Message {
-    Message::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    Message::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         content,
         api: "bedrock-converse-stream".to_string(),
         provider: "amazon-bedrock".to_string(),
@@ -551,8 +554,8 @@ fn assistant_message(content: Vec<AssistantContent>) -> Message {
     }))
 }
 
-fn redacted_thinking() -> pi_core::ai::types::ThinkingContent {
-    pi_core::ai::types::ThinkingContent {
+fn redacted_thinking() -> holt_core::ai::types::ThinkingContent {
+    holt_core::ai::types::ThinkingContent {
         thinking: String::new(),
         thinking_signature: Some(REDACTED_BASE64.to_string()),
         redacted: Some(true),
@@ -566,7 +569,7 @@ async fn replays_redacted_reasoning_as_reasoning_content_redacted_content() {
         user_message("hello"),
         assistant_message(vec![
             AssistantContent::Thinking(redacted_thinking()),
-            AssistantContent::Text(pi_core::ai::types::TextContent {
+            AssistantContent::Text(holt_core::ai::types::TextContent {
                 text: "done".to_string(),
                 ..Default::default()
             }),
@@ -596,7 +599,7 @@ async fn replays_redacted_reasoning_before_the_tool_use_block_it_belongs_to() {
         user_message("read the file"),
         assistant_message(vec![
             AssistantContent::Thinking(redacted_thinking()),
-            AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+            AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
                 id: "tool-1".to_string(),
                 name: "read".to_string(),
                 arguments: serde_json::json!({ "path": "/tmp/a.txt" })
@@ -606,12 +609,12 @@ async fn replays_redacted_reasoning_before_the_tool_use_block_it_belongs_to() {
                 ..Default::default()
             }),
         ]),
-        Message::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
-            role: pi_core::ai::types::RoleToolResult,
+        Message::ToolResult(Box::new(holt_core::ai::types::ToolResultMessage {
+            role: holt_core::ai::types::RoleToolResult,
             tool_call_id: "tool-1".to_string(),
             tool_name: "read".to_string(),
-            content: vec![pi_core::ai::types::BlockContent::Text(
-                pi_core::ai::types::TextContent {
+            content: vec![holt_core::ai::types::BlockContent::Text(
+                holt_core::ai::types::TextContent {
                     text: "file body".to_string(),
                     ..Default::default()
                 },
@@ -654,7 +657,7 @@ fn metadata_model() -> Model {
 async fn run_dispatch(
     response: BedrockDispatchResponse,
     signal: Option<tokio_util::sync::CancellationToken>,
-) -> pi_core::ai::types::AssistantMessage {
+) -> holt_core::ai::types::AssistantMessage {
     stream_from_items(
         &metadata_model(),
         &Context {
@@ -706,7 +709,7 @@ fn failing_stream(thrown: BedrockError) -> BedrockDispatchResponse {
     }
 }
 
-fn find_diagnostic(message: &pi_core::ai::types::AssistantMessage) -> Option<Value> {
+fn find_diagnostic(message: &holt_core::ai::types::AssistantMessage) -> Option<Value> {
     message
         .diagnostics
         .as_ref()?
@@ -866,12 +869,12 @@ async fn omits_the_sdk_unknown_placeholder_instead_of_reporting_it_as_a_code() {
 async fn run_send_error(
     model_id: &str,
     error: BedrockError,
-) -> pi_core::ai::types::AssistantMessage {
+) -> holt_core::ai::types::AssistantMessage {
     stream_from_items(
         &base_model(model_id),
         &Context {
             messages: vec![Message::User(UserMessage {
-                role: pi_core::ai::types::RoleUser,
+                role: holt_core::ai::types::RoleUser,
                 content: UserContent::Text("hi".to_string()),
                 timestamp: 0,
             })],
@@ -952,7 +955,7 @@ async fn capture_tool_payload(context: Context, model: &Model) -> Value {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let signal = tokio_util::sync::CancellationToken::new();
     signal.cancel();
-    let on_payload: pi_core::ai::types::OnPayloadCallback = {
+    let on_payload: holt_core::ai::types::OnPayloadCallback = {
         let captured = Arc::clone(&captured);
         Arc::new(move |payload, _model| {
             *captured.lock().unwrap() = Some(payload);
@@ -986,11 +989,11 @@ fn lookup_tool(strict: &str) -> Tool {
             "properties": { "value": { "type": "string" } },
             "required": ["value"],
         }),
-        constrained_sampling: Some(pi_core::ai::types::ToolConstrainedSampling::Config(
-            pi_core::ai::types::ConstrainedSamplingConfig::JsonSchema {
+        constrained_sampling: Some(holt_core::ai::types::ToolConstrainedSampling::Config(
+            holt_core::ai::types::ConstrainedSamplingConfig::JsonSchema {
                 strict: match strict {
-                    "require" => pi_core::ai::types::ConstrainedSamplingStrict::Require,
-                    _ => pi_core::ai::types::ConstrainedSamplingStrict::Prefer,
+                    "require" => holt_core::ai::types::ConstrainedSamplingStrict::Require,
+                    _ => holt_core::ai::types::ConstrainedSamplingStrict::Prefer,
                 },
             },
         )),
@@ -1097,13 +1100,13 @@ async fn replaces_user_messages_with_only_unknown_or_blank_content_with_a_placeh
     // Blank text blocks when other content remains are filtered.
     let context = Context {
         messages: vec![Message::User(UserMessage {
-            role: pi_core::ai::types::RoleUser,
+            role: holt_core::ai::types::RoleUser,
             content: UserContent::Blocks(vec![
-                pi_core::ai::types::BlockContent::Text(pi_core::ai::types::TextContent {
+                holt_core::ai::types::BlockContent::Text(holt_core::ai::types::TextContent {
                     text: String::new(),
                     ..Default::default()
                 }),
-                pi_core::ai::types::BlockContent::Text(pi_core::ai::types::TextContent {
+                holt_core::ai::types::BlockContent::Text(holt_core::ai::types::TextContent {
                     text: "hello".to_string(),
                     ..Default::default()
                 }),
@@ -1123,7 +1126,7 @@ async fn replaces_user_messages_with_only_unknown_or_blank_content_with_a_placeh
 
 #[tokio::test]
 async fn forwards_raw_response_headers_to_on_response() {
-    use pi_core::ai::api::bedrock_converse_stream::stream as stream_bedrock;
+    use holt_core::ai::api::bedrock_converse_stream::stream as stream_bedrock;
 
     const MODEL_ID: &str = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1144,12 +1147,12 @@ async fn forwards_raw_response_headers_to_on_response() {
 
     let mut model = base_model(MODEL_ID);
     model.base_url = format!("http://{addr}");
-    let responses: Arc<Mutex<Vec<pi_core::ai::types::ProviderResponse>>> =
+    let responses: Arc<Mutex<Vec<holt_core::ai::types::ProviderResponse>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let on_response: pi_core::ai::types::OnResponseCallback = {
+    let on_response: holt_core::ai::types::OnResponseCallback = {
         let responses = Arc::clone(&responses);
         Arc::new(
-            move |response: &pi_core::ai::types::ProviderResponse, _model| {
+            move |response: &holt_core::ai::types::ProviderResponse, _model| {
                 let response = response.clone();
                 let responses = Arc::clone(&responses);
                 Box::pin(async move {
@@ -1160,7 +1163,7 @@ async fn forwards_raw_response_headers_to_on_response() {
     };
     let mut env = serde_json::Map::new();
     env.insert("AWS_BEDROCK_SKIP_AUTH".to_string(), serde_json::json!("1"));
-    let env: pi_core::ai::types::ProviderEnv = env
+    let env: holt_core::ai::types::ProviderEnv = env
         .into_iter()
         .map(|(key, value)| (key, value.as_str().unwrap_or_default().to_string()))
         .collect();
@@ -1219,19 +1222,19 @@ async fn forwards_raw_response_headers_to_on_response() {
 
 #[tokio::test]
 async fn wire_stream_decodes_framed_events_end_to_end() {
-    use pi_core::ai::api::bedrock_converse_stream::stream as stream_bedrock;
+    use holt_core::ai::api::bedrock_converse_stream::stream as stream_bedrock;
 
     // A scripted transport speaking the event-stream wire format.
     struct FramedFetch;
-    impl pi_core::ai::utils::http::HttpFetch for FramedFetch {
+    impl holt_core::ai::utils::http::HttpFetch for FramedFetch {
         fn fetch<'a>(
             &'a self,
-            _request: pi_core::ai::utils::http::HttpRequest,
+            _request: holt_core::ai::utils::http::HttpRequest,
         ) -> futures::future::BoxFuture<
             'a,
             Result<
-                pi_core::ai::utils::http::HttpResponse,
-                pi_core::ai::utils::http::HttpFetchError,
+                holt_core::ai::utils::http::HttpResponse,
+                holt_core::ai::utils::http::HttpFetchError,
             >,
         > {
             fn encode_frame(headers: &[(&str, &str)], payload: &[u8]) -> Vec<u8> {
@@ -1269,7 +1272,7 @@ async fn wire_stream_decodes_framed_events_end_to_end() {
             ]
             .concat();
             Box::pin(async move {
-                Ok(pi_core::ai::utils::http::HttpResponse {
+                Ok(holt_core::ai::utils::http::HttpResponse {
                     status: 200,
                     headers: vec![(
                         "content-type".to_string(),
@@ -1293,7 +1296,7 @@ async fn wire_stream_decodes_framed_events_end_to_end() {
                 base: ProviderRequestOptions {
                     api_key: Some("bearer-token".to_string()),
                     fetch: Some(
-                        Arc::new(FramedFetch) as Arc<dyn pi_core::ai::utils::http::HttpFetch>
+                        Arc::new(FramedFetch) as Arc<dyn holt_core::ai::utils::http::HttpFetch>
                     ),
                     ..Default::default()
                 },
@@ -1320,7 +1323,7 @@ async fn wire_stream_decodes_framed_events_end_to_end() {
 
 #[test]
 fn bedrock_catalog_lists_models_via_inference_profiles() {
-    let models = pi_core::ai::models_generated::models_for_provider("amazon-bedrock");
+    let models = holt_core::ai::models_generated::models_for_provider("amazon-bedrock");
     assert!(!models.is_empty());
     assert!(
         models

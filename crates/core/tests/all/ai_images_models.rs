@@ -6,16 +6,16 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::types::{
     ApiKeyAuth, ApiKeyAuthInput, AuthContext, AuthFuture, AuthResult, AuthStorageError, ModelAuth,
     ProviderAuth,
 };
-use pi_core::ai::images::generate_images as dispatch_generate_images;
-use pi_core::ai::images_models::{
+use holt_core::ai::images::generate_images as dispatch_generate_images;
+use holt_core::ai::images_models::{
     CreateImagesProviderOptions, ProviderImages, create_images_models, create_images_provider,
 };
-use pi_core::ai::models::CreateModelsOptions;
-use pi_core::ai::types::{
+use holt_core::ai::models::CreateModelsOptions;
+use holt_core::ai::types::{
     AssistantImages, BlockContent, ImageContent, ImagesContext, ImagesModel, ImagesOptions,
     ImagesStopReason, ModelCost, ModelInput,
 };
@@ -72,7 +72,7 @@ fn ok_result(model: &ImagesModel) -> AssistantImages {
         usage: None,
         stop_reason: ImagesStopReason::Stop,
         error_message: None,
-        timestamp: pi_core::ai::auth::resolve::now_millis(),
+        timestamp: holt_core::ai::auth::resolve::now_millis(),
     }
 }
 
@@ -147,7 +147,9 @@ struct TestProviderInput {
     calls: Arc<Mutex<Vec<(ImagesModel, ImagesOptions)>>>,
 }
 
-fn test_provider(input: TestProviderInput) -> Arc<dyn pi_core::ai::images_models::ImagesProvider> {
+fn test_provider(
+    input: TestProviderInput,
+) -> Arc<dyn holt_core::ai::images_models::ImagesProvider> {
     create_images_provider(CreateImagesProviderOptions {
         id: input.id.to_string(),
         name: None,
@@ -166,7 +168,7 @@ fn test_provider(input: TestProviderInput) -> Arc<dyn pi_core::ai::images_models
 
 fn context() -> ImagesContext {
     ImagesContext {
-        input: vec![BlockContent::Text(pi_core::ai::types::TextContent {
+        input: vec![BlockContent::Text(holt_core::ai::types::TextContent {
             text: "a red circle".to_string(),
             ..Default::default()
         })],
@@ -261,7 +263,7 @@ async fn resolves_auth_and_merges_it_into_requests_explicit_options_win() {
             &models
                 .get_auth(
                     "p1",
-                    Some(&pi_core::ai::auth::resolve::AuthResolutionOverrides {
+                    Some(&holt_core::ai::auth::resolve::AuthResolutionOverrides {
                         api_key: Some("explicit-key".to_string()),
                         ..Default::default()
                     }),
@@ -461,7 +463,7 @@ async fn supports_dynamic_providers_via_refresh_with_in_flight_dedupe() {
     let error = models.refresh(Some("flaky")).await.unwrap_err();
     assert_eq!(
         error.code,
-        pi_core::ai::auth::resolve::ModelsErrorCode::ModelSource
+        holt_core::ai::auth::resolve::ModelsErrorCode::ModelSource
     );
     assert_eq!(
         error.message,

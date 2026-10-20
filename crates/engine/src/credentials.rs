@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use pi_core::ai::auth::types::{
+use holt_core::ai::auth::types::{
     ApiKeyCredential, AuthFuture, AuthOperationOptions, AuthStorageError, BoxedAuthError,
     Credential, CredentialInfo, CredentialStore, ModifyFn,
 };

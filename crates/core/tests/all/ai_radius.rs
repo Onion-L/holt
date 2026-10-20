@@ -5,13 +5,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_core::ai::auth::types::{ApiKeyCredential, Credential, OAuthCredential};
-use pi_core::ai::models::{ModelsPublication, RefreshModelsContext};
-use pi_core::ai::models_store::ModelsStoreEntry;
-use pi_core::ai::providers::radius::{RadiusProviderOptions, radius_provider};
-use pi_core::ai::providers::radius_config::load_radius_gateway_config;
-use pi_core::ai::types::Model;
-use pi_core::ai::utils::http::{HttpBody, HttpFetch, HttpMethod, HttpRequest, HttpResponse};
+use holt_core::ai::auth::types::{ApiKeyCredential, Credential, OAuthCredential};
+use holt_core::ai::models::{ModelsPublication, RefreshModelsContext};
+use holt_core::ai::models_store::ModelsStoreEntry;
+use holt_core::ai::providers::radius::{RadiusProviderOptions, radius_provider};
+use holt_core::ai::providers::radius_config::load_radius_gateway_config;
+use holt_core::ai::types::Model;
+use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpMethod, HttpRequest, HttpResponse};
 
 const GATEWAY: &str = "https://radius.example";
 
@@ -40,13 +40,13 @@ fn remote_model() -> Model {
         provider: "radius".to_string(),
         base_url: "https://gw.example".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
-        cost: pi_core::ai::types::ModelCost {
-            rates: pi_core::ai::types::ModelCostRates {
-                input: pi_core::ai::types::JsF64(1.0),
-                output: pi_core::ai::types::JsF64(2.0),
-                cache_read: pi_core::ai::types::JsF64(0.0),
-                cache_write: pi_core::ai::types::JsF64(0.0),
+        input: vec![holt_core::ai::types::ModelInput::Text],
+        cost: holt_core::ai::types::ModelCost {
+            rates: holt_core::ai::types::ModelCostRates {
+                input: holt_core::ai::types::JsF64(1.0),
+                output: holt_core::ai::types::JsF64(2.0),
+                cache_read: holt_core::ai::types::JsF64(0.0),
+                cache_write: holt_core::ai::types::JsF64(0.0),
             },
             tiers: None,
         },
@@ -65,7 +65,7 @@ fn stored_model(id: &str, provider: &str) -> Model {
         provider: provider.to_string(),
         base_url: "https://gw.example".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
+        input: vec![holt_core::ai::types::ModelInput::Text],
         context_window: 1000,
         max_tokens: 100,
         ..Default::default()
@@ -84,7 +84,7 @@ impl HttpFetch for CannedFetch {
         request: HttpRequest,
     ) -> futures::future::BoxFuture<
         'a,
-        Result<HttpResponse, pi_core::ai::utils::http::HttpFetchError>,
+        Result<HttpResponse, holt_core::ai::utils::http::HttpFetchError>,
     > {
         self.requests.lock().unwrap().push(request);
         let status = self.status;
@@ -197,7 +197,7 @@ fn refresh_context(
     }
 }
 
-fn provider(fetch: Arc<CannedFetch>) -> Arc<dyn pi_core::ai::models::Provider> {
+fn provider(fetch: Arc<CannedFetch>) -> Arc<dyn holt_core::ai::models::Provider> {
     radius_provider(RadiusProviderOptions {
         gateway: Some(GATEWAY.to_string()),
         fetch: Some(fetch as Arc<dyn HttpFetch>),

@@ -1,21 +1,21 @@
 use std::sync::Arc;
 
-use pi_core::agent::harness::messages::BashExecutionMessage;
-use pi_core::agent::harness::session::memory::InMemorySessionRepo;
-use pi_core::agent::harness::session::testing::{
+use holt_core::agent::harness::messages::BashExecutionMessage;
+use holt_core::agent::harness::session::memory::InMemorySessionRepo;
+use holt_core::agent::harness::session::testing::{
     SessionBackendFixture, SessionBackendFixtureFactory,
 };
-use pi_core::agent::harness::session::types::{
+use holt_core::agent::harness::session::types::{
     CompactionReason, Entry, MessageEntry, SessionStopReason,
 };
-use pi_core::agent::harness::tools::bash::{BashToolDetails, BashToolInput};
-use pi_core::agent::harness::tools::edit::{EditToolDetails, EditToolInput};
-use pi_core::agent::harness::tools::edit_diff::{
+use holt_core::agent::harness::tools::bash::{BashToolDetails, BashToolInput};
+use holt_core::agent::harness::tools::edit::{EditToolDetails, EditToolInput};
+use holt_core::agent::harness::tools::edit_diff::{
     Edit, TextReplacement, apply_replacements_preserving_unchanged_lines,
 };
-use pi_core::agent::harness::tools::read::{ReadToolDetails, ReadToolInput};
-use pi_core::agent::harness::tools::write::WriteToolInput;
-use pi_core::agent::types::{AgentMessage, CustomAgentMessage};
+use holt_core::agent::harness::tools::read::{ReadToolDetails, ReadToolInput};
+use holt_core::agent::harness::tools::write::WriteToolInput;
+use holt_core::agent::types::{AgentMessage, CustomAgentMessage};
 
 #[test]
 fn exposes_tool_input_and_detail_shapes() {

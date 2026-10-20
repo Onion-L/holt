@@ -69,12 +69,12 @@ fn title_requests(provider: &ScriptedProvider) -> Vec<common::RecordedRequest> {
 
 fn first_user_text(request: &common::RecordedRequest) -> String {
     match &request.messages[0] {
-        pi_core::ai::types::Message::User(user) => match &user.content {
-            pi_core::ai::types::UserContent::Text(text) => text.clone(),
-            pi_core::ai::types::UserContent::Blocks(blocks) => blocks
+        holt_core::ai::types::Message::User(user) => match &user.content {
+            holt_core::ai::types::UserContent::Text(text) => text.clone(),
+            holt_core::ai::types::UserContent::Blocks(blocks) => blocks
                 .iter()
                 .find_map(|block| match block {
-                    pi_core::ai::types::BlockContent::Text(text) => Some(text.text.clone()),
+                    holt_core::ai::types::BlockContent::Text(text) => Some(text.text.clone()),
                     _ => None,
                 })
                 .unwrap_or_default(),

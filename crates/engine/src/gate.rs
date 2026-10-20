@@ -12,9 +12,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use holt_core::agent::types::{BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult};
 use holt_doc::parts::{GateVerdict, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, PermissionMode, RunOutcome};
-use pi_core::agent::types::{BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::ChatRuntime;
@@ -267,9 +267,9 @@ pub(crate) fn stamp_gate(
 /// separately-configured reviewer.
 #[derive(Clone)]
 pub(crate) struct ReviewTransport {
-    pub(crate) model: pi_core::ai::types::Model,
+    pub(crate) model: holt_core::ai::types::Model,
     pub(crate) api_key: String,
-    pub(crate) stream_fn: pi_core::agent::types::StreamFn,
+    pub(crate) stream_fn: holt_core::agent::types::StreamFn,
 }
 
 /// The system prompt every review pass rides on. The cwd anchors the
@@ -364,7 +364,7 @@ async fn run_review_pass(
         "Tool: {tool_name}\nArguments: {arguments}",
         arguments = serde_json::to_string(arguments).unwrap_or_default()
     );
-    let mut options = pi_core::ai::types::SimpleStreamOptions::default();
+    let mut options = holt_core::ai::types::SimpleStreamOptions::default();
     // The protocol is one line; a small cap bounds a rambling reviewer (the
     // parser reads the first line regardless).
     options.base.max_tokens = Some(256);
@@ -372,12 +372,12 @@ async fn run_review_pass(
     options.base.base.signal = Some(cancel.clone());
     // Background reviewer: retries transient provider failures, silently.
     options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);
-    let context = pi_core::ai::types::Context {
+    let context = holt_core::ai::types::Context {
         system_prompt: Some(review_system_prompt(cwd)),
-        messages: vec![pi_core::ai::types::Message::User(
-            pi_core::ai::types::UserMessage {
-                role: pi_core::ai::types::RoleUser,
-                content: pi_core::ai::types::UserContent::Text(prompt),
+        messages: vec![holt_core::ai::types::Message::User(
+            holt_core::ai::types::UserMessage {
+                role: holt_core::ai::types::RoleUser,
+                content: holt_core::ai::types::UserContent::Text(prompt),
                 timestamp: 0,
             },
         )],
@@ -412,10 +412,10 @@ async fn run_review_pass(
         // Aborted with the token live is the cancellation path (no verdict,
         // no stamp). An abort the gate did not ask for is a garbled
         // outcome — fail closed like every other unclear one.
-        pi_core::ai::types::StopReason::Aborted if cancel.is_cancelled() => {
+        holt_core::ai::types::StopReason::Aborted if cancel.is_cancelled() => {
             ReviewOutcome::Cancelled
         }
-        pi_core::ai::types::StopReason::Aborted | pi_core::ai::types::StopReason::Error => {
+        holt_core::ai::types::StopReason::Aborted | holt_core::ai::types::StopReason::Error => {
             ReviewOutcome::Reject {
                 reason: format!(
                     "the review pass failed: {}",
@@ -425,7 +425,7 @@ async fn run_review_pass(
                 ),
             }
         }
-        _ => parse_review_reply(&pi_core::ai::utils::text::content_text(
+        _ => parse_review_reply(&holt_core::ai::utils::text::content_text(
             &response.content,
             "\n",
         )),

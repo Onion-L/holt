@@ -8,8 +8,8 @@
 use crate::common;
 
 use common::{ScriptedProvider, ScriptedReply};
+use holt_core::ai::types::{Message, StopReason};
 use holt_rpc::{RpcService as _, methods};
-use pi_core::ai::types::{Message, StopReason};
 
 /// Whether the chat's damaged History was set aside (a timestamped
 /// `.corrupt` sibling in the history dir).

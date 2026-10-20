@@ -13,11 +13,11 @@
 use std::{sync::Arc, time::Duration};
 
 use futures::{StreamExt, future::BoxFuture};
-use htmd::HtmlToMarkdown;
-use pi_core::{
+use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };
+use htmd::HtmlToMarkdown;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::json;

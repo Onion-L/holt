@@ -42,7 +42,9 @@ fn last_user_prompt(request: &common::RecordedRequest) -> String {
         .messages
         .iter()
         .filter_map(|message| match message {
-            pi_core::ai::types::Message::User(message) => Some(message.content.text().to_string()),
+            holt_core::ai::types::Message::User(message) => {
+                Some(message.content.text().to_string())
+            }
             _ => None,
         })
         .next_back()
@@ -229,7 +231,7 @@ async fn ordinary_messages_wait_their_turn_without_entering_the_transcript() {
                 .messages
                 .iter()
                 .filter_map(|message| match message {
-                    pi_core::ai::types::Message::User(message) => {
+                    holt_core::ai::types::Message::User(message) => {
                         Some(serde_json::to_value(&message.content).unwrap())
                     }
                     _ => None,
@@ -665,7 +667,7 @@ async fn a_started_checkpoint_recovers_even_before_the_first_transcript_or_histo
 async fn stop_propagates_through_all_compaction_placements_and_pauses_pending_work() {
     for placement in ["before", "between", "manual"] {
         let fixture = Fixture::new();
-        let usage = pi_core::ai::types::Usage {
+        let usage = holt_core::ai::types::Usage {
             input: 260_000,
             output: 500,
             total_tokens: 260_500,
@@ -842,7 +844,9 @@ fn user_text(request: &common::RecordedRequest) -> String {
         .messages
         .iter()
         .filter_map(|message| match message {
-            pi_core::ai::types::Message::User(message) => Some(message.content.text().to_string()),
+            holt_core::ai::types::Message::User(message) => {
+                Some(message.content.text().to_string())
+            }
             _ => None,
         })
         .next_back()

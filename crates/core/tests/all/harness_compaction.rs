@@ -7,31 +7,31 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use pi_core::agent::harness::compaction::branch_summarization::{
+use holt_core::agent::harness::compaction::branch_summarization::{
     GenerateBranchSummaryOptions, collect_entries_for_branch_summary, generate_branch_summary,
 };
-use pi_core::agent::harness::compaction::compaction::{
+use holt_core::agent::harness::compaction::compaction::{
     CompactionSettings, CutPointResult, DEFAULT_COMPACTION_SETTINGS, calculate_context_tokens,
     estimate_context_tokens, estimate_tokens, find_cut_point, find_turn_start_index,
     prepare_compaction, should_compact,
 };
-use pi_core::agent::harness::compaction::utils::serialize_conversation;
-use pi_core::agent::harness::session::context::build_session_context;
-use pi_core::agent::harness::session::memory::InMemorySessionStorage;
-use pi_core::agent::harness::session::memory::Session;
-use pi_core::agent::harness::session::types::{Entry, SessionMetadata};
-use pi_core::agent::harness::types::CompactionErrorCode;
-use pi_core::agent::types::AgentMessage;
-use pi_core::ai::models::Models;
-use pi_core::ai::providers::faux::{
+use holt_core::agent::harness::compaction::utils::serialize_conversation;
+use holt_core::agent::harness::session::context::build_session_context;
+use holt_core::agent::harness::session::memory::InMemorySessionStorage;
+use holt_core::agent::harness::session::memory::Session;
+use holt_core::agent::harness::session::types::{Entry, SessionMetadata};
+use holt_core::agent::harness::types::CompactionErrorCode;
+use holt_core::agent::types::AgentMessage;
+use holt_core::ai::models::Models;
+use holt_core::ai::providers::faux::{
     FauxMessageOptions, FauxResponseStep, RegisterFauxProviderOptions, faux_assistant_message,
     faux_provider,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantContent, BlockContent, RoleAssistant, RoleUser, StopReason, TextContent, Usage,
     UserContent, UserMessage,
 };
-use pi_core::ai::types::{
+use holt_core::ai::types::{
     AssistantMessage as AiAssistantMessage, CacheRetention, Context, Message, SimpleStreamOptions,
 };
 
@@ -58,7 +58,7 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
-    AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content: vec![AssistantContent::Text(TextContent {
             text: text.to_string(),
@@ -75,7 +75,7 @@ fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
 }
 
 fn assistant_message_with_content(content: Vec<AssistantContent>, usage: Usage) -> AgentMessage {
-    AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content,
         api: "anthropic-messages".to_string(),
@@ -232,7 +232,7 @@ fn covers_cut_point_and_turn_start_edge_cases() {
 
     let tool_result = message_entry(
         1,
-        AgentMessage::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
+        AgentMessage::ToolResult(Box::new(holt_core::ai::types::ToolResultMessage {
             role: Default::default(),
             tool_call_id: "call-1".to_string(),
             tool_name: "read".to_string(),
@@ -271,10 +271,10 @@ fn estimates_tokens_across_supported_message_roles() {
     // user text: ceil(chars/4)
     assert_eq!(estimate_tokens(&user_message("123456789")), 3);
     // assistant text + thinking + tool call name/arguments
-    let assistant = AgentMessage::Assistant(Box::new(pi_core::ai::types::AssistantMessage {
+    let assistant = AgentMessage::Assistant(Box::new(holt_core::ai::types::AssistantMessage {
         role: RoleAssistant,
         content: vec![
-            AssistantContent::Thinking(pi_core::ai::types::ThinkingContent {
+            AssistantContent::Thinking(holt_core::ai::types::ThinkingContent {
                 thinking: "abcd".to_string(),
                 ..Default::default()
             }),
@@ -282,7 +282,7 @@ fn estimates_tokens_across_supported_message_roles() {
                 text: "1234".to_string(),
                 ..Default::default()
             }),
-            AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+            AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
                 id: "call".to_string(),
                 name: "bash".to_string(),
                 arguments: json!({ "command": "ls" })
@@ -305,7 +305,7 @@ fn estimates_tokens_across_supported_message_roles() {
     assert!(tokens >= 3, "unexpected estimate {tokens}");
 
     // custom roles ride JSON payloads
-    let custom = pi_core::agent::harness::messages::custom_message(
+    let custom = holt_core::agent::harness::messages::custom_message(
         "bashExecution",
         json!({ "role": "bashExecution", "command": "1234", "output": "1234", "timestamp": 1 }),
     );
@@ -333,7 +333,7 @@ fn estimates_context_tokens_with_usage_anchor() {
 }
 
 impl ContextUsageEstimateExt
-    for pi_core::agent::harness::compaction::compaction::ContextUsageEstimate
+    for holt_core::agent::harness::compaction::compaction::ContextUsageEstimate
 {
     fn last_used_index(&self) -> Option<usize> {
         self.last_usage_index
@@ -350,7 +350,7 @@ fn the_estimate_ignores_usage_reported_before_the_latest_compaction() {
         other => other,
     };
     let summary = |timestamp| {
-        pi_core::agent::harness::messages::create_compaction_summary_message(
+        holt_core::agent::harness::messages::create_compaction_summary_message(
             "summary", 250_000, timestamp,
         )
     };
@@ -510,7 +510,7 @@ fn does_not_prepare_compaction_when_nothing_valid_to_compact() {
 #[test]
 fn serializes_conversation_with_truncated_tool_results() {
     let messages = vec![
-        pi_core::ai::types::Message::User(UserMessage {
+        holt_core::ai::types::Message::User(UserMessage {
             role: RoleUser,
             content: UserContent::Blocks(vec![BlockContent::Text(TextContent {
                 text: "hello".to_string(),
@@ -518,18 +518,20 @@ fn serializes_conversation_with_truncated_tool_results() {
             })]),
             timestamp: 1,
         }),
-        pi_core::ai::types::Message::ToolResult(Box::new(pi_core::ai::types::ToolResultMessage {
-            role: Default::default(),
-            tool_call_id: "call".to_string(),
-            tool_name: "read".to_string(),
-            content: vec![BlockContent::Text(TextContent {
-                text: "x".repeat(3000),
+        holt_core::ai::types::Message::ToolResult(Box::new(
+            holt_core::ai::types::ToolResultMessage {
+                role: Default::default(),
+                tool_call_id: "call".to_string(),
+                tool_name: "read".to_string(),
+                content: vec![BlockContent::Text(TextContent {
+                    text: "x".repeat(3000),
+                    ..Default::default()
+                })],
+                is_error: false,
+                timestamp: 1,
                 ..Default::default()
-            })],
-            is_error: false,
-            timestamp: 1,
-            ..Default::default()
-        })),
+            },
+        )),
     ];
     let serialized = serialize_conversation(&messages);
     assert!(serialized.starts_with("[User]: hello\n\n[Tool result]: "));
@@ -673,13 +675,13 @@ struct StubCompleteStreams {
     remaining: Mutex<std::collections::VecDeque<AiAssistantMessage>>,
 }
 
-impl pi_core::ai::models::ProviderStreams for StubCompleteStreams {
+impl holt_core::ai::models::ProviderStreams for StubCompleteStreams {
     fn stream(
         &self,
-        model: &pi_core::ai::types::Model,
+        model: &holt_core::ai::types::Model,
         context: &Context,
-        options: Option<&pi_core::ai::types::StreamOptions>,
-    ) -> pi_core::ai::utils::event_stream::AssistantMessageEventStream {
+        options: Option<&holt_core::ai::types::StreamOptions>,
+    ) -> holt_core::ai::utils::event_stream::AssistantMessageEventStream {
         let simple = options.map(|options| SimpleStreamOptions {
             base: options.clone(),
             ..Default::default()
@@ -689,29 +691,29 @@ impl pi_core::ai::models::ProviderStreams for StubCompleteStreams {
 
     fn stream_simple(
         &self,
-        _model: &pi_core::ai::types::Model,
+        _model: &holt_core::ai::types::Model,
         _context: &Context,
         _options: Option<&SimpleStreamOptions>,
-    ) -> pi_core::ai::utils::event_stream::AssistantMessageEventStream {
-        let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
+    ) -> holt_core::ai::utils::event_stream::AssistantMessageEventStream {
+        let stream = holt_core::ai::utils::event_stream::create_assistant_message_event_stream();
         let next = self.remaining.lock().unwrap().pop_front();
         let producer = stream.clone();
         tokio::spawn(async move {
             match next {
                 Some(message) => {
-                    producer.push(pi_core::ai::types::AssistantMessageEvent::Start {
+                    producer.push(holt_core::ai::types::AssistantMessageEvent::Start {
                         partial: message.clone(),
                     });
-                    producer.push(pi_core::ai::types::AssistantMessageEvent::Done {
-                        reason: pi_core::ai::types::DoneReason::Stop,
+                    producer.push(holt_core::ai::types::AssistantMessageEvent::Done {
+                        reason: holt_core::ai::types::DoneReason::Stop,
                         message,
                     });
                     producer.end(None);
                 }
                 None => {
-                    producer.push(pi_core::ai::types::AssistantMessageEvent::Error {
-                        reason: pi_core::ai::types::ErrorReason::Error,
-                        error: pi_core::ai::types::AssistantMessage {
+                    producer.push(holt_core::ai::types::AssistantMessageEvent::Error {
+                        reason: holt_core::ai::types::ErrorReason::Error,
+                        error: holt_core::ai::types::AssistantMessage {
                             role: RoleAssistant,
                             content: Vec::new(),
                             api: "stub-complete".to_string(),
@@ -736,23 +738,23 @@ impl pi_core::ai::models::ProviderStreams for StubCompleteStreams {
 
 struct StubApiKeyAuth;
 
-impl pi_core::ai::auth::types::ApiKeyAuth for StubApiKeyAuth {
+impl holt_core::ai::auth::types::ApiKeyAuth for StubApiKeyAuth {
     fn name(&self) -> &str {
         "Stub API key"
     }
 
     fn resolve(
         &self,
-        _input: pi_core::ai::auth::types::ApiKeyAuthInput,
-    ) -> pi_core::ai::auth::types::AuthFuture<
+        _input: holt_core::ai::auth::types::ApiKeyAuthInput,
+    ) -> holt_core::ai::auth::types::AuthFuture<
         Result<
-            Option<pi_core::ai::auth::types::AuthResult>,
-            pi_core::ai::auth::types::AuthStorageError,
+            Option<holt_core::ai::auth::types::AuthResult>,
+            holt_core::ai::auth::types::AuthStorageError,
         >,
     > {
         Box::pin(async {
-            Ok(Some(pi_core::ai::auth::types::AuthResult {
-                auth: pi_core::ai::auth::types::ModelAuth::default(),
+            Ok(Some(holt_core::ai::auth::types::AuthResult {
+                auth: holt_core::ai::auth::types::ModelAuth::default(),
                 env: None,
                 source: None,
             }))
@@ -762,34 +764,34 @@ impl pi_core::ai::auth::types::ApiKeyAuth for StubApiKeyAuth {
 
 fn stub_models_with_simple_responses(
     responses: Vec<AiAssistantMessage>,
-) -> (Arc<Models>, pi_core::ai::types::Model) {
+) -> (Arc<Models>, holt_core::ai::types::Model) {
     let streams = Arc::new(StubCompleteStreams {
         remaining: Mutex::new(responses.into_iter().collect()),
     });
-    let model = pi_core::ai::types::Model {
+    let model = holt_core::ai::types::Model {
         id: "non-reasoning-model".to_string(),
         name: "Non-reasoning stub model".to_string(),
         api: "stub-complete".to_string(),
         provider: "stub-compaction".to_string(),
         reasoning: false,
-        input: vec![pi_core::ai::types::ModelInput::Text],
-        cost: pi_core::ai::types::ModelCost::default(),
+        input: vec![holt_core::ai::types::ModelInput::Text],
+        cost: holt_core::ai::types::ModelCost::default(),
         context_window: 200_000,
         max_tokens: 8_192,
         ..Default::default()
     };
-    let provider = Arc::new(pi_core::ai::models::BasicProvider::new(
-        pi_core::ai::models::CreateProviderOptions {
+    let provider = Arc::new(holt_core::ai::models::BasicProvider::new(
+        holt_core::ai::models::CreateProviderOptions {
             id: "stub-compaction".to_string(),
             organization_id: None,
             name: None,
             base_url: None,
             headers: None,
-            auth: pi_core::ai::auth::types::ProviderAuth::api_key(Arc::new(StubApiKeyAuth)),
+            auth: holt_core::ai::auth::types::ProviderAuth::api_key(Arc::new(StubApiKeyAuth)),
             models: vec![model.clone()],
             fetch_models: None,
             filter_models: None,
-            api: pi_core::ai::models::ProviderApi::Single(streams),
+            api: holt_core::ai::models::ProviderApi::Single(streams),
         },
     ));
     let models = Arc::new(Models::new(Default::default()));
@@ -804,13 +806,13 @@ fn create_faux_model(
     reasoning: bool,
     max_tokens: u64,
 ) -> (
-    pi_core::ai::providers::faux::FauxProviderHandle,
+    holt_core::ai::providers::faux::FauxProviderHandle,
     Arc<Models>,
 ) {
     let count = FAUX_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let faux = faux_provider(RegisterFauxProviderOptions {
         provider: Some(format!("faux-compaction-{count}")),
-        models: vec![pi_core::ai::providers::faux::FauxModelDefinition {
+        models: vec![holt_core::ai::providers::faux::FauxModelDefinition {
             id: if reasoning {
                 "reasoning-model".to_string()
             } else {
@@ -831,14 +833,14 @@ fn create_faux_model(
 }
 
 fn default_faux_model() -> (
-    pi_core::ai::providers::faux::FauxProviderHandle,
+    holt_core::ai::providers::faux::FauxProviderHandle,
     Arc<Models>,
 ) {
     create_faux_model(false, 8192)
 }
 
-fn summary_options() -> pi_core::agent::harness::compaction::compaction::SummaryOptions<'static> {
-    pi_core::agent::harness::compaction::compaction::SummaryOptions {
+fn summary_options() -> holt_core::agent::harness::compaction::compaction::SummaryOptions<'static> {
+    holt_core::agent::harness::compaction::compaction::SummaryOptions {
         signal: None,
         custom_instructions: None,
         previous_summary: None,
@@ -871,15 +873,15 @@ async fn passes_reasoning_through_generate_summary_for_reasoning_models_with_thi
                 ))
             },
         ))]);
-        let options = pi_core::agent::harness::compaction::compaction::SummaryOptions {
+        let options = holt_core::agent::harness::compaction::compaction::SummaryOptions {
             thinking_level: if thinking {
-                Some(pi_core::agent::types::ThinkingLevel::Medium)
+                Some(holt_core::agent::types::ThinkingLevel::Medium)
             } else {
                 None
             },
             ..summary_options()
         };
-        let result = pi_core::agent::harness::compaction::compaction::generate_summary(
+        let result = holt_core::agent::harness::compaction::compaction::generate_summary(
             &messages,
             &models,
             &faux.get_model(),
@@ -911,7 +913,7 @@ async fn includes_previous_summaries_and_custom_instructions_in_prompts() {
                         UserContent::Text(text) => Some(text.clone()),
                         UserContent::Blocks(blocks) => {
                             blocks.iter().find_map(|block| match block {
-                                pi_core::ai::types::BlockContent::Text(text) => {
+                                holt_core::ai::types::BlockContent::Text(text) => {
                                     Some(text.text.clone())
                                 }
                                 _ => None,
@@ -928,13 +930,13 @@ async fn includes_previous_summaries_and_custom_instructions_in_prompts() {
         },
     ))]);
 
-    let options = pi_core::agent::harness::compaction::compaction::SummaryOptions {
+    let options = holt_core::agent::harness::compaction::compaction::SummaryOptions {
         custom_instructions: Some("focus"),
         previous_summary: Some("old summary"),
         ..summary_options()
     };
     let (summary, usage) =
-        pi_core::agent::harness::compaction::compaction::generate_summary_with_usage(
+        holt_core::agent::harness::compaction::compaction::generate_summary_with_usage(
             &messages,
             &models,
             &faux.get_model(),
@@ -969,7 +971,7 @@ async fn preserves_the_string_result_from_generate_summary() {
         faux_assistant_message("## Goal\nTest summary", FauxMessageOptions::default()),
     ))]);
 
-    let summary = pi_core::agent::harness::compaction::compaction::generate_summary(
+    let summary = holt_core::agent::harness::compaction::compaction::generate_summary(
         &messages,
         &models,
         &faux.get_model(),
@@ -997,7 +999,7 @@ async fn returns_error_results_for_failed_or_aborted_summary_generations() {
             },
         ),
     ))]);
-    let error = pi_core::agent::harness::compaction::compaction::generate_summary(
+    let error = holt_core::agent::harness::compaction::compaction::generate_summary(
         &messages,
         &error_models,
         &error_faux.get_model(),
@@ -1025,7 +1027,7 @@ async fn returns_error_results_for_failed_or_aborted_summary_generations() {
             },
         ),
     ))]);
-    let aborted = pi_core::agent::harness::compaction::compaction::generate_summary(
+    let aborted = holt_core::agent::harness::compaction::compaction::generate_summary(
         &messages,
         &aborted_models,
         &aborted_faux.get_model(),
@@ -1046,7 +1048,7 @@ async fn clamps_compaction_summary_max_tokens_to_the_model_output_cap() {
     let (faux, models) = create_faux_model(false, 128_000);
     let seen_options: Arc<Mutex<Vec<SimpleStreamOptions>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&seen_options);
-    let factory: pi_core::ai::providers::faux::FauxResponseFactory = Arc::new(
+    let factory: holt_core::ai::providers::faux::FauxResponseFactory = Arc::new(
         move |_context, options: Option<&SimpleStreamOptions>, _state, _model| {
             seen.lock()
                 .unwrap()
@@ -1062,7 +1064,7 @@ async fn clamps_compaction_summary_max_tokens_to_the_model_output_cap() {
         FauxResponseStep::Factory(factory),
     ]);
 
-    let preparation = pi_core::agent::harness::compaction::compaction::CompactionPreparation {
+    let preparation = holt_core::agent::harness::compaction::compaction::CompactionPreparation {
         messages_to_summarize: messages.clone(),
         turn_prefix_messages: messages,
         retained_tail: Vec::new(),
@@ -1076,9 +1078,9 @@ async fn clamps_compaction_summary_max_tokens_to_the_model_output_cap() {
             keep_recent_tokens: 20_000,
         },
     };
-    pi_core::agent::harness::compaction::compaction::compact(
+    holt_core::agent::harness::compaction::compaction::compact(
         preparation,
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &models,
             model: &faux.get_model(),
             custom_instructions: None,
@@ -1114,7 +1116,7 @@ async fn returns_compaction_error_results_without_throwing() {
             },
         ),
     ))]);
-    let preparation = pi_core::agent::harness::compaction::compaction::CompactionPreparation {
+    let preparation = holt_core::agent::harness::compaction::compaction::CompactionPreparation {
         messages_to_summarize: messages,
         turn_prefix_messages: Vec::new(),
         retained_tail: Vec::new(),
@@ -1129,9 +1131,9 @@ async fn returns_compaction_error_results_without_throwing() {
         },
     };
 
-    let error = pi_core::agent::harness::compaction::compaction::compact(
+    let error = holt_core::agent::harness::compaction::compaction::compact(
         preparation,
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &models,
             model: &faux.get_model(),
             custom_instructions: None,
@@ -1162,7 +1164,7 @@ async fn combines_usage_for_split_turn_compaction_summaries() {
     prefix.usage = mock_usage(5, 6, 7, 8);
     let (models, model) = stub_models_with_simple_responses(vec![history, prefix]);
 
-    let preparation = pi_core::agent::harness::compaction::compaction::CompactionPreparation {
+    let preparation = holt_core::agent::harness::compaction::compaction::CompactionPreparation {
         messages_to_summarize: messages.clone(),
         turn_prefix_messages: messages,
         retained_tail: Vec::new(),
@@ -1176,9 +1178,9 @@ async fn combines_usage_for_split_turn_compaction_summaries() {
             keep_recent_tokens: 20,
         },
     };
-    let result = pi_core::agent::harness::compaction::compaction::compact(
+    let result = holt_core::agent::harness::compaction::compaction::compact(
         preparation,
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &models,
             model: &model,
             custom_instructions: None,
@@ -1211,7 +1213,7 @@ async fn passes_reasoning_through_turn_prefix_summaries_when_enabled() {
             ))
         },
     ))]);
-    let preparation = pi_core::agent::harness::compaction::compaction::CompactionPreparation {
+    let preparation = holt_core::agent::harness::compaction::compaction::CompactionPreparation {
         messages_to_summarize: Vec::new(),
         turn_prefix_messages: messages,
         retained_tail: Vec::new(),
@@ -1225,14 +1227,14 @@ async fn passes_reasoning_through_turn_prefix_summaries_when_enabled() {
             keep_recent_tokens: 20,
         },
     };
-    pi_core::agent::harness::compaction::compaction::compact(
+    holt_core::agent::harness::compaction::compaction::compact(
         preparation,
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &models,
             model: &faux.get_model(),
             custom_instructions: None,
             signal: None,
-            thinking_level: Some(pi_core::agent::types::ThinkingLevel::High),
+            thinking_level: Some(holt_core::agent::types::ThinkingLevel::High),
             retry: None,
             callbacks: None,
         },
@@ -1246,7 +1248,7 @@ async fn passes_reasoning_through_turn_prefix_summaries_when_enabled() {
 #[tokio::test]
 async fn returns_turn_prefix_compaction_errors_without_throwing() {
     let messages = vec![user_message("Summarize this.")];
-    let preparation = pi_core::agent::harness::compaction::compaction::CompactionPreparation {
+    let preparation = holt_core::agent::harness::compaction::compaction::CompactionPreparation {
         messages_to_summarize: Vec::new(),
         turn_prefix_messages: messages,
         retained_tail: Vec::new(),
@@ -1272,9 +1274,9 @@ async fn returns_turn_prefix_compaction_errors_without_throwing() {
             },
         ),
     ))]);
-    let error = pi_core::agent::harness::compaction::compaction::compact(
+    let error = holt_core::agent::harness::compaction::compaction::compact(
         preparation.clone(),
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &models,
             model: &faux.get_model(),
             custom_instructions: None,
@@ -1305,9 +1307,9 @@ async fn returns_turn_prefix_compaction_errors_without_throwing() {
             },
         ),
     ))]);
-    let aborted = pi_core::agent::harness::compaction::compaction::compact(
+    let aborted = holt_core::agent::harness::compaction::compaction::compact(
         preparation,
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &aborted_models,
             model: &aborted_faux.get_model(),
             custom_instructions: None,
@@ -1329,7 +1331,7 @@ async fn returns_turn_prefix_compaction_errors_without_throwing() {
 fn prepares_split_turn_compaction_with_prior_file_operation_details() {
     let u1 = message_entry(1, user_message("user msg 1"), None);
     let assistant = assistant_message_with_content(
-        vec![AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+        vec![AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
             id: "tool-1".to_string(),
             name: "write".to_string(),
             arguments: json!({"path": "written.ts"})
@@ -1398,7 +1400,7 @@ fn prepares_split_turn_compaction_with_prior_file_operation_details() {
 async fn returns_a_compaction_result_with_file_details() {
     let u1 = message_entry(1, user_message("read a file"), None);
     let assistant = assistant_message_with_content(
-        vec![AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+        vec![AssistantContent::ToolCall(holt_core::ai::types::ToolCall {
             id: "tool-1".to_string(),
             name: "read".to_string(),
             arguments: json!({"path": "src/index.ts"})
@@ -1425,9 +1427,9 @@ async fn returns_a_compaction_result_with_file_details() {
         faux_assistant_message("## Goal\nTest summary", FauxMessageOptions::default()),
     ))]);
 
-    let result = pi_core::agent::harness::compaction::compaction::compact(
+    let result = holt_core::agent::harness::compaction::compaction::compact(
         preparation,
-        &pi_core::agent::harness::compaction::compaction::CompactOptions {
+        &holt_core::agent::harness::compaction::compaction::CompactOptions {
             models: &models,
             model: &faux.get_model(),
             custom_instructions: None,

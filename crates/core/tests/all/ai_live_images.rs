@@ -2,9 +2,9 @@
 //! `pi-core/ai/test/images.test.ts` ("Images E2E Tests", 3 TS cases).
 //!
 //! The shared TS bodies (`basicImageGeneration`, `handleTextAndImageOutput`,
-//! `handleImageInput`) run through `pi_core::ai::images::generate_images`
+//! `handleImageInput`) run through `holt_core::ai::images::generate_images`
 //! with the builtin openrouter images model from
-//! `pi_core::ai::providers::builtin::builtin_images_models` (the
+//! `holt_core::ai::providers::builtin::builtin_images_models` (the
 //! `getImageModel` catalog read).
 //!
 //! Gate translated verbatim: `describe.skipIf(!process.env.OPENROUTER_API_KEY)`.
@@ -21,9 +21,9 @@
 use crate::common;
 
 use common::live::{live_env, red_circle_base64, skip};
-use pi_core::ai::images::generate_images;
-use pi_core::ai::providers::builtin::builtin_images_models;
-use pi_core::ai::types::{
+use holt_core::ai::images::generate_images;
+use holt_core::ai::providers::builtin::builtin_images_models;
+use holt_core::ai::types::{
     BlockContent, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason, ModelInput,
     TextContent,
 };
@@ -135,7 +135,7 @@ async fn handle_image_input(model: &ImagesModel, case: &str) {
         return;
     }
 
-    let image_content = BlockContent::Image(pi_core::ai::types::ImageContent {
+    let image_content = BlockContent::Image(holt_core::ai::types::ImageContent {
         data: red_circle_base64(),
         mime_type: "image/png".to_string(),
         ..Default::default()

@@ -241,7 +241,7 @@ fn build_base_codex_headers(
     upsert_header(
         &mut headers,
         "User-Agent",
-        &crate::ai::session_resources::get_pi_user_agent(),
+        &crate::ai::session_resources::get_user_agent(),
     );
     headers
 }

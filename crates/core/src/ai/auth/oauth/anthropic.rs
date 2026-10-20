@@ -67,7 +67,7 @@ impl AnthropicOAuth {
     }
 
     fn callback_host(&self) -> String {
-        get_provider_env_value("PI_OAUTH_CALLBACK_HOST", Some(&self.env))
+        get_provider_env_value("HOLT_OAUTH_CALLBACK_HOST", Some(&self.env))
             .unwrap_or_else(|| "127.0.0.1".to_string())
     }
 

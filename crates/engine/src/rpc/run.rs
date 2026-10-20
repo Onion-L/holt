@@ -943,7 +943,7 @@ impl EngineService {
             .enumerate()
             .rev()
             .find(|(_, message)| {
-                matches!(message, pi_core::agent::types::AgentMessage::User(user) if user.timestamp == target.created_at)
+                matches!(message, holt_core::agent::types::AgentMessage::User(user) if user.timestamp == target.created_at)
             })
             .map(|(index, _)| index);
         if let Some(history_index) = history_index {
