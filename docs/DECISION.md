@@ -525,10 +525,12 @@ History does not hold, is undone; subagent steps carry the child's call ids,
 so only the clock places them. One file that moved on since its last undone
 step, whose content was never stored, or that would leave the work tree
 refuses the whole rewind before anything is written — the never-merge stance
-of turn-restore-from-change-records, applied to the set. Files go first, then
-the step log drops the undone steps (a later rewind would otherwise see them
-as conflicts), then the conversation; the cut Turns' change sets are retracted
-as an edit-last prune's are. The chat stays idle afterwards.
+of turn-restore-from-change-records, applied to the set. A confirmed rewind is
+written down whole and synced first, then carried out: files, the step log
+dropping the undone steps (a later rewind would otherwise see them as
+conflicts), History, transcript, and the cut Turns' change sets, retracted as
+an edit-last prune's are. Every part is idempotent, so the chat's next load
+finishes a rewind a crash cut off. The chat stays idle afterwards.
 Rejected: rewinding only to a user message (a long Turn could not be entered);
 separate conversation-only and files-only rewinds (two states that disagree);
 restoring what can be and skipping conflicts (a conversation that no longer

@@ -318,6 +318,11 @@ impl ChatRuntime {
                     .into(),
             );
         }
+        // A rewind a crash cut off finishes before anything reads the
+        // conversation (ADR-rewind-to-a-step-is-all-or-nothing).
+        if notice.is_none() {
+            crate::rewind::finish_pending(data_dir, chat_id, &mut history, &mut transcript);
+        }
         // A damaged or missing record cannot carry a Turn forward.
         let history_readable = notice.is_none();
         if let Some(message) = notice {

@@ -48,7 +48,7 @@ struct Running {
     start: CallStart,
 }
 
-fn chat_dir(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
+pub(crate) fn chat_dir(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     crate::store::id_is_path_safe(chat_id).then(|| data_dir.join("checkpoints").join(chat_id))
 }
 

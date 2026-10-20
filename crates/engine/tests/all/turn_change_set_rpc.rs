@@ -2055,3 +2055,73 @@ async fn a_file_that_moved_on_refuses_the_whole_rewind() {
     assert!(transcript.contains("b-1"), "the conversation is untouched");
     assert_eq!(steps(&fixture).len(), 2);
 }
+
+#[tokio::test]
+async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(Vec::new());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    // Let the settled Turn release the chat before the "crash".
+    rewind(&engine, "w-1", true).await;
+    drop(engine);
+
+    // The rewind was written down, then the process died before any of it
+    // ran — except one file write that landed.
+    let steps = steps(&fixture);
+    let bash = steps
+        .iter()
+        .find(|step| step["toolCallId"] == "b-1")
+        .unwrap();
+    let writes: Vec<serde_json::Value> = bash["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| serde_json::json!({ "path": file["path"], "target": file["before"] }))
+        .collect();
+    let workdir = std::fs::canonicalize(fixture.repo_dir.path()).unwrap();
+    std::fs::write(
+        fixture
+            .data_dir
+            .path()
+            .join("checkpoints/chat-1/rewind.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "toolCallId": "w-1",
+            "workdir": workdir,
+            "writes": writes,
+            "undone": ["b-1"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(fixture.path("a.txt"), "one\n").unwrap();
+
+    let engine = fixture.engine(&provider);
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(
+        transcript.contains("w-1") && !transcript.contains("b-1"),
+        "{transcript}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert!(!fixture.path("b.txt").exists());
+    assert_eq!(self::steps(&fixture).len(), 1);
+    assert!(
+        !fixture
+            .data_dir
+            .path()
+            .join("checkpoints/chat-1/rewind.json")
+            .exists()
+    );
+}
