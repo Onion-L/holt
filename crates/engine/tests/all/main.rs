@@ -38,6 +38,7 @@ mod provider_mode_rpc;
 mod provider_store_rpc;
 mod queue_commands_rpc;
 mod read_chat_rpc;
+mod resume_rpc;
 mod routines_rpc;
 mod scripted_provider;
 mod search_files_rpc;

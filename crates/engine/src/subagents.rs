@@ -435,6 +435,7 @@ async fn execute(
                 providers: None,
                 attribution: d.attribution,
                 stream_fn: Some(stream_fn),
+                resume: false,
             })
             .await,
             crate::agent::TurnEnd::Succeeded

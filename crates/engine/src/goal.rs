@@ -1176,8 +1176,10 @@ pub(crate) fn pause_for_deleted_continuation(service: &EngineService, chat: &Arc
 
 /// Boot reconciliation (ADR-goal-mode-verified-loop-at-turn-settle): an `active` goal whose queue holds no
 /// continuation can never run again — continuations are born only at a Turn
-/// settle — so it opens paused. Runs over the registry before any runtime
-/// exists; queue files are read directly.
+/// settle — so it opens paused. A started Turn that resumes at launch
+/// (ADR-turns-resume-from-an-intent-journal) settles again, so it keeps the
+/// loop too. Runs over the registry before any runtime exists; queue files
+/// are read directly.
 pub(crate) fn reconcile_on_boot(data_dir: &std::path::Path, chats: &mut [Chat]) -> bool {
     let mut changed = false;
     for row in chats.iter_mut() {
@@ -1186,7 +1188,7 @@ pub(crate) fn reconcile_on_boot(data_dir: &std::path::Path, chats: &mut [Chat]) 
             continue;
         }
         let queue = crate::queue::Queue::load(data_dir, &row.id);
-        if queue.has_goal_continuation() {
+        if queue.has_goal_continuation() || queue.may_resume() {
             continue;
         }
         goal.status = GoalStatus::Paused;

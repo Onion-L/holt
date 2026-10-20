@@ -196,6 +196,9 @@ pub(crate) struct ChatRuntime {
     /// calls through, so a call left without a result is told apart as
     /// "may have partly run" from "never ran".
     pub(crate) tool_intents: Mutex<std::collections::HashSet<String>>,
+    /// Set on load when a restart cut the started Turn off and it resumes
+    /// rather than recovering as interrupted; consumed by the queue driver.
+    pub(crate) resume: std::sync::atomic::AtomicBool,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -252,6 +255,7 @@ impl ChatRuntime {
             usage_pending: Mutex::new(Vec::new()),
             usage_totals: Mutex::new(Default::default()),
             tool_intents: Mutex::new(Default::default()),
+            resume: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -272,9 +276,11 @@ impl ChatRuntime {
         let replayed =
             crate::history::load_repaired(data_dir, chat_id, crate::history::Cut::Restart);
         let mut intents = Default::default();
+        let mut prompts = std::collections::HashSet::new();
         let (mut history, mut notice) = match replayed {
             Ok(replayed) => {
                 intents = replayed.intents;
+                prompts = replayed.prompts;
                 (replayed.messages, None)
             }
             Err(reason) => {
@@ -310,6 +316,8 @@ impl ChatRuntime {
                     .into(),
             );
         }
+        // A damaged or missing record cannot carry a Turn forward.
+        let history_readable = notice.is_none();
         if let Some(message) = notice {
             transcript.push(SessionMessageEntry {
                 id: HISTORY_NOTICE_ENTRY_ID.into(),
@@ -334,11 +342,14 @@ impl ChatRuntime {
         // poses as answerable.
         crate::gate::settle_pending_gates_on_load(&mut transcript);
         crate::subagents::settle_on_load(&mut transcript);
+        let mut cut_entries = Vec::new();
         for entry in &mut transcript {
             if entry.status == Some(MessageStatus::Streaming) {
                 entry.status = Some(MessageStatus::Aborted);
+                cut_entries.push(entry.id.clone());
             }
         }
+        let mut resume = false;
         let mut queue = crate::queue::Queue::load(data_dir, chat_id);
         if let Some(started) = queue.recover_started() {
             let mut recovery_error = None;
@@ -409,9 +420,7 @@ impl ChatRuntime {
                     // the catalog, so only the ordinary body is re-appended
                     // here — a skill Turn that had already written History
                     // is caught by the timestamp guard either way.
-                    if !is_skill
-                        && !history.iter().any(|message| matches!(message, AgentMessage::User(user) if user.timestamp == started.timestamp))
-                    {
+                    if !is_skill && !prompts.contains(&started.timestamp) {
                         let prompt = user_agent_message(
                             started.message.request.prompt.clone(),
                             started.timestamp,
@@ -422,15 +431,55 @@ impl ChatRuntime {
                             recovery_error = Some(error.to_string());
                         }
                         history.push(prompt);
+                        prompts.insert(started.timestamp);
+                    }
+                    // ADR-turns-resume-from-an-intent-journal: a Turn whose
+                    // prompt is on record resumes where the restart cut it
+                    // off — unless it already ended (the History closes on
+                    // a reply, only the settle was lost) or it keeps
+                    // crashing the app.
+                    let recorded = prompts.contains(&started.timestamp);
+                    let ended = history
+                        .last()
+                        .is_some_and(|message| message.role() == "assistant");
+                    let exhausted = started.resumes >= crate::queue::RESUME_LIMIT;
+                    let resumable = history_readable
+                        && recovery_error.is_none()
+                        && recorded
+                        && !started.stopped;
+                    resume = resumable && !ended && !exhausted;
+                    if resumable && ended {
+                        // The reply was whole; only its settle was lost.
+                        for entry in &mut transcript {
+                            if cut_entries.contains(&entry.id) {
+                                entry.status = Some(MessageStatus::Complete);
+                                if let Err(error) =
+                                    append_transcript_entry(data_dir, chat_id, entry)
+                                {
+                                    recovery_error = Some(error.to_string());
+                                }
+                            }
+                        }
                     }
                     let id = format!("interrupted-{}", started.message.message_id);
-                    if !transcript.iter().any(|entry| entry.id == id) {
+                    if !resume
+                        && !(resumable && ended)
+                        && !transcript.iter().any(|entry| entry.id == id)
+                    {
+                        let message = if exhausted {
+                            format!(
+                                "Turn interrupted by restart; it stopped resuming after {} restarts",
+                                crate::queue::RESUME_LIMIT
+                            )
+                        } else {
+                            "Turn interrupted by restart".into()
+                        };
                         transcript.push(SessionMessageEntry {
                             id,
                             role: MessageRole::Assistant,
                             parts: vec![MessagePart::Notice {
                                 id: "n0".into(),
-                                message: "Turn interrupted by restart".into(),
+                                message,
                                 goal: None,
                             }],
                             created_at: started.timestamp,
@@ -448,7 +497,9 @@ impl ChatRuntime {
                     }
                 }
             }
-            queue.recovered(recovery_error);
+            if !resume {
+                queue.recovered(recovery_error);
+            }
         }
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
@@ -489,6 +540,7 @@ impl ChatRuntime {
             // file is set aside inside and the count continues from zero.
             usage_totals: Mutex::new(crate::usage::warm_totals(data_dir, chat_id)),
             tool_intents: Mutex::new(intents),
+            resume: std::sync::atomic::AtomicBool::new(resume),
         }
     }
 
@@ -733,6 +785,13 @@ impl ChatRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .insert(tool_call_id.to_string());
         Ok(())
+    }
+
+    /// Take the load-time mark that this chat's started Turn resumes
+    /// (ADR-turns-resume-from-an-intent-journal); the queue driver relaunches
+    /// it once.
+    pub(crate) fn take_resume(&self) -> bool {
+        self.resume.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     pub(crate) fn tool_intents(&self) -> std::collections::HashSet<String> {
@@ -1192,6 +1251,10 @@ pub(crate) struct AgentRun {
     pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<holt_core::agent::types::StreamFn>,
+    /// A restart cut this Turn off and it continues from its History
+    /// (ADR-turns-resume-from-an-intent-journal): the prompt is already
+    /// recorded, so the loop continues instead of starting from it.
+    pub(crate) resume: bool,
 }
 
 /// The run's event-sink state: everything the agent-loop event → transcript
@@ -1510,6 +1573,19 @@ pub(crate) enum TurnEnd {
     Interrupted,
 }
 
+/// Open a resumed Turn's reply with a notice, so the transcript shows where
+/// the restart cut in (ADR-turns-resume-from-an-intent-journal).
+fn push_resumed_notice(base_parts: &Mutex<Vec<MessagePart>>) {
+    base_parts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(MessagePart::Notice {
+            id: "resumed".into(),
+            message: "Resumed after Holt restarted".into(),
+            goal: None,
+        });
+}
+
 /// Wrap the gate so every call it lets through is journaled before it runs
 /// (ADR-turns-resume-from-an-intent-journal). A blocked or cancelled call
 /// never runs and records nothing; an intent that cannot be made durable
@@ -1624,6 +1700,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         providers,
         stream_fn,
         attribution,
+        resume,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
     // AND the transcript's SKILL.md read collapsing — both see the same
@@ -1775,10 +1852,15 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         consumed: 0,
     }));
     let prompt_message = user_agent_message(prompt.clone(), timestamp);
+    if resume {
+        push_resumed_notice(&base_parts);
+    }
     // The user prompt joins the History when the Turn starts (ADR-history-is-a-separate-persisted-record) —
     // before any request, so even a Turn that dies immediately keeps what
-    // the user asked.
-    chat.append_history(prompt_message.clone());
+    // the user asked. A resumed Turn's prompt is already there.
+    if !resume {
+        chat.append_history(prompt_message.clone());
+    }
     let mut stream_options = SimpleStreamOptions {
         reasoning: provider_reasoning(reasoning),
         ..Default::default()
@@ -2054,19 +2136,33 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         before_tool_call: Some(gate),
         after_tool_call: Some(crate::subagents::after_tool_call()),
     };
-    let mut result = run_agent_loop(
-        vec![prompt_message.clone()],
-        AgentContext {
-            system_prompt: system_prompt.clone(),
-            messages: history,
-            tools: Some(tools.clone()),
-        },
-        config.clone(),
-        emit.clone(),
-        Some(cancel.clone()),
-        Some(stream_fn.clone()),
-    )
-    .await;
+    let context = AgentContext {
+        system_prompt: system_prompt.clone(),
+        messages: history,
+        tools: Some(tools.clone()),
+    };
+    // A resumed Turn continues from its repaired History, which ends on the
+    // prompt or a tool result — exactly what the continue entry accepts.
+    let mut result = if resume {
+        run_agent_loop_continue(
+            context,
+            config.clone(),
+            emit.clone(),
+            Some(cancel.clone()),
+            Some(stream_fn.clone()),
+        )
+        .await
+    } else {
+        run_agent_loop(
+            vec![prompt_message.clone()],
+            context,
+            config.clone(),
+            emit.clone(),
+            Some(cancel.clone()),
+            Some(stream_fn.clone()),
+        )
+        .await
+    };
     // In-Turn overflow recovery (ADR-compaction-is-not-a-turn): the provider rejected a request
     // as too long before producing anything — the estimate missed. Compact
     // the History as it stands (the failed answer is dropped, the prompt

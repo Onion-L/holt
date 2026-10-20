@@ -134,8 +134,11 @@ async fn the_transcript_log_writes_one_line_per_completed_unit() {
     assert_eq!(entries[1]["status"].as_str(), Some("complete"));
 }
 
+/// A crash mid-Turn loses no completed tool result, and the Turn resumes
+/// right after it (ADR-turns-resume-from-an-intent-journal): the finished
+/// read is replayed from the record, never run again.
 #[tokio::test]
-async fn a_crash_mid_turn_loses_no_completed_tool_result() {
+async fn a_crash_mid_turn_resumes_after_its_last_completed_tool_result() {
     let fixture = common::Fixture::new();
     std::fs::write(
         fixture.project_dir.path().join("notes.txt"),
@@ -157,23 +160,19 @@ async fn a_crash_mid_turn_loses_no_completed_tool_result() {
     // wait for it, then kill the "process".
     common::wait_for_requests(&provider, 2).await;
     drop(engine);
+    std::fs::write(fixture.project_dir.path().join("notes.txt"), "changed\n").unwrap();
 
-    // A fresh engine replays the record: the tool call and its result are
-    // there even though the Turn never ended.
+    // A fresh engine resumes the Turn from the record: the tool call and
+    // its result are there even though the Turn never ended.
     let engine = fixture.engine(&provider);
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the crash").await;
-    engine
-        .handle(
-            methods::CONTINUE_MESSAGE_QUEUE,
-            serde_json::json!({"chatId":"chat-1"}),
-        )
-        .await
-        .unwrap();
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::wait_for_transcript_text(&mut transcript, "post-crash reply").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
     let summary = common::summarize(&requests[2].messages);
+    assert_eq!(summary.len(), 3, "{summary:?}");
     assert_eq!(summary[0], "user:read before the crash");
     assert_eq!(summary[1], "assistant:toolcall:call-9");
     assert!(
@@ -182,7 +181,6 @@ async fn a_crash_mid_turn_loses_no_completed_tool_result() {
         summary[2]
     );
     assert!(summary[2].contains("survivor content"));
-    assert_eq!(summary[3], "user:after the crash");
 }
 
 /// ADR-turns-resume-from-an-intent-journal: a call the gate lets through
@@ -452,7 +450,7 @@ async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
             serde_json::json!({ "command": "echo hi" }),
         ),
         ScriptedReply::Silent,
-        ScriptedReply::text("after the first restart"),
+        ScriptedReply::text("resumed reply"),
         ScriptedReply::text("after the second restart"),
     ]);
     let engine = fixture.engine(&provider);
@@ -472,28 +470,23 @@ async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
         .collect();
     std::fs::write(&history_file, format!("{}\n", kept.join("\n"))).unwrap();
 
-    // Restart 1: the load-time repair answers call-1, a Turn runs on top.
+    // Restart 1: the load-time repair answers call-1 and the Turn resumes
+    // on top of it.
     let engine = fixture.engine(&provider);
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first restart").await;
-    engine
-        .handle(
-            methods::CONTINUE_MESSAGE_QUEUE,
-            serde_json::json!({"chatId":"chat-1"}),
-        )
-        .await
-        .unwrap();
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::wait_for_transcript_text(&mut transcript, "resumed reply").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     drop(engine);
 
     // Restart 2: the synthetic result is still right after its call, not
-    // re-derived at the tail behind the later Turn — and there is exactly
-    // one of it.
+    // re-derived at the tail behind the resumed reply — and there is
+    // exactly one of it.
     let engine = fixture.engine(&provider);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second restart").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
+    assert_eq!(requests.len(), 4);
     let summary = common::summarize(&requests.last().unwrap().messages);
     assert_eq!(summary[0], "user:crash me");
     assert_eq!(summary[1], "assistant:toolcall:call-1");
@@ -509,10 +502,9 @@ async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
         "{}",
         summary[2]
     );
-    assert_eq!(summary[3], "user:first restart");
-    assert_eq!(summary[4], "assistant:text:after the first restart");
-    assert_eq!(summary[5], "user:second restart");
-    assert_eq!(summary.len(), 6);
+    assert_eq!(summary[3], "assistant:text:resumed reply");
+    assert_eq!(summary[4], "user:second restart");
+    assert_eq!(summary.len(), 5);
     let serialized = serde_json::to_string(&requests.last().unwrap().messages).unwrap();
     assert!(!serialized.contains("No result provided"));
 }

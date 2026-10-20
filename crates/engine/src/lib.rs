@@ -342,6 +342,7 @@ impl LocalEngine {
             _instance_lock: lock,
         };
         engine.service.spawn_scheduler();
+        engine.service.resume_cut_turns();
         Ok(engine)
     }
 

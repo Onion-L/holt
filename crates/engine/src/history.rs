@@ -209,11 +209,14 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
 }
 
 /// What a History file replays to: the model's message sequence, plus the
-/// ids of the tool calls it journaled as started.
+/// ids of the tool calls it journaled as started and the timestamps of
+/// every user prompt it ever recorded — a compaction may have summarized a
+/// prompt away, but the record still proves the Turn was admitted.
 #[derive(Default)]
 pub(crate) struct Replayed {
     pub messages: Vec<AgentMessage>,
     pub intents: HashSet<String>,
+    pub prompts: HashSet<i64>,
 }
 
 fn replay(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
@@ -249,6 +252,7 @@ fn replay(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
     }
     let mut messages = Vec::new();
     let mut intents = HashSet::new();
+    let mut prompts = HashSet::new();
     // Whether a compaction point (a record, or a summary materialized as
     // a message — see below) already shaped the replayed prefix. Guards
     // the drop rule: once compacted, a later summary belongs to the
@@ -273,6 +277,9 @@ fn replay(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
                     .unwrap_or(serde_json::Value::Null),
             ) {
                 Ok(message) => {
+                    if let AgentMessage::User(user) = &message {
+                        prompts.insert(user.timestamp);
+                    }
                     // A compaction summary as a plain message entry is the
                     // lost-record shape (issue #21): the compaction ran and
                     // its summary plus retained tail were materialized as
@@ -354,7 +361,11 @@ fn replay(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
             }
         }
     }
-    Ok(Replayed { messages, intents })
+    Ok(Replayed {
+        messages,
+        intents,
+        prompts,
+    })
 }
 
 /// Whether the chat has a History file on disk (a missing one alongside an
@@ -583,6 +594,7 @@ pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str, cut: Cut) -> Result<
     let Replayed {
         messages: replayed,
         intents,
+        prompts,
     } = replay(data_dir, chat_id)?;
     let repaired = repair_history(&replayed, cut, &intents);
     let answered: Vec<&str> = replayed
@@ -606,6 +618,7 @@ pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str, cut: Cut) -> Result<
     Ok(Replayed {
         messages: repaired,
         intents,
+        prompts,
     })
 }
 

@@ -621,20 +621,15 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     common::wait_for_requests(&provider, 3).await;
     drop(engine);
 
-    // A fresh engine replays the compacted record: the mid-Turn summary
-    // survived the kill and leads the next request. Its retained tail's
-    // overflowing usage predates the compaction, so the restart does not
-    // compact again (issue #37).
+    // A fresh engine replays the compacted record and resumes the Turn
+    // (ADR-turns-resume-from-an-intent-journal): the mid-Turn summary
+    // survived the kill and leads the resumed request, with the prompt in
+    // its retained tail exactly once — never appended a second time. Its retained tail's overflowing usage
+    // predates the compaction, so the restart does not compact again
+    // (issue #37).
     let engine = fixture.engine(&provider);
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the crash").await;
-    engine
-        .handle(
-            holt_rpc::methods::CONTINUE_MESSAGE_QUEUE,
-            serde_json::json!({"chatId":"chat-1"}),
-        )
-        .await
-        .unwrap();
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::wait_for_transcript_text(&mut transcript, "post-crash reply").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();
@@ -647,7 +642,11 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     let summary = user_text(&run.messages[0]);
     assert!(summary.contains("mid-turn checkpoint text"), "{summary}");
     let run_text = serde_json::to_string(&run.messages).unwrap();
-    assert!(run_text.contains("after the crash"), "{run_text}");
+    assert_eq!(
+        run_text.matches("two rounds please").count(),
+        1,
+        "{run_text}"
+    );
 }
 
 #[tokio::test]

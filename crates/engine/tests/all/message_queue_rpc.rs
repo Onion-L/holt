@@ -353,11 +353,16 @@ async fn continue_after_shell_interrupt_waits_for_descendant_cleanup() {
     assert!(transcript.to_string().contains("aborted"));
 }
 
+/// ADR-turns-resume-from-an-intent-journal: the started Turn a restart cut
+/// off resumes at launch, once, from its recorded prompt — a redelivered
+/// copy of it never runs again — while everything queued behind it stays
+/// paused for the user.
 #[tokio::test]
-async fn restart_retains_pending_messages_paused_and_never_replays_a_started_turn() {
+async fn restart_resumes_the_started_turn_and_keeps_pending_messages_paused() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::Silent,
+        ScriptedReply::text("answer A"),
         ScriptedReply::text("answer B"),
         ScriptedReply::text("answer C"),
     ]);
@@ -377,18 +382,32 @@ async fn restart_retains_pending_messages_paused_and_never_replays_a_started_tur
     drop(engine);
 
     let engine = fixture.engine(&provider);
-    let state = queue_state(&engine).await;
+    let state = wait_for_queue(&engine, |q| q["activeMessageId"].is_null()).await;
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(
+        common::summarize(&provider.requests()[1].messages),
+        ["user:A"]
+    );
     assert_eq!(state["paused"], true);
-    assert_eq!(state["activeMessageId"], serde_json::Value::Null);
     assert_eq!(state["pending"][0]["request"]["prompt"], "B");
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;
-    assert!(transcript.to_string().contains("aborted"));
+    assert!(
+        transcript
+            .to_string()
+            .contains("Resumed after Holt restarted")
+    );
+    assert!(transcript.to_string().contains("answer A"));
+    assert!(
+        !transcript
+            .to_string()
+            .contains("Turn interrupted by restart")
+    );
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "C").await;
     let state = queue_state(&engine).await;
     assert_eq!(state["paused"], true);
     assert_eq!(state["pending"].as_array().unwrap().len(), 2);
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests().len(), 2);
     engine
         .handle(methods::CONTINUE_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
         .await
@@ -397,10 +416,10 @@ async fn restart_retains_pending_messages_paused_and_never_replays_a_started_tur
         q["pending"] == json!([]) && q["activeMessageId"].is_null()
     })
     .await;
-    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(provider.requests().len(), 4);
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "B").await;
     assert_eq!(queue_state(&engine).await["pending"], json!([]));
-    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(provider.requests().len(), 4);
 }
 
 #[tokio::test]
@@ -614,11 +633,17 @@ async fn pending_model_and_reasoning_are_fixed_but_permission_is_read_at_start()
     );
 }
 
+/// The admission checkpoint alone carries the Turn: with neither its
+/// transcript nor its History written, a restart rebuilds the prompt from
+/// the queue and resumes it (ADR-turns-resume-from-an-intent-journal).
 #[tokio::test]
-async fn a_started_checkpoint_recovers_even_before_the_first_transcript_or_history_write() {
+async fn a_started_checkpoint_resumes_even_before_the_first_transcript_or_history_write() {
     let fixture = Fixture::new();
-    let provider =
-        ScriptedProvider::new(vec![ScriptedReply::Silent, ScriptedReply::text("answer B")]);
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::Silent,
+        ScriptedReply::text("answer A"),
+        ScriptedReply::text("answer B"),
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
@@ -629,11 +654,16 @@ async fn a_started_checkpoint_recovers_even_before_the_first_transcript_or_histo
     std::fs::remove_file(fixture.data_dir.path().join("transcripts/chat-1.jsonl")).unwrap();
     std::fs::remove_file(fixture.data_dir.path().join("history/chat-1.jsonl")).unwrap();
     let engine = fixture.engine(&provider);
+    wait_for_queue(&engine, |q| q["activeMessageId"].is_null()).await;
+    assert_eq!(
+        common::summarize(&provider.requests()[1].messages),
+        ["user:A"]
+    );
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(
         transcript
             .to_string()
-            .contains("Turn interrupted by restart")
+            .contains("Resumed after Holt restarted")
     );
     assert_eq!(
         transcript["reset"]
@@ -648,7 +678,7 @@ async fn a_started_checkpoint_recovers_even_before_the_first_transcript_or_histo
         queue_state(&engine).await["pending"][0]["request"]["prompt"],
         "B"
     );
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests().len(), 2);
     engine
         .handle(methods::CONTINUE_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
         .await
@@ -658,8 +688,8 @@ async fn a_started_checkpoint_recovers_even_before_the_first_transcript_or_histo
     })
     .await;
     assert_eq!(
-        common::summarize(&provider.requests()[1].messages),
-        ["user:A", "user:B"]
+        common::summarize(&provider.requests()[2].messages),
+        ["user:A", "assistant:text:answer A", "user:B"]
     );
 }
 

@@ -642,3 +642,41 @@ async fn later_continuations_point_back_at_the_stated_objective() {
     );
     assert!(second.contains("the docs are still missing"), "{second}");
 }
+
+/// ADR-turns-resume-from-an-intent-journal: a goal Turn a restart cut off
+/// resumes at launch, the goal stays active through the restart, and the
+/// resumed Turn's settle feeds the verifier like any other.
+#[tokio::test]
+async fn a_goal_turn_cut_off_by_a_restart_resumes_and_the_loop_carries_on() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::Silent,
+        ScriptedReply::text("wrote the feature after the restart"),
+        ScriptedReply::text("COMPLETE: the feature is written"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    set_goal(&engine, "chat-1", "ship the login page").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start working").await;
+    common::wait_for_requests(&provider, 1).await;
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
+    loop {
+        let frame = common::next_frame(&mut transcript).await;
+        if frame.to_string().contains("Goal achieved ·") {
+            break;
+        }
+    }
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        common::summarize(&requests[1].messages),
+        ["user:start working"]
+    );
+    assert_eq!(
+        watched_goal(&engine, "chat-1").await,
+        serde_json::Value::Null
+    );
+}

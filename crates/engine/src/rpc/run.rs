@@ -321,7 +321,7 @@ impl EngineService {
                 if chat.is_removed() {
                     return Err(RpcError::Failed("chat was deleted".into()));
                 }
-                let paused = queue.pause(true);
+                let paused = queue.pause(true).and_then(|()| queue.mark_stopped());
                 if let Some(cancel) = chat
                     .cancel
                     .lock()
@@ -369,6 +369,7 @@ impl EngineService {
                 }
                 let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                 queue.pause(false)?;
+                queue.mark_stopped()?;
                 if let Some(cancel) = chat
                     .cancel
                     .lock()
@@ -438,8 +439,9 @@ impl EngineService {
         mut prompt: String,
         mut title_prompt: Option<String>,
         cancel: CancellationToken,
-        queued: bool,
+        admission: crate::queue::Admission,
     ) -> Result<AgentRun, RpcError> {
+        let resume = admission == crate::queue::Admission::Resume;
         let Some(api_key) = self
             .providers
             .credentials
@@ -474,14 +476,18 @@ impl EngineService {
         // checkpoint wins — the Turn is built from the body the queue holds
         // now, not from the pick-time snapshot.
         let mut invocation: Vec<MessagePart> = Vec::new();
-        let mut mentions = false;
-        if queued {
+        let mentions: bool;
+        {
             let admitted = {
                 let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                 if cancel.is_cancelled() || chat.is_removed() {
                     return Err(RpcError::Failed("Turn interrupted before execution".into()));
                 }
-                queue.start(&message_id, timestamp)?
+                if resume {
+                    queue.mark_resumed(&message_id)?
+                } else {
+                    queue.start(&message_id, timestamp)?
+                }
             };
             match admitted.message.kind {
                 PendingKind::Ordinary | PendingKind::Skill => {
@@ -503,7 +509,9 @@ impl EngineService {
                         );
                         title_prompt = Some(current);
                     }
-                    mentions = true;
+                    // A resumed Turn's prompt is already in the History,
+                    // its mentions resolved at first admission.
+                    mentions = !resume;
                 }
                 // Manual Compaction is admitted by the driver itself — it
                 // never becomes a Turn (ADR-compaction-is-not-a-turn).
@@ -710,13 +718,16 @@ impl EngineService {
             status: None,
             continuation_of: None,
         };
-        let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = transcript.iter_mut().find(|entry| entry.id == message_id) {
-            *existing = entry;
-        } else {
-            transcript.push(entry);
+        // A resumed Turn's user entry is already on record; rewriting it
+        // would restamp the message with the relaunch time.
+        if !resume {
+            let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = transcript.iter_mut().find(|entry| entry.id == message_id) {
+                *existing = entry;
+            } else {
+                transcript.push(entry);
+            }
         }
-        drop(transcript);
         self.runtime.publish_chats();
         self.runtime.set_session(chat_id, SessionStatus::Working);
         // A run waiting on a question runs again with the next Turn.
@@ -741,7 +752,10 @@ impl EngineService {
         }
         // The admitted user entry lands in the log now, complete at
         // creation (ADR-transcript-append-only-log-per-chat-lock) — not on the next run event.
-        chat.persist_entry(&message_id);
+        // A resumed Turn's fence is its resumption checkpoint above.
+        if !resume {
+            chat.persist_entry(&message_id);
+        }
         // That write is the storage fence (issue #16): if the user entry
         // could not be saved, the Turn never launches — no model call on
         // storage the run cannot durably record. The item returns to the
@@ -789,6 +803,7 @@ impl EngineService {
             providers: Some(Arc::clone(&self.providers)),
             attribution,
             stream_fn: self.runtime.stream_fn.clone(),
+            resume,
         })
     }
 
@@ -871,6 +886,7 @@ impl EngineService {
         {
             let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
             queue.pause(true)?;
+            queue.mark_stopped()?;
         }
         if let Some(cancel) = chat
             .cancel
