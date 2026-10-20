@@ -8,6 +8,7 @@
 //! `Custom` variant) and a truncated or unparsable trailing line — the
 //! crash-mid-append shape — is treated as absent.
 
+use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -30,14 +31,29 @@ pub(crate) fn history_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     Some(data_dir.join("history").join(format!("{chat_id}.jsonl")))
 }
 
-/// One JSONL entry: `{"kind":"message","entry":{…AgentMessage…}}` or
-/// `{"kind":"compaction","entry":{…CompactionRecord…}}`. The adjacent-tag
-/// shape keeps the entry self-describing for the tolerant reader below.
+/// One JSONL entry: `{"kind":"message","entry":{…AgentMessage…}}`,
+/// `{"kind":"compaction","entry":{…CompactionRecord…}}`, or
+/// `{"kind":"toolIntent","entry":{…ToolIntent…}}`. The adjacent-tag shape
+/// keeps the entry self-describing for the tolerant reader below.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "entry", rename_all = "camelCase")]
 pub(crate) enum HistoryEntry {
     Message(AgentMessage),
     Compaction(CompactionRecord),
+    ToolIntent(ToolIntent),
+}
+
+/// A tool call the gate let through, recorded before it runs
+/// (ADR-turns-resume-from-an-intent-journal). Never part of the model's
+/// message sequence: replay only collects the ids, so a call left without
+/// a result can be told apart as "started, may have partly run" from
+/// "never ran".
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ToolIntent {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub timestamp: i64,
 }
 
 /// A Compaction of the History (ADR-compaction-is-not-a-turn): everything before this entry is
@@ -63,6 +79,15 @@ pub(crate) fn append_entry(
     data_dir: &Path,
     chat_id: &str,
     entry: &HistoryEntry,
+) -> std::io::Result<()> {
+    append_entry_with(data_dir, chat_id, entry, false)
+}
+
+fn append_entry_with(
+    data_dir: &Path,
+    chat_id: &str,
+    entry: &HistoryEntry,
+    sync: bool,
 ) -> std::io::Result<()> {
     let Some(path) = history_path(data_dir, chat_id) else {
         return Ok(());
@@ -95,7 +120,11 @@ pub(crate) fn append_entry(
             file.write_all(b"\n")?;
         }
     }
-    writeln!(file, "{line}")
+    writeln!(file, "{line}")?;
+    if sync {
+        file.sync_data()?;
+    }
+    Ok(())
 }
 
 /// Append one completed message to the chat's History.
@@ -116,6 +145,22 @@ pub(crate) fn append_compaction(
     record: &CompactionRecord,
 ) -> std::io::Result<()> {
     append_entry(data_dir, chat_id, &HistoryEntry::Compaction(record.clone()))
+}
+
+/// Append a tool intent and sync it to disk before returning: the call
+/// runs only once the record is durable, so a crash can never hide that it
+/// started (ADR-turns-resume-from-an-intent-journal).
+pub(crate) fn append_intent(
+    data_dir: &Path,
+    chat_id: &str,
+    intent: &ToolIntent,
+) -> std::io::Result<()> {
+    append_entry_with(
+        data_dir,
+        chat_id,
+        &HistoryEntry::ToolIntent(intent.clone()),
+        true,
+    )
 }
 
 /// Replace a chat's model History after a Last-message edit. The in-memory
@@ -158,21 +203,34 @@ pub(crate) fn rewrite(
 /// missing file is an empty History (a chat that never ran — or a legacy
 /// chat, whose notice arrives with its slice); an unreadable header or an
 /// unknown version is an error the caller decides how to surface.
+#[cfg(test)]
 pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, String> {
+    replay(data_dir, chat_id).map(|replayed| replayed.messages)
+}
+
+/// What a History file replays to: the model's message sequence, plus the
+/// ids of the tool calls it journaled as started.
+#[derive(Default)]
+pub(crate) struct Replayed {
+    pub messages: Vec<AgentMessage>,
+    pub intents: HashSet<String>,
+}
+
+fn replay(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
     let Some(path) = history_path(data_dir, chat_id) else {
-        return Ok(Vec::new());
+        return Ok(Replayed::default());
     };
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         // A chat that never ran — or whose id fails the path-safety rule —
         // has no History: one "no History" shape for callers.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Vec::new());
+            return Ok(Replayed::default());
         }
         Err(error) => return Err(format!("could not read {}: {error}", path.display())),
     };
     if bytes.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Replayed::default());
     }
     let text = String::from_utf8_lossy(&bytes);
     let mut lines = text.lines();
@@ -190,6 +248,7 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
         ));
     }
     let mut messages = Vec::new();
+    let mut intents = HashSet::new();
     // Whether a compaction point (a record, or a summary materialized as
     // a message — see below) already shaped the replayed prefix. Guards
     // the drop rule: once compacted, a later summary belongs to the
@@ -275,6 +334,19 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                     }
                 }
             }
+            Some("toolIntent") => match serde_json::from_value::<ToolIntent>(
+                value
+                    .get("entry")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            ) {
+                Ok(intent) => {
+                    intents.insert(intent.tool_call_id);
+                }
+                Err(error) => {
+                    tracing::warn!(target: "holt::history", %error, "skipping undecodable tool intent")
+                }
+            },
             other => {
                 // Unknown entry kinds are tolerated: a future holt wrote
                 // them, an older model must not choke on them.
@@ -282,7 +354,7 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
             }
         }
     }
-    Ok(messages)
+    Ok(Replayed { messages, intents })
 }
 
 /// Whether the chat has a History file on disk (a missing one alongside an
@@ -469,8 +541,11 @@ pub(crate) fn repair_history(messages: &[AgentMessage]) -> Vec<AgentMessage> {
 /// after later Turns, at the tail, away from the call it answers). The
 /// record stays append-only: the additions go at the end of the file,
 /// which is where a crash-truncated tail's dangling calls are.
-pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, String> {
-    let replayed = load(data_dir, chat_id)?;
+pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str) -> Result<Replayed, String> {
+    let Replayed {
+        messages: replayed,
+        intents,
+    } = replay(data_dir, chat_id)?;
     let repaired = repair_history(&replayed);
     let answered: Vec<&str> = replayed
         .iter()
@@ -490,7 +565,10 @@ pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentM
             tracing::warn!(target: "holt::history", %error, "could not persist a load-time repair");
         }
     }
-    Ok(repaired)
+    Ok(Replayed {
+        messages: repaired,
+        intents,
+    })
 }
 
 #[cfg(test)]
@@ -725,7 +803,7 @@ mod tests {
             .unwrap();
         let replayed = load(&dir, "chat-1").unwrap();
         assert_eq!(replayed.len(), 2);
-        let repaired = load_repaired(&dir, "chat-1").unwrap();
+        let repaired = load_repaired(&dir, "chat-1").unwrap().messages;
         assert_eq!(result_ids(&repaired), ["call-1"]);
         assert_eq!(repaired.len(), 3);
         assert_eq!(load(&dir, "chat-1").unwrap(), repaired);
@@ -735,10 +813,44 @@ mod tests {
         // the tail behind the newer messages.
         append_message(&dir, "chat-1", &user("later")).unwrap();
         append_message(&dir, "chat-1", &assistant("sure")).unwrap();
-        let reloaded = load_repaired(&dir, "chat-1").unwrap();
+        let reloaded = load_repaired(&dir, "chat-1").unwrap().messages;
         assert_eq!(reloaded.len(), 5);
         assert!(matches!(&reloaded[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"));
         assert_eq!(reloaded[3], user("later"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_tool_intent_replays_as_an_id_and_never_reaches_the_model() {
+        let dir = temp_dir();
+        append_message(&dir, "chat-1", &user("go")).unwrap();
+        append_message(
+            &dir,
+            "chat-1",
+            &AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![tool_call_block("call-1", "bash")],
+                stop_reason: StopReason::ToolUse,
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+        append_intent(
+            &dir,
+            "chat-1",
+            &ToolIntent {
+                tool_call_id: "call-1".into(),
+                tool_name: "bash".into(),
+                timestamp: 1,
+            },
+        )
+        .unwrap();
+        append_message(&dir, "chat-1", &tool_result("call-1")).unwrap();
+        let replayed = replay(&dir, "chat-1").unwrap();
+        assert_eq!(replayed.messages.len(), 3);
+        assert!(replayed.intents.contains("call-1"));
+        let repaired = load_repaired(&dir, "chat-1").unwrap();
+        assert_eq!(repaired.messages, replayed.messages);
+        assert_eq!(repaired.intents, replayed.intents);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -781,7 +893,7 @@ mod tests {
         std::fs::write(&path, format!("{damaged}\n")).unwrap();
 
         for load in 1..=3 {
-            let history = load_repaired(&dir, "chat-1").unwrap();
+            let history = load_repaired(&dir, "chat-1").unwrap().messages;
             assert_eq!(
                 result_ids(&history),
                 ["call-1"],
@@ -821,7 +933,7 @@ mod tests {
             .write_all(b"{\"kind\":\"message\",\"entry\":")
             .unwrap();
         for load in 1..=3 {
-            let history = load_repaired(&dir, "chat-1").unwrap();
+            let history = load_repaired(&dir, "chat-1").unwrap().messages;
             assert_eq!(
                 result_ids(&history),
                 ["call-1"],
@@ -854,7 +966,7 @@ mod tests {
         append_message(dir.path(), "chat-1", &user("after")).unwrap();
 
         assert_eq!(
-            load_repaired(dir.path(), "chat-1").unwrap(),
+            load_repaired(dir.path(), "chat-1").unwrap().messages,
             [user("before"), user("after")]
         );
         assert!(std::fs::read(&path).unwrap().starts_with(&bytes));

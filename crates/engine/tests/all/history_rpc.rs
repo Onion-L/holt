@@ -185,6 +185,54 @@ async fn a_crash_mid_turn_loses_no_completed_tool_result() {
     assert_eq!(summary[3], "user:after the crash");
 }
 
+/// ADR-turns-resume-from-an-intent-journal: a call the gate lets through
+/// is journaled before it runs — its intent line lands ahead of its result.
+#[tokio::test]
+async fn a_tool_call_is_journaled_before_its_result() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "bash",
+            serde_json::json!({ "command": "echo hi" }),
+        ),
+        ScriptedReply::text("done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_ungated_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "say hi").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let text =
+        std::fs::read_to_string(fixture.data_dir.path().join("history/chat-1.jsonl")).unwrap();
+    let kinds: Vec<String> = text
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            match value["kind"].as_str().unwrap() {
+                "message" => value["entry"]["role"].as_str().unwrap().to_string(),
+                kind => format!(
+                    "{kind}:{}",
+                    value["entry"]["toolCallId"].as_str().unwrap_or("")
+                ),
+            }
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "user",
+            "assistant",
+            "toolIntent:call-1",
+            "toolResult",
+            "assistant"
+        ],
+        "{text}"
+    );
+}
+
 #[tokio::test]
 async fn deleting_a_chat_removes_its_history_file() {
     let fixture = common::Fixture::new();

@@ -191,6 +191,11 @@ pub(crate) struct ChatRuntime {
     /// The chat's running usage totals over its ledger, replayed warm on
     /// load and kept current as records settle.
     pub(crate) usage_totals: Mutex<crate::usage::UsageTotals>,
+    /// Tool calls journaled as started (ADR-turns-resume-from-an-intent-journal):
+    /// replayed from the History on load and extended as the gate lets
+    /// calls through, so a call left without a result is told apart as
+    /// "may have partly run" from "never ran".
+    pub(crate) tool_intents: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -246,6 +251,7 @@ impl ChatRuntime {
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
             usage_totals: Mutex::new(Default::default()),
+            tool_intents: Mutex::new(Default::default()),
         }
     }
 
@@ -263,8 +269,12 @@ impl ChatRuntime {
         let persistence = Arc::new(Mutex::new(()));
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
         let replayed = crate::history::load_repaired(data_dir, chat_id);
+        let mut intents = Default::default();
         let (mut history, mut notice) = match replayed {
-            Ok(repaired) => (repaired, None),
+            Ok(replayed) => {
+                intents = replayed.intents;
+                (replayed.messages, None)
+            }
             Err(reason) => {
                 // A damaged record never blocks the chat (ADR-history-is-a-separate-persisted-record): the
                 // file is set aside — kept, never overwritten — and the
@@ -476,6 +486,7 @@ impl ChatRuntime {
             // Replay warms the running totals from the ledger; a damaged
             // file is set aside inside and the count continues from zero.
             usage_totals: Mutex::new(crate::usage::warm_totals(data_dir, chat_id)),
+            tool_intents: Mutex::new(intents),
         }
     }
 
@@ -692,6 +703,34 @@ impl ChatRuntime {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
         }
+    }
+
+    /// Journal a tool call the gate let through, durably, before it runs
+    /// (ADR-turns-resume-from-an-intent-journal). Unlike the best-effort
+    /// appends, a failure is returned: the caller refuses the call rather
+    /// than run a side effect a crash could hide.
+    pub(crate) fn record_tool_intent(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+    ) -> std::io::Result<()> {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.chat_id.is_empty() && !self.is_removed() {
+            crate::history::append_intent(
+                &self.data_dir,
+                &self.chat_id,
+                &crate::history::ToolIntent {
+                    tool_call_id: tool_call_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    timestamp: Utc::now().timestamp_millis(),
+                },
+            )?;
+        }
+        self.tool_intents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool_call_id.to_string());
+        Ok(())
     }
 
     pub(crate) fn append_compaction(&self, record: &CompactionRecord) {
@@ -1462,6 +1501,43 @@ pub(crate) enum TurnEnd {
     Interrupted,
 }
 
+/// Wrap the gate so every call it lets through is journaled before it runs
+/// (ADR-turns-resume-from-an-intent-journal). A blocked or cancelled call
+/// never runs and records nothing; an intent that cannot be made durable
+/// refuses the call.
+fn journal_tool_intents(
+    gate: holt_core::agent::types::BeforeToolCallFn,
+    chat: Arc<ChatRuntime>,
+) -> holt_core::agent::types::BeforeToolCallFn {
+    Arc::new(move |ctx, signal| {
+        let gate = gate.clone();
+        let chat = chat.clone();
+        Box::pin(async move {
+            let tool_call_id = ctx.tool_call.id.clone();
+            let tool_name = ctx.tool_call.name.clone();
+            let decision = (gate)(ctx, signal.clone()).await;
+            if decision
+                .as_ref()
+                .is_some_and(|decision| decision.block == Some(true))
+                || signal.as_ref().is_some_and(|signal| signal.is_cancelled())
+            {
+                return decision;
+            }
+            if let Err(error) = chat.record_tool_intent(&tool_call_id, &tool_name) {
+                tracing::warn!(target: "holt::history", %error, "tool intent append failed");
+                return Some(holt_core::agent::types::BeforeToolCallResult {
+                    block: Some(true),
+                    reason: Some(format!(
+                        "The call was not run: Holt could not save that it started ({error})."
+                    )),
+                    terminate: None,
+                });
+            }
+            decision
+        })
+    })
+}
+
 /// The Explorer tool whitelist (ADR-web-tools-full-text-ungated-pluggable-search): the shared read-only surface —
 /// directory listing, reading, content search, chat reads, and the ungated
 /// web reads. The Plan Mode planning whitelist (ADR-plan-mode-is-an-independent-approval-checkpoint) is the same
@@ -1818,6 +1894,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         cancel: cancel.clone(),
         routines: runtime.routines.get().cloned(),
     });
+    // The gate is the last hook before a call runs, so the intent journal
+    // rides behind it: what it records is what executes.
+    let gate = journal_tool_intents(gate, chat.clone());
     let allow_images = model
         .input
         .contains(&holt_core::ai::types::ModelInput::Image);
@@ -2199,10 +2278,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             {
                 let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
                 if !chat.is_removed()
-                    && let Ok(repaired) =
+                    && let Ok(replayed) =
                         crate::history::load_repaired(&chat.data_dir, &chat.chat_id)
                 {
-                    *chat.history.write().unwrap_or_else(|e| e.into_inner()) = repaired;
+                    *chat.history.write().unwrap_or_else(|e| e.into_inner()) = replayed.messages;
                 }
             }
             let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
