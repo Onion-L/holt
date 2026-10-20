@@ -515,17 +515,18 @@ could prune what a checkpoint points at).
 
 ## rewind-to-a-step-is-all-or-nothing
 
-A chat rewinds to just after any tool step of a settled Turn, conversation
-and files together, in one action (`RewindToStep`). The History is cut after
-the results of the assistant message that made the call — parallel siblings
-stay, so no call is left without its result. The files are put back from the
-step checkpoints (see step-checkpoints-in-a-chat-owned-object-store): every
-step recorded after the kept tail's newest timestamp, by a call the kept
-History does not hold, is undone; subagent steps carry the child's call ids,
-so only the clock places them. One file that moved on since its last undone
-step, whose content was never stored, or that would leave the work tree
-refuses the whole rewind before anything is written — the never-merge stance
-of turn-restore-from-change-records, applied to the set. A confirmed rewind is
+`10cfe6d`, `4b5447b`, `399608d`. A chat rewinds to just after any tool step of
+a settled Turn, conversation and files together, in one action
+(`RewindToStep`). The History is cut after the results of the assistant
+message that made the call — parallel siblings stay, so no call is left
+without its result. The files are put back from the step checkpoints (see
+step-checkpoints-in-a-chat-owned-object-store): every step recorded after the
+kept tail's newest timestamp, by a call the kept History does not hold, is
+undone; subagent steps carry the child's call ids, so only the clock places
+them. One file that moved on since its last undone step, whose content was
+never stored, or that would leave the work tree refuses the whole rewind
+before anything is written — the never-merge stance of
+turn-restore-from-change-records, applied to the set. A confirmed rewind is
 written down whole and synced first, then carried out: files, the step log
 dropping the undone steps (a later rewind would otherwise see them as
 conflicts), History, transcript, and the cut Turns' change sets, retracted as
@@ -534,22 +535,21 @@ finishes a rewind a crash cut off. The chat stays idle afterwards.
 Rejected: rewinding only to a user message (a long Turn could not be entered);
 separate conversation-only and files-only rewinds (two states that disagree);
 restoring what can be and skipping conflicts (a conversation that no longer
-describes the files); continuing the run from the step automatically (the
-user rewinds to change course, so the next word is theirs).
+describes the files); continuing the run from the step automatically (the user
+rewinds to change course, so the next word is theirs).
 
 ## step-checkpoints-are-bounded-per-chat
 
-A chat's step checkpoints are bounded where they are used, not only when the
-chat is deleted: at each Turn's admission, under the execution lock, the
-oldest steps go past 1200 (down to 1000) and, while the store exceeds 1 GiB,
-the oldest fifth goes at a time. The store is then repacked: the blobs the
-remaining steps reference are copied into a new store that replaces the old
-one (a crash between the two renames is completed on the next run). A rewind
-marks the store for the same repack, since the steps it undid leave blobs
-nothing references. The newest dropped step's timestamp is kept, and a
+`b59bc27`. A chat's step checkpoints are bounded where they are used, not only
+when the chat is deleted: at each Turn's admission, under the execution lock,
+the oldest steps go past 1200 (down to 1000) and, while the store exceeds 1
+GiB, the oldest fifth goes at a time. The store is then repacked: the blobs
+the remaining steps reference are copied into a new store that replaces the
+old one (a crash between the two renames is completed on the next run). A
+rewind marks the store for the same repack, since the steps it undid leave
+blobs nothing references. The newest dropped step's timestamp is kept, and a
 rewind to a point before it is refused — it could not undo everything after
 its point. Maintenance waits while a rewind is still to finish.
-Rejected: growth until the chat is deleted (a long task's chat is exactly
-the one that keeps running); libgit2 garbage collection (it has none);
-age-based expiry (an idle chat would lose its checkpoints while nothing
-happens in it).
+Rejected: growth until the chat is deleted (a long task's chat is exactly the
+one that keeps running); libgit2 garbage collection (it has none); age-based
+expiry (an idle chat would lose its checkpoints while nothing happens in it).
