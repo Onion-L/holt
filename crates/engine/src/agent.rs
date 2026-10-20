@@ -1997,6 +1997,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         allow_images,
         search_backend.clone(),
         attribution.clone(),
+        Some(crate::shell_groups::registry_dir(&runtime.data_dir)),
     );
     let current_chat_id = chat
         .child

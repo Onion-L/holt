@@ -56,6 +56,7 @@ mod rpc;
 mod scheduler;
 mod settings_record;
 mod shell_env;
+mod shell_groups;
 mod skills;
 mod store;
 mod stream;
@@ -342,6 +343,9 @@ impl LocalEngine {
             _instance_lock: lock,
         };
         engine.service.spawn_scheduler();
+        // Orphaned shell groups die before any Turn resumes into their
+        // workspace (ADR-turns-resume-from-an-intent-journal).
+        shell_groups::reap(&shell_groups::registry_dir(&config.data_dir));
         engine.service.resume_cut_turns();
         Ok(engine)
     }

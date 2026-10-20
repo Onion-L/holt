@@ -445,7 +445,7 @@ Provider Mode Turns keep their curated toolsets).
 
 ## turns-resume-from-an-intent-journal
 
-`52eb35d`, `45231e3`, `2fd3425`. A Turn cut off by a crash or quit resumes
+`52eb35d`, `45231e3`, `2fd3425`, amended by the orphan sweep. A Turn cut off by a crash or quit resumes
 at launch from its last committed step instead of being recovered as
 interrupted; continuing no longer needs a new queue item. The journal is a new kind in the History JSONL
 (see history-is-a-separate-persisted-record): once the permission gate lets a
@@ -460,6 +460,9 @@ interrupted, as is one the user stopped: Stop, Steer and edit-last record the
 stop on the started item before cancelling, so a quit that beats the settle
 cannot undo it. Core is unchanged: the engine already owns the last hook before
 execution (the gate), and resumption goes through `run_agent_loop_continue`.
+A hard kill runs no destructor, so a bash process group outlives it and keeps
+changing the workspace; launch kills every recorded group before any Turn
+resumes.
 Resumption is independent of goal mode: goal is one consumer, not the
 orchestration of long runs.
 Rejected: asking before resuming on open (Stop is how a user ends a run; a
