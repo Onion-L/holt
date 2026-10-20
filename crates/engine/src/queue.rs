@@ -45,7 +45,30 @@ enum DriverOutcome {
 pub(crate) struct StartedMessage {
     pub message: PendingMessage,
     pub timestamp: i64,
+    /// How many times a restart resumed this Turn
+    /// (ADR-turns-resume-from-an-intent-journal): bumped durably before each
+    /// relaunch, so a Turn that keeps crashing the app stops resuming.
+    #[serde(default)]
+    pub resumes: u32,
+    /// The user stopped this Turn (Stop, Steer, a last-message edit).
+    /// Recorded before the cancel fires, so a quit that beats the Turn's
+    /// own settle can never resume what the user ended.
+    #[serde(default)]
+    pub stopped: bool,
 }
+
+/// How a queued item reaches `start_turn`: admitted from pending, or the
+/// started Turn a restart cut off, relaunched where it stopped
+/// (ADR-turns-resume-from-an-intent-journal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    Queued,
+    Resume,
+}
+
+/// Consecutive restart resumptions after which a Turn is recovered as
+/// interrupted instead (ADR-turns-resume-from-an-intent-journal).
+pub(crate) const RESUME_LIMIT: u32 = 3;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Record {
@@ -167,6 +190,16 @@ impl Queue {
         };
         queue.publish();
         queue
+    }
+
+    /// Whether the chat's saved queue holds a started Turn — a cheap read
+    /// that loads nothing else, for the launch-time resume scan.
+    pub(crate) fn has_started(data_dir: &Path, chat_id: &str) -> bool {
+        crate::store::id_is_path_safe(chat_id)
+            && std::fs::read(data_dir.join("queues").join(format!("{chat_id}.json")))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
+                .is_some_and(|record| record.started.is_some())
     }
 
     pub fn recover_started(&mut self) -> Option<StartedMessage> {
@@ -516,6 +549,18 @@ impl Queue {
                 .is_some_and(|started| started.message.goal_continuation)
     }
 
+    /// Whether the started Turn is one a restart resumes (the load-time
+    /// decision also needs its History, so this is the queue's half of it):
+    /// not stopped by the user, not a Compaction, under the resume limit
+    /// (ADR-turns-resume-from-an-intent-journal).
+    pub(crate) fn may_resume(&self) -> bool {
+        self.record.started.as_ref().is_some_and(|started| {
+            !started.stopped
+                && started.resumes < RESUME_LIMIT
+                && started.message.kind != PendingKind::Compact
+        })
+    }
+
     /// Drop every pending goal continuation (`ClearGoal`/pausing sweeps the
     /// loop's queued steps so "off" never leaves a last Turn to run). A
     /// started continuation is execution's property and stays — its settle
@@ -651,6 +696,8 @@ impl Queue {
         let started = StartedMessage {
             message: next.pending.remove(index),
             timestamp,
+            resumes: 0,
+            stopped: false,
         };
         next.priority.retain(|id| id != message_id);
         if next.attended_grant.as_deref() == Some(message_id) {
@@ -668,6 +715,35 @@ impl Queue {
             self.publish();
         }
         result.map(|()| started)
+    }
+
+    /// The resumption checkpoint (ADR-turns-resume-from-an-intent-journal):
+    /// count the relaunch of the started Turn durably before any model or
+    /// tool work, so a crash during the resumed run still counts.
+    pub(crate) fn mark_resumed(&mut self, message_id: &str) -> Result<StartedMessage, RpcError> {
+        let mut next = self.record.clone();
+        let Some(started) = next
+            .started
+            .as_mut()
+            .filter(|started| started.message.message_id == message_id)
+        else {
+            return Err(RpcError::Failed("Turn is no longer started".into()));
+        };
+        started.resumes += 1;
+        let resumed = started.clone();
+        self.commit(next).map(|()| resumed)
+    }
+
+    /// Record that the user is stopping the started Turn
+    /// (ADR-turns-resume-from-an-intent-journal); a no-op with nothing
+    /// started. Callers hold the queue lock across this and the cancel.
+    pub(crate) fn mark_stopped(&mut self) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        let Some(started) = next.started.as_mut().filter(|started| !started.stopped) else {
+            return Ok(());
+        };
+        started.stopped = true;
+        self.commit(next)
     }
 
     /// Undo one admission whose Turn never launched (its first durable
@@ -736,6 +812,32 @@ impl Queue {
 }
 
 impl EngineService {
+    /// ADR-turns-resume-from-an-intent-journal: at launch, every chat whose
+    /// queue holds a Turn a restart cut off loads now and relaunches it,
+    /// rather than waiting for the chat to be opened.
+    pub(crate) fn resume_cut_turns(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let chat_ids: Vec<String> = self
+            .runtime
+            .chats
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|chat| chat.id.clone())
+            .collect();
+        for chat_id in chat_ids {
+            if !Queue::has_started(&self.data_dir, &chat_id) {
+                continue;
+            }
+            let chat = self.runtime.chat(&chat_id);
+            if chat.resume.load(Ordering::Acquire) {
+                self.kick_queue(chat);
+            }
+        }
+    }
+
     /// The queued manual Compaction (ADR-compaction-is-not-a-turn): never a Turn. Model and
     /// credential failures retain the head before admission. Nothing to
     /// compact settles as a notice without a model request or queue pause.
@@ -936,10 +1038,20 @@ impl EngineService {
         let task = tokio::spawn(async move {
             loop {
                 let _execution = worker_chat.execution.lock().await;
-                let (message, cancel, picked_id) = {
+                let (message, cancel, picked_id, resume) = {
                     let queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    // A Turn a restart cut off runs first, past the
+                    // load-time pause that holds everything queued behind
+                    // it (ADR-turns-resume-from-an-intent-journal).
+                    let resume = worker_chat.take_resume();
                     let head = if worker_chat.is_removed() {
                         None
+                    } else if resume {
+                        queue
+                            .record
+                            .started
+                            .as_ref()
+                            .map(|started| started.message.clone())
                     } else {
                         queue.head()
                     };
@@ -951,7 +1063,7 @@ impl EngineService {
                     *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(cancel.clone());
                     let picked_id = message.message_id.clone();
-                    (message, cancel, picked_id)
+                    (message, cancel, picked_id, resume)
                 };
                 // One persist failure fences only the Turn that hit it:
                 // every attempt starts clean, and its own admission write
@@ -1013,9 +1125,13 @@ impl EngineService {
                                     parts,
                                     prompt.clone(),
                                     prompt.clone(),
-                                    Some(prompt),
+                                    (!resume).then_some(prompt),
                                     cancel.clone(),
-                                    true,
+                                    if resume {
+                                        Admission::Resume
+                                    } else {
+                                        Admission::Queued
+                                    },
                                 )
                                 .await;
                             match prepared {

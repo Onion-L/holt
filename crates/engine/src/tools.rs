@@ -91,6 +91,10 @@ pub(crate) struct LocalExecutionEnv {
     /// The login shell resolved once per environment; every agent command
     /// runs under it (see [`Shell::exec`]).
     shell: String,
+    /// Where each running command's process group is recorded, so launch
+    /// can kill one a hard kill orphaned (see [`crate::shell_groups`]).
+    /// `None` records nothing.
+    shell_groups: Option<std::path::PathBuf>,
 }
 
 impl LocalExecutionEnv {
@@ -108,6 +112,7 @@ impl LocalExecutionEnv {
                 .and_then(|path| path.to_str().map(str::to_owned))
                 .unwrap_or(cwd),
             shell: login_shell(),
+            shell_groups: None,
         }
     }
 
@@ -116,6 +121,7 @@ impl LocalExecutionEnv {
         Self {
             cwd: cwd.into(),
             shell: shell.into(),
+            shell_groups: None,
         }
     }
 }
@@ -265,6 +271,24 @@ fn write_to_file(
         std::fs::create_dir_all(parent)
             .map_err(|error| io_file_error(&error, &format!("{}/", parent.display())))?;
     }
+    let bytes = match content {
+        WriteContent::Text(text) => text.as_bytes(),
+        WriteContent::Bytes(bytes) => bytes.as_slice(),
+    };
+    if !append {
+        // A whole-file write replaces atomically: a crash mid-write must
+        // not leave a half-written file for a resumed Turn to build on
+        // (ADR-turns-resume-from-an-intent-journal). A confined path was
+        // proven symlink-free above, and the rename replaces the entry
+        // itself; an outside path keeps writing through its symlink, as
+        // the open did.
+        let target = if confined {
+            addressed.to_path_buf()
+        } else {
+            std::fs::canonicalize(addressed).unwrap_or_else(|_| addressed.to_path_buf())
+        };
+        return replace_atomically(&target, bytes).map_err(|error| io_file_error(&error, path));
+    }
     let mut options = std::fs::OpenOptions::new();
     options
         .write(true)
@@ -289,11 +313,34 @@ fn write_to_file(
         }
         io_file_error(&error, path)
     })?;
-    match content {
-        WriteContent::Text(text) => std::io::Write::write_all(&mut file, text.as_bytes()),
-        WriteContent::Bytes(bytes) => std::io::Write::write_all(&mut file, bytes),
+    std::io::Write::write_all(&mut file, bytes).map_err(|error| io_file_error(&error, path))
+}
+
+/// Replace `path` with `bytes` through a synced sibling temp file and a
+/// rename, keeping the existing file's permissions.
+fn replace_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = parent.join(format!(".{name}.holt-write-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            std::fs::set_permissions(&temp, meta.permissions())?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
-    .map_err(|error| io_file_error(&error, path))
+    result
 }
 
 impl FileSystem for LocalExecutionEnv {
@@ -577,6 +624,7 @@ fn io_execution_error(error: &std::io::Error) -> ExecutionError {
 #[cfg(unix)]
 struct ShellProcessGroup {
     id: Option<u32>,
+    record: Option<std::path::PathBuf>,
 }
 
 #[cfg(unix)]
@@ -601,6 +649,9 @@ impl Drop for ShellProcessGroup {
     fn drop(&mut self) {
         // Also covers the execution future being dropped during cleanup.
         self.signal(libc::SIGKILL);
+        if let Some(record) = &self.record {
+            crate::shell_groups::forget(record);
+        }
     }
 }
 
@@ -644,7 +695,14 @@ impl Shell for LocalExecutionEnv {
             }
             let mut child = cmd.spawn().map_err(|error| io_execution_error(&error))?;
             #[cfg(unix)]
-            let mut group = ShellProcessGroup { id: child.id() };
+            let mut group = ShellProcessGroup {
+                id: child.id(),
+                record: self
+                    .shell_groups
+                    .as_deref()
+                    .zip(child.id())
+                    .and_then(|(dir, id)| crate::shell_groups::record(dir, id)),
+            };
             // Readers own their pipes; capped so `cat huge.log` cannot balloon
             // memory ahead of the bash tool's own truncation.
             async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut pipe: Option<R>) -> String {
@@ -777,7 +835,7 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 /// (no backend means the tool is absent, never registered-and-erroring).
 #[cfg(test)]
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
-    execution_tools_for_model(cwd, true, None, None)
+    execution_tools_for_model(cwd, true, None, None, None)
 }
 
 /// The per-Turn write-attribution handle (ADR-turn-change-sets-and-review): the tools record the
@@ -890,13 +948,18 @@ fn attribute_bash(
     tool
 }
 
+/// The Turn's toolset. With `shell_groups`, the shell records each
+/// command's process group there while it runs (see [`crate::shell_groups`]).
 pub(crate) fn execution_tools_for_model(
     cwd: &str,
     allow_images: bool,
     search_backend: Option<Arc<dyn web_search::SearchBackend>>,
     attribution: Option<ChangeAttribution>,
+    shell_groups: Option<std::path::PathBuf>,
 ) -> Vec<AgentTool> {
-    let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new(cwd));
+    let mut env = LocalExecutionEnv::new(cwd);
+    env.shell_groups = shell_groups;
+    let env: Arc<dyn ExecutionEnv> = Arc::new(env);
     let context = ExecutionToolContext { env }.into_tool_context();
     let mut tools = vec![
         image_read_tool(&context, allow_images),
@@ -1157,6 +1220,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
+        // The atomic replace lands on the resolved file, never over the link.
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_whole_file_write_replaces_atomically_and_keeps_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let root_path = std::path::Path::new(&root);
+        let target = root_path.join("run.sh");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let before = std::fs::metadata(&target).unwrap();
+        env.write_file("run.sh", &"new".into(), None).await.unwrap();
+        let after = std::fs::metadata(&target).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(after.permissions().mode() & 0o777, 0o755);
+        // A new inode: the old one was replaced whole, never truncated.
+        assert_ne!(
+            std::os::unix::fs::MetadataExt::ino(&before),
+            std::os::unix::fs::MetadataExt::ino(&after)
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(root_path)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("holt-write"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[tokio::test]
@@ -1224,7 +1318,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_tool_wraps_execute_without_disturbing_fast_calls() {
-        let tools = execution_tools_for_model(".", true, None, None);
+        let tools = execution_tools_for_model(".", true, None, None, None);
         let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
         let result = (bash.execute)(
             "test-call",
