@@ -359,6 +359,17 @@ impl Transcript {
                     .child(SharedString::from(summary)),
             );
 
+        // The rewind affordance (ADR-rewind-to-a-step-is-all-or-nothing):
+        // the main chat's settled chips only — never a subagent tab, never
+        // while a Turn runs.
+        let rewind_chat = self
+            .chat_id
+            .clone()
+            .filter(|_| self.doc_override.is_none())
+            .filter(|id| {
+                self.state.read(cx).indicator_for(id, chrono::Utc::now())
+                    != crate::state::Indicator::Working
+            });
         let chips = div()
             .pt(px(CHIPS_TOP_PAD))
             .flex()
@@ -394,6 +405,27 @@ impl Transcript {
                         cx,
                     );
                 }
+                let rewind_group = SharedString::from(format!("{row_id}#r{ix}"));
+                let rewind = match (&rewind_chat, &tool.call_id) {
+                    (Some(chat_id), Some(call_id)) if tool.resolved && !tool.is_thought => {
+                        let chat_id = chat_id.clone();
+                        let tool_call_id = call_id.to_string();
+                        Some(crate::rewind::rewind_button(
+                            rewind_group.clone(),
+                            SharedString::from(format!("{row_id}#rb{ix}")),
+                            theme,
+                            cx.listener(move |_, _, _, cx| {
+                                // The header under it toggles the chip.
+                                cx.stop_propagation();
+                                cx.emit(TranscriptEvent::RewindToStep {
+                                    chat_id: chat_id.clone(),
+                                    tool_call_id: tool_call_id.clone(),
+                                });
+                            }),
+                        ))
+                    }
+                    _ => None,
+                };
                 let detail = details[ix].clone();
                 let invocation = invocations[ix].clone();
                 if detail.is_none() && invocation.is_none() {
@@ -401,6 +433,7 @@ impl Transcript {
                         tool,
                         identities[ix].clone(),
                         collapses,
+                        (rewind_group, rewind),
                         theme,
                         cx.entity_id(),
                         chip_cwd.as_deref(),
@@ -440,6 +473,7 @@ impl Transcript {
                     .child(
                         div()
                             .id(key.clone())
+                            .group(rewind_group)
                             .h(px(CHIP_HEIGHT))
                             .flex_none()
                             .flex()
@@ -480,7 +514,8 @@ impl Transcript {
                                 cx.entity_id(),
                                 chip_cwd.as_deref(),
                                 cx,
-                            )),
+                            ))
+                            .children(rewind),
                     );
                 // The body stays mounted while the close tween shrinks over it.
                 // Invocation first (what was asked), then output/diff (what
@@ -833,16 +868,19 @@ fn subagent_tab_title(call: &ToolCall) -> SharedString {
 
 /// A plain (non-expandable) chip: a flat quiet row, plus the group guide rail
 /// when the chip lives under a collapsible header.
+#[allow(clippy::too_many_arguments)]
 fn tool_chip(
     tool: &ToolItem,
     identity: Option<AgentIdentity>,
     rail: bool,
+    (group, rewind): (SharedString, Option<AnyElement>),
     theme: &Theme,
     view: gpui::EntityId,
     cwd: Option<&str>,
     cx: &mut gpui::App,
 ) -> AnyElement {
     div()
+        .group(group)
         .h(px(CHIP_HEIGHT))
         .w_full()
         .flex_none()
@@ -867,6 +905,7 @@ fn tool_chip(
                 .overflow_hidden()
                 .child(chip_header_row(tool, identity, None, theme, view, cwd, cx)),
         )
+        .children(rewind)
         .into_any_element()
 }
 

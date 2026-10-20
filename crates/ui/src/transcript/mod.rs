@@ -431,6 +431,13 @@ pub enum TranscriptEvent {
     },
     /// A run chat's caption: open its Routine on the Scheduled page.
     OpenRoutine { routine_id: String },
+    /// A settled tool chip's rewind affordance
+    /// (ADR-rewind-to-a-step-is-all-or-nothing): plan and confirm a rewind
+    /// to just after that call.
+    RewindToStep {
+        chat_id: String,
+        tool_call_id: String,
+    },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
