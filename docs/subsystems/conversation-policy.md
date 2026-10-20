@@ -23,7 +23,7 @@ Not here: the agent loop and Turn execution pipeline (see run-loop); the permiss
 1. **Accept.** A submission lands in the durable queue (model and reasoning captured at submission) and the watch frame carries the snapshot.
 2. **Admit.** The consumer picks the head, writes the checkpoint, snapshots permission mode and live checkout identity, and refreshes the Turn's diff baseline — then the run loop owns the Turn.
 3. **Settle.** History repair, transcript settlement, the usage batch, queue completion, then the terminal event — in that order, each durable before the next.
-4. **Restart.** A started Turn repairs as interrupted (never requeued); a started manual Compaction settles with no record; unstarted work restores paused, with the attended-send grant intact.
+4. **Restart.** At launch, a started Turn resumes from its History (ADR-turns-resume-from-an-intent-journal) — counted durably before it relaunches, its reply opening with a resumed notice — and runs past the pause. It repairs as interrupted instead when the user stopped it (Stop, Steer, and edit-last record the stop on the started item before cancelling), when its History is damaged or never got its prompt, or after three resumptions; one whose reply had already ended settles complete without running. A started manual Compaction settles with no record; unstarted work restores paused, with the attended-send grant intact.
 
 ## Constraints, state, and failure behavior
 
@@ -44,4 +44,4 @@ cargo test -p holt-engine ask_user
 cargo test -p holt-engine --test all queue
 ```
 
-The suites cover admission checkpointing and the edit/delete race window, steer promotion and priority enqueue, the attended-send grant's one-shot scope across a simulated restart, edit-last pruning and identity preservation, compaction triggers (including the overflow retry-once path), the title task's silent failures and answer-rejection, question-card settling and rollback, and restart repair of every started shape.
+The suites cover admission checkpointing and the edit/delete race window, steer promotion and priority enqueue, the attended-send grant's one-shot scope across a simulated restart, edit-last pruning and identity preservation, compaction triggers (including the overflow retry-once path), the title task's silent failures and answer-rejection, question-card settling and rollback, and restart resume and repair of every started shape.

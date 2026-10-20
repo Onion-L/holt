@@ -8,7 +8,7 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 
 | Part | Responsibility | Source |
 | --- | --- | --- |
-| The loop | `run_agent_command` drives one Turn: system prompt, the chat's History converted to the LLM view, tool rounds through holt-core's loop, cancellation races throughout. A Turn ends `Succeeded`, `Failed { reason }`, or `Interrupted` | [`crates/engine/src/agent.rs`](../../crates/engine/src/agent.rs) |
+| The loop | `run_agent_command` drives one Turn: system prompt, the chat's History converted to the LLM view, tool rounds through holt-core's loop, cancellation races throughout. Every call the permission gate lets through is journaled before it runs; a resumed Turn enters through `run_agent_loop_continue`. A Turn ends `Succeeded`, `Failed { reason }`, or `Interrupted` | [`crates/engine/src/agent.rs`](../../crates/engine/src/agent.rs) |
 | Transport guard | Every engine-owned request runs behind exactly one guard: the built-in compat stream wrapped with an idle watchdog. Tests inject a scripted provider through `EngineConfig::stream_fn` and get the same watchdog | [`crates/engine/src/stream.rs`](../../crates/engine/src/stream.rs) (`default_stream_fn`, `guard_stream_fn`) |
 | Idle watchdog | 300 s bounds the time between events — never total request duration. Five silent minutes means the connection is gone; without it a Turn or child stays `streaming` until an app restart | `stream.rs` (`STREAM_IDLE_TIMEOUT`) |
 | Mid-stream retry | A failure arriving after the provider's `Start` but before any content re-dials in place (a small retry budget, seconds of backoff); a failure after content surfaces as-is. Cancellation gives a provider a 1 s window to emit its own terminal abort before the engine synthesizes one | `stream.rs` |
@@ -31,7 +31,7 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 - **One watchdog per request, no exceptions** — the wrapper is applied where the transport is created, so an injected test transport cannot bypass it.
 - **Events never fail the run**: terminal and retry publishing are fire-and-forget with bounded buffers; a closed or lagging consumer loses frames, never blocks a Turn.
 - **Terminal means durable**: the event publishes only after settlement; a completion that cannot be persisted keeps the queue's error and emits nothing.
-- **Streams are live-only** — no synthetic initial event, no replay across restart; consumers must tolerate a restart mid-Turn (restart repair is conversation-policy's).
+- **Streams are live-only** — no synthetic initial event, no replay across restart; consumers must tolerate a restart mid-Turn (restart repair is conversation-policy's). A resumed Turn is a fresh run over the same History: it continues from the record rather than from its prompt, and a half-received provider stream is re-requested, never continued.
 - A Turn that fails mid-flight keeps an honest record: interrupted Turns keep their partial transcript with synthetic error tool results (see persistence).
 
 ## Verification

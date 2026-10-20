@@ -21,8 +21,8 @@ in the same commit.
 
 | Page | Entries |
 | --- | --- |
-| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) |
-| [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) |
+| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
+| [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) |
@@ -30,7 +30,7 @@ in the same commit.
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
-| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) |
+| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) |
@@ -442,3 +442,36 @@ checklist surface (a chip renders one line per call — a card that rewrites
 in place is a part, not a chip; the chip stays as the per-call record);
 mounting beyond main-chat Turns (the MCP policy — subagent, planning, and
 Provider Mode Turns keep their curated toolsets).
+
+## turns-resume-from-an-intent-journal
+
+`52eb35d`, `45231e3`, `2fd3425`. A Turn cut off by a crash or quit resumes
+at launch from its last committed step instead of being recovered as
+interrupted; continuing no longer needs a new queue item. The journal is a new kind in the History JSONL
+(see history-is-a-separate-persisted-record): once the permission gate lets a
+call through, the engine fsyncs a tool intent before the call runs. On load, a
+call without a result is answered by what the journal proves — no intent:
+not executed; intent: started and may have partly run, check before
+repeating (the old "interrupted by the user … not executed" was wrong for a
+crash). Nothing is re-run automatically; the model decides. An unfinished
+model stream is never continued: the request is re-sent from History. A Turn
+that crashes three times in a row stops resuming and is recovered as
+interrupted, as is one the user stopped: Stop, Steer and edit-last record the
+stop on the started item before cancelling, so a quit that beats the settle
+cannot undo it. Core is unchanged: the engine already owns the last hook before
+execution (the gate), and resumption goes through `run_agent_loop_continue`.
+Resumption is independent of goal mode: goal is one consumer, not the
+orchestration of long runs.
+Rejected: asking before resuming on open (Stop is how a user ends a run; a
+quit is not a decision about the Turn); pi-durable's model of one SQLite transaction per step over task
+state machines (a second store beside History, transcript and queue; Holt no
+longer builds on pi — its spec and source informed the intent rule only);
+automatic re-run of read-only tools after a crash (a per-tool replay policy
+saves one model round; deferred until that round matters); adopting core's
+ported pi harness scaffold (`agent/harness`, never wired, every operation
+`HarnessNotImplemented`, and its session codec was already rejected); deterministic re-execution against a journal in the
+Temporal/Restate style (an in-process loop with one model call per step
+gains nothing from replaying code, and model and tool calls cannot be made
+deterministic); resuming a half-received provider stream (no provider
+supports it). Workspace snapshots per step are deferred to their own entry —
+they reopen turn-diff-net-change-baseline.
