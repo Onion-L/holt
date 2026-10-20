@@ -2125,3 +2125,35 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
             .exists()
     );
 }
+
+#[tokio::test]
+async fn a_step_older_than_the_kept_checkpoints_cannot_be_rewound_to() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&three_step_provider(Vec::new()));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    rewind(&engine, "w-1", true).await;
+    // The limits dropped steps newer than the rewind point.
+    std::fs::write(
+        fixture
+            .data_dir
+            .path()
+            .join("checkpoints/chat-1/dropped.json"),
+        serde_json::to_vec(&serde_json::json!({ "until": i64::MAX })).unwrap(),
+    )
+    .unwrap();
+
+    let refused = engine
+        .handle(
+            methods::REWIND_TO_STEP,
+            serde_json::json!({ "chatId": "chat-1", "toolCallId": "w-1", "dryRun": true }),
+        )
+        .await;
+    let Err(RpcError::Failed(message)) = refused else {
+        panic!("expected a refusal")
+    };
+    assert!(message.contains("older than the checkpoints"), "{message}");
+    assert!(fixture.path("b.txt").exists());
+}

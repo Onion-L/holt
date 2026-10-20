@@ -1830,6 +1830,37 @@ pub(crate) fn checkpoint_blob(store: &Path, id: &str) -> Option<Vec<u8>> {
     Some(blob.content().to_vec())
 }
 
+/// Copy the blobs `ids` names from one checkpoint store into a new one at
+/// `to` — the repack that reclaims what no step references any more. A
+/// blob already gone is skipped.
+pub(crate) fn copy_checkpoint_blobs(
+    from: &Path,
+    to: &Path,
+    ids: &HashSet<String>,
+) -> Result<(), String> {
+    let from = Repository::open_bare(from).map_err(git_message)?;
+    let to = Repository::init_bare(to).map_err(git_message)?;
+    for id in ids {
+        let Ok(oid) = git2::Oid::from_str(id) else {
+            continue;
+        };
+        if let Ok(blob) = from.find_blob(oid) {
+            to.blob(blob.content()).map_err(git_message)?;
+        }
+    }
+    Ok(())
+}
+
+/// Store `bytes` as a checkpoint blob — a test's way to fill a store.
+#[cfg(test)]
+pub(crate) fn put_checkpoint_blob(store: &Path, bytes: &[u8]) -> String {
+    checkpoints::open_store(store)
+        .unwrap()
+        .blob(bytes)
+        .unwrap()
+        .to_string()
+}
+
 /// `path` (absolute, or relative to `repo_root`) as a repo-root-relative
 /// path; `None` when it escapes the work tree.
 fn relative_path(repo: &Repository, repo_root: &str, path: &str) -> Option<String> {

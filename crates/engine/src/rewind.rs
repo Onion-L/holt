@@ -291,6 +291,7 @@ pub(crate) fn finish(
             .into_iter()
             .filter(|step| !undone.contains(step.tool_call_id.as_str()))
             .collect();
+        crate::checkpoints::mark_for_repack(data_dir, chat_id);
         crate::checkpoints::rewrite(data_dir, chat_id, &kept)
             .map_err(|error| format!("rewrite the step log: {error}"))?;
     }

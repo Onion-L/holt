@@ -702,6 +702,14 @@ impl EngineService {
         // chat's concurrent work in the same working tree must not land in
         // this Turn's card). A turn without a Git baseline has no change
         // set to filter — no recorder.
+        if had_baseline {
+            // Keep the chat's checkpoints bounded before this Turn adds to
+            // them (ADR-step-checkpoints-in-a-chat-owned-object-store).
+            let (data_dir, chat) = (self.data_dir.clone(), chat_id.to_string());
+            let _ =
+                tokio::task::spawn_blocking(move || crate::checkpoints::maintain(&data_dir, &chat))
+                    .await;
+        }
         let attribution = if had_baseline {
             self.turn_changes
                 .attribution(chat_id, &message_id)
@@ -1056,6 +1064,13 @@ impl EngineService {
             &call_id,
         )
         .map_err(RpcError::Failed)?;
+        if crate::checkpoints::dropped_until(&self.data_dir, &chat_id)
+            .is_some_and(|until| cut.boundary < until)
+        {
+            return Err(RpcError::Failed(
+                "that step is older than the checkpoints this chat keeps".into(),
+            ));
+        }
         crate::rewind::transcript_cut(
             &chat.transcript.read().unwrap_or_else(|e| e.into_inner()),
             &cut.group,
