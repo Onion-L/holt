@@ -106,6 +106,26 @@ import ChangelogController from '../components/ChangelogController';
 
   <ol class="vers">
 
+    <li class="ver" id="v0.6.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.6.0">0.6.0</a>
+        <span class="vdate mono">Oct 21, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Crash recovery — a Turn cut off by a crash or <code>kill -9</code> resumes automatically at the next launch: orphan process groups are cleaned up, the model is told exactly which files changed since the call started, and the conversation continues where it left off</li>
+            <li>Step checkpoints — every write, edit, and bash call records the exact before and after bytes of every file it touches, stored in a content-addressed object store per chat; the model always knows what an interrupted call actually changed</li>
+            <li>Rewind to any step — hover any resolved tool chip to preview and apply a rewind: the conversation is cut at that step and every changed file goes back to how it was, all or nothing; conflicts block the whole rewind before anything is written</li>
+            <li>Bounded checkpoint storage — at each Turn admission, steps beyond 1&thinsp;200 are trimmed to 1&thinsp;000 and the object store is repacked when it exceeds 1 GiB; a rewind to a dropped step is refused rather than applied partially</li>
+            <li>Durable rewind — a rewind a crash interrupts is finished automatically the next time the chat loads</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.5.4">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.5.4">0.5.4</a>
