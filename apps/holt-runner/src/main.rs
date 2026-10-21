@@ -52,6 +52,9 @@ struct Args {
     /// `None` with `--resume`.
     fresh: Option<Fresh>,
     timeout: Duration,
+    /// Runs every agent command instead of the login shell — the crash eval
+    /// forwards commands into a task's container this way.
+    shell: Option<String>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -63,6 +66,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut reasoning = None;
     let mut timeout_sec = 1800u64;
     let mut resume = false;
+    let mut shell = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || {
@@ -77,6 +81,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--source-data-dir" => source_data_dir = Some(PathBuf::from(value()?)),
             "--reasoning" => reasoning = Some(value()?),
             "--resume" => resume = true,
+            "--shell" => shell = Some(value()?),
             "--timeout-sec" => {
                 timeout_sec = value()?
                     .parse()
@@ -103,6 +108,7 @@ fn parse_args() -> anyhow::Result<Args> {
             data_dir,
             fresh: None,
             timeout,
+            shell,
         });
     }
     let prompt_file = prompt_file.ok_or_else(|| anyhow!("--prompt-file is required\n{USAGE}"))?;
@@ -126,6 +132,7 @@ fn parse_args() -> anyhow::Result<Args> {
             reasoning,
         }),
         timeout,
+        shell,
     })
 }
 
@@ -213,13 +220,11 @@ fn history_outcome(entries: &[Value]) -> &'static str {
         .find(|entry| entry["kind"] == "message")
         .map(|entry| &entry["entry"]);
     match last {
-        Some(message) if message["role"] == "assistant" => {
-            match message["stopReason"].as_str() {
-                Some("stop") => "succeeded",
-                Some("error") => "failed",
-                _ => "interrupted",
-            }
-        }
+        Some(message) if message["role"] == "assistant" => match message["stopReason"].as_str() {
+            Some("stop") => "succeeded",
+            Some("error") => "failed",
+            _ => "interrupted",
+        },
         _ => "interrupted",
     }
 }
@@ -293,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
         stream_fn: None,
         search_backend_resolver: None,
         clock: None,
+        exec_shell: args.shell.clone(),
     })
     .map_err(|error| anyhow!("assembling the engine: {error}"))?;
 

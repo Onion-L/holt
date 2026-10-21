@@ -864,6 +864,9 @@ pub(crate) struct AgentRuntime {
     /// The Routine store (ADR-routines-fire-in-process-and-coalesce-missed-fires), set once at boot: the gate moves a
     /// run Chat's record to waiting while its Approval is open.
     pub(crate) routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
+    /// `EngineConfig::exec_shell`: when set, agent commands run through this
+    /// program instead of the user's login shell. The app leaves it unset.
+    pub(crate) exec_shell: Option<String>,
 }
 
 impl AgentRuntime {
@@ -913,6 +916,7 @@ impl AgentRuntime {
         chats: Vec<Chat>,
         stream_fn: Option<holt_core::agent::types::StreamFn>,
         mcp: crate::mcp::McpPool,
+        exec_shell: Option<String>,
     ) -> Self {
         let chats_value = serde_json::to_value(&chats).unwrap_or_else(|_| serde_json::json!([]));
         let (chats_tx, _) = watch::channel(chats_value);
@@ -939,6 +943,7 @@ impl AgentRuntime {
             mcp,
             retry_events: crate::retry_events::RetryEvents::new(),
             routines: std::sync::OnceLock::new(),
+            exec_shell,
         }
     }
 
@@ -2006,6 +2011,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         search_backend.clone(),
         attribution.clone(),
         Some(crate::shell_groups::registry_dir(&runtime.data_dir)),
+        runtime.exec_shell.clone(),
     );
     let current_chat_id = chat
         .child
@@ -2502,6 +2508,7 @@ mod tests {
             vec![session_chat("chat-1")],
             None,
             crate::mcp::McpPool::load(dir.path()).unwrap(),
+            None,
         );
         let chat = runtime.chat("chat-1");
         let request = crate::tools::model_setup::PendingKeyRequest {
@@ -2542,6 +2549,7 @@ mod tests {
             vec![session_chat("chat-1")],
             None,
             crate::mcp::McpPool::load(dir.path()).unwrap(),
+            None,
         );
         runtime.set_session("chat-1", SessionStatus::Working);
         let first = runtime.sessions.read().unwrap()[0].started_at.unwrap();
@@ -2570,6 +2578,7 @@ mod tests {
             vec![session_chat("chat-1")],
             None,
             crate::mcp::McpPool::load(dir.path()).unwrap(),
+            None,
         ));
         runtime.set_session("chat-1", SessionStatus::Working);
         let before = runtime.sessions.read().unwrap()[0].updated_at;
@@ -2761,6 +2770,7 @@ mod tests {
             Vec::new(),
             None,
             crate::mcp::McpPool::load(&dir).unwrap(),
+            None,
         );
         let chat = runtime.chat("chat-1");
         chat.transcript.write().unwrap().push(SessionMessageEntry {
@@ -2789,6 +2799,7 @@ mod tests {
             Vec::new(),
             None,
             crate::mcp::McpPool::load(&dir).unwrap(),
+            None,
         );
         let restored = restarted.chat("chat-1");
         let transcript = restored.transcript.read().unwrap();
@@ -2809,6 +2820,7 @@ mod tests {
             Vec::new(),
             None,
             crate::mcp::McpPool::load(&dir).unwrap(),
+            None,
         );
         assert_eq!(again.chat("chat-1").transcript.read().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();

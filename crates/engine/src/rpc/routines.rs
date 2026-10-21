@@ -527,6 +527,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: Some(clock.clone()),
+            exec_shell: None,
         })
         .unwrap();
         let params = serde_json::json!({

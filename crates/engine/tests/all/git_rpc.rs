@@ -96,6 +96,7 @@ impl Fixture {
             ),
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap()
     }
@@ -1794,6 +1795,7 @@ fn write_turn_engine(path: &str, content: &str) -> LocalEngine {
         stream_fn: Some(common::ScriptedProvider::new(script).stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap()
 }
@@ -1879,6 +1881,7 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     register_space(&engine, &fixture, "space-1").await;
@@ -2006,6 +2009,7 @@ async fn turn_diff_filters_net_changes_on_a_dirty_start() {
         ),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     register_space(&engine, &fixture, "space-1").await;

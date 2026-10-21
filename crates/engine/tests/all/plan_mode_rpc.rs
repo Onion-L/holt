@@ -254,6 +254,7 @@ async fn plan_mode_state_survives_restart_without_starting_a_turn() {
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     let RpcReply::Stream(mut sessions) = engine
