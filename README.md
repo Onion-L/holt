@@ -5,7 +5,7 @@
 <h1 align="center">Holt</h1>
 
 <p align="center">
-  A native desktop coding agent built with Rust and GPUI.
+  A local coding agent that survives crashes and lets you rewind any step.
 </p>
 
 <p align="center">
@@ -27,28 +27,23 @@
 
 ## Why Holt
 
-Why not.
+Long tasks fail at the worst times. The build is two hours in, the agent is mid-run, and the app gets killed. Every other tool tells the model "it may have partly run" and starts over. Holt doesn't.
 
-- **One agent.** Holt is the agent — a single Rust agent loop drives every
-  chat. Model services plug in as providers; Holt doesn't wrap other coding-agent
-  CLIs.
-- **Local only.** No cloud, no accounts, no sync, no telemetry. Chats,
-  transcripts, and credentials live under `~/.holt` and nowhere else.
-- **One process.** No daemon, no CLI. A native desktop app that embeds its
-  backend in-process over a typed memory-RPC transport.
+- **Survives crashes.** When the app is killed mid-run, Holt restores orphan processes, tells the model exactly which files changed since it started, and picks up the Turn automatically. The model sees what happened and decides whether to continue — it doesn't start from scratch.
+- **Rewind to any step.** Every tool call that touches a file records the exact bytes before and after. If the agent goes off track, hover any tool chip and rewind — the conversation is trimmed and the files go back together, all or nothing.
+- **Local only.** No cloud, no accounts, no sync, no telemetry. Chats, transcripts, credentials, and checkpoints live under `~/.holt` and nowhere else.
+- **One process.** No daemon, no CLI. A native desktop app that embeds its backend in-process over a typed memory-RPC transport.
 
 ## Features
 
-- **Bring your own model** — built-in providers plus custom providers and model
-  records, editable live in Settings without a restart.
-- **Permission modes** — per chat: confirm each change, let a model review
-  pass judge it, or grant full access. Reads are never gated.
-- **Plan mode** — the agent inspects the workspace and writes a plan for
-  approval before touching anything.
-- **Review every Turn** — per-Turn change sets with diffs, plus branches,
-  checkout diffs, history, and fetch on a built-in git2 backend.
-- **Extensible** — skills from the standard skill roots, MCP servers, subagents,
-  and pluggable web search (Zhipu, Bocha, Brave).
+- **Crash recovery** — a Turn interrupted by `kill -9` or a crash resumes automatically on the next launch: orphan processes cleaned up, the model told what changed, the conversation continued.
+- **Step checkpoints** — every write, edit, and bash call records its exact file changes. Storage is content-addressed and bounded per chat; blobs older than the keep window are dropped and the object store is repacked.
+- **Step rewind** — hover any resolved tool chip to preview and apply a rewind. The conversation is cut at that step, all parallel sibling calls included, and every file goes back to its state before the step. Conflicts — a file modified by something else since — block the whole rewind.
+- **Bring your own model** — built-in providers plus custom providers and model records, editable live in Settings without a restart.
+- **Permission modes** — per chat: confirm each change, let a model review pass judge it, or grant full access. Reads are never gated.
+- **Plan mode** — the agent inspects the workspace and writes a plan for approval before touching anything.
+- **Review every Turn** — per-Turn change sets with diffs, plus branches, checkout diffs, history, and fetch on a built-in git2 backend.
+- **Extensible** — skills from the standard skill roots, MCP servers, subagents, and pluggable web search (Zhipu, Bocha, Brave).
 - **Built-in terminals** — chat-owned terminal panes next to the transcript.
 
 ## Install
