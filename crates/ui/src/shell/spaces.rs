@@ -52,6 +52,7 @@ struct ActiveChatRow {
     status: ChatIndicator,
     chat: holt_proto::Chat,
     folder: String,
+    branch: Option<String>,
     change_request: Option<holt_proto::ChangeRequestSummary>,
     group: Option<(String, String)>,
 }
@@ -130,14 +131,16 @@ pub(super) struct SpacesMenu {
 enum SidebarViewRow {
     Sort(SidebarSort),
     ShowProvider,
+    ShowBranch,
     ShowPullRequest,
 }
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 5] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 6] = [
     SidebarViewRow::Sort(SidebarSort::LastUpdated),
     SidebarViewRow::Sort(SidebarSort::Created),
     SidebarViewRow::Sort(SidebarSort::Manual),
     SidebarViewRow::ShowProvider,
+    SidebarViewRow::ShowBranch,
     SidebarViewRow::ShowPullRequest,
 ];
 
@@ -910,6 +913,7 @@ impl Shell {
         match row {
             SidebarViewRow::Sort(sort) => sort == self.settings.sidebar_sort,
             SidebarViewRow::ShowProvider => self.settings.sidebar_show_provider,
+            SidebarViewRow::ShowBranch => self.settings.sidebar_show_branch,
             SidebarViewRow::ShowPullRequest => self.settings.sidebar_show_pull_request,
         }
     }
@@ -931,6 +935,10 @@ impl Shell {
             }
             SidebarViewRow::ShowProvider => {
                 self.settings.sidebar_show_provider = !self.settings.sidebar_show_provider;
+                self.schedule_save(cx);
+            }
+            SidebarViewRow::ShowBranch => {
+                self.settings.sidebar_show_branch = !self.settings.sidebar_show_branch;
                 self.schedule_save(cx);
             }
             SidebarViewRow::ShowPullRequest => {
@@ -1008,6 +1016,7 @@ impl Shell {
                 SidebarViewRow::Sort(SidebarSort::Created) => "Created".into(),
                 SidebarViewRow::Sort(SidebarSort::Manual) => "Manual".into(),
                 SidebarViewRow::ShowProvider => "Provider logo".into(),
+                SidebarViewRow::ShowBranch => "Branch".into(),
                 SidebarViewRow::ShowPullRequest => "Pull request".into(),
             };
             rows.push(
@@ -1104,18 +1113,30 @@ impl Shell {
                         .space_for_chat(&chat)
                         .map(|space| space.display_name().to_string())
                         .unwrap_or_else(|| "?".to_string());
+                    // The branch shows whenever the engine has stamped one —
+                    // main-checkout sessions included, not just worktrees.
+                    let branch = crate::change_requests::conversation_branch(&chat, &state.spaces)
+                        .map(str::trim)
+                        .filter(|b| !b.is_empty())
+                        .map(str::to_string);
                     let change_request = state.change_request_for_chat(&chat).cloned();
                     let group = None;
                     ActiveChatRow {
                         status,
                         chat: chat.clone(),
                         folder,
+                        branch,
                         change_request,
                         group,
                     }
                 })
                 .collect()
         };
+        if !self.settings.sidebar_show_branch {
+            for row in &mut rows {
+                row.branch = None;
+            }
+        }
         if !self.settings.sidebar_show_pull_request {
             for row in &mut rows {
                 row.change_request = None;
@@ -1154,6 +1175,7 @@ impl Shell {
                     status,
                     chat,
                     folder,
+                    branch,
                     change_request,
                     group: _,
                 } = row;
@@ -1165,7 +1187,9 @@ impl Shell {
                     .sidebar_show_provider
                     .then(|| chat.config.as_ref().map(|c| c.provider.clone()))
                     .flatten();
-                let height = super::chat_row_height(change_request.is_some());
+                let height = super::chat_row_height(
+                    self.settings.sidebar_show_branch || self.settings.sidebar_show_pull_request,
+                );
                 // Only rows a jump slot can reach wear a chip; row 10 onward
                 // keeps its time-ago.
                 let jump_label: Option<SharedString> = if jump_hints {
@@ -1187,6 +1211,7 @@ impl Shell {
                     .into(),
                     time_ago,
                     folder.into(),
+                    branch.map(SharedString::from),
                     change_request,
                     provider,
                     status,
@@ -2795,21 +2820,21 @@ mod tests {
             assert!(shell.sidebar_view_menu.closing_since().is_none());
         });
 
-        let pull_request = cx
+        let branch = cx
             .debug_bounds("sidebar-view-row-4")
             .expect("the card is up")
             .center();
-        cx.simulate_click(pull_request, Default::default());
+        cx.simulate_click(branch, Default::default());
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
             assert!(!shell.settings.sidebar_show_provider);
-            assert!(!shell.settings.sidebar_show_pull_request);
+            assert!(!shell.settings.sidebar_show_branch);
             assert!(shell.sidebar_view_menu.closing_since().is_none());
         });
         cx.update(|_, cx| {
             let current = crate::settings::current(cx);
             assert!(!current.sidebar_show_provider);
-            assert!(!current.sidebar_show_pull_request);
+            assert!(!current.sidebar_show_branch);
         });
 
         // Esc closes — re-opened first, since a mouse pick does not re-focus

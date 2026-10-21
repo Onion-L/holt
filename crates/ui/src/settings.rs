@@ -268,6 +268,7 @@ pub struct UiSettings {
     /// Optional provider branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_provider: bool,
+    pub sidebar_show_branch: bool,
     pub sidebar_show_pull_request: bool,
     /// The last selected space — restored on boot when the row still exists;
     /// also the new-tab default when the sidebar filter is "All".
@@ -377,6 +378,7 @@ impl Default for UiSettings {
             sidebar_sort: SidebarSort::LastUpdated,
             sidebar_order: Vec::new(),
             sidebar_show_provider: true,
+            sidebar_show_branch: true,
             sidebar_show_pull_request: true,
             last_space_id: None,
             home_hint_dismissed: false,
@@ -1077,6 +1079,7 @@ mod tests {
             sidebar_sort: SidebarSort::Manual,
             sidebar_order: vec!["b".to_string(), "a".to_string()],
             sidebar_show_provider: false,
+            sidebar_show_branch: false,
             sidebar_show_pull_request: false,
             last_space_id: Some("space-1".into()),
             open_tabs: Some(vec!["b".to_string(), "a".to_string()]),

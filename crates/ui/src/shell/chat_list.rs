@@ -141,10 +141,13 @@ fn sidebar_key_order_changed(old: &[(String, f32)], new: &[(String, f32)]) -> bo
 
 /// Exact active-session row height. Provider identity lives on the title line
 /// and the Working glyph lives in the status corner, so neither adds a third
-/// line. A row carrying a PR badge gets the 16px metadata strip (63px); bare
-/// rows stay compact (45px) — no empty strip is held open (user request).
+/// line. Once either metadata view option is on, line 3 is RESERVED on every
+/// row — a chat without a branch or PR leaves its strip empty rather than
+/// collapsing, so all rows share one fixed height. The 16px strip fits the
+/// tallest child (the PR badge); the branch text is 14px inside it. Only with
+/// both options hidden do rows go compact and omit the line entirely.
 /// Keeping this calculation beside the renderer's metrics prevents disclosure
-/// clips when the list's row structure varies.
+/// clips when view options alter the row structure.
 pub(super) fn chat_row_height(metadata_line: bool) -> f32 {
     if metadata_line { 63.0 } else { 45.0 }
 }
@@ -311,6 +314,7 @@ impl Shell {
         title: SharedString,
         time_ago: SharedString,
         space_name: SharedString,
+        branch: Option<SharedString>,
         change_request: Option<holt_proto::ChangeRequestSummary>,
         provider: Option<holt_proto::ProviderId>,
         status: holt_proto::ChatIndicator,
@@ -363,6 +367,12 @@ impl Shell {
                 holt_proto::ChatIndicator::Idle => None,
             }
         };
+        // Line 3's strip is reserved whenever EITHER metadata view option is
+        // on — the caller blanks `branch`/`change_request` per the same
+        // settings, so a row without data here simply leaves its strip empty
+        // and every row keeps one fixed height.
+        let reserve_metadata =
+            self.settings.sidebar_show_branch || self.settings.sidebar_show_pull_request;
         let queued = queued && !undelivered;
         let working = status == holt_proto::ChatIndicator::Working && !queued && !undelivered;
         let corner_body: AnyElement = if let Some(label) = jump_label {
@@ -673,11 +683,10 @@ impl Shell {
                         )
                     }),
             )
-            // Line 3 exists only on a row carrying the PR badge — bare rows
-            // keep the compact height instead of holding an empty strip
-            // (user request). The caller has already blanked the badge per
-            // the view option.
-            .when_some(change_request, |row, summary| {
+            // Line 3 is reserved whitespace once either metadata view option
+            // is on (fixed-height rows), pinned to the PR badge's 16px; it is
+            // omitted only when both options are hidden.
+            .when(reserve_metadata, |row| {
                 row.child(
                     div()
                         .w_full()
@@ -685,14 +694,35 @@ impl Shell {
                         .flex()
                         .flex_row()
                         .items_center()
-                        // The spring pins the badge right.
+                        .gap(px(4.0))
+                        .when_some(branch, |el, branch| {
+                            el.child(
+                                icon(icons::GIT_BRANCH)
+                                    .size(px(11.0))
+                                    .flex_none()
+                                    .text_color(subline),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .line_height(px(14.0))
+                                    .text_color(subline)
+                                    .child(branch),
+                            )
+                        })
+                        // Stable invisible spring keeps the optional PR badge
+                        // pinned right without changing no-PR paint.
                         .child(div().flex_1().min_w_0())
-                        .child(crate::change_requests::pull_request_badge(
-                            format!("chat-pr-{id}").into(),
-                            summary,
-                            crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
-                            theme,
-                        )),
+                        .when_some(change_request, |el, summary| {
+                            el.child(crate::change_requests::pull_request_badge(
+                                format!("chat-pr-{id}").into(),
+                                summary,
+                                crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                                theme,
+                            ))
+                        }),
                 )
             })
             .into_any_element()
@@ -1156,8 +1186,9 @@ mod tests {
 
     #[test]
     fn sidebar_chat_height_reserves_the_metadata_line() {
-        // The metadata strip follows the badge: a row with a PR is 63px,
-        // a bare row 45px.
+        // Fixed height while either metadata view option is on: a branch
+        // (14px) or a PR badge (16px) lands in the reserved strip instead of
+        // growing its own row.
         assert_eq!(chat_row_height(false), 45.0);
         assert_eq!(chat_row_height(true), 63.0);
     }
