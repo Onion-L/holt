@@ -27,6 +27,12 @@ after the run starts); `--kills N` kills that many times per task (the engine
 stops resuming after 3 cut-off restarts, so keep it at 2 or below). Provider
 credentials come from `~/.holt` (or `HOLT_DATA_DIR`).
 
+`--skip-existing` skips any case whose `result.json` is already on disk, so a
+suite cut off overnight continues where it stopped. `HOLT_RUNNER` overrides
+the binary under test: point it at a copy outside `target/` (or run the suite
+from a pinned `git worktree`) when a rebuild must not change the runtime
+mid-suite.
+
 ## Tasks
 
 `tasks/` holds local tasks that need nothing but bash and Python, built so a
@@ -44,20 +50,30 @@ if setup leaves it without one, so step checkpoints are recorded.
 ### Terminal-Bench 2
 
 `tb2-task.sh` wraps a Terminal-Bench 2 task in the same format. The task's
-container runs with its working directory bind-mounted from the work tree;
-the prompt tells the agent to run shell commands through `docker exec`. After
-a kill, `on-kill.sh` kills what the dead run left running inside the container,
-which Holt's launch-time reaping can't reach. Needs Docker running.
+container runs with its working directory bind-mounted from the work tree. The
+generated task dir carries a `shell.sh`, which `run-task.sh` passes to
+`holt-runner --shell`: every bash call the agent issues is forwarded into the
+container, so the model writes `ls` rather than a `docker exec ... bash -lc`
+prefix. After a kill, `on-kill.sh` kills what the dead run left running inside
+the container, which Holt's launch-time reaping can't reach. Needs Docker
+running.
+
+Use the 2.1 task set — 2.0 has 28 tasks that reject valid work (external
+dependencies, budgets, instructions that did not match their tests):
 
 ```bash
-git clone --depth 1 https://github.com/laude-institute/terminal-bench-2 /tmp/tb2
-for t in /tmp/tb2/*/; do
+git clone --depth 1 https://github.com/harbor-framework/terminal-bench-2-1 /tmp/tb2
+for t in /tmp/tb2/tasks/*/; do
   s=$(awk '/^\[agent\]/{f=1;next} /^\[/{f=0} f&&/timeout_sec/{print int($3)}' "$t/task.toml")
   [ "${s:-0}" -ge 1800 ] && scripts/crash-eval/tb2-task.sh "$t" "/tmp/tb2-long/$(basename "$t")"
 done
 scripts/crash-eval/run-suite.sh --tasks /tmp/tb2-long --out /tmp/holt-crash-eval/tb2 \
-  --model zai-coding-cn/glm-5.3 --jobs 4 --kill-after 120:900
+  --model zai-coding-cn/glm-5.3 --arms "baseline resume cold" --jobs 4 --kill-after 60:120
 ```
+
+The generated task dir records the image in `image` and the upstream task in
+`source`, and `check.sh` reads the upstream tests by absolute path — generate
+the set on the machine that runs it, or keep the clone at the same path.
 
 ## What each result records
 
