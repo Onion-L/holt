@@ -21,22 +21,32 @@ WORKDIR=$(awk 'toupper($1)=="WORKDIR"{w=$2} END{print w}' "$SRC/environment/Dock
 WORKDIR=${WORKDIR:-/app}
 
 echo "${TIMEOUT:-1800}" > "$DEST/timeout"
+echo "$IMAGE" > "$DEST/image"
 cp "$SRC/instruction.md" "$DEST/instruction.md"
 printf '%s\n' "$SRC" > "$DEST/source"
+
+# The agent's shell for this task: every bash call lands in the container, so
+# the model writes `ls` rather than `docker exec ... bash -lc 'ls'`. The
+# container name and workdir are written by setup.sh into $OUT.
+cat > "$DEST/shell.sh" <<'EOF'
+#!/bin/sh
+[ "$1" = -lc ] || exit 97
+exec docker exec -w "$(cat "$OUT/workdir")" "$(cat "$OUT/container")" bash -lc "$2"
+EOF
+chmod +x "$DEST/shell.sh"
 
 cat > "$DEST/setup.sh" <<EOF
 set -euo pipefail
 c=holt-eval-\$(printf %s "\$OUT" | shasum | cut -c1-12)
 echo "\$c" > "\$OUT/container"
+echo "$WORKDIR" > "\$OUT/workdir"
 docker rm -f "\$c" "\$c-seed" >/dev/null 2>&1 || true
 docker create --name "\$c-seed" "$IMAGE" >/dev/null
 docker cp "\$c-seed:$WORKDIR/." "\$WORK/" 2>/dev/null || true
 docker rm "\$c-seed" >/dev/null
 docker run -d --name "\$c" -v "\$WORK:$WORKDIR" -w "$WORKDIR" --entrypoint sleep "$IMAGE" infinity >/dev/null
 cat > "\$OUT/prompt.md" <<PROMPT
-You are working on a task inside the Linux Docker container \$c. Its working directory $WORKDIR is mounted from your current working directory, so the files you read, write, or edit here are the container's files.
-
-Run every shell command inside the container, as: docker exec -w $WORKDIR \$c bash -lc '<command>'. Never run the task's commands on this machine directly.
+You are working inside the Linux Docker container \$c. Your shell runs in that container: the working directory $WORKDIR is where the task's files are, and every command you issue executes there. The files you read, write, or edit are the container's files at $WORKDIR.
 
 The task:
 

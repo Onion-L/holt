@@ -49,6 +49,11 @@ OUT=$(cd "$OUT" && pwd)
 WORK=$OUT/work
 export TASK WORK OUT
 
+# A task that ships `shell.sh` wants every command run through it instead of
+# the login shell (tb2 tasks forward into their container).
+SHELL_ARGS=()
+[ -f "$TASK/shell.sh" ] && SHELL_ARGS=(--shell "$TASK/shell.sh")
+
 hook() { if [ -f "$TASK/$1" ]; then bash "$TASK/$1"; fi; }
 trap 'hook teardown.sh || true' EXIT
 
@@ -91,10 +96,11 @@ while :; do
   if [ "$left" -le 0 ]; then break; fi
   if [ "$run" -gt 1 ] && [ "$ARM" = resume ]; then
     "$RUNNER" --resume --data-dir "$data" --timeout-sec "$left" \
+      ${SHELL_ARGS[@]+"${SHELL_ARGS[@]}"} \
       > "$OUT/run-$run.json" 2> "$OUT/run-$run.err" &
   else
     "$RUNNER" --cwd "$WORK" --prompt-file "$PROMPT" --model "$MODEL" \
-      --data-dir "$data" --timeout-sec "$left" \
+      --data-dir "$data" --timeout-sec "$left" ${SHELL_ARGS[@]+"${SHELL_ARGS[@]}"} \
       > "$OUT/run-$run.json" 2> "$OUT/run-$run.err" &
   fi
   pid=$!

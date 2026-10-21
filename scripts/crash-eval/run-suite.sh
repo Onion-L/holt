@@ -9,7 +9,7 @@
 # summarize.py reads them.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-TASKS= OUT= MODEL= ARMS="baseline resume cold" REPEATS=1 JOBS=2 KILL_AFTER=20:60 KILLS=1
+TASKS= OUT= MODEL= ARMS="baseline resume cold" REPEATS=1 JOBS=2 KILL_AFTER=20:60 KILLS=1 SKIP_EXISTING=0
 while [ $# -gt 0 ]; do
   case $1 in
     --tasks) TASKS=$2; shift 2 ;;
@@ -20,6 +20,7 @@ while [ $# -gt 0 ]; do
     --jobs) JOBS=$2; shift 2 ;;
     --kill-after) KILL_AFTER=$2; shift 2 ;;
     --kills) KILLS=$2; shift 2 ;;
+    --skip-existing) SKIP_EXISTING=1; shift ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -30,6 +31,10 @@ for task in "$TASKS"/*/; do
   [ -f "$task/check.sh" ] || continue
   for arm in $ARMS; do
     for rep in $(seq 1 "$REPEATS"); do
+      if [ "$SKIP_EXISTING" = 1 ] && [ -f "$OUT/$(basename "$task")/$arm/$rep/result.json" ]; then
+        echo "skip: $(basename "$task")/$arm/$rep" >&2
+        continue
+      fi
       printf '%s\0%s\0%s\0' "${task%/}" "$arm" "$OUT/$(basename "$task")/$arm/$rep"
     done
   done
