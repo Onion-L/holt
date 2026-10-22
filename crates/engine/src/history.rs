@@ -192,7 +192,7 @@ pub(crate) fn rewrite(
         }
         file.sync_all()?;
         std::fs::rename(&temp, &path)?;
-        std::fs::File::open(dir)?.sync_all()?;
+        crate::store::sync_dir(dir)?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&temp);

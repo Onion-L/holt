@@ -887,6 +887,8 @@ mod tests {
         assert!(matches!(fault, FilesFault::GitExcluded(_)));
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn symlinks_classify_against_the_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -924,15 +926,20 @@ mod tests {
         let root = dir.path();
         let outside = tempfile::tempdir().unwrap();
         write(&outside.path().join("secret.txt"), b"x");
-        std::os::unix::fs::symlink(outside.path(), root.join("elsewhere")).unwrap();
+        // Unix-only: creating a symlink on Windows needs a privilege test
+        // hosts lack.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), root.join("elsewhere")).unwrap();
+            // Escape through a symlinked directory.
+            let fault = list_directory(root, "elsewhere").unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+            let fault = read_file(root, "elsewhere/secret.txt", &[]).unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        }
         // Direct absolute escape.
         let outside_path = outside.path().display().to_string();
         let fault = list_directory(root, &outside_path).unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
-        // Escape through a symlinked directory.
-        let fault = list_directory(root, "elsewhere").unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
-        let fault = read_file(root, "elsewhere/secret.txt", &[]).unwrap_err();
         assert!(matches!(fault, FilesFault::OutsideRoot(_)));
         // Dot-dot traversal canonicalizes away: the parent of the root is
         // outside it.
@@ -954,18 +961,23 @@ mod tests {
         let read = read_file(root, &requested.display().to_string(), &skill_roots).unwrap();
         assert_eq!(read.text.as_deref(), Some("# research\n"));
 
-        // A symlink inside the skill root landing OUTSIDE still refuses —
-        // the fence judges where the path lands, not the spelling.
         let outside = tempfile::tempdir().unwrap();
         write(&outside.path().join("secret.txt"), b"x");
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.txt"),
-            skills.path().join("escape.md"),
-        )
-        .unwrap();
-        let requested = skills.path().join("escape.md");
-        let fault = read_file(root, &requested.display().to_string(), &skill_roots).unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        // A symlink inside the skill root landing OUTSIDE still refuses —
+        // the fence judges where the path lands, not the spelling. Unix-only:
+        // creating the link on Windows needs a privilege test hosts lack.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside.path().join("secret.txt"),
+                skills.path().join("escape.md"),
+            )
+            .unwrap();
+            let requested = skills.path().join("escape.md");
+            let fault =
+                read_file(root, &requested.display().to_string(), &skill_roots).unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        }
 
         // Outside every allowed root stays fenced.
         write(&outside.path().join("plain.txt"), b"x");
@@ -1043,6 +1055,8 @@ mod tests {
         );
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn reads_go_through_inside_aliases_and_read_the_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -1074,6 +1088,8 @@ mod tests {
         assert!(matches!(fault, FilesFault::NotFound(_)));
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn cyclic_symlink_chains_fail_closed_not_forever() {
         let dir = tempfile::tempdir().unwrap();
@@ -1114,9 +1130,14 @@ mod tests {
         let resolved = resolve_image_target(root, "shot.png").unwrap();
         assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
         // An inside-root file alias reads its target, not the entry spelling.
-        std::os::unix::fs::symlink(root.join("shot.png"), root.join("alias.png")).unwrap();
-        let resolved = resolve_image_target(root, "alias.png").unwrap();
-        assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
+        // Unix-only: creating a symlink on Windows needs a privilege test
+        // hosts lack.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("shot.png"), root.join("alias.png")).unwrap();
+            let resolved = resolve_image_target(root, "alias.png").unwrap();
+            assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
+        }
         // Directories are not images.
         std::fs::create_dir_all(root.join("src")).unwrap();
         let fault = resolve_image_target(root, "src").unwrap_err();
@@ -1128,12 +1149,16 @@ mod tests {
         write(&root.join(".git/shot.png"), b"\x89PNG");
         let fault = resolve_image_target(root, ".git/shot.png").unwrap_err();
         assert!(matches!(fault, FilesFault::GitExcluded(_)));
-        // An outside-root symlink target never escapes the fence.
-        let outside = tempfile::tempdir().unwrap();
-        write(&outside.path().join("secret.png"), b"\x89PNG");
-        std::os::unix::fs::symlink(outside.path().join("secret.png"), root.join("escape.png"))
-            .unwrap();
-        let fault = resolve_image_target(root, "escape.png").unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        // An outside-root symlink target never escapes the fence. Unix-only:
+        // creating the link on Windows needs a privilege test hosts lack.
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            write(&outside.path().join("secret.png"), b"\x89PNG");
+            std::os::unix::fs::symlink(outside.path().join("secret.png"), root.join("escape.png"))
+                .unwrap();
+            let fault = resolve_image_target(root, "escape.png").unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        }
     }
 }

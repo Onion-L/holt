@@ -250,7 +250,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             std::fs::set_permissions(&temp, meta.permissions())?;
         }
         std::fs::rename(&temp, path)?;
-        std::fs::File::open(parent)?.sync_all()?;
+        crate::store::sync_dir(parent)?;
         Ok(())
     })();
     if result.is_err() {

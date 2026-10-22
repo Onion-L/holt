@@ -592,7 +592,7 @@ fn write_result(path: &Path, text: &str) -> std::io::Result<()> {
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     std::fs::rename(temp, path)?;
-    std::fs::File::open(dir)?.sync_all()
+    crate::store::sync_dir(dir)
 }
 
 fn bounded_result(text: &str, path: &Path) -> Result<String, String> {

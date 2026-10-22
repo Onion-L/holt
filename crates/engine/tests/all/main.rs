@@ -30,6 +30,9 @@ mod overflow_rpc;
 mod path_references_rpc;
 mod permission_gate_rpc;
 mod permission_mode_rpc;
+// The whole file gates its fault-injection tests on unix (chmod-based); the
+// module gate keeps the helpers from going dead on other platforms.
+#[cfg(unix)]
 mod persistence_wedge_rpc;
 mod plan_mode_rpc;
 mod plan_mode_turn_rpc;

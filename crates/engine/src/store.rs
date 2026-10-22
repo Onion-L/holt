@@ -72,6 +72,27 @@ pub(crate) fn id_is_path_safe(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Flush a directory so a rename that just landed in it survives a crash.
+/// On Windows a directory handle opens only with FILE_FLAG_BACKUP_SEMANTICS,
+/// and FlushFileBuffers refuses a read-only handle — a plain
+/// `File::open(dir)` fails with ERROR_ACCESS_DENIED (issue #52).
+pub(crate) fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)?
+            .sync_all()
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+}
+
 /// Per-chat transcript snapshot — the legacy whole-file format
 /// (`transcripts/<chatId>.json`), written before ADR-transcript-append-only-log-per-chat-lock. Never written
 /// anymore; read only as the replay base for chats that predate the log.
@@ -268,7 +289,7 @@ pub(crate) fn rewrite_transcript(
         }
         file.sync_all()?;
         std::fs::rename(&temp, &path)?;
-        std::fs::File::open(dir)?.sync_all()?;
+        sync_dir(dir)?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&temp);

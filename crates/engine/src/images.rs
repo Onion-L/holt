@@ -129,8 +129,7 @@ impl ImageStore {
         let target = self.dir.join(&file_name);
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create the image store: {error}"))?;
-        std::fs::File::open(&self.data_dir)
-            .and_then(|dir| dir.sync_all())
+        crate::store::sync_dir(&self.data_dir)
             .map_err(|error| format!("could not sync the image store: {error}"))?;
         let dir = self.dir.clone();
         let write_target = target.clone();
@@ -368,7 +367,7 @@ fn write_durably(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()>
         file.sync_all()?;
         drop(file);
         std::fs::rename(&temp, target)?;
-        std::fs::File::open(dir)?.sync_all()?;
+        crate::store::sync_dir(dir)?;
         Ok(())
     })();
     if result.is_err() {

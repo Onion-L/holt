@@ -2318,10 +2318,13 @@ fn history_page(
 mod tests {
     use super::{
         MAX_PATCH_BYTES, checkout_identity, classify_status, default_branch, diff_checksum,
-        filter_turn_patch, normalize_path, resolve_existing, status_sides, truncate_patch,
-        turn_start_content,
+        filter_turn_patch, status_sides, truncate_patch, turn_start_content,
     };
+    #[cfg(unix)]
+    use super::{normalize_path, resolve_existing};
+    #[cfg(unix)]
     use git2::Repository;
+    #[cfg(unix)]
     use std::path::Path;
 
     fn names(values: &[&str]) -> Vec<String> {
@@ -2338,6 +2341,8 @@ mod tests {
         out
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn repo_relative_resolves_symlinks_and_missing_targets() {
         // A symlinked root (macOS /var/folders → /private/var/folders) with

@@ -9,7 +9,9 @@ use std::path::Path;
 
 use common::{Fixture, ScriptedProvider};
 use holt_engine::LocalEngine;
-use holt_proto::{WorkspaceEntryKind, WorkspaceFileRead, WorkspaceLineEndings, WorkspaceListing};
+#[cfg(unix)]
+use holt_proto::WorkspaceEntryKind;
+use holt_proto::{WorkspaceFileRead, WorkspaceLineEndings, WorkspaceListing};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use serde_json::json;
 
@@ -22,12 +24,18 @@ fn build_tree(root: &Path) -> tempfile::TempDir {
     fs::write(root.join(".env"), "secret=1\n").unwrap();
     fs::create_dir_all(root.join(".git/refs")).unwrap();
     fs::write(root.join(".git/HEAD"), "ref").unwrap();
-    // Inside-root alias (dir + file), an outside-root link, and a broken one.
-    std::os::unix::fs::symlink(root.join("src"), root.join("lib-alias")).unwrap();
-    std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("main-alias.rs")).unwrap();
     let outside = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(outside.path(), root.join("outside-link")).unwrap();
-    std::os::unix::fs::symlink("/definitely/not/here", root.join("broken-link")).unwrap();
+    // Symlink fixtures are unix-only: on Windows, creating a symlink takes a
+    // privilege (Developer Mode / SeCreateSymbolicLinkPrivilege) test hosts
+    // do not have — CI (macOS) keeps the symlink coverage.
+    #[cfg(unix)]
+    {
+        // Inside-root alias (dir + file), an outside-root link, and a broken one.
+        std::os::unix::fs::symlink(root.join("src"), root.join("lib-alias")).unwrap();
+        std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("main-alias.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("outside-link")).unwrap();
+        std::os::unix::fs::symlink("/definitely/not/here", root.join("broken-link")).unwrap();
+    }
     outside
 }
 
@@ -101,18 +109,20 @@ mod list_workspace_entries {
             json!({ "spaceId": "space-1" }),
         ] {
             let listing = list(&engine, selector).await.unwrap();
-            assert_eq!(
-                names(&listing),
-                [
-                    "lib-alias",
-                    "outside-link",
-                    "src",
-                    ".env",
-                    "broken-link",
-                    "main-alias.rs",
-                    "README.md"
-                ]
-            );
+            // The symlink fixture entries exist on unix only (see build_tree).
+            #[cfg(unix)]
+            let expected = [
+                "lib-alias",
+                "outside-link",
+                "src",
+                ".env",
+                "broken-link",
+                "main-alias.rs",
+                "README.md",
+            ];
+            #[cfg(not(unix))]
+            let expected = ["src", ".env", "README.md"];
+            assert_eq!(names(&listing), expected);
             // `.git` is invisible in any form.
             assert!(!names(&listing).contains(&".git"));
             // Hidden entries are shown.
@@ -142,6 +152,8 @@ mod list_workspace_entries {
         assert!(deep.path.ends_with("src"));
     }
 
+    // The fixture's symlink entries are unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_kinds_report_resolution_and_boundary() {
         let fixture = Fixture::new();
@@ -199,17 +211,20 @@ mod list_workspace_entries {
             matches!(&fault, RpcError::Failed(message) if message.contains("outside")),
             "{fault:?}"
         );
-        // Escape through the outside symlink.
-        let fault = list(
-            &engine,
-            json!({ "spaceId": "space-1", "path": format!("{root}/outside-link") }),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(&fault, RpcError::Failed(message) if message.contains("outside")),
-            "{fault:?}"
-        );
+        // Escape through the outside symlink — unix-only (see build_tree).
+        #[cfg(unix)]
+        {
+            let fault = list(
+                &engine,
+                json!({ "spaceId": "space-1", "path": format!("{root}/outside-link") }),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(&fault, RpcError::Failed(message) if message.contains("outside")),
+                "{fault:?}"
+            );
+        }
         // Dot-dot traversal.
         let fault = list(
             &engine,
@@ -293,6 +308,8 @@ mod read_workspace_file {
         assert_eq!(file.unsupported_reason, None);
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_inside_alias_reads_its_target_and_shares_identity() {
         let fixture = Fixture::new();
@@ -1104,6 +1121,8 @@ mod create_and_rename {
         assert!(Path::new(&root).join("crate/src").is_dir());
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn renames_act_on_symlink_entries_not_targets() {
         let fixture = Fixture::new();
@@ -1198,6 +1217,8 @@ mod create_rename_guards {
         }
     }
 
+    // Unix-only: the whole scenario runs on POSIX permission bits.
+    #[cfg(unix)]
     #[tokio::test]
     async fn permission_failures_refuse_without_side_effects() {
         let fixture = Fixture::new();
@@ -1636,6 +1657,8 @@ mod move_and_trash {
         );
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn moves_act_on_symlink_entries_and_honor_alias_destinations() {
         let fixture = Fixture::new();
@@ -1843,6 +1866,7 @@ mod move_and_trash {
 
 mod read_workspace_image {
     use super::*;
+    #[cfg(unix)]
     use base64::Engine as _;
     use holt_rpc::images::WorkspaceImageData;
 
@@ -1872,6 +1896,8 @@ mod read_workspace_image {
         }
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn reads_validated_bytes_and_reports_the_resolved_path() {
         let fixture = Fixture::new();
@@ -1907,21 +1933,26 @@ mod read_workspace_image {
         let fixture = Fixture::new();
         let _outside = build_tree(fixture.project_dir.path());
         let root = fixture.cwd();
-        // A real PNG outside the root, linked in: the general ReadImage would
-        // happily serve it; the workspace read must refuse at the fence.
         let outside_png = _outside.path().join("secret.png");
         fs::write(&outside_png, png_bytes()).unwrap();
+        // A real PNG outside the root, linked in: the general ReadImage would
+        // happily serve it; the workspace read must refuse at the fence.
+        // Unix-only: the link cannot be created on Windows (see build_tree).
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&outside_png, Path::new(&root).join("escape.png")).unwrap();
         let engine = setup(&fixture).await;
 
-        let fault = fault_of(
-            read_image(
-                &engine,
-                json!({ "spaceId": "space-1", "path": format!("{root}/escape.png") }),
-            )
-            .await,
-        );
-        assert!(fault.contains("outside"), "{fault}");
+        #[cfg(unix)]
+        {
+            let fault = fault_of(
+                read_image(
+                    &engine,
+                    json!({ "spaceId": "space-1", "path": format!("{root}/escape.png") }),
+                )
+                .await,
+            );
+            assert!(fault.contains("outside"), "{fault}");
+        }
 
         let fault = fault_of(
             read_image(
