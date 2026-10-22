@@ -49,8 +49,19 @@ fn hostname() -> String {
     "This device".to_string()
 }
 
+/// The user's home directory. `HOME` is a Unix convention — a plain Windows
+/// process has `USERPROFILE` instead (with `HOMEDRIVE`+`HOMEPATH` as the
+/// last resort), so resolve all three before giving up.
 pub(crate) fn home_dir() -> Option<String> {
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            let mut home = drive;
+            home.push(path);
+            Some(home)
+        })
         .map(|home| home.to_string_lossy().to_string())
         .filter(|home| !home.is_empty())
 }

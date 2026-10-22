@@ -188,8 +188,7 @@ impl Skills {
         let personal = personal_override
             .map(Path::to_path_buf)
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .filter(|home| !home.is_empty())
+                crate::local_fs::home_dir()
                     .map(|home| Path::new(&home).join(".agents").join("skills"))
             })
             .unwrap_or_else(|| PathBuf::from(".agents/skills"));
@@ -315,13 +314,12 @@ impl Skills {
     }
 }
 
-/// `~` at the start of a mention path expands against `HOME`; anything else
-/// passes through untouched.
+/// `~` at the start of a mention path expands against the user's home
+/// directory; anything else passes through untouched.
 fn expand_home(path: &str) -> String {
     path.strip_prefix("~/")
         .map(|rest| {
-            std::env::var_os("HOME")
-                .filter(|home| !home.is_empty())
+            crate::local_fs::home_dir()
                 .map(|home| Path::new(&home).join(rest).to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string())
         })
