@@ -54,7 +54,9 @@ fn data_dir() -> std::path::PathBuf {
 }
 
 fn default_data_dir() -> std::path::PathBuf {
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME not set"));
+    // `home_dir` reads HOME on unix and USERPROFILE on Windows — a bare
+    // HOME expect() panicked on launch where HOME does not exist.
+    let home = std::env::home_dir().expect("could not locate the user's home directory");
     // Keep a locally launched debug build isolated from an installed release
     // app. Both may run at the same time during development.
     #[cfg(debug_assertions)]

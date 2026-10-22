@@ -58,6 +58,7 @@ mod rpc;
 mod scheduler;
 mod settings_record;
 mod shell_env;
+#[cfg(unix)]
 mod shell_groups;
 mod skills;
 mod store;
@@ -346,7 +347,9 @@ impl LocalEngine {
         };
         engine.service.spawn_scheduler();
         // Orphaned shell groups die before any Turn resumes into their
-        // workspace (ADR-turns-resume-from-an-intent-journal).
+        // workspace (ADR-turns-resume-from-an-intent-journal). Unix only:
+        // Windows spawns carry no process-group bookkeeping yet.
+        #[cfg(unix)]
         shell_groups::reap(&shell_groups::registry_dir(&config.data_dir));
         engine.service.resume_cut_turns();
         Ok(engine)

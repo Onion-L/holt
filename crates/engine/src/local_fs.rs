@@ -19,16 +19,31 @@ pub(crate) fn local_device(device_id: &str) -> Device {
 }
 
 /// Bare hostname without any domain suffix ("macbook.local" → "macbook").
+/// `libc::gethostname` is unix-only; Windows names the machine in
+/// COMPUTERNAME, which the system always sets.
 fn hostname() -> String {
-    let mut buf = [0u8; 256];
-    // SAFETY: `buf` is a valid writable buffer of `buf.len()` bytes.
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if rc == 0 {
-        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-        let name = String::from_utf8_lossy(&buf[..end]);
-        let name = name.split('.').next().unwrap_or("").trim();
-        if !name.is_empty() {
-            return name.to_string();
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: `buf` is a valid writable buffer of `buf.len()` bytes.
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        if rc == 0 {
+            let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+            let name = String::from_utf8_lossy(&buf[..end]);
+            let name = name.split('.').next().unwrap_or("").trim();
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(name) = std::env::var("COMPUTERNAME")
+            .ok()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+        {
+            return name;
         }
     }
     "This device".to_string()

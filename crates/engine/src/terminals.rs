@@ -594,7 +594,7 @@ mod tests {
         let terminals = Terminals::default();
         let dir = tempfile::tempdir().unwrap();
 
-        let idle = shell(&terminals, dir.path(), "read");
+        let idle = shell(&terminals, dir.path(), "read line");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let idle_status = terminals
             .list()

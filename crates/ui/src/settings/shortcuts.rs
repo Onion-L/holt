@@ -548,8 +548,12 @@ mod tests {
         // and the display overrides only its key segment.
         assert_eq!(typed_key_char("b", Some("∫")).as_deref(), Some("∫"));
         assert_eq!(
-            display_combo_with_typed_key("mod-alt-b", Some("∫")),
+            crate::settings::display_combo_with_typed_key_on(true, "mod-alt-b", Some("∫")),
             "Cmd+Opt+∫"
+        );
+        assert_eq!(
+            crate::settings::display_combo_with_typed_key_on(false, "mod-alt-b", Some("∫")),
+            "Ctrl+Alt+∫"
         );
         // A keystroke whose character is the key itself records canonically.
         assert_eq!(typed_key_char("b", Some("b")), None);

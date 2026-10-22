@@ -2000,12 +2000,18 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         .input
         .contains(&holt_core::ai::types::ModelInput::Image);
     let search_backend_present = search_backend.is_some();
+    // Windows spawns carry no process-group bookkeeping (see lib.rs), so
+    // only unix registers the Turn's shells with the reaper.
+    #[cfg(unix)]
+    let shell_registry = Some(crate::shell_groups::registry_dir(&runtime.data_dir));
+    #[cfg(not(unix))]
+    let shell_registry = None;
     let mut tools = crate::tools::execution_tools_for_model(
         &cwd,
         allow_images,
         search_backend.clone(),
         attribution.clone(),
-        Some(crate::shell_groups::registry_dir(&runtime.data_dir)),
+        shell_registry,
     );
     let current_chat_id = chat
         .child

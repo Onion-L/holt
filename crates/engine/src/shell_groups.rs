@@ -106,15 +106,47 @@ fn start_time(pid: i32) -> Option<(i64, i64)> {
     (read == size).then_some((info.pbi_start_tvsec as i64, info.pbi_start_tvusec as i64))
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux: field 22 of `/proc/<pid>/stat` — the leader's start time in clock
+/// ticks since boot. Only ever compared for equality against a recorded
+/// value, so the unit does not matter.
+#[cfg(target_os = "linux")]
+fn start_time(pid: i32) -> Option<(i64, i64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    Some((parse_proc_stat_start_time(&stat)?, 0))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn start_time(_pid: i32) -> Option<(i64, i64)> {
     None
+}
+
+/// The start-time token of a `/proc/<pid>/stat` line: index 19 past the
+/// comm — the LAST `)` on the line, since comm itself may hold spaces and
+/// parentheses while nothing after it can.
+#[cfg(any(target_os = "linux", test))]
+fn parse_proc_stat_start_time(stat: &str) -> Option<i64> {
+    let comm_end = stat.rfind(')')?;
+    stat[comm_end + 1..]
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt as _;
+
+    #[test]
+    fn proc_stat_start_time_reads_field_22() {
+        let stat = "1234 (bash) S 1233 1234 1234 34816 5678 4194304 1234 5678 0 0 10 2 3 4 20 0 1 0 987654321 12345678 900";
+        assert_eq!(parse_proc_stat_start_time(stat), Some(987654321));
+        // comm holding spaces and parentheses does not shift the fields.
+        let stat = "12 (my (odd) sh) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 42 0";
+        assert_eq!(parse_proc_stat_start_time(stat), Some(42));
+        assert_eq!(parse_proc_stat_start_time("garbage"), None);
+    }
 
     #[test]
     fn an_orphaned_group_is_killed_and_the_registry_cleared() {

@@ -57,20 +57,24 @@ impl InstanceLock {
                         retries -= 1;
                         std::thread::sleep(std::time::Duration::from_millis(25));
                     }
-                    Some(libc::EWOULDBLOCK) => {
-                        let holder = std::fs::read_to_string(&path).unwrap_or_default();
-                        let holder = holder.trim();
-                        return Err(EngineError::Other(format!(
-                            "another holt engine is already running on {} (pid {}); \
-                             stop it or use a different data dir (HOLT_DATA_DIR)",
-                            data_dir.display(),
-                            if holder.is_empty() { "unknown" } else { holder },
-                        )));
-                    }
+                    Some(libc::EWOULDBLOCK) => return Err(already_running(data_dir, &path)),
                     // Anything else (ENOLCK, filesystem without flock, …) is an
                     // environment problem, not a second engine — surface it as-is.
                     _ => return Err(EngineError::Io(errno)),
                 }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // std's whole-file try_lock maps to LockFileEx — the same
+            // kernel-owned, crash-released advisory lock flock gives unix.
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(already_running(data_dir, &path));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(EngineError::Io(error)),
             }
         }
 
@@ -80,6 +84,18 @@ impl InstanceLock {
         let _ = file.flush();
         Ok(Self { _file: file })
     }
+}
+
+/// The contention error, with the holder's pid when the stamp is readable.
+fn already_running(data_dir: &Path, path: &Path) -> EngineError {
+    let holder = std::fs::read_to_string(path).unwrap_or_default();
+    let holder = holder.trim();
+    EngineError::Other(format!(
+        "another holt engine is already running on {} (pid {}); \
+         stop it or use a different data dir (HOLT_DATA_DIR)",
+        data_dir.display(),
+        if holder.is_empty() { "unknown" } else { holder },
+    ))
 }
 
 #[cfg(all(test, unix))]

@@ -11,23 +11,62 @@
 //! (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) — ask the same shell for its PATH once ([`login_path`]) and
 //! resolve bare command names against it.
 
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
-/// The user's login shell, from the password database.
+/// The user's login shell: the password database's record on unix, cmd.exe
+/// via COMSPEC on Windows (which names the command processor by contract).
 pub(crate) fn login_shell() -> String {
-    resolve_login_shell(
-        passwd_shell().as_deref().map(OsStr::new),
-        std::env::var_os("SHELL").as_deref(),
-    )
+    #[cfg(unix)]
+    {
+        resolve_login_shell(
+            passwd_shell().as_deref().map(OsStr::new),
+            std::env::var_os("SHELL").as_deref(),
+        )
+    }
+    // A SHELL inherited from a git-bash launch names an msys path
+    // (/usr/bin/bash) win32 cannot spawn; the executability bar in
+    // `resolve_login_shell` filters it, leaving COMSPEC.
+    #[cfg(windows)]
+    {
+        resolve_login_shell(
+            std::env::var_os("COMSPEC").as_deref().map(OsStr::new),
+            std::env::var_os("SHELL").as_deref(),
+        )
+    }
+}
+
+/// The argv a one-shot command string runs under: `shell -lc <cmd>` on
+/// unix — a login shell assembles PATH from the user's profiles. On Windows
+/// the same `-lc` holds when the resolved shell IS an sh (git-bash);
+/// anything else is cmd, which takes `/d /s /c` (`/d` skips AutoRun, `/s`
+/// keeps the quoting rules). PowerShell is deliberately not special-cased:
+/// its sh-incompatible quoting buys nothing over cmd.
+pub(crate) fn command_args(shell: &str) -> Vec<&'static str> {
+    #[cfg(windows)]
+    {
+        let name = shell
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(shell)
+            .to_ascii_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        if !matches!(name, "sh" | "bash" | "zsh") {
+            return vec!["/d", "/s", "/c"];
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = shell;
+    vec!["-lc"]
 }
 
 /// The shell recorded for this user in the password database, if any.
+#[cfg(unix)]
 fn passwd_shell() -> Option<String> {
-    #[cfg(unix)]
     {
         // Reentrant lookup: GUI launches need not inherit SHELL from a login shell.
         let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
@@ -56,15 +95,22 @@ fn passwd_shell() -> Option<String> {
 
 /// The executable agent commands run under: the password database's shell for
 /// this user when it names an executable file, else `$SHELL` under the same
-/// bar, else `/bin/sh` — so a broken or missing shell record degrades to the
-/// one shell every Unix guarantees, never to a spawn failure per command.
+/// bar, else `/bin/sh` (cmd.exe on Windows — System32 is always on the spawn
+/// search path) — so a broken or missing shell record degrades to the one
+/// shell the platform guarantees, never to a spawn failure per command.
 fn resolve_login_shell(passwd: Option<&OsStr>, env: Option<&OsStr>) -> String {
     passwd
         .into_iter()
         .chain(env)
         .find(|shell| is_executable_file(shell))
         .map(|shell| shell.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "/bin/sh".into())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "cmd.exe".into()
+            } else {
+                "/bin/sh".into()
+            }
+        })
 }
 
 /// An absolute path to an executable regular file. Metadata only: a candidate

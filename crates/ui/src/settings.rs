@@ -1563,7 +1563,14 @@ mod tests {
             display_combo_with_typed_key_on(false, "mod-alt-b", Some("∫")),
             "Ctrl+Alt+∫"
         );
-        assert_eq!(display_combo_with_typed_key("mod-s", None), "Cmd+S");
+        assert_eq!(
+            display_combo_with_typed_key_on(true, "mod-s", None),
+            "Cmd+S"
+        );
+        assert_eq!(
+            display_combo_with_typed_key_on(false, "mod-s", None),
+            "Ctrl+S"
+        );
     }
 
     #[test]

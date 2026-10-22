@@ -947,7 +947,7 @@ impl Transcript {
             // X11 middle-click paste parity, including the case where the
             // anchor row has virtualized away and cannot receive mouse-up.
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-            cx.write_to_primary(ClipboardItem::new_string(_text));
+            _cx.write_to_primary(gpui::ClipboardItem::new_string(_text));
         }
     }
 

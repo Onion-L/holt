@@ -1,4 +1,5 @@
 /target
+/target-xwin
 **/*.rs.bk
 # Local-only scratch space — holds signing/notary credentials, never commit.
 /ignore/

@@ -668,9 +668,11 @@ impl Shell for LocalExecutionEnv {
             // `-l` sources the user's login profiles — the shell owns PATH and
             // the rest of its environment, so no probe or override here (see
             // `shell_env`). `-c` keeps the session non-interactive: no prompt,
-            // no stdin reads, exit code straight from the command.
+            // no stdin reads, exit code straight from the command. On Windows
+            // `command_args` swaps `-lc` for cmd's `/d /s /c` unless the
+            // resolved shell is a real sh.
             let mut cmd = Command::new(&self.shell);
-            cmd.arg("-lc")
+            cmd.args(crate::shell_env::command_args(&self.shell))
                 .arg(command)
                 .current_dir(&cwd)
                 .stdin(Stdio::null())
@@ -682,7 +684,14 @@ impl Shell for LocalExecutionEnv {
             match options.and_then(|options| options.inherit_env) {
                 Some(false) => {
                     cmd.env_clear();
-                    cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+                    cmd.env(
+                        "PATH",
+                        if cfg!(windows) {
+                            r"C:\Windows\System32"
+                        } else {
+                            "/usr/bin:/bin:/usr/sbin:/sbin"
+                        },
+                    );
                     if let Some(env) = options.and_then(|options| options.env.as_ref()) {
                         cmd.envs(env);
                     }

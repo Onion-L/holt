@@ -380,7 +380,7 @@ fn maintain_dir(data_dir: &Path, chat_id: &str, dir: &Path, limits: &Limits) -> 
         }
         let _ = std::fs::remove_file(&marker);
         repack = false;
-        if steps.is_empty() || dir_bytes(&store) <= limits.bytes {
+        if steps.is_empty() || payload_bytes(&store) <= limits.bytes {
             return Ok(());
         }
         drop = steps.len().div_ceil(5);
@@ -419,6 +419,16 @@ pub(crate) fn mark_for_repack(data_dir: &Path, chat_id: &str) {
     if let Some(dir) = chat_dir(data_dir, chat_id) {
         let _ = std::fs::write(dir.join("repack"), b"");
     }
+}
+
+/// The store's billable size: the git OBJECT payload only. The bare repo
+/// around it carries platform-dependent metadata — libgit2's init copies
+/// the system git templates (~24 KiB of sample hooks on Debian) when they
+/// exist — which the checkpoint budget must not count: it can exceed a
+/// small budget on its own and would send maintenance deleting every step
+/// without the store ever "fitting".
+fn payload_bytes(store: &Path) -> u64 {
+    dir_bytes(&store.join("objects"))
 }
 
 fn dir_bytes(path: &Path) -> u64 {
@@ -511,7 +521,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         // Incompressible enough: each blob is distinct, 64 KiB.
         let dir = chat_with_steps(data.path(), 10, 64 * 1024);
-        let budget = dir_bytes(&dir.join("objects")) / 2;
+        let budget = payload_bytes(&dir.join("objects")) / 2;
         maintain_within(
             data.path(),
             "chat-1",
@@ -523,7 +533,7 @@ mod tests {
         );
         let kept = load(data.path(), "chat-1");
         assert!(!kept.is_empty() && kept.len() < 10, "{}", kept.len());
-        assert!(dir_bytes(&dir.join("objects")) <= budget);
+        assert!(payload_bytes(&dir.join("objects")) <= budget);
         assert_eq!(kept.last().unwrap().tool_call_id, "c9", "the newest stay");
     }
 
