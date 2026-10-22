@@ -87,15 +87,27 @@ pub fn caption_buttons_width(count: usize) -> f32 {
     count as f32 * 24.0 + (count as f32 - 1.0) * 2.0
 }
 
+/// Width of the Windows-only titlebar identity (16px app icon + 6px gap +
+/// the "holt" label) that precedes the cluster, WinUI-style.
+pub const WINDOWS_IDENTITY_WIDTH: f32 = 16.0 + 6.0 + 22.0;
+
 /// Where the cluster's first button starts, from the window's left edge.
 /// `linux_left_captions` is the number of caption buttons holt draws at the
 /// top-left on Linux (GNOME `close:…` layouts) — the app cluster follows them
-/// at the shared 2px rhythm.
-pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captions: usize) -> f32 {
+/// at the shared 2px rhythm. `windows_identity` reserves room for the
+/// Windows-only icon + title ahead of the cluster.
+pub fn cluster_buttons_start(
+    is_macos: bool,
+    fullscreen: bool,
+    linux_left_captions: usize,
+    windows_identity: bool,
+) -> f32 {
     if is_macos {
         titlebar_cluster_start(fullscreen)
     } else if linux_left_captions > 0 {
         10.0 + caption_buttons_width(linux_left_captions) + 2.0
+    } else if windows_identity {
+        10.0 + WINDOWS_IDENTITY_WIDTH + TITLEBAR_GROUP_GAP
     } else {
         10.0
     }
@@ -107,9 +119,12 @@ pub fn cluster_clearance(
     is_macos: bool,
     fullscreen: bool,
     linux_left_captions: usize,
+    windows_identity: bool,
     container_pad: f32,
 ) -> f32 {
-    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions) + CLUSTER_BUTTONS_WIDTH + 8.0
+    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions, windows_identity)
+        + CLUSTER_BUTTONS_WIDTH
+        + 8.0
         - container_pad)
         .max(0.0)
 }
@@ -186,7 +201,12 @@ impl Shell {
         let is_macos = cfg!(target_os = "macos");
         let cluster = self.eval_tween(
             self.titlebar_tween,
-            cluster_buttons_start(is_macos, fullscreen, self.linux_left_caption_count()),
+            cluster_buttons_start(
+                is_macos,
+                fullscreen,
+                self.linux_left_caption_count(),
+                cfg!(target_os = "windows"),
+            ),
         );
         cluster + CLUSTER_BUTTONS_WIDTH + TITLEBAR_IDENTITY_GAP
     }
@@ -298,6 +318,32 @@ impl Shell {
                     .flex_none()
                     .h_full()
                     .w(px(caption_buttons_width(self.linux_left_caption_count())))
+            }))
+            // Windows-only WinUI identity: app icon + title ahead of the
+            // cluster (macOS has the traffic lights there; Linux follows the
+            // desktop's own caption layout). No id/occlude/listeners — like
+            // the gaps between cluster buttons, presses fall through to the
+            // titlebar drag strip below.
+            .children(cfg!(target_os = "windows").then(|| {
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .mr(px(TITLEBAR_GROUP_GAP))
+                    .child(
+                        img(crate::app_icon::logo_image())
+                            .size(px(16.0))
+                            .rounded(px(4.0))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child("holt"),
+                    )
             }))
             .child(window_control_button_with(
                 "toggle-sidebar",
@@ -521,6 +567,7 @@ impl Shell {
                 cfg!(target_os = "macos"),
                 self.fullscreen.unwrap_or(false),
                 self.linux_left_caption_count(),
+                cfg!(target_os = "windows"),
             ),
         );
         let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
@@ -794,6 +841,7 @@ impl Shell {
         }
 
         let theme = Theme::of(cx);
+        let active = window.is_window_active();
         let (maximize_id, maximize_glyph) = if window.is_maximized() {
             ("window-restore", "\u{e923}")
         } else {
@@ -805,15 +853,19 @@ impl Shell {
                 .absolute()
                 .top_0()
                 .right_0()
-                .h(px(Theme::TITLEBAR_HEIGHT))
                 .flex()
                 .flex_row()
-                .font_family("Segoe Fluent Icons")
+                // Segoe MDL2 Assets ships on both Windows 10 and 11 and holds
+                // the same Chrome* caption codepoints; Segoe Fluent Icons is
+                // Windows-11-only, and gpui's per-glyph fallback cannot save a
+                // primary family that does not resolve at all.
+                .font_family("Segoe MDL2 Assets")
                 .child(windows_caption_button(
                     "window-minimize",
                     "\u{e921}",
                     WindowControlArea::Min,
                     theme,
+                    active,
                     false,
                 ))
                 .child(windows_caption_button(
@@ -821,6 +873,7 @@ impl Shell {
                     maximize_glyph,
                     WindowControlArea::Max,
                     theme,
+                    active,
                     false,
                 ))
                 .child(windows_caption_button(
@@ -828,6 +881,7 @@ impl Shell {
                     "\u{e8bb}",
                     WindowControlArea::Close,
                     theme,
+                    active,
                     true,
                 ))
                 .into_any_element(),
@@ -1134,7 +1188,11 @@ fn window_control_button_with(
         .child(content)
 }
 
-const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
+// Native Windows caption metrics (WinUI / Win32): 46px-wide buttons, 32px
+// tall, flush with the window's top-right corner. The remaining strip of the
+// 38px titlebar below them stays drag surface.
+const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
+const WINDOWS_CAPTION_HEIGHT: f32 = 32.0;
 const WINDOWS_CAPTION_WIDTH: f32 = WINDOWS_CAPTION_BUTTON_WIDTH * 3.0;
 
 /// Right padding for titlebar content: past the native Windows caption
@@ -1150,41 +1208,42 @@ fn titlebar_right_padding(is_windows: bool, linux_right_captions: usize, base: f
     }
 }
 
-/// A Windows-owned caption target using the same system glyphs and native
-/// non-client hit-test areas as GPUI/Zed's platform titlebar.
+/// A Windows-owned caption target at native metrics (46×32) using the system
+/// Segoe glyphs and native non-client hit-test areas as GPUI/Zed's platform
+/// titlebar. `active` follows `Window::is_window_active`: like the native
+/// caption row, the glyphs dim while the window is in the background.
 fn windows_caption_button(
     id: &'static str,
     glyph: &'static str,
     area: WindowControlArea,
     theme: &Theme,
+    active: bool,
     close: bool,
 ) -> impl IntoElement {
+    let fg = if active { theme.text } else { theme.text_muted };
     let (hover_bg, hover_fg, active_bg, active_fg) = if close {
         let red: gpui::Hsla = gpui::rgb(0xe81123).into();
-        (
-            red,
-            gpui::white(),
-            red.opacity(0.8),
-            gpui::white().opacity(0.8),
-        )
+        // Native pressed state: a darker red, not a fade of the hover red.
+        let pressed: gpui::Hsla = gpui::rgb(0xc42b1c).into();
+        (red, gpui::white(), pressed, gpui::white())
     } else {
         (
             theme.glass_hover(),
-            theme.text,
+            fg,
             theme.glass_hover().opacity(0.7),
-            theme.text,
+            fg,
         )
     };
     div()
         .id(id)
         .w(px(WINDOWS_CAPTION_BUTTON_WIDTH))
-        .h_full()
+        .h(px(WINDOWS_CAPTION_HEIGHT))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .text_size(crate::typography::ui_rems(10.0))
-        .text_color(theme.text)
+        .text_color(fg)
         .hover(move |style| style.bg(hover_bg).text_color(hover_fg))
         .active(move |style| style.bg(active_bg).text_color(active_fg))
         .occlude()
@@ -1369,7 +1428,8 @@ mod tests {
 
     #[test]
     fn windows_caption_controls_reserve_titlebar_space() {
-        assert_eq!(titlebar_right_padding(true, 0, 16.0), 124.0);
+        // Native 46px × 3 = 138px caption row.
+        assert_eq!(titlebar_right_padding(true, 0, 16.0), 154.0);
         assert_eq!(titlebar_right_padding(false, 0, 16.0), 16.0);
     }
 
@@ -1386,11 +1446,34 @@ mod tests {
         assert_eq!(titlebar_right_padding(false, 1, 16.0), 16.0 + 10.0 + 24.0);
         // Left-side captions ("close:…" layouts) shift the app cluster right
         // by the button row + one 2px gap.
-        assert_eq!(cluster_buttons_start(false, false, 0), 10.0);
-        assert_eq!(cluster_buttons_start(false, false, 1), 10.0 + 24.0 + 2.0);
-        assert_eq!(cluster_buttons_start(false, false, 3), 10.0 + 76.0 + 2.0);
+        assert_eq!(cluster_buttons_start(false, false, 0, false), 10.0);
+        assert_eq!(
+            cluster_buttons_start(false, false, 1, false),
+            10.0 + 24.0 + 2.0
+        );
+        assert_eq!(
+            cluster_buttons_start(false, false, 3, false),
+            10.0 + 76.0 + 2.0
+        );
         // macOS ignores the Linux caption count entirely.
-        assert_eq!(cluster_buttons_start(true, false, 3), 88.0);
+        assert_eq!(cluster_buttons_start(true, false, 3, false), 88.0);
+    }
+
+    #[test]
+    fn windows_identity_shifts_the_cluster_start() {
+        // Windows: the icon + "holt" label precede the cluster, one group gap
+        // away — and only when no Linux left captions claim the edge.
+        assert_eq!(
+            cluster_buttons_start(false, false, 0, true),
+            10.0 + WINDOWS_IDENTITY_WIDTH + TITLEBAR_GROUP_GAP
+        );
+        assert_eq!(
+            cluster_buttons_start(false, false, 1, true),
+            10.0 + 24.0 + 2.0,
+            "Linux left captions win the edge over the Windows identity"
+        );
+        // The identity never moves the macOS cluster.
+        assert_eq!(cluster_buttons_start(true, false, 0, true), 88.0);
     }
 
     #[test]
@@ -1417,18 +1500,26 @@ mod tests {
     fn cluster_clearance_clears_the_overlay_buttons() {
         // Linux: buttons at 10..140; a 16px-padded header needs 116 more px
         // to put content at 140 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 132.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 138.0);
+        assert_eq!(cluster_clearance(false, false, 0, false, 16.0), 132.0);
+        assert_eq!(cluster_clearance(false, false, 0, false, 10.0), 138.0);
         // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 132.0 + 26.0);
+        assert_eq!(
+            cluster_clearance(false, false, 1, false, 16.0),
+            132.0 + 26.0
+        );
+        // Windows: the identity shifts the buttons one identity width over.
+        assert_eq!(
+            cluster_clearance(false, false, 0, true, 16.0),
+            132.0 + WINDOWS_IDENTITY_WIDTH + TITLEBAR_GROUP_GAP
+        );
         // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
-            cluster_clearance(true, false, 0, 16.0),
+            cluster_clearance(true, false, 0, false, 16.0),
             88.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
         );
         // macOS fullscreen: cluster reclaims the inset (starts at 12).
         assert_eq!(
-            cluster_clearance(true, true, 0, 16.0),
+            cluster_clearance(true, true, 0, false, 16.0),
             12.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
         );
     }
