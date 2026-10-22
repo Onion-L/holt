@@ -783,6 +783,18 @@ impl Theme {
     pub const TITLEBAR_HEIGHT: f32 = 38.0;
     /// Downward shift of titlebar content within the bar.
     pub const TITLEBAR_TOP_PAD: f32 = 2.0;
+    /// Top inset content keeps to clear the titlebar band. Everywhere but
+    /// Windows the titlebar is an overlay over the full-height content, so
+    /// content pads itself down by [`Self::TITLEBAR_HEIGHT`]; Windows draws a
+    /// dedicated strip in normal flow (Kimi-desktop layout), where content
+    /// already starts below it and needs no inset at all.
+    pub fn chrome_top_inset() -> f32 {
+        if cfg!(target_os = "windows") {
+            0.0
+        } else {
+            Self::TITLEBAR_HEIGHT
+        }
+    }
     /// Reserved status strip under the content outlet (holt `h-6`) — the
     /// WorkingIndicator row; reserving it keeps the composer from shifting.
     pub const STATUS_STRIP_HEIGHT: f32 = 24.0;

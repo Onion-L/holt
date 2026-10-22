@@ -5,10 +5,16 @@
 
 use super::*;
 
-/// Vertical pane resize hitboxes yield the global titlebar. Keeping this in
-/// the shared constructor makes left/right seams mirror each other and avoids
-/// relying on paint order when chrome crosses an animated pane boundary.
-pub(super) const PANE_RESIZE_HITBOX_TOP: f32 = Theme::TITLEBAR_HEIGHT;
+/// Vertical pane resize hitboxes yield the top chrome: the overlaid titlebar
+/// band on macOS/Linux (Windows runs a dedicated strip in normal flow, so the
+/// panes there already start below it). Keeping this in the shared constructor
+/// makes left/right seams mirror each other and avoids relying on paint order
+/// when chrome crosses an animated pane boundary.
+pub(super) const PANE_RESIZE_HITBOX_TOP: f32 = if cfg!(target_os = "windows") {
+    0.0
+} else {
+    Theme::TITLEBAR_HEIGHT
+};
 
 pub(super) fn stable_panel_content_width(target: f32, transition: Option<(f32, f32)>) -> f32 {
     transition.map(|(from, to)| from.max(to)).unwrap_or(target)

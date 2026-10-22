@@ -87,27 +87,16 @@ pub fn caption_buttons_width(count: usize) -> f32 {
     count as f32 * 24.0 + (count as f32 - 1.0) * 2.0
 }
 
-/// Width of the Windows-only titlebar identity (16px app icon + 6px gap +
-/// the "holt" label) that precedes the cluster, WinUI-style.
-pub const WINDOWS_IDENTITY_WIDTH: f32 = 16.0 + 6.0 + 22.0;
-
 /// Where the cluster's first button starts, from the window's left edge.
 /// `linux_left_captions` is the number of caption buttons holt draws at the
 /// top-left on Linux (GNOME `close:…` layouts) — the app cluster follows them
-/// at the shared 2px rhythm. `windows_identity` reserves room for the
-/// Windows-only icon + title ahead of the cluster.
-pub fn cluster_buttons_start(
-    is_macos: bool,
-    fullscreen: bool,
-    linux_left_captions: usize,
-    windows_identity: bool,
-) -> f32 {
+/// at the shared 2px rhythm. Windows never renders the overlay cluster: its
+/// titlebar is the dedicated strip in normal flow.
+pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captions: usize) -> f32 {
     if is_macos {
         titlebar_cluster_start(fullscreen)
     } else if linux_left_captions > 0 {
         10.0 + caption_buttons_width(linux_left_captions) + 2.0
-    } else if windows_identity {
-        10.0 + WINDOWS_IDENTITY_WIDTH + TITLEBAR_GROUP_GAP
     } else {
         10.0
     }
@@ -119,12 +108,9 @@ pub fn cluster_clearance(
     is_macos: bool,
     fullscreen: bool,
     linux_left_captions: usize,
-    windows_identity: bool,
     container_pad: f32,
 ) -> f32 {
-    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions, windows_identity)
-        + CLUSTER_BUTTONS_WIDTH
-        + 8.0
+    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions) + CLUSTER_BUTTONS_WIDTH + 8.0
         - container_pad)
         .max(0.0)
 }
@@ -201,12 +187,7 @@ impl Shell {
         let is_macos = cfg!(target_os = "macos");
         let cluster = self.eval_tween(
             self.titlebar_tween,
-            cluster_buttons_start(
-                is_macos,
-                fullscreen,
-                self.linux_left_caption_count(),
-                cfg!(target_os = "windows"),
-            ),
+            cluster_buttons_start(is_macos, fullscreen, self.linux_left_caption_count()),
         );
         cluster + CLUSTER_BUTTONS_WIDTH + TITLEBAR_IDENTITY_GAP
     }
@@ -214,7 +195,27 @@ impl Shell {
     /// The unified window titlebar: chat → the session tab strip; settings →
     /// the section label. Full-width on the glass shell; the traffic lights
     /// and control cluster overlay its left end.
+    ///
+    /// On Windows this renders as a normal FLOW row at the top of the content
+    /// column (the dedicated strip above it owns the drag surface, menus, and
+    /// captions): the row carries the navigation cluster — back/forward, the
+    /// new-session `+`, and the "..." nav menu.
     pub(super) fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if cfg!(target_os = "windows") {
+            if matches!(self.route, Route::Chat) {
+                return self.render_session_title_bar_windows(cx);
+            }
+            let row = div()
+                .h(px(Theme::TITLEBAR_HEIGHT))
+                .w_full()
+                .flex_none()
+                .flex()
+                .items_center()
+                .pl(px(Theme::SPACE_SM))
+                .pr(px(TITLEBAR_ACTION_EDGE_INSET))
+                .child(self.render_windows_nav_cluster(cx));
+            return row.into_any_element();
+        }
         match self.route {
             Route::Chat => self.render_session_title_bar(cx),
             Route::Settings(_) | Route::ChatManager | Route::Scheduled => {
@@ -230,6 +231,168 @@ impl Shell {
                     .into_any_element()
             }
         }
+    }
+
+    /// The Windows titlebar strip (Kimi-desktop layout): a dedicated band in
+    /// normal flow carrying the app identity, the sidebar toggle, and the
+    /// File/Edit/View/Help menus, plus the update pill when the engine
+    /// offers a release. The native caption buttons still overlay its right
+    /// end from the root (`render_windows_caption_controls`); the band
+    /// itself is the window's drag surface. `None` off Windows.
+    pub(super) fn render_windows_strip(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !cfg!(target_os = "windows") {
+            return None;
+        }
+        let theme = Theme::of(cx).clone();
+        let update_version = self.state.read(cx).update.available.clone();
+        let strip = div()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .pl(px(TITLEBAR_CLUSTER_PAD))
+            // The root-level caption overlay owns the right end.
+            .pr(px(WINDOWS_CAPTION_WIDTH))
+            .bg(theme.bg)
+            .border_b_1()
+            .border_color(theme.border)
+            // The app identity (macOS has the traffic lights here; Linux
+            // follows the desktop's own caption layout). No listeners —
+            // presses fall through to the strip's drag surface.
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .mr(px(Theme::SPACE_SM))
+                    .child(
+                        img(crate::app_icon::logo_image())
+                            .size(px(16.0))
+                            .rounded(px(4.0))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child("holt"),
+                    ),
+            )
+            .child(window_control_button_with(
+                "toggle-sidebar",
+                // The glyph morphs with the pane: progress rides the
+                // sidebar's own width tween, so the icon and the width share
+                // one clock (0-wide collapsed target → closed glyph).
+                icons::sidebar_glyph(
+                    (self.eval_tween(self.sidebar_tween, self.sidebar_target())
+                        / self.settings.sidebar_width.max(1.0))
+                    .clamp(0.0, 1.0),
+                    false,
+                    16.0,
+                    theme.text_muted,
+                )
+                .into_any_element(),
+                &theme,
+                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+            ))
+            .child(div().w(px(6.0)).flex_none())
+            .child(self.render_menu_bar(&theme, cx))
+            .child(div().flex_1())
+            .when_some(update_version, |el, version| {
+                el.child(
+                    div()
+                        .id("strip-update")
+                        .flex_none()
+                        .h(px(22.0))
+                        .px(px(10.0))
+                        .mr(px(Theme::SPACE_SM))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .rounded_full()
+                        .bg(theme.accent)
+                        .cursor_pointer()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.update_dialog = true;
+                            cx.notify();
+                        }))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| {
+                                crate::popover::TextTooltip(
+                                    format!("Update to Holt {version}").into(),
+                                )
+                            })
+                            .into()
+                        })
+                        .child(
+                            icon(icons::DOWNLOAD_MINIMALISTIC)
+                                .size(px(12.0))
+                                .text_color(theme.on_accent),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(11.5))
+                                .text_color(theme.on_accent)
+                                .child("Update"),
+                        ),
+                )
+            });
+        Some(
+            self.titlebar_drag_region("windows-titlebar-strip", strip, cx)
+                .into_any_element(),
+        )
+    }
+
+    /// The Windows navigation cluster at the content header's left — the
+    /// back/forward pair, the new-session `+`, and the "..." nav menu
+    /// (Scheduled / Chat manager). These live in the overlay cluster on
+    /// macOS/Linux; Windows dropped that overlay for the strip.
+    pub(super) fn render_windows_nav_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let can_back = self.nav.can_back();
+        let can_forward = self.nav.can_forward();
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(TITLEBAR_CONTROL_GAP))
+            .child(nav_history_button(
+                "nav-back",
+                icons::ARROW_LEFT,
+                can_back,
+                &theme,
+                cx.listener(|this, _, _, cx| this.navigate_back(cx)),
+            ))
+            .child(nav_history_button(
+                "nav-forward",
+                icons::ARROW_RIGHT,
+                can_forward,
+                &theme,
+                cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
+            ))
+            // The new-session `+`, on every route.
+            .child(
+                div()
+                    .ml(px(TITLEBAR_GROUP_GAP - TITLEBAR_CONTROL_GAP))
+                    .flex_none()
+                    .child(window_control_button(
+                        "titlebar-new-session",
+                        icons::PLUS,
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                    )),
+            )
+            .child(self.render_titlebar_menu(&theme, cx))
+            .into_any_element()
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
@@ -293,6 +456,12 @@ impl Shell {
     /// container has no id/listeners — everything between the buttons falls
     /// through to the titlebar drag strips below.
     pub(super) fn render_titlebar_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // Windows draws the dedicated strip instead: the identity and sidebar
+        // toggle live in it (`render_windows_strip`), the navigation cluster
+        // in the content header (`render_windows_nav_cluster`).
+        if cfg!(target_os = "windows") {
+            return div().into_any_element();
+        }
         let theme = Theme::of(cx).clone();
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
@@ -318,32 +487,6 @@ impl Shell {
                     .flex_none()
                     .h_full()
                     .w(px(caption_buttons_width(self.linux_left_caption_count())))
-            }))
-            // Windows-only WinUI identity: app icon + title ahead of the
-            // cluster (macOS has the traffic lights there; Linux follows the
-            // desktop's own caption layout). No id/occlude/listeners — like
-            // the gaps between cluster buttons, presses fall through to the
-            // titlebar drag strip below.
-            .children(cfg!(target_os = "windows").then(|| {
-                div()
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .mr(px(TITLEBAR_GROUP_GAP))
-                    .child(
-                        img(crate::app_icon::logo_image())
-                            .size(px(16.0))
-                            .rounded(px(4.0))
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(theme.text_muted)
-                            .child("holt"),
-                    )
             }))
             .child(window_control_button_with(
                 "toggle-sidebar",
@@ -560,18 +703,23 @@ impl Shell {
 
         // Anchor to the sidebar seam (tracking its tween) so the trigger
         // lines up with the sidebar's view-options button below; a
-        // collapsed or narrow sidebar parks it just past the `+`.
-        let buttons_start = self.eval_tween(
-            self.titlebar_tween,
-            cluster_buttons_start(
-                cfg!(target_os = "macos"),
-                self.fullscreen.unwrap_or(false),
-                self.linux_left_caption_count(),
-                cfg!(target_os = "windows"),
-            ),
-        );
-        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
-        let menu_ml = titlebar_menu_margin(buttons_start, sidebar_now);
+        // collapsed or narrow sidebar parks it just past the `+`. On Windows
+        // the trigger sits in the content header's nav cluster instead —
+        // one group gap past the `+`, no seam tracking.
+        let menu_ml = if cfg!(target_os = "windows") {
+            TITLEBAR_GROUP_GAP - TITLEBAR_CONTROL_GAP
+        } else {
+            let buttons_start = self.eval_tween(
+                self.titlebar_tween,
+                cluster_buttons_start(
+                    cfg!(target_os = "macos"),
+                    self.fullscreen.unwrap_or(false),
+                    self.linux_left_caption_count(),
+                ),
+            );
+            let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
+            titlebar_menu_margin(buttons_start, sidebar_now)
+        };
         div()
             .ml(px(menu_ml))
             .flex_none()
@@ -1446,34 +1594,11 @@ mod tests {
         assert_eq!(titlebar_right_padding(false, 1, 16.0), 16.0 + 10.0 + 24.0);
         // Left-side captions ("close:…" layouts) shift the app cluster right
         // by the button row + one 2px gap.
-        assert_eq!(cluster_buttons_start(false, false, 0, false), 10.0);
-        assert_eq!(
-            cluster_buttons_start(false, false, 1, false),
-            10.0 + 24.0 + 2.0
-        );
-        assert_eq!(
-            cluster_buttons_start(false, false, 3, false),
-            10.0 + 76.0 + 2.0
-        );
+        assert_eq!(cluster_buttons_start(false, false, 0), 10.0);
+        assert_eq!(cluster_buttons_start(false, false, 1), 10.0 + 24.0 + 2.0);
+        assert_eq!(cluster_buttons_start(false, false, 3), 10.0 + 76.0 + 2.0);
         // macOS ignores the Linux caption count entirely.
-        assert_eq!(cluster_buttons_start(true, false, 3, false), 88.0);
-    }
-
-    #[test]
-    fn windows_identity_shifts_the_cluster_start() {
-        // Windows: the icon + "holt" label precede the cluster, one group gap
-        // away — and only when no Linux left captions claim the edge.
-        assert_eq!(
-            cluster_buttons_start(false, false, 0, true),
-            10.0 + WINDOWS_IDENTITY_WIDTH + TITLEBAR_GROUP_GAP
-        );
-        assert_eq!(
-            cluster_buttons_start(false, false, 1, true),
-            10.0 + 24.0 + 2.0,
-            "Linux left captions win the edge over the Windows identity"
-        );
-        // The identity never moves the macOS cluster.
-        assert_eq!(cluster_buttons_start(true, false, 0, true), 88.0);
+        assert_eq!(cluster_buttons_start(true, false, 3), 88.0);
     }
 
     #[test]
@@ -1500,26 +1625,18 @@ mod tests {
     fn cluster_clearance_clears_the_overlay_buttons() {
         // Linux: buttons at 10..140; a 16px-padded header needs 116 more px
         // to put content at 140 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, false, 16.0), 132.0);
-        assert_eq!(cluster_clearance(false, false, 0, false, 10.0), 138.0);
+        assert_eq!(cluster_clearance(false, false, 0, 16.0), 132.0);
+        assert_eq!(cluster_clearance(false, false, 0, 10.0), 138.0);
         // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(
-            cluster_clearance(false, false, 1, false, 16.0),
-            132.0 + 26.0
-        );
-        // Windows: the identity shifts the buttons one identity width over.
-        assert_eq!(
-            cluster_clearance(false, false, 0, true, 16.0),
-            132.0 + WINDOWS_IDENTITY_WIDTH + TITLEBAR_GROUP_GAP
-        );
+        assert_eq!(cluster_clearance(false, false, 1, 16.0), 132.0 + 26.0);
         // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
-            cluster_clearance(true, false, 0, false, 16.0),
+            cluster_clearance(true, false, 0, 16.0),
             88.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
         );
         // macOS fullscreen: cluster reclaims the inset (starts at 12).
         assert_eq!(
-            cluster_clearance(true, true, 0, false, 16.0),
+            cluster_clearance(true, true, 0, 16.0),
             12.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
         );
     }

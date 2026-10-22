@@ -93,10 +93,15 @@ pub const SPRING_SETTLE_GRACE_MS: u64 = 500;
 /// Teleport when farther than this many viewports from the end; glide the rest.
 pub const GLIDE_MAX_VIEWPORTS: f32 = 2.5;
 /// A freshly-sent prompt rests this far below the transcript viewport's top
-/// when it is pulled up to the top (no reply room below it). The titlebar
-/// overlays the full-height list, so its height is part of the inset; the
-/// extra 10px matches the first row's breathing room.
-pub(crate) const OWN_SEND_TOP_INSET_PX: f32 = Theme::TITLEBAR_HEIGHT + 10.0;
+/// when it is pulled up to the top (no reply room below it). On macOS/Linux
+/// the titlebar overlays the full-height list, so its height is part of the
+/// inset; on Windows the dedicated strip sits in normal flow above the list
+/// and only the 10px breathing room remains.
+pub(crate) const OWN_SEND_TOP_INSET_PX: f32 = if cfg!(target_os = "windows") {
+    10.0
+} else {
+    Theme::TITLEBAR_HEIGHT + 10.0
+};
 /// The fraction of the viewport height a freshly-sent prompt must leave free
 /// below itself (on top of the bottom chrome pad) to hold in place instead of
 /// gliding to the top. Less room than this reads as "the reply won't fit" —

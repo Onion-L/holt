@@ -1178,8 +1178,9 @@ impl Shell {
             .when(!theme.is_glass(), |el| el.bg(bg))
             .overflow_hidden()
             // The titlebar is a glass overlay over the full-height content
-            // row; the panel's own chrome starts below it.
-            .pt(px(Theme::TITLEBAR_HEIGHT))
+            // row on macOS/Linux; the panel's own chrome starts below it.
+            // Windows draws a dedicated strip in normal flow instead.
+            .pt(px(Theme::chrome_top_inset()))
             .child(content);
         let target = self.right_target(cx);
         self.right_pane_container(

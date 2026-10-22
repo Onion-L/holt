@@ -141,16 +141,18 @@ impl Transcript {
     /// computed from the SAME live state at click time rather than cached
     /// from a render, so a click can never inherit a stale geometry.
     pub(super) fn row_outer_pads(&self, ix: usize, row: &Row) -> (f32, f32) {
-        // The viewport spans the full window (under the titlebar): the first
-        // row's gap adds the titlebar's height so a top-scrolled transcript
-        // rests below the chrome it fades under. The right pane already pads
-        // for the titlebar — an override instance's first row keeps only the
+        // The viewport spans the full window (under the titlebar overlay on
+        // macOS/Linux): the first row's gap adds the titlebar's height so a
+        // top-scrolled transcript rests below the chrome it fades under.
+        // Windows draws a dedicated strip in normal flow, so only the
+        // breathing room remains. The right pane already pads for the
+        // titlebar — an override instance's first row keeps only the
         // ordinary turn gap, or the content sits double-chrome low.
         let top_gap = if ix == 0 {
             if self.doc_override.is_some() {
                 Theme::SPACE_LG
             } else {
-                Theme::TITLEBAR_HEIGHT + Theme::SPACE_LG + 10.0
+                Theme::chrome_top_inset() + Theme::SPACE_LG + 10.0
             }
         } else {
             top_gap_for(ix.checked_sub(1).and_then(|i| self.rows.get(i)), row)
