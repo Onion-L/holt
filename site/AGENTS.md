@@ -1,11 +1,13 @@
 # site — Astro + React landing page
 
-- Three pages (`/` Billboard, `/changelog` Coast road, `/og` OG capture
-  template) render the chosen prototype variant's markup verbatim as static
-  Astro HTML; React controllers (`src/components/*Controller.tsx`) render
-  nothing and only resolve version/dmg links from the latest GitHub release.
-  Keep rendered output byte-identical to the prototypes unless asked otherwise
-  — hydrating the markup itself with React changes text rasterization.
+- Four pages (`/` Billboard, `/changelog` and `/download` Coast road, `/og`
+  OG capture template) render the chosen prototype variant's markup verbatim
+  as static Astro HTML; React controllers (`src/components/*Controller.tsx`)
+  render nothing and only resolve version and download links from the latest
+  GitHub release. `src/components/detect.ts` holds their shared platform and
+  chip detection. Keep rendered output byte-identical to the prototypes unless
+  asked otherwise — hydrating the markup itself with React changes text
+  rasterization.
 - The five-variant prototypes stay in `site/prototypes/` for reference; the
   variant switcher is not shipped.
 - Page CSS lives verbatim in each `.astro` page inside `<style is:inline>`

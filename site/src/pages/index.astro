@@ -187,8 +187,13 @@ import HeroController from "../components/HeroController";
             .va-btn {
                 display: inline-flex;
                 align-items: center;
+                justify-content: center;
                 gap: 0.5em;
                 padding: 13.5px 26px;
+                /* transparent border keeps the solid and ghost pills the same
+                   height; min-width keeps the pair the same width. */
+                border: 1.5px solid transparent;
+                min-width: 176px;
                 border-radius: 999px;
                 font-weight: 700;
                 font-size: 14.5px;
@@ -331,13 +336,7 @@ import HeroController from "../components/HeroController";
                 <p class="va-kicker mono">Native coding agent · macOS</p>
                 <h1 class="va-title">Holt is an agent.</h1>
                 <div class="va-cta">
-                    <a
-                        class="va-btn solid"
-                        data-arch="arm64"
-                        href="https://github.com/Onion-L/holt/releases/latest"
-                    >
-                        ↓ Download for macOS
-                    </a>
+                    <a class="va-btn solid" href="/download">↓ Download</a>
                     <a
                         class="va-btn ghost"
                         href="https://github.com/Onion-L/holt"

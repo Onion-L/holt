@@ -6,11 +6,18 @@ page, markup and CSS verbatim from the chosen variant:
 
 - `/` — hero, Billboard (`src/components/HeroController.tsx`)
 - `/changelog` — Coast road layout (`src/components/ChangelogController.tsx`)
+- `/download` — per-platform downloads, Coast road layout
+  (`src/components/DownloadController.tsx`)
 - `/og` — 1200×630 OG card capture template (Billboard), `noindex`
 
-The React controllers render nothing; they resolve the version and dmg links
-from the latest GitHub release, like the prototypes' scripts. The prototype
-variant switcher (bottom bar, `?variant=`, ←/→) is intentionally not shipped.
+`/changelog` and `/download` open on the same hero-coast band as the landing —
+same artwork, scrim, nav pill, and white type — then continue on cream.
+
+The React controllers render nothing; they resolve the version and download
+links from the latest GitHub release, like the prototypes' scripts.
+`src/components/detect.ts` holds their shared platform and chip detection. The
+prototype variant switcher (bottom bar, `?variant=`, ←/→) is intentionally not
+shipped.
 
 ## Commands
 
