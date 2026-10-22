@@ -36,6 +36,17 @@ struct Edges {
     float left;
 };
 
+struct EdgeFadeParams {
+    float top_y;
+    float bottom_y;
+    float band_top;
+    float band_bottom;
+    float left_x;
+    float right_x;
+    float band_left;
+    float band_right;
+};
+
 struct Hsla {
     float h;
     float s;
@@ -502,6 +513,7 @@ struct Quad {
     Hsla border_color;
     Corners corner_radii;
     Edges border_widths;
+    EdgeFadeParams fade;
 };
 
 struct QuadVertexOutput {
@@ -1209,6 +1221,7 @@ struct PolychromeSprite {
     Bounds bounds;
     Bounds content_mask;
     Corners corner_radii;
+    EdgeFadeParams fade;
     AtlasTile tile;
 };
 

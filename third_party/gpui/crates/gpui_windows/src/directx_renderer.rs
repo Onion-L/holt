@@ -1126,19 +1126,28 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
-        let view = create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
-        set_pipeline_state(
-            device_context,
-            slice::from_ref(&view),
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
-            viewport,
-            &self.vertex,
-            &self.fragment,
-            global_params,
-            &self.blend_state,
-        );
-        unsafe {
-            device_context.DrawInstanced(vertex_count, instance_count, 0, 0);
+        // Some drivers return zeros when a structured-buffer SRV range covers
+        // more than a few KB, so draw in small chunks with per-chunk views.
+        const CHUNK: u32 = 16;
+        let mut offset = 0;
+        while offset < instance_count {
+            let chunk = (instance_count - offset).min(CHUNK);
+            let view =
+                create_buffer_view_range(device, &self.buffer, first_instance + offset, chunk)?;
+            set_pipeline_state(
+                device_context,
+                slice::from_ref(&view),
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+                viewport,
+                &self.vertex,
+                &self.fragment,
+                global_params,
+                &self.blend_state,
+            );
+            unsafe {
+                device_context.DrawInstanced(vertex_count, chunk, 0, 0);
+            }
+            offset += chunk;
         }
         Ok(())
     }
@@ -1154,22 +1163,30 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
-        let view = create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
-        set_pipeline_state(
-            device_context,
-            slice::from_ref(&view),
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
-            viewport,
-            &self.vertex,
-            &self.fragment,
-            global_params,
-            &self.blend_state,
-        );
-        unsafe {
-            device_context.PSSetSamplers(0, Some(sampler));
-            device_context.VSSetShaderResources(0, Some(texture));
-            device_context.PSSetShaderResources(0, Some(texture));
-            device_context.DrawInstanced(4, instance_count, 0, 0);
+        // See draw_range for why this is chunked.
+        const CHUNK: u32 = 16;
+        let mut offset = 0;
+        while offset < instance_count {
+            let chunk = (instance_count - offset).min(CHUNK);
+            let view =
+                create_buffer_view_range(device, &self.buffer, first_instance + offset, chunk)?;
+            set_pipeline_state(
+                device_context,
+                slice::from_ref(&view),
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+                viewport,
+                &self.vertex,
+                &self.fragment,
+                global_params,
+                &self.blend_state,
+            );
+            unsafe {
+                device_context.PSSetSamplers(0, Some(sampler));
+                device_context.VSSetShaderResources(0, Some(texture));
+                device_context.PSSetShaderResources(0, Some(texture));
+                device_context.DrawInstanced(4, chunk, 0, 0);
+            }
+            offset += chunk;
         }
         Ok(())
     }
@@ -1568,7 +1585,7 @@ fn update_buffer<T>(
     unsafe {
         let mut dest = std::mem::zeroed();
         device_context.Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut dest))?;
-        std::ptr::copy_nonoverlapping(data.as_ptr(), dest.pData as _, data.len());
+        std::ptr::copy_nonoverlapping(data.as_ptr(), dest.pData as *mut T, data.len());
         device_context.Unmap(buffer, 0);
     }
     Ok(())
