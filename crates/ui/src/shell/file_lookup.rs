@@ -48,8 +48,14 @@ pub(super) struct FileLookup {
 fn absolute_result(root: &std::path::Path, relative: &str) -> String {
     // The addressed vocabulary: search results are `/`-separated, and the
     // join keeps that spelling on every platform (a native Windows join
-    // would mix separators mid-path).
-    root.join(relative).to_string_lossy().replace('\\', "/")
+    // would mix separators mid-path). A backslash outside Windows is a
+    // filename character, never a separator, so the name keeps its spelling.
+    let joined = root.join(relative).to_string_lossy().into_owned();
+    if cfg!(windows) {
+        joined.replace('\\', "/")
+    } else {
+        joined
+    }
 }
 
 impl Shell {

@@ -153,17 +153,19 @@ fn io_file_error(error: &std::io::Error, path: &str) -> FileError {
 
 /// Lexically normalize an absolute path (`.`/`..` collapsed, no symlink
 /// resolution, trailing slash stripped) — the "addressed path" shape the
-/// contract asks for. One vocabulary on every platform: separators become
-/// `/`, a Windows drive letter uppercases (`C:/foo`), a verbatim prefix
-/// (`\\?\C:\foo`) unwraps, and a UNC share keeps its `//server/share`
-/// root. `..` clamps at the root.
+/// contract asks for. One vocabulary on every platform: a Windows-shaped
+/// root (drive, UNC, verbatim) takes `/` separators, its drive letter
+/// uppercases (`C:/foo`), and a verbatim prefix (`\\?\C:\foo`) unwraps;
+/// a UNC share keeps its `//server/share` root. `..` clamps at the root.
+/// A backslash outside a Windows-shaped root is a filename character,
+/// never a separator — a unix name keeps its own spelling.
 fn normalize_absolute(path: &str) -> String {
     debug_assert!(
         path.starts_with('/') || has_windows_root(path),
         "addressed path must be absolute, got {path:?}"
     );
     let replaced;
-    let mut path = if path.contains('\\') {
+    let mut path = if path.contains('\\') && has_windows_root(path) {
         replaced = path.replace('\\', "/");
         &replaced
     } else {
@@ -1515,6 +1517,13 @@ mod tests {
         assert_eq!(normalize_absolute("/a/./b/../c"), "/a/c");
         assert_eq!(normalize_absolute("//foo"), "/foo");
         assert_eq!(normalize_absolute("/../../.."), "/");
+        // A backslash is a legal filename character on unix, never a
+        // separator — the name keeps its spelling (a Windows-rooted one
+        // still converts, per the windows-shapes test below).
+        assert_eq!(
+            normalize_absolute("/tmp/back\\slash.txt"),
+            "/tmp/back\\slash.txt"
+        );
     }
 
     #[test]
