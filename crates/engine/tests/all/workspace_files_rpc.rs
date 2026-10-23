@@ -1879,13 +1879,114 @@ mod move_and_trash {
     }
 }
 
+/// One path vocabulary for every workspace reply. The UI string-matches
+/// tabs ↔ tree rows ↔ watch frames ↔ resolved identities, so a reply
+/// spelled differently breaks tab bookkeeping: Windows's `canonicalize`
+/// yields `\\?\C:\…`, which through a bare separator swap leaked as
+/// `//?/C:/…` into rename/move replies. On unix these assertions are
+/// trivially true; the Windows CI runner — where canonicalize really
+/// produces the verbatim prefix — is where they bite.
+mod addressed_path_vocabulary {
+    use super::*;
+
+    fn assert_addressed(path: &str) {
+        assert!(Path::new(path).is_absolute(), "not absolute: {path}");
+        assert!(!path.contains('\\'), "backslash separator: {path}");
+        assert!(!path.starts_with("//?/"), "verbatim prefix leaked: {path}");
+    }
+
+    async fn reply_path(engine: &LocalEngine, method: &str, params: serde_json::Value) -> String {
+        match engine.handle(method, params).await.unwrap() {
+            RpcReply::Value(value) => value
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap()
+                .to_string(),
+            _ => panic!("{method} must reply with a value"),
+        }
+    }
+
+    #[tokio::test]
+    async fn listings_reads_renames_and_moves_speak_it() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join("src")).unwrap();
+        fs::create_dir_all(Path::new(&root).join("dest")).unwrap();
+        fs::write(Path::new(&root).join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            Path::new(&root).join("shot.png"),
+            super::read_workspace_image::png_bytes(),
+        )
+        .unwrap();
+        let engine = setup(&fixture).await;
+
+        // Listings: the directory key and every row.
+        let listing = list(&engine, json!({ "spaceId": "space-1" }))
+            .await
+            .unwrap();
+        assert_addressed(&listing.path);
+        for entry in &listing.entries {
+            assert_addressed(&entry.path);
+        }
+        let src = list(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/src") }),
+        )
+        .await
+        .unwrap();
+        assert_addressed(&src.path);
+
+        // Reads: the resolved identity the opening tab records.
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/src/main.rs") }),
+        )
+        .await
+        .unwrap();
+        assert_addressed(&read.path);
+
+        // Image reads: the alias-aware identity.
+        let image = super::read_workspace_image::read_image(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/shot.png") }),
+        )
+        .await
+        .unwrap();
+        assert_addressed(&image.path);
+
+        // Rename and move: the destinations the UI rewrites open tabs with.
+        let renamed = reply_path(
+            &engine,
+            methods::RENAME_WORKSPACE_ENTRY,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/src/main.rs"),
+                "newName": "lib.rs",
+            }),
+        )
+        .await;
+        assert_addressed(&renamed);
+        let moved = reply_path(
+            &engine,
+            methods::MOVE_WORKSPACE_ENTRY,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/src/lib.rs"),
+                "destinationDirectory": format!("{root}/dest"),
+            }),
+        )
+        .await;
+        assert_addressed(&moved);
+    }
+}
+
 mod read_workspace_image {
     use super::*;
     #[cfg(unix)]
     use base64::Engine as _;
     use holt_rpc::images::WorkspaceImageData;
 
-    fn png_bytes() -> Vec<u8> {
+    pub(super) fn png_bytes() -> Vec<u8> {
         let mut output = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255]))
             .write_to(&mut output, image::ImageFormat::Png)
@@ -1893,7 +1994,7 @@ mod read_workspace_image {
         output.into_inner()
     }
 
-    async fn read_image(
+    pub(super) async fn read_image(
         engine: &LocalEngine,
         params: serde_json::Value,
     ) -> Result<WorkspaceImageData, RpcError> {
