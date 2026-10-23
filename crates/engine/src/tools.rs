@@ -821,9 +821,14 @@ impl Drop for ShellProcessGroup {
 
 /// A Windows Job Object around one shell execution. `kill_on_drop` reaches
 /// only the direct child; the job's KILL_ON_JOB_CLOSE limit extends that to
-/// every descendant — closing the last handle (this guard's drop: abort,
-/// timeout, or Holt's exit) kills whatever survives, the moral equivalent
-/// of the unix process group's signals.
+/// the descendants *spawned after the assignment* — closing the last handle
+/// (this guard's drop: abort, timeout, or Holt's exit) kills whatever
+/// survives, the moral equivalent of the unix process group's signals.
+///
+/// The assignment happens on the spawned child, so anything it forks in the
+/// instant before `AssignProcessToJobObject` returns is outside the job.
+/// Closing that window would take CREATE_SUSPENDED + resume, which tokio's
+/// `Command` does not expose; the binding is best-effort by construction.
 #[cfg(windows)]
 struct ShellJob(Option<windows_sys::Win32::Foundation::HANDLE>);
 
@@ -1028,7 +1033,9 @@ impl Shell for LocalExecutionEnv {
                     // A completed command's survivors are not ours to kill
                     // (the unix group is disarmed above). With nobody left,
                     // the job handle closes here; with survivors, detach it —
-                    // they die, with the job, when Holt exits.
+                    // they die, with the job, when Holt exits. The forgotten
+                    // handle is the cost: one per command that leaves a
+                    // process behind, held for the life of the app.
                     #[cfg(windows)]
                     if job.active_processes() > 0 {
                         std::mem::forget(job);
