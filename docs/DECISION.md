@@ -23,7 +23,7 @@ in the same commit.
 | --- | --- |
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
-| [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) |
+| [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
@@ -553,3 +553,21 @@ its point. Maintenance waits while a rewind is still to finish.
 Rejected: growth until the chat is deleted (a long task's chat is exactly the
 one that keeps running); libgit2 garbage collection (it has none); age-based
 expiry (an idle chat would lose its checkpoints while nothing happens in it).
+
+## agent-commands-run-under-git-bash-on-windows
+
+`c9cdc69` and the engine commit that added `agent_shell` (issue #52's
+cross-platform work). Agent commands — the bash tool and every harness
+exec the engine mounts — run under Git for Windows' bash when an install
+exists, found in the one order core's harness discovery also uses:
+`where bash.exe` (WSL's `System32\bash.exe` excepted), the install root
+derived from a resolvable `git.exe`, then the standard install
+locations. cmd.exe — the shell COMSPEC names — stays the floor, and
+terminals keep it: only the agent toolset prefers bash. Rejected:
+COMSPEC always (on a stock Git-for-Windows machine the registry PATH
+carries `Git\cmd`, never `Git\bin`, so every sh-syntax command died with
+cmd's "'printf' is not recognized"); WSL bash for agent commands (it
+boots a Linux world win32 argv and cwd do not translate into — core's
+harness supports it through a stdin transport the engine's argv model
+cannot); flipping `login_shell()` itself (drags the terminal surface,
+whose page owns that observable, into a toolset decision).

@@ -23,7 +23,7 @@ pub(crate) mod web_search;
 
 use crate::checkpoints::RunningCall;
 use crate::git::{CallStart, CheckpointFile, CheckpointSide, Git, WindowStart};
-use crate::shell_env::login_shell;
+use crate::shell_env::agent_shell;
 use crate::turn_changes::Attribution;
 use std::{
     future::pending,
@@ -88,8 +88,9 @@ pub(crate) fn clamp_utf8(text: &str, max_bytes: usize) -> (&str, bool) {
 /// method, runs its walk on `spawn_blocking` instead (see [`grep`]).
 pub(crate) struct LocalExecutionEnv {
     cwd: String,
-    /// The login shell resolved once per environment; every agent command
-    /// runs under it (see [`Shell::exec`]).
+    /// The shell resolved once per environment — Git Bash ahead of the
+    /// login-shell floor on Windows (see [`shell_env::agent_shell`]) —
+    /// that every agent command runs under (see [`Shell::exec`]).
     shell: String,
     /// Where each running command's process group is recorded, so launch
     /// can kill one a hard kill orphaned (see [`crate::shell_groups`]).
@@ -116,7 +117,7 @@ impl LocalExecutionEnv {
                 .and_then(|path| path.to_str().map(str::to_owned))
                 .map(|path| normalize_absolute(&path))
                 .unwrap_or(cwd),
-            shell: login_shell(),
+            shell: agent_shell(),
             shell_groups: None,
         }
     }
@@ -1392,13 +1393,14 @@ fn apply_default_bash_timeout(params: &mut serde_json::Value) {
     }
 }
 
-/// The holt-core bash tool, retargeted to the user's login shell. The harness
+/// The holt-core bash tool, retargeted to the agent shell — Git Bash when
+/// installed on Windows, the user's login shell elsewhere. The harness
 /// fixes the tool *name* as `bash`; the executable choice is holt's (see
-/// [`LocalExecutionEnv::exec`]) and so is the description — the user's shell
-/// may be zsh or anything else, so the model must not assume bash syntax.
+/// [`LocalExecutionEnv::exec`]) and so is the description — the shell may
+/// be zsh or anything else, so the model must not assume bash syntax.
 fn bash_tool(context: &AgentToolContext) -> AgentTool {
     let mut tool = with_execution_context(create_bash_tool(BashToolOptions::default()), context);
-    let shell = login_shell();
+    let shell = agent_shell();
     tool.description = format!(
         "Execute a command in the user's login shell ({shell}). It runs as a non-interactive login shell in the current working directory, so the user's profile environment (PATH, toolchains) is loaded. Returns stdout and stderr. A non-zero exit code is reported as a failed call, including a plain `grep` that matches nothing (exit 1) — the `grep` tool returns 'No matches found.' as an ordinary result instead. Output is truncated to last {} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds; when omitted, a {}-second default applies.",
         DEFAULT_MAX_LINES,
@@ -1740,9 +1742,19 @@ mod tests {
     async fn exec_returns_output_and_exit_code_on_windows() {
         let (root, _guard) = temp_root();
         let env = LocalExecutionEnv::new(&root);
-        let result = env.exec("echo hi", None).await.unwrap();
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout, "hi\r\n");
+        // The agent shell is Git Bash when installed (printf, LF) and
+        // cmd.exe otherwise (echo, CRLF); the contract under test is the
+        // pass-through of stdout and exit code, spelled per the resolved
+        // shell.
+        if crate::shell_env::is_sh_like(&agent_shell()) {
+            let result = env.exec("printf 'hi'", None).await.unwrap();
+            assert_eq!(result.exit_code, 0);
+            assert_eq!(result.stdout, "hi");
+        } else {
+            let result = env.exec("echo hi", None).await.unwrap();
+            assert_eq!(result.exit_code, 0);
+            assert_eq!(result.stdout, "hi\r\n");
+        }
         let failed = env.exec("exit 3", None).await.unwrap();
         assert_eq!(failed.exit_code, 3);
     }
@@ -2102,7 +2114,7 @@ mod tests {
     }
 
     #[test]
-    fn bash_tool_describes_the_login_shell() {
+    fn bash_tool_describes_the_shell_it_runs() {
         let (root, _guard) = temp_root();
         let tools = execution_tools(&root);
         let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
@@ -2112,15 +2124,15 @@ mod tests {
             "description must name the login shell: {description}"
         );
         assert!(
-            description.contains(login_shell().as_str()),
+            description.contains(agent_shell().as_str()),
             "description must name the resolved shell ({}): {description}",
-            login_shell()
+            agent_shell()
         );
         assert!(
             description.contains("failed call"),
             "description must state that a non-zero exit is a failed call: {description}"
         );
-        if login_shell().ends_with("zsh") {
+        if agent_shell().ends_with("zsh") {
             assert!(
                 description.contains("quote glob patterns"),
                 "zsh description must warn about unquoted globs: {description}"

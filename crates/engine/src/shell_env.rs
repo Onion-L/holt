@@ -46,10 +46,123 @@ pub(crate) fn login_shell() -> String {
     }
 }
 
+/// The shell agent commands run under: Git Bash ahead of the login-shell
+/// floor on Windows. The toolset and its prompts speak POSIX sh, and the
+/// floor there is cmd.exe, which answers sh syntax with spawn errors —
+/// so a stock Git-for-Windows machine (only `Git\cmd` on PATH) would run
+/// every bash-tool call through cmd otherwise. WSL's
+/// `System32\bash.exe` is skipped: it boots a Linux world win32 argv and
+/// cwd do not translate into. Everything else matches [`login_shell`],
+/// which stays the terminal's shell. The candidate order mirrors core's
+/// harness discovery (`agent/harness/env/nodejs.rs`); keep the two in
+/// step.
+pub(crate) fn agent_shell() -> String {
+    find_git_bash().unwrap_or_else(login_shell)
+}
+
+#[cfg(windows)]
+fn find_git_bash() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    fn where_hits(program: &str) -> Vec<String> {
+        Command::new("where")
+            .arg(program)
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    if let Some(bash) = where_hits("bash.exe")
+        .into_iter()
+        .find(|hit| !is_wsl_bash(hit) && Path::new(hit).is_file())
+    {
+        return Some(bash);
+    }
+    if let Some(git_exe) = where_hits("git.exe").first()
+        && let Some(bash) = bash_beside_git(git_exe)
+        && Path::new(&bash).is_file()
+    {
+        return Some(bash);
+    }
+    standard_git_bash_locations(
+        std::env::var_os("ProgramFiles").as_deref().map(Path::new),
+        std::env::var_os("ProgramFiles(x86)")
+            .as_deref()
+            .map(Path::new),
+        std::env::var_os("LocalAppData").as_deref().map(Path::new),
+    )
+    .into_iter()
+    .find(|bash| Path::new(bash).is_file())
+}
+
+/// Unix agent commands already run through the user's login shell.
+#[cfg(not(windows))]
+fn find_git_bash() -> Option<String> {
+    None
+}
+
+/// `…\Git\cmd\git.exe` (or `…\Git\bin\git.exe`) → `…\Git\bin\bash.exe`,
+/// derived without touching the filesystem; the caller checks existence.
+/// Mirrors the core harness helper of the same name.
+#[cfg(windows)]
+fn bash_beside_git(git_exe: &str) -> Option<String> {
+    let root = Path::new(git_exe).parent()?.parent()?;
+    Some(
+        root.join("bin")
+            .join("bash.exe")
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// The standard Git-for-Windows install locations of `bin\bash.exe`, most
+/// canonical first. Mirrors the core harness helper of the same name.
+#[cfg(windows)]
+fn standard_git_bash_locations(
+    program_files: Option<&Path>,
+    program_files_x86: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<String> {
+    program_files
+        .into_iter()
+        .chain(program_files_x86)
+        .map(|root| root.join("Git").join("bin").join("bash.exe"))
+        .chain(local_app_data.into_iter().map(|root| {
+            root.join("Programs")
+                .join("Git")
+                .join("bin")
+                .join("bash.exe")
+        }))
+        .map(|bash| bash.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The WSL launcher: a bash.exe that boots Linux, not a shell win32
+/// commands can run under (same spelling core's harness filters).
+#[cfg(windows)]
+fn is_wsl_bash(path: &str) -> bool {
+    let normalized = path.replace('/', "\\").to_lowercase();
+    normalized == "c:\\windows\\system32\\bash.exe"
+        || normalized == "c:\\windows\\sysnative\\bash.exe"
+}
+
 /// How a shell program classifies by basename: POSIX-sh-shaped (sh, bash,
 /// zsh — git-bash's bash included) or not.
 #[cfg(windows)]
-fn is_sh_like(shell: &str) -> bool {
+pub(crate) fn is_sh_like(shell: &str) -> bool {
     let name = shell
         .rsplit(['\\', '/'])
         .next()
@@ -377,6 +490,61 @@ mod tests {
         // getpwuid_r (COMSPEC on Windows) is the source; the env fallback
         // only fires without one. Absolute in the platform's own grammar.
         assert!(std::path::Path::new(&login_shell()).is_absolute());
+    }
+
+    #[test]
+    fn agent_shell_is_an_absolute_path() {
+        // Git Bash when an install exists, the login shell otherwise —
+        // either way a spawnable absolute path.
+        assert!(std::path::Path::new(&agent_shell()).is_absolute());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bash_beside_git_targets_the_install_roots_bin() {
+        // `cmd\git.exe` and `bin\git.exe` both sit two levels under the
+        // install root; a bare name has no root to derive from. Compared
+        // as `Path`s so the assertion holds under either separator.
+        assert_eq!(
+            bash_beside_git("C:/Program Files/Git/cmd/git.exe")
+                .as_deref()
+                .map(Path::new),
+            Some(Path::new("C:/Program Files/Git/bin/bash.exe"))
+        );
+        assert_eq!(
+            bash_beside_git("D:/tools/git/bin/git.exe")
+                .as_deref()
+                .map(Path::new),
+            Some(Path::new("D:/tools/git/bin/bash.exe"))
+        );
+        assert_eq!(bash_beside_git("git.exe").as_deref().map(Path::new), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn standard_locations_cover_both_program_files_and_per_user_installs() {
+        let locations = standard_git_bash_locations(
+            Some(Path::new("C:/Program Files")),
+            Some(Path::new("C:/Program Files (x86)")),
+            Some(Path::new("C:/Users/u/AppData/Local")),
+        );
+        let as_paths: Vec<&Path> = locations.iter().map(|p| Path::new(p.as_str())).collect();
+        assert_eq!(
+            as_paths,
+            vec![
+                Path::new("C:/Program Files/Git/bin/bash.exe"),
+                Path::new("C:/Program Files (x86)/Git/bin/bash.exe"),
+                Path::new("C:/Users/u/AppData/Local/Programs/Git/bin/bash.exe"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_bash_spellings_are_recognized_across_case_and_separators() {
+        assert!(is_wsl_bash("C:\\Windows\\System32\\BASH.EXE"));
+        assert!(is_wsl_bash("C:/windows/sysnative/bash.exe"));
+        assert!(!is_wsl_bash("C:\\Program Files\\Git\\bin\\bash.exe"));
     }
 
     /// A stand-in shell whose whole behavior is a canned script body, so
