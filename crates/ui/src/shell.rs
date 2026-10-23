@@ -90,6 +90,10 @@ actions!(
         OpenFileLookup,
         NewSession,
         OpenSettings,
+        /// The Windows menu bar's Exit: routed through the same close gate as
+        /// the window's caption button (see `terminal::lifecycle`), never
+        /// straight to `cx.quit()`.
+        QuitApp,
         NextSession,
         PrevSession,
         ArchiveSession,
@@ -2692,6 +2696,14 @@ impl Render for Shell {
             // macOS, Ctrl+, elsewhere) always land on the default section.
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::General, cx)
+            }))
+            // The Windows menu bar's Exit is the caption button's twin: it
+            // asks the lifecycle gate first (unsaved drafts, running
+            // terminals) and quits only once that approves. `cx.quit()`
+            // alone would skip the gate — gpui implements `on_should_quit`
+            // on macOS only.
+            .on_action(cx.listener(|_, _: &QuitApp, window, cx| {
+                crate::terminal::lifecycle::request_close(window, cx, true);
             }))
             // The native About menu item opens the in-app dialog (theme
             // styling + the app logo) rather than a platform alert.

@@ -91,7 +91,11 @@ fn menu_rows(menu: MenuId, keymap: &crate::settings::KeymapConfig) -> Vec<MenuRo
             MenuRow::item("New Session", custom(ShortcutId::NewSession), NewSession),
             MenuRow::item("Settings…", fixed("Ctrl+,"), OpenSettings),
             MenuRow::Separator,
-            MenuRow::item("Exit", None, app_menus::Quit),
+            // The shell's own action: the Exit row must pass the lifecycle
+            // gate (unsaved drafts, running terminals) the way the caption
+            // button does, so it never dispatches `app_menus::Quit` — on
+            // Windows `cx.quit()` exits without asking.
+            MenuRow::item("Exit", None, QuitApp),
         ],
         MenuId::Edit => vec![
             MenuRow::item("Undo", fixed("Ctrl+Z"), crate::composer::Undo),
@@ -417,11 +421,7 @@ mod tests {
         use crate::app_menus;
         assert_eq!(
             action_names(MenuId::File),
-            [
-                NewSession.name(),
-                OpenSettings.name(),
-                app_menus::Quit.name()
-            ]
+            [NewSession.name(), OpenSettings.name(), QuitApp.name()]
         );
         assert_eq!(
             action_names(MenuId::Edit),
