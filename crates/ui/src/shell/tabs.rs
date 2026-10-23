@@ -289,7 +289,10 @@ impl Shell {
     /// The session title bar on Windows (Kimi-desktop layout): a normal FLOW
     /// row at the top of the content column. The dedicated strip above owns
     /// the drag surface, menus, and captions, so this row opens with the
-    /// navigation cluster and needs no overlay clearances.
+    /// navigation cluster and needs no overlay clearances. It shares the
+    /// strip's `theme.bg` and carries the chrome block's one separator
+    /// hairline at its bottom edge — the strip itself is borderless, so the
+    /// two rows read as a single titlebar rather than two severed bands.
     pub(super) fn render_session_title_bar_windows(
         &mut self,
         cx: &mut Context<Self>,
@@ -307,6 +310,9 @@ impl Shell {
             .gap(px(Theme::SPACE_SM))
             .pl(px(Theme::SPACE_SM))
             .pr(px(TITLEBAR_ACTION_EDGE_INSET))
+            .bg(theme.bg)
+            .border_b_1()
+            .border_color(theme.border)
             .child(self.render_windows_nav_cluster(cx))
             .when(!takeover, |el| {
                 el.child(Self::session_title_group(

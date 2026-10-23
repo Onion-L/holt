@@ -199,12 +199,18 @@ impl Shell {
     /// On Windows this renders as a normal FLOW row at the top of the content
     /// column (the dedicated strip above it owns the drag surface, menus, and
     /// captions): the row carries the navigation cluster — back/forward, the
-    /// new-session `+`, and the "..." nav menu.
+    /// new-session `+`, and the "..." nav menu. The row shares the strip's
+    /// `theme.bg` and carries the chrome block's one separator hairline at
+    /// its bottom edge, so the two rows read as a single titlebar.
     pub(super) fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if cfg!(target_os = "windows") {
             if matches!(self.route, Route::Chat) {
                 return self.render_session_title_bar_windows(cx);
             }
+            let (bg, border) = {
+                let theme = Theme::of(cx);
+                (theme.bg, theme.border)
+            };
             let row = div()
                 .h(px(Theme::TITLEBAR_HEIGHT))
                 .w_full()
@@ -213,6 +219,9 @@ impl Shell {
                 .items_center()
                 .pl(px(Theme::SPACE_SM))
                 .pr(px(TITLEBAR_ACTION_EDGE_INSET))
+                .bg(bg)
+                .border_b_1()
+                .border_color(border)
                 .child(self.render_windows_nav_cluster(cx));
             return row.into_any_element();
         }
@@ -239,6 +248,11 @@ impl Shell {
     /// offers a release. The native caption buttons still overlay its right
     /// end from the root (`render_windows_caption_controls`); the band
     /// itself is the window's drag surface. `None` off Windows.
+    ///
+    /// No bottom border here: the session/settings header row directly below
+    /// shares this band's `theme.bg` and carries the chrome block's ONE
+    /// separator hairline at its own bottom edge, so strip + header read as
+    /// a single titlebar instead of two severed bands.
     pub(super) fn render_windows_strip(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !cfg!(target_os = "windows") {
             return None;
@@ -256,8 +270,6 @@ impl Shell {
             // The root-level caption overlay owns the right end.
             .pr(px(WINDOWS_CAPTION_WIDTH))
             .bg(theme.bg)
-            .border_b_1()
-            .border_color(theme.border)
             // The app identity (macOS has the traffic lights here; Linux
             // follows the desktop's own caption layout). No listeners —
             // presses fall through to the strip's drag surface.
