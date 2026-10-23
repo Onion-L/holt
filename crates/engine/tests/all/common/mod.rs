@@ -27,7 +27,11 @@ use holt_engine::{EngineConfig, LocalEngine};
 use holt_rpc::{RpcReply, RpcService, methods};
 use tempfile::TempDir;
 
-const WAIT: Duration = Duration::from_secs(10);
+/// The pump timeout. 30 s, not 10: these harnesses wait for a frame that
+/// a heavily loaded CI runner (three platform jobs compiling in parallel,
+/// the whole suite in one process) can easily deliver late — a 10 s budget
+/// failed the same commit on one runner and passed it on another.
+const WAIT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // The scripted provider
