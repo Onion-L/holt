@@ -556,8 +556,8 @@ expiry (an idle chat would lose its checkpoints while nothing happens in it).
 
 ## agent-commands-run-under-git-bash-on-windows
 
-`c9cdc69` and the engine commit that added `agent_shell` (issue #52's
-cross-platform work). Agent commands — the bash tool and every harness
+`c9cdc69` and `648d4b2` (issue #52's cross-platform work). Agent commands —
+the bash tool and every harness
 exec the engine mounts — run under Git for Windows' bash when an install
 exists, found in the one order core's harness discovery also uses:
 `where bash.exe` (WSL's `System32\bash.exe` excepted), the install root
