@@ -17,13 +17,10 @@ pub fn titlebar_cluster_start(fullscreen: bool) -> f32 {
 }
 
 /// Width of the spacer ahead of the control cluster for a strip that already
-/// carries `container_pad` px of its own left padding. macOS only — on
-/// Linux/Windows there are no traffic lights and the cluster hugs the edge.
-pub fn titlebar_spacer_width(is_macos: bool, fullscreen: bool, container_pad: f32) -> f32 {
-    if !is_macos {
-        return 0.0;
-    }
-    (titlebar_cluster_start(fullscreen) - container_pad).max(0.0)
+/// carries `container_pad` px of its own left padding, given the cluster's
+/// (tweened) start.
+pub fn titlebar_spacer_width(cluster_start: f32, container_pad: f32) -> f32 {
+    (cluster_start - container_pad).max(0.0)
 }
 
 /// Within-group rhythm for Back/Forward.
@@ -102,19 +99,6 @@ pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captio
     }
 }
 
-/// Left clearance a full-bleed header (collapsed sidebar) needs so its content
-/// starts past the overlay cluster, given the header's own `container_pad`.
-pub fn cluster_clearance(
-    is_macos: bool,
-    fullscreen: bool,
-    linux_left_captions: usize,
-    container_pad: f32,
-) -> f32 {
-    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions) + CLUSTER_BUTTONS_WIDTH + 8.0
-        - container_pad)
-        .max(0.0)
-}
-
 /// The titlebar's nav menu (Scheduled / Chat manager), `Some` while open.
 ///
 /// Key bindings dispatch BEFORE the card's `on_key_down` (gpui runs a
@@ -169,7 +153,7 @@ impl Shell {
         // The tween runs in cluster-start coordinates; the spacer is that
         // minus the container's own padding.
         let start = self.eval_tween(self.titlebar_tween, titlebar_cluster_start(fullscreen));
-        let width = (start - container_pad).max(0.0);
+        let width = titlebar_spacer_width(start, container_pad);
         Some(div().flex_none().h_full().w(px(width)).into_any_element())
     }
 
@@ -1568,19 +1552,22 @@ mod tests {
 
     #[test]
     fn titlebar_spacer_selects_per_platform_and_fullscreen() {
-        // macOS, lights visible: spacer fills up to the 88px cluster start.
-        assert_eq!(titlebar_spacer_width(true, false, 10.0), 78.0);
-        assert_eq!(titlebar_spacer_width(true, false, 12.0), 76.0);
-        assert_eq!(titlebar_spacer_width(true, false, 26.0), 62.0);
-        // macOS fullscreen: the inset animates away (clamped at zero when the
-        // strip's own padding already exceeds the 12px cluster start).
-        assert_eq!(titlebar_spacer_width(true, true, 10.0), 2.0);
-        assert_eq!(titlebar_spacer_width(true, true, 26.0), 0.0);
-        // Linux / Windows: never any inset.
-        assert_eq!(titlebar_spacer_width(false, false, 10.0), 0.0);
-        assert_eq!(titlebar_spacer_width(false, true, 10.0), 0.0);
+        // macOS, lights visible: the spacer fills up to the 88px cluster
+        // start; fullscreen animates that start to 12 (clamped at zero when
+        // the strip's own padding already exceeds it). The clock source is
+        // `titlebar_cluster_start`, the tween target in the render path.
+        let macos_visible = titlebar_cluster_start(false);
+        let macos_fullscreen = titlebar_cluster_start(true);
+        assert_eq!((macos_visible, macos_fullscreen), (88.0, 12.0));
+        assert_eq!(titlebar_spacer_width(macos_visible, 10.0), 78.0);
+        assert_eq!(titlebar_spacer_width(macos_visible, 12.0), 76.0);
+        assert_eq!(titlebar_spacer_width(macos_visible, 26.0), 62.0);
+        assert_eq!(titlebar_spacer_width(macos_fullscreen, 10.0), 2.0);
+        assert_eq!(titlebar_spacer_width(macos_fullscreen, 26.0), 0.0);
+        // Linux / Windows render no spacer at all (`titlebar_spacer` returns
+        // `None`), so the helper is never reached there.
         assert_eq!(
-            TITLEBAR_CLUSTER_PAD + titlebar_spacer_width(true, false, TITLEBAR_CLUSTER_PAD),
+            TITLEBAR_CLUSTER_PAD + titlebar_spacer_width(macos_visible, TITLEBAR_CLUSTER_PAD),
             titlebar_cluster_start(false),
             "the rendered row padding and spacer must land on the declared cluster start"
         );
@@ -1631,26 +1618,6 @@ mod tests {
         // gap after the prefix; a collapsed sidebar parks there as well.
         assert_eq!(titlebar_menu_margin(88.0, 208.0), TITLEBAR_GROUP_GAP);
         assert_eq!(titlebar_menu_margin(88.0, 0.0), TITLEBAR_GROUP_GAP);
-    }
-
-    #[test]
-    fn cluster_clearance_clears_the_overlay_buttons() {
-        // Linux: buttons at 10..140; a 16px-padded header needs 116 more px
-        // to put content at 140 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 132.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 138.0);
-        // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 132.0 + 26.0);
-        // macOS: buttons start at the 88px traffic-light cluster start.
-        assert_eq!(
-            cluster_clearance(true, false, 0, 16.0),
-            88.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
-        );
-        // macOS fullscreen: cluster reclaims the inset (starts at 12).
-        assert_eq!(
-            cluster_clearance(true, true, 0, 16.0),
-            12.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
-        );
     }
 
     // ---- titlebar nav menu ----
