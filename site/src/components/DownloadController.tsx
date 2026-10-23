@@ -1,113 +1,106 @@
 import { useEffect } from 'react';
 import { detectArch, detectPlatform, isMobile } from './detect';
 
-// React controller for the download page (/download). The page is static
-// Astro markup — one column per OS, one row per build — and this island
-// renders nothing. It only
-//  - marks the visitor's column and, inside it, the build for their chip,
-//  - fills every version stamp and every link from the latest GitHub release,
-//  - hides a build (and then a column) the release carries no asset for, so
-//    the page never offers a download that is not there.
-// A link matches its asset by the `data-asset` suffix — the tail of the
-// release asset name (`-arm64.dmg`, `-x64-win.zip`, `-x64.AppImage`) — so
-// shipping a new format only needs its anchor in the markup.
+// React controller for the download page (/download): one panel per OS with a
+// chip selector and a single action. The page is static Astro markup; this
+// island renders nothing and only
+//  - marks the visitor's OS row and preselects their chip,
+//  - fills the version, its date and the changelog link from the latest
+//    GitHub release,
+//  - points each Download button at the selected asset, and takes the whole
+//    row's action away when the release carries no build for it.
+// A selector option's value IS its asset suffix (`-arm64.dmg`,
+// `-x64-win.zip`, `-x64.AppImage`), so shipping another format means adding
+// an option to the markup and nothing else.
 
 type Asset = { name: string; size: number; browser_download_url: string };
-type Release = { tag_name: string; assets: Asset[] };
+type Release = { tag_name: string; published_at: string; assets: Asset[] };
 
 const RELEASE_API = 'https://api.github.com/repos/Onion-L/holt/releases/latest';
 
-/** The `hidden` attribute, which CSS cannot outrank on its own. */
-function hide(el: Element) {
-  el.setAttribute('hidden', '');
+function assetFor(release: Release, suffix: string): Asset | undefined {
+  return release.assets.find((asset) => asset.name.endsWith(suffix));
 }
 
-function visibleAssetLinks(root: ParentNode): HTMLAnchorElement[] {
-  return Array.from(root.querySelectorAll<HTMLAnchorElement>('a[data-asset]:not([hidden])'));
+/** Point the row's one button at the selected option's asset. */
+function syncRow(row: HTMLElement, release: Release | null) {
+  const select = row.querySelector<HTMLSelectElement>('select[data-arch-select]');
+  const button = row.querySelector<HTMLAnchorElement>('a[data-download]');
+  if (!select || !button) return;
+  const asset = release ? assetFor(release, select.value) : undefined;
+  if (asset) {
+    button.href = asset.browser_download_url;
+    button.removeAttribute('aria-disabled');
+    row.removeAttribute('data-unavailable');
+  } else {
+    // No build for this platform in this release: the row stays (the platform
+    // matrix is the page) but its action is not offered.
+    button.setAttribute('aria-disabled', 'true');
+    row.setAttribute('data-unavailable', '');
+  }
 }
 
 export default function DownloadController() {
   useEffect(() => {
-    (async () => {
-      const cols = Array.from(document.querySelectorAll<HTMLElement>('.col[data-platform]'));
+    let release: Release | null = null;
 
-      // The visitor's own column, and the build for the chip we could detect.
-      // A phone gets no "your system" mark: every artifact here is a desktop
-      // binary it cannot run.
-      if (!isMobile()) {
-        const yours = cols.find((col) => col.dataset.platform === detectPlatform());
-        if (yours) {
-          yours.setAttribute('data-yours', '');
-          const arch = await detectArch();
-          if (arch) {
-            yours
-              .querySelector<HTMLElement>(`[data-arch="${arch}"]`)
-              ?.setAttribute('data-pick', '');
-          }
-        }
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.os[data-platform]'));
+    rows.forEach((row) => {
+      row
+        .querySelector<HTMLSelectElement>('select[data-arch-select]')
+        ?.addEventListener('change', () => syncRow(row, release));
+    });
+
+    (async () => {
+      // The visitor's own row, with their chip preselected where we can tell.
+      const platform = isMobile() ? null : detectPlatform();
+      const yours = platform ? rows.find((row) => row.dataset.platform === platform) : undefined;
+      const arch = yours ? await detectArch() : null;
+      if (yours) {
+        yours.setAttribute('data-yours', '');
+        const select = yours.querySelector<HTMLSelectElement>('select[data-arch-select]');
+        const match = arch
+          ? Array.from(select?.options ?? []).find((option) => option.value.includes(arch))
+          : undefined;
+        if (select && match) select.value = match.value;
       }
 
       try {
         const response = await fetch(RELEASE_API);
         if (!response.ok) return;
-        const release: Release = await response.json();
+        release = (await response.json()) as Release;
 
         document.querySelectorAll('[data-version]').forEach((el) => {
-          el.textContent = release.tag_name.replace(/^v/, '');
+          el.textContent = release!.tag_name.replace(/^v/, '');
         });
+        const date = new Date(release.published_at);
+        if (!Number.isNaN(date.getTime())) {
+          document.querySelectorAll('[data-date]').forEach((el) => {
+            el.textContent = date.toLocaleDateString('en-US', {
+              month: 'long',
+              day: 'numeric',
+              year: 'numeric',
+            });
+          });
+        }
 
-        document.querySelectorAll<HTMLAnchorElement>('a[data-asset]').forEach((anchor) => {
-          const suffix = anchor.dataset.asset;
-          const asset = suffix
-            ? release.assets.find((candidate) => candidate.name.endsWith(suffix))
-            : undefined;
-          if (asset) {
-            anchor.href = asset.browser_download_url;
-            // A format the markup ships hidden (one we may not build yet)
-            // appears only once the release carries it.
-            anchor.removeAttribute('hidden');
-            anchor.removeAttribute('data-unavailable');
-            return;
+        rows.forEach((row) => {
+          const select = row.querySelector<HTMLSelectElement>('select[data-arch-select]');
+          if (select) {
+            let firstAvailable: HTMLOptionElement | undefined;
+            for (const option of Array.from(select.options)) {
+              const asset = assetFor(release!, option.value);
+              option.disabled = !asset;
+              if (asset && !firstAvailable) firstAvailable = option;
+            }
+            // A preselected chip the release does not carry falls back to the
+            // first one it does.
+            const current = Array.from(select.options).find((o) => o.value === select.value);
+            if (current?.disabled && firstAvailable) select.value = firstAvailable.value;
+            // Nothing to choose from: the selector greys out with the button.
+            select.disabled = !firstAvailable;
           }
-          // Formats we have not committed to stay out of the layout; the
-          // builds we do ship stay visible but go grey and inert, so the
-          // platform matrix never collapses to whatever is published today.
-          if (anchor.classList.contains('fmt') && anchor.hasAttribute('hidden')) return;
-          anchor.setAttribute('data-unavailable', '');
-        });
-
-        document.querySelectorAll<HTMLElement>('.row').forEach((row) => {
-          const anchor = row.querySelector<HTMLAnchorElement>('a[data-asset]');
-          if (anchor?.hasAttribute('data-unavailable')) row.setAttribute('data-unavailable', '');
-        });
-        document.querySelectorAll<HTMLElement>('.card').forEach((card) => {
-          const formats = Array.from(
-            card.querySelectorAll<HTMLAnchorElement>('.fmt:not([hidden])'),
-          );
-          if (formats.length && formats.every((f) => f.hasAttribute('data-unavailable'))) {
-            card.setAttribute('data-unavailable', '');
-          }
-        });
-        cols.forEach((col) => {
-          const offered = col.querySelector(
-            'a[data-asset]:not([hidden]):not([data-unavailable])',
-          );
-          const soon = col.querySelector<HTMLElement>('.soon');
-          if (offered) {
-            soon?.setAttribute('hidden', '');
-            return;
-          }
-          col.setAttribute('data-unavailable', '');
-          soon?.removeAttribute('hidden');
-        });
-
-        // The format to lead with inside the visitor's Linux card: the first
-        // one this release actually shipped (`.deb` before `.AppImage`).
-        cols.forEach((col) => {
-          const picked = col.querySelector<HTMLElement>('[data-arch][data-pick]');
-          picked
-            ?.querySelector<HTMLAnchorElement>('.fmt:not([hidden]):not([data-unavailable])')
-            ?.setAttribute('data-pick', '');
+          syncRow(row, release);
         });
       } catch {
         // offline or rate-limited: the static hrefs (the releases page) remain
