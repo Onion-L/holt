@@ -242,9 +242,11 @@ impl Git {
             };
         };
         // Canonical spelling: the tree's row paths arrive canonicalized by
-        // the listing, so the prefix the UI strips must be too.
+        // the listing, so the prefix the UI strips must be too — and in the
+        // addressed vocabulary (`C:/…`, never Windows's verbatim `\\?\C:\…`)
+        // so the string comparison survives on every platform.
         let workdir = workdir.canonicalize().unwrap_or(workdir);
-        let display = workdir.display().to_string();
+        let display = crate::tools::addressed_canonical(&workdir);
         let workdir_out = display.clone();
         match self
             .with_repo(repo_path, move |repo| {

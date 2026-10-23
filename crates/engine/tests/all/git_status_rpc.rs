@@ -198,7 +198,10 @@ fn stage(repo: &Repository, paths: &[&str]) {
 }
 
 fn canonical(path: &std::path::Path) -> String {
-    std::fs::canonicalize(path).unwrap().display().to_string()
+    // The addressed spelling: canonicalize unwraps to the platform's own
+    // form (`\\?\C:\…` on Windows), while the reply carries the vocabulary
+    // the sidebar's row paths use.
+    common::addressed(&std::fs::canonicalize(path).unwrap())
 }
 
 /// The plain-fixture engine + space (the common::Fixture writes its own
@@ -224,9 +227,13 @@ async fn clean_repository_reports_an_empty_clean_snapshot() {
         assert!(status.entries.is_empty(), "clean tree, {:?}", selector);
         assert_eq!(status.error, None);
         // The workdir is canonical so the tree's canonical row paths strip
-        // against it cleanly.
+        // against it cleanly — in the addressed spelling, never Windows's
+        // verbatim (`\\?\C:\…`) one.
         let expected = canonical(fixture.repo_dir.path());
         assert_eq!(status.workdir.as_deref(), Some(expected.as_str()));
+        let workdir = status.workdir.clone().unwrap();
+        assert!(!workdir.starts_with(r"\\?\"), "{workdir}");
+        assert!(!workdir.contains('\\'), "{workdir}");
     }
 }
 
