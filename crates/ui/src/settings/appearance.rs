@@ -489,12 +489,11 @@ impl Render for AppearancePage {
                     }
                 },
             ))
-            .on_click(cx.listener(|page, _, window, cx| {
-                if cfg!(target_os = "macos") {
-                    Self::browse_for_backdrop(cx);
-                } else {
-                    page.start_backdrop_edit(window, cx);
-                }
+            .on_click(cx.listener(|_, _, _, cx| {
+                // The picker is cross-platform (NSOpenPanel on macOS, the
+                // gpui dialog elsewhere); manual entry stays available
+                // through the field's own edit affordance.
+                Self::browse_for_backdrop(cx);
             }))
             .when_some(loaded, |card, loaded| {
                 let wash = crate::chat_backdrop::wash(
