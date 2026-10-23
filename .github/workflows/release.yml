@@ -411,7 +411,17 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          # A semver pre-release tag (anything with a `-`, e.g.
+          # v0.7.0-alpha.1) publishes WITHOUT flipping latest: GitHub's
+          # releases/latest API excludes prereleases, so the stable download
+          # page keeps serving the last stable release and the alpha reaches
+          # only people who click into the releases list deliberately.
+          if [[ "$GITHUB_REF_NAME" == *"-"* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
+          else
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
 
   # Keep a failed attempt from leaving its draft release behind.
   cleanup:

@@ -87,7 +87,9 @@ does not run.
   root `Cargo.toml` (the Release workflow fails closed). A release bumps
   the version, adds the `site/src/pages/changelog.astro` entry, then
   commits `chore: bump workspace version to X.Y.Z`, tags, and pushes both.
-  The Release workflow runs over 20 minutes — push and move on; never
-  block a session watching it.
+  A tag with a semver pre-release suffix (`vX.Y.Z-alpha.1`) publishes as a
+  GitHub prerelease without flipping latest — the download page keeps
+  serving the last stable release. The Release workflow runs over 20
+  minutes — push and move on; never block a session watching it.
 - Issues are GitHub issues, filed through the `issue` skill; there is no
   local tracker.
