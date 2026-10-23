@@ -183,26 +183,38 @@ pub fn format_skill_title(name: &str) -> String {
 /// collapsed to `~`: the absolute path is noise in a 12px detail slot, and
 /// `~/.agents/skills/…` reads as the same file at a glance.
 pub(super) fn skill_file_display(file: &str) -> String {
+    match home_dir() {
+        Some(home) => skill_file_display_on(cfg!(windows), &home, file),
+        None => file.trim_start_matches("file://").to_string(),
+    }
+}
+
+/// [`skill_file_display`] for an explicit platform and home — see
+/// [`display_combo_on`](crate::settings::display_combo_on) for the same
+/// pattern: the platform branch is the thing worth testing, so it is a
+/// parameter rather than a `cfg!` only one CI leg can reach.
+///
+/// Home arrives from the environment in the host's spelling (`C:\Users\…` on
+/// Windows) while skill paths ride the RPC's addressed one (`C:/Users/…`), so
+/// Windows folds both. Only there: a backslash in a unix filename is a
+/// character, not a separator, and the display keeps the file's real spelling.
+fn skill_file_display_on(windows: bool, home: &str, file: &str) -> String {
     let path = file.trim_start_matches("file://");
-    let Some(home) = home_dir() else {
-        return path.to_string();
-    };
-    // Home arrives from the environment (`C:\Users\…` on Windows) while
-    // skill paths ride the RPC's addressed spelling (`C:/Users/…`) —
-    // normalize separators so the collapse survives the trip. Only there:
-    // a backslash in a unix filename is a character, not a separator, so
-    // the display keeps the file's real spelling.
-    let (path, home) = if cfg!(windows) {
-        (path.replace('\\', "/"), home.replace('\\', "/"))
+    if windows {
+        collapse_home(&path.replace('\\', "/"), &home.replace('\\', "/"))
     } else {
-        (path.to_string(), home)
-    };
+        collapse_home(path, home)
+    }
+}
+
+/// `~` in place of a leading `home`, matched as whole components:
+/// `/home/onion2/x` shares the string prefix but is not under `/home/onion`,
+/// so it must not collapse to `~2/x`. A trailing separator on `home` is fine.
+fn collapse_home(path: &str, home: &str) -> String {
     let home = home.trim_end_matches('/');
-    // A whole component only: `/home/onion2/x` shares the string prefix but
-    // is not under `home`, so it must not collapse to `~2/x`.
     match path.strip_prefix(home) {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
-        _ => path,
+        _ => path.to_string(),
     }
 }
 
@@ -2260,21 +2272,11 @@ mod tests {
     }
 
     #[test]
-    fn skill_file_display_collapses_home_and_strips_file_scheme() {
+    fn skill_file_display_collapses_the_host_home_and_strips_the_scheme() {
         let home = home_dir().expect("a home directory resolves in the test env");
         assert_eq!(
             skill_file_display(&format!("{home}/.agents/skills/ask-matt/SKILL.md")),
             "~/.agents/skills/ask-matt/SKILL.md"
-        );
-        // A backslash in a unix skill filename is a character, not a
-        // separator; Windows normalizes it away with the separators.
-        assert_eq!(
-            skill_file_display(&format!("{home}/.agents/skills/back\\slash/SKILL.md")),
-            if cfg!(windows) {
-                "~/.agents/skills/back/slash/SKILL.md"
-            } else {
-                "~/.agents/skills/back\\slash/SKILL.md"
-            }
         );
         assert_eq!(
             skill_file_display(&format!("file://{home}/SKILL.md")),
@@ -2284,10 +2286,54 @@ mod tests {
             skill_file_display("/opt/skills/ask-matt/SKILL.md"),
             "/opt/skills/ask-matt/SKILL.md"
         );
-        // A sibling directory sharing the home string prefix is not home.
+    }
+
+    #[test]
+    fn skill_file_display_folds_separators_only_on_windows() {
+        // A backslash is a filename character on unix and a separator on
+        // Windows: the same chip reads differently by design.
         assert_eq!(
-            skill_file_display(&format!("{home}2/.agents/skills/x/SKILL.md")),
-            format!("{home}2/.agents/skills/x/SKILL.md")
+            skill_file_display_on(
+                false,
+                "/home/onion",
+                "/home/onion/.agents/skills/back\\slash/SKILL.md"
+            ),
+            "~/.agents/skills/back\\slash/SKILL.md"
+        );
+        assert_eq!(
+            skill_file_display_on(
+                true,
+                r"C:\Users\onion",
+                r"C:\Users\onion\.agents\skills\back\slash\SKILL.md"
+            ),
+            "~/.agents/skills/back/slash/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn skill_file_display_collapses_whole_components_only() {
+        // `/home/onion2` shares the string prefix with `/home/onion` but is
+        // not under it, so it keeps its spelling (and its separators).
+        assert_eq!(
+            skill_file_display_on(
+                false,
+                "/home/onion",
+                "/home/onion2/.agents/skills/x/SKILL.md"
+            ),
+            "/home/onion2/.agents/skills/x/SKILL.md"
+        );
+        assert_eq!(
+            skill_file_display_on(
+                true,
+                r"C:\Users\onion",
+                r"C:\Users\onion2\.agents\skills\x\SKILL.md"
+            ),
+            "C:/Users/onion2/.agents/skills/x/SKILL.md"
+        );
+        // A trailing separator on home still collapses.
+        assert_eq!(
+            skill_file_display_on(false, "/home/onion/", "/home/onion/a.md"),
+            "~/a.md"
         );
     }
 
