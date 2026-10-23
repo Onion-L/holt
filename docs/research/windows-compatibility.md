@@ -25,10 +25,12 @@ Classify the symptom into a class before reading any code:
 
 Two structural facts amplify all six:
 
-- **CI is macOS-only.** Nothing gates a Windows regression until someone runs
-  `cargo test --workspace` on a Windows box. Do that before every merge in
-  this port effort; the unix-gated integration tests (see §10) mean the
-  Windows suite is also smaller than it looks.
+- **CI gates on all three desktop platforms** (`.github/workflows/ci.yml`
+  runs `cargo test --workspace` on `macos-latest`, `ubuntu-latest`, and
+  `windows-latest`), but a green run is a weaker statement than it looks:
+  the engine integration suite is compiled whole except for one unix-gated
+  module (§10), and the unit tests that need `cfg`-balanced fixtures skip
+  their unix arm. Read the test counts, do not just read "ok".
 - **The repo has no `.gitattributes`**, and Windows checkouts commonly run
   `core.autocrlf=true` (this survey's box does). Working-tree bytes can be
   CRLF where macOS CI sees LF — any byte-exact fixture or comparison is
@@ -155,7 +157,8 @@ pre-existing on all platforms, not Windows-specific.
 (`instance_lock.rs`) — semantics differ around inheritance by child
 processes, which matters only if Holt ever spawns children that outlive it
 (see §5: it does, via the shell tool). The log-file lock in
-`apps/holt/src/main.rs` is another flock site to re-check on Windows.
+`apps/holt/src/main.rs` is `#[cfg(unix)]` only: the Windows arm renames the
+stale log instead of locking it.
 
 ### 3.4 Symlinks and permissions
 
@@ -228,24 +231,26 @@ POSIX shells — cmd.exe takes no session flags
   on Windows (`tools.rs`) — a minimal but valid floor.
 - **`.cmd`/`.bat` resolution: `CreateProcess` appends only `.exe`.** An MCP
   stdio server configured as `npx …` (the most common shape) is really
-  `npx.cmd`; with `resolve_command` a no-op on Windows, the spawn goes to
-  `CreateProcess` as written and fails — "did not initialize within its
-  startup timeout" is this failure wearing its disguise. Fix pattern:
-  resolve through `where.exe`/PATHEXT at connect time, or spawn through
-  `cmd /c`.
+  `npx.cmd`. Handled: `shell_env::resolve_command` walks PATH×PATHEXT at
+  connect time and `mcp::connect` spawns the resolved absolute path, so a
+  bare name no longer reaches `CreateProcess` as written. The old failure
+  wore the disguise "did not initialize within its startup timeout".
 - The MCP child env is **not** stripped to nothing: `sanitize_child_env`
   starts from the parent env minus credential-shaped names (case-insensitive
   `TOKEN|SECRET|PASSWORD|KEY|AUTH`), so `SYSTEMROOT`/`COMSPEC` survive
-  (`mcp/config.rs`). A subtler edge: Windows env names are
-  case-insensitive but the sanitized `HashMap` keys are not — a parent
-  carrying `PATH` and `Path` both keeps both entries.
+  (`mcp/config.rs`). Windows env names are case-insensitive, so every name
+  is folded to upper case there (`config::env_key`): a parent carrying both
+  `Path` and `PATH` now yields one entry, and an explicit value overrides
+  the inherited spelling instead of sitting beside it.
 
 ### 4.4 Line endings and code pages
 
 - With `core.autocrlf=true` and no `.gitattributes`, a Windows checkout of
   *this repo* rewrites text files to CRLF (git says so on every `git add`
-  here). Tests that compare bytes read from the working tree — checkpoints
-  above all, which snapshot exact workdir bytes — see CRLF where CI sees LF.
+  here). Engine test fixtures pin `core.autocrlf=false` at init
+  (`common::init_repo`), so byte-exact assertions are hermetic; the runtime
+  side is not — checkpoints snapshot exact workdir bytes and see CRLF where
+  CI sees LF.
   The core harness already anticipates the sibling problem
   (`nodejs.rs` `find_bash_on_path` splits on `\r\n`).
 - cmd.exe output decodes in the console's **OEM code page** (GBK on zh-CN
@@ -293,8 +298,11 @@ POSIX shells — cmd.exe takes no session flags
   ssh-agent; never interactive. A private-remote fetch on Windows depends on
   GCM being installed and configured for that host.
 - **Status/diff paths**: libgit2 entry paths always use `/` regardless of
-  platform; `git.rs` already folds separators at the boundary. The trap is
-  the *workdir* side: discovery canonicalizes it (verbatim spelling, §2.2).
+  platform; `git.rs` already folds separators at the boundary. The workdir
+  side is the trap: discovery canonicalizes it (`\\?\` verbatim spelling,
+  §2.2), so it now passes through `tools::addressed_canonical` before it
+  reaches the reply — the UI strips it as a string prefix against row paths
+  that are addressed too.
 - **Identity**: `checkout_identity` hashes `git_dir.display()` verbatim —
   case or spelling variants of the same repo hash to different checkout ids
   (duplicated change-set history after e.g. a case-different re-import).
@@ -310,7 +318,7 @@ The vendored platform crate is
 `third_party/gpui/crates/gpui_windows/` (D3D11 + HLSL **fxc SM 4.1** — not
 D3D12/blade — with DirectComposition for the transparent titlebar,
 DirectWrite text, IMM32 IME, and a PerMonitorV2 manifest embedded by
-`crates/gpui/build.rs`).
+`third_party/gpui/crates/gpui/build.rs`).
 
 ### 7.1 The two fixed rendering bug classes (expect them again)
 
@@ -324,12 +332,15 @@ DirectWrite text, IMM32 IME, and a PerMonitorV2 manifest embedded by
   a structured buffer inherits the chunking rule.
 - **Rust-scene ↔ HLSL struct misalignment** (same commit): the HLSL
   `StructuredBuffer` element structs in `shaders.hlsl` must match
-  `crates/gpui/src/scene.rs` field-for-field, in order — a field inserted
-  only on one side shifts every later member and renders silent garbage, not
-  an error. `EdgeFadeParams` was added to *both* `Quad` and
-  `PolychromSprite` for exactly this. Rule: adding a scene field means
-  editing `scene.rs`, the producer, and `shaders.hlsl` in one change, and
-  debug runs won't catch a release-only divergence (next bullet).
+  `third_party/gpui/crates/gpui/src/scene.rs` field-for-field, in order — a
+  field inserted only on one side shifts every later member and renders
+  silent garbage, not an error. `EdgeFadeParams` was added to *both* `Quad`
+  and `PolychromeSprite` for exactly this, and it is **layout only**: no
+  HLSL entry point reads `fade`, so the transcript/sidebar edge fade is
+  unimplemented on Windows (macOS and Linux apply it). Rule: adding a scene
+  field means editing `scene.rs`, the producer, and `shaders.hlsl` in one
+  change, and debug runs won't catch a release-only divergence (next
+  bullet).
 - **Debug/release shader paths differ**: debug compiles `shaders.hlsl` at
   runtime (`D3DCompileFromFile`); release embeds build-time fxc output, and
   the build **hard-fails** without `fxc.exe` (`gpui_windows/build.rs`:
@@ -379,9 +390,10 @@ must name a face present on Windows 10 or embed one.
 - `reveal_path` uses `SHOpenFolderAndSelectItems` with a ShellExecute
   fallback for its spurious `ERROR_FILE_NOT_FOUND` — if "reveal in Explorer"
   ever breaks, both halves are already there.
-- `ui/file_dialog.rs`'s pickers are macOS NSOpenPanel only — the provider
-  **logo picker silently does nothing on Windows** (gpui's IFileOpenDialog
-  path exists but is not what this code calls).
+- `ui/file_dialog.rs`'s pickers run the platform's own dialog on every
+  platform now: `NSOpenPanel` with an extension filter on macOS, gpui's
+  `IFileOpenDialog`/portal dialog elsewhere (no extension filter — a wrong
+  pick fails where the bytes are read).
 
 ## 8. Network, TLS, self-update
 
@@ -418,12 +430,14 @@ settings pickers, and the console-window pair. What remains open:
 
 ## 10. Testing on Windows
 
-- CI (macOS) gates `cargo test --workspace`; nothing Windows runs there.
-  The Windows check is a local `cargo test --workspace` — and note the
-  engine integration suite is compiled behind a unix gate
-  (`tests/all/main.rs`), so a green Windows run exercises fewer tests than
-  the same run on macOS. Treat "the Windows suite passed" as a weaker
-  statement and prefer adding `cfg`-balanced unit tests near the code.
+- CI gates `cargo test --workspace` on Windows as well as macOS and Linux
+  (`.github/workflows/ci.yml`). What a green Windows run still does not
+  cover: `persistence_wedge_rpc` is `#[cfg(unix)]` (`tests/all/main.rs`),
+  the symlink fixtures in `workspace_files_rpc` / `files.rs` / `git.rs` are
+  unix-only (creating a link takes a privilege test hosts lack), and the
+  gpui test platform reports `can_select_mixed_files_and_dirs() == true`,
+  so the two-pass picker branch never runs. Prefer `cfg`-balanced unit
+  tests near the code over "the Windows suite passed".
 - Patterns already in tree for dual-platform tests: `let root = if
   cfg!(windows) { "C:/repo" } else { "/repo" }` (`gate.rs`, `decode.rs`
   tests); the `addressed()` separator-fold helper for fixture paths
