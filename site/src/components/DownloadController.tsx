@@ -76,11 +76,17 @@ export default function DownloadController() {
         document.querySelectorAll<HTMLElement>('.card').forEach((card) => {
           if (!visibleAssetLinks(card).length) hide(card);
         });
+        // A platform the release carries nothing for leaves the page rather
+        // than explaining itself: three columns is the layout, and an empty
+        // one is noise. The grid keeps its column widths for what is left.
+        const grid = document.querySelector<HTMLElement>('.cols');
         cols.forEach((col) => {
-          if (!col.querySelector('[data-arch]:not([hidden])')) {
-            col.setAttribute('data-missing', '');
-          }
+          if (!col.querySelector('[data-arch]:not([hidden])')) hide(col);
         });
+        if (grid) {
+          const remaining = cols.filter((col) => !col.hasAttribute('hidden')).length;
+          if (remaining > 0 && remaining < 3) grid.dataset.n = String(remaining);
+        }
 
         // The format to lead with inside the visitor's Linux card: the first
         // one this release actually shipped (`.deb` before `.AppImage`).
