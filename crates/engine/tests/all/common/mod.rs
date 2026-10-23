@@ -27,10 +27,11 @@ use holt_engine::{EngineConfig, LocalEngine};
 use holt_rpc::{RpcReply, RpcService, methods};
 use tempfile::TempDir;
 
-/// The pump timeout. 30 s, not 10: these harnesses wait for a frame that
-/// a heavily loaded CI runner (three platform jobs compiling in parallel,
-/// the whole suite in one process) can easily deliver late — a 10 s budget
-/// failed the same commit on one runner and passed it on another.
+/// The pump timeout. Headroom, not a load budget: the 10 s this replaced
+/// failed on a state race (a wait that could never see its frame), and the
+/// fix was to read the watch's current value — see `wait_for_chat_status`
+/// and the 2026-10-23 RETROS entry. Keep it generous; widen it only after
+/// proving the frame actually arrives.
 const WAIT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
