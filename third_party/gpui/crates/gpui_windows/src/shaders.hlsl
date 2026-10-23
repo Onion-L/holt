@@ -36,6 +36,14 @@ struct Edges {
     float left;
 };
 
+/*
+ * Stride-only on Windows: gpui's Rust scene structs (Quad,
+ * PolychromeSprite) carry `fade`, so the structured-buffer layout must too —
+ * but nothing in these shaders reads it. Edge fades (edge_fade_alpha in the
+ * Metal and WGSL shaders) are not implemented here yet; port them before
+ * removing this struct, never silently — the strides would disagree with
+ * the Rust side and rendering reads garbage.
+ */
 struct EdgeFadeParams {
     float top_y;
     float bottom_y;
@@ -513,6 +521,7 @@ struct Quad {
     Hsla border_color;
     Corners corner_radii;
     Edges border_widths;
+    // Stride-only on Windows — see EdgeFadeParams above.
     EdgeFadeParams fade;
 };
 
@@ -1221,6 +1230,7 @@ struct PolychromeSprite {
     Bounds bounds;
     Bounds content_mask;
     Corners corner_radii;
+    // Stride-only on Windows — see EdgeFadeParams above.
     EdgeFadeParams fade;
     AtlasTile tile;
 };
