@@ -1711,6 +1711,9 @@ mod tests {
         );
     }
 
+    // printf is POSIX-only; Windows's cmd twin below spells the same
+    // output/exit-code contract as echo's CRLF plus the shared `exit`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn exec_returns_output_and_exit_code() {
         let (root, _guard) = temp_root();
@@ -1722,6 +1725,21 @@ mod tests {
         assert_eq!(failed.exit_code, 3);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn exec_returns_output_and_exit_code_on_windows() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let result = env.exec("echo hi", None).await.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "hi\r\n");
+        let failed = env.exec("exit 3", None).await.unwrap();
+        assert_eq!(failed.exit_code, 3);
+    }
+
+    // sleep is POSIX-only; the Windows twin below holds the shell open with
+    // ping, the sleeper cmd is guaranteed to have.
+    #[cfg(unix)]
     #[tokio::test]
     async fn exec_times_out_and_aborts() {
         let (root, _guard) = temp_root();
@@ -1738,6 +1756,33 @@ mod tests {
             ..Default::default()
         };
         let task = tokio::spawn(async move { env.exec("sleep 5", Some(&options)).await });
+        signal.cancel();
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code, ExecutionErrorCode::Aborted);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn exec_times_out_and_aborts_on_windows() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let options = ShellExecOptions {
+            timeout: Some(0.05),
+            ..Default::default()
+        };
+        // ping waits out five seconds; cmd has no sleep of its own.
+        let error = env
+            .exec("ping -n 6 127.0.0.1 >nul", Some(&options))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ExecutionErrorCode::Timeout);
+        let signal = CancellationToken::new();
+        let options = ShellExecOptions {
+            abort_signal: Some(signal.clone()),
+            ..Default::default()
+        };
+        let task =
+            tokio::spawn(async move { env.exec("ping -n 6 127.0.0.1 >nul", Some(&options)).await });
         signal.cancel();
         let error = task.await.unwrap().unwrap_err();
         assert_eq!(error.code, ExecutionErrorCode::Aborted);
@@ -1764,9 +1809,11 @@ mod tests {
     async fn bash_tool_wraps_execute_without_disturbing_fast_calls() {
         let tools = execution_tools_for_model(".", true, None, None, None);
         let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
+        // `exit 0` is the no-op sh and cmd spell the same way (`true` is
+        // POSIX-only).
         let result = (bash.execute)(
             "test-call",
-            &serde_json::json!({ "command": "true" }),
+            &serde_json::json!({ "command": "exit 0" }),
             None,
             None,
         )
