@@ -294,6 +294,15 @@ pub(crate) fn addressed_spelling(path: &Path) -> String {
     }
 }
 
+/// The one spelling every path handed to the UI uses: the canonical path
+/// with Windows's verbatim prefix dropped and `/` separators, so string
+/// matching on the consumer side (file tabs ↔ tree rows ↔ watch frames ↔
+/// resolved identities) compares like with like. `canonicalize` output
+/// must pass through here, never through `display()` alone.
+pub(crate) fn addressed_canonical(path: &Path) -> String {
+    addressed_spelling(&strip_verbatim(path.to_path_buf()))
+}
+
 /// Resolve a tool-call path argument against `cwd` (the env's "addressed
 /// path" shape: lexical, no symlink resolution). Also used engine-side to
 /// match read targets against the skill catalog.
@@ -660,7 +669,7 @@ use the ls tool to list a directory's entries."
         Box::pin(async move {
             let path = to_absolute(&self.cwd, path);
             std::fs::canonicalize(&path)
-                .map(|path| addressed_spelling(&strip_verbatim(path)))
+                .map(|path| addressed_canonical(&path))
                 .map_err(|error| io_file_error(&error, &path))
         })
     }

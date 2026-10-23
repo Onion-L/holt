@@ -31,6 +31,7 @@ Not here: git-derived views (see workspace-git — though the sidebar's status f
 
 ## Constraints, state, and failure behavior
 
+- **One path vocabulary**: every path an RPC hands the UI — listing rows and directory keys, read replies, symlink `resolved_path`s, rename/move destinations, watch frames — is the addressed spelling of the canonical path (`tools::addressed_canonical`: Windows's `\\?\` verbatim prefix dropped, `/` separators; identity elsewhere). The UI string-matches tabs ↔ tree rows ↔ frames ↔ resolved identities, so a producer spelling its paths differently (a raw `display()` of a canonicalized path) breaks tab association and re-read matching on Windows.
 - **The fence is the product**: every fault is a typed reason the UI renders as a distinct state — outside-root, `.git`-excluded, not-found, collision, invalid destination — never a silent best-effort.
 - **No destructive verb exists**: trash-or-fail, version-check-or-refuse, create-no-clobber; nothing in this surface can overwrite or permanently delete user data.
 - **A managed path is forever**: files never move after staging, so references in persisted records stay valid; drafts themselves are not persisted, and startup reconciliation is the only reclaimer.

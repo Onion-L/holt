@@ -177,7 +177,7 @@ fn classify_entry(canonical_root: &Path, path: &Path) -> WorkspaceEntryKind {
         if inside {
             WorkspaceEntryKind::SymlinkInside {
                 target_is_dir,
-                resolved_path: resolved.display().to_string(),
+                resolved_path: crate::tools::addressed_canonical(&resolved),
             }
         } else {
             WorkspaceEntryKind::SymlinkOutside { target_is_dir }
@@ -260,14 +260,14 @@ pub(crate) fn list_directory(root: &Path, requested: &str) -> Result<WorkspaceLi
         }
         entries.push(WorkspaceEntry {
             name,
-            path: path.display().to_string(),
+            path: crate::tools::addressed_canonical(&path),
             kind,
             size,
         });
     }
     entries.sort_by(entry_order);
     Ok(WorkspaceListing {
-        path: canonical.display().to_string(),
+        path: crate::tools::addressed_canonical(&canonical),
         entries,
         truncated,
     })
@@ -333,9 +333,12 @@ pub(crate) fn read_file(
     }
     let version = version_token(&metadata);
     let bytes_len = metadata.len();
+    // Every path handed to the UI takes the addressed spelling — see
+    // `addressed_canonical`.
+    let addressed = crate::tools::addressed_canonical(&canonical);
     if bytes_len > MAX_TEXT_BYTES {
         return Ok(WorkspaceFileRead {
-            path: canonical.display().to_string(),
+            path: addressed,
             version,
             bytes: bytes_len,
             bom: false,
@@ -354,7 +357,7 @@ pub(crate) fn read_file(
     let sniff = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
     if sniff.contains(&0) {
         return Ok(WorkspaceFileRead {
-            path: canonical.display().to_string(),
+            path: addressed.clone(),
             version,
             bytes: bytes_len,
             bom: false,
@@ -371,7 +374,7 @@ pub(crate) fn read_file(
         Ok(text) => text,
         Err(_) => {
             return Ok(WorkspaceFileRead {
-                path: canonical.display().to_string(),
+                path: addressed.clone(),
                 version,
                 bytes: bytes_len,
                 bom: false,
@@ -385,7 +388,7 @@ pub(crate) fn read_file(
     };
     let endings = line_endings(text.as_bytes());
     Ok(WorkspaceFileRead {
-        path: canonical.display().to_string(),
+        path: addressed,
         version,
         bytes: bytes_len,
         bom,
@@ -790,9 +793,9 @@ pub(crate) fn rename_entry(root: &Path, from: &str, new_name: &str) -> Result<St
         rename_noreplace(&source, &destination)
     }
     .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
-    // The addressed spelling: a canonicalized root carries Windows's
-    // verbatim prefix otherwise.
-    Ok(crate::tools::addressed_spelling(&destination))
+    // The addressed spelling — the reply's path feeds the UI's tab and
+    // tree bookkeeping, which string-match against listing spellings.
+    Ok(crate::tools::addressed_canonical(&destination))
 }
 
 /// Move an entry into an EXISTING directory inside the root (ticket 07's
@@ -848,7 +851,7 @@ pub(crate) fn move_entry(
     rename_noreplace(&source, &destination)
         .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
     // The addressed spelling — see rename_entry.
-    Ok(crate::tools::addressed_spelling(&destination))
+    Ok(crate::tools::addressed_canonical(&destination))
 }
 
 /// Move an entry to the operating system's trash (ticket 07). The ENTRY

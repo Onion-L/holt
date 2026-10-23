@@ -151,7 +151,7 @@ impl EngineService {
         let display = canonical.display().to_string();
         let (mime_type, data) = self.images.read(&display).await.map_err(RpcError::Failed)?;
         RpcReply::value(&holt_rpc::images::WorkspaceImageData {
-            path: display,
+            path: crate::tools::addressed_canonical(&canonical),
             mime_type,
             data,
         })
