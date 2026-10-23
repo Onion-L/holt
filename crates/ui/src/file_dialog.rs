@@ -49,11 +49,24 @@ async fn pick_file(extensions: &[&str], cx: &mut gpui::AsyncApp) -> Option<PathB
     }
 }
 
-/// Pick one file AND/OR folder set. Platforms that cannot mix files and
-/// folders in one dialog (Windows — its folder mode is exclusive) get two
-/// sequential passes: files first, then folders once the file pass is
-/// cancelled or comes back empty. macOS and Linux keep the single mixed
-/// dialog they always had, byte for byte.
+/// What follows the file pass of a two-pass picker.
+enum AfterFilePass {
+    /// The user picked files: that set is the answer.
+    Done(Vec<PathBuf>),
+    /// Cancelled or empty — offer the folder pass. Declining the file dialog
+    /// is how a folder gets picked, so this pass is offered, not skipped.
+    Folders,
+    /// The dialog itself failed (no portal, no OS dialog). Reported as-is:
+    /// retrying the same failure as a folder picker only doubles it.
+    Failed(anyhow::Error),
+}
+
+/// Pick one file AND/OR folder set. Windows and Linux accept one mode per
+/// dialog (Windows's `FOS_PICKFOLDERS` is exclusive; the XDG portal picks
+/// files *or* directories), so those platforms get two sequential passes:
+/// files first, then folders once the file pass is cancelled or comes back
+/// empty — two cancels to reach “never mind”. macOS mixes both in one
+/// dialog and keeps that single pass.
 pub fn prompt_for_files_and_dirs(
     prompt: &str,
     multiple: bool,
@@ -76,30 +89,45 @@ pub fn prompt_for_files_and_dirs(
     let prompt = prompt.to_string();
     let (done_tx, done_rx) = futures::channel::oneshot::channel();
     cx.spawn(async move |cx| {
-        if let Ok(Ok(Some(paths))) = files.await
-            && !paths.is_empty()
-        {
-            let _ = done_tx.send(Ok(Some(paths)));
-            return;
-        }
-        // Cancelled or empty — offer the folder pass.
-        let folders = cx.update(|cx| {
-            cx.prompt_for_paths(gpui::PathPromptOptions {
-                files: false,
-                directories: true,
-                multiple,
-                prompt: Some(prompt.into()),
-            })
-        });
-        let reply = match folders.await {
-            Ok(Ok(paths)) => Ok(paths),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Ok(None),
+        let next = match files.await {
+            Ok(outcome) => after_file_pass(outcome),
+            // The dialog's sender went away (the window closed mid-pick):
+            // answer by dropping ours, i.e. "cancelled", rather than opening
+            // a second dialog nobody asked for.
+            Err(_) => return,
+        };
+        let reply = match next {
+            AfterFilePass::Done(paths) => Ok(Some(paths)),
+            AfterFilePass::Failed(error) => Err(error),
+            AfterFilePass::Folders => {
+                let folders = cx.update(|cx| {
+                    cx.prompt_for_paths(gpui::PathPromptOptions {
+                        files: false,
+                        directories: true,
+                        multiple,
+                        prompt: Some(prompt.into()),
+                    })
+                });
+                match folders.await {
+                    Ok(Ok(paths)) => Ok(paths),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Ok(None),
+                }
+            }
         };
         let _ = done_tx.send(reply);
     })
     .detach();
     done_rx
+}
+
+/// See [`AfterFilePass`].
+fn after_file_pass(outcome: anyhow::Result<Option<Vec<PathBuf>>>) -> AfterFilePass {
+    match outcome {
+        Ok(Some(paths)) if !paths.is_empty() => AfterFilePass::Done(paths),
+        Ok(_) => AfterFilePass::Folders,
+        Err(error) => AfterFilePass::Failed(error),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -155,5 +183,32 @@ fn pick_file_with_panel(extensions: &[&str]) -> Option<PathBuf> {
         Some(PathBuf::from(
             CStr::from_ptr(utf8).to_string_lossy().into_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_two_pass_pick_only_ends_on_files_that_came_back() {
+        let picked = vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/dir")];
+        assert!(matches!(
+            after_file_pass(Ok(Some(picked.clone()))),
+            AfterFilePass::Done(paths) if paths == picked
+        ));
+        // Cancelled and empty both mean "the file pass declined" — the
+        // folder pass is how a folder is chosen at all.
+        assert!(matches!(after_file_pass(Ok(None)), AfterFilePass::Folders));
+        assert!(matches!(
+            after_file_pass(Ok(Some(Vec::new()))),
+            AfterFilePass::Folders
+        ));
+        // A failing dialog is reported, never retried as a folder picker.
+        let failed = after_file_pass(Err(anyhow::anyhow!("no portal")));
+        assert!(matches!(
+            failed,
+            AfterFilePass::Failed(error) if error.to_string() == "no portal"
+        ));
     }
 }
