@@ -607,29 +607,53 @@ mod tests {
         let terminals = Terminals::default();
         let dir = tempfile::tempdir().unwrap();
 
+        // Wait for the observable, never a fixed tick: a loaded CI runner
+        // can take longer than any sleep for the shell to fork its first
+        // command, so the status is polled until it shows the expected
+        // shape (the 2026-10-23 RETROS entry's rule, applied to processes).
         let idle = shell(&terminals, dir.path(), "read line");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let idle_status = terminals
-            .list()
-            .into_iter()
-            .find(|status| status.terminal_id == idle.id)
-            .unwrap();
-        assert!(idle_status.running);
-        assert!(!idle_status.has_running_jobs);
+        let idle_settled = poll_status(&terminals, &idle.id, |status| {
+            status.running && !status.has_running_jobs
+        });
+        assert!(
+            idle_settled,
+            "the idle shell never showed running with no jobs"
+        );
         terminals.close(&idle.id);
 
         // Keep a command after sleep so shells that optimize a final simple
         // command with exec still leave a child process to observe.
         let job = shell(&terminals, dir.path(), "sleep 60; true");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let job_status = terminals
-            .list()
-            .into_iter()
-            .find(|status| status.terminal_id == job.id)
-            .unwrap();
-        assert!(job_status.running);
-        assert!(job_status.has_running_jobs);
+        let job_settled = poll_status(&terminals, &job.id, |status| {
+            status.running && status.has_running_jobs
+        });
+        assert!(job_settled, "the shell never showed its running child");
         terminals.close(&job.id);
+    }
+
+    /// Poll a terminal's status until `expected` answers true, or `WAIT`
+    /// passes. The state a test asserts must be reached, not assumed to have
+    /// been reached by an arbitrary tick of the clock.
+    #[cfg(unix)]
+    fn poll_status(
+        terminals: &Terminals,
+        id: &str,
+        expected: impl Fn(&TerminalStatus) -> bool,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let status = terminals
+                .list()
+                .into_iter()
+                .find(|status| status.terminal_id == id);
+            if status.as_ref().is_some_and(&expected) {
+                return true;
+            }
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[cfg(unix)]
