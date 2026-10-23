@@ -76,8 +76,8 @@ does not run.
 - Check / lint: `cargo check --workspace`, `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`.
 - Test: `cargo test --workspace`; focus with `-p`. `crates/core` live
-  provider suites skip unless `HOLT_TEST_LIVE=1`. CI (macOS) gates on
-  `cargo test --workspace` only.
+  provider suites skip unless `HOLT_TEST_LIVE=1`. CI (macOS, Linux,
+  Windows) gates on `cargo test --workspace` only.
 
 ## Facts with no other home
 
@@ -87,7 +87,9 @@ does not run.
   root `Cargo.toml` (the Release workflow fails closed). A release bumps
   the version, adds the `site/src/pages/changelog.astro` entry, then
   commits `chore: bump workspace version to X.Y.Z`, tags, and pushes both.
-  The Release workflow runs over 20 minutes — push and move on; never
-  block a session watching it.
+  A tag with a semver pre-release suffix (`vX.Y.Z-alpha.1`) publishes as a
+  GitHub prerelease without flipping latest — the download page keeps
+  serving the last stable release. The Release workflow runs over 20
+  minutes — push and move on; never block a session watching it.
 - Issues are GitHub issues, filed through the `issue` skill; there is no
   local tracker.

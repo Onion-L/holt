@@ -44,7 +44,12 @@ use holt_core::ai::utils::http::{HttpFetch, HttpFetchError, HttpRequest, HttpRes
 
 fn golden(name: &str) -> String {
     let path = format!("{}/tests/goldens/ai/{name}", env!("CARGO_MANIFEST_DIR"));
-    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("missing golden {name}: {error}"))
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("missing golden {name}: {error}"));
+    // Golden files are LF-authored; a core.autocrlf Windows checkout hands
+    // them back with CRLF. Normalize so the oracle comparison stays
+    // byte-meaningful on every platform.
+    content.replace("\r\n", "\n")
 }
 
 /// The tempdir's `auth.json` path.

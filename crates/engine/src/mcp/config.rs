@@ -526,13 +526,28 @@ pub(crate) fn sanitize_child_env(
     let mut env = std::collections::HashMap::new();
     for (name, value) in std::env::vars() {
         if !is_credential_shaped(&name) {
-            env.insert(name, value);
+            env.insert(env_key(name), value);
         }
     }
     for (name, value) in explicit {
-        env.insert(name.clone(), value.clone());
+        env.insert(env_key(name.clone()), value.clone());
     }
     env
+}
+
+/// Windows environment names are case-insensitive — `PATH`, `Path`, and
+/// `path` are one variable — and `env::vars()` yields the stored casing
+/// (typically `Path`). Fold every name to uppercase there so the child's
+/// environment map holds each variable once and an explicit set OVERRIDES
+/// its inherited spelling instead of sitting beside it (a duplicate key
+/// in the spawned env block resolves nondeterministically). Unix names
+/// are case-sensitive and pass through untouched.
+pub(crate) fn env_key(name: String) -> String {
+    if cfg!(windows) {
+        name.to_ascii_uppercase()
+    } else {
+        name
+    }
 }
 
 #[cfg(test)]
@@ -610,7 +625,17 @@ mod tests {
         let env = sanitize_child_env(&explicit);
         // An explicit set is the opt-in: the value passes untouched.
         assert_eq!(env.get("MY_TOKEN").map(String::as_str), Some("granted"));
-        assert!(env.contains_key("PATH"));
+        // The inherited PATH survives under the platform's one spelling:
+        // folded to `PATH` on Windows (it arrives as `Path`), as-is on
+        // unix.
+        assert!(
+            env.keys().any(|name| name.eq_ignore_ascii_case("PATH")),
+            "no PATH-shaped variable survived: {env:?}"
+        );
+        assert_eq!(
+            env_key("Path".to_string()),
+            if cfg!(windows) { "PATH" } else { "Path" }
+        );
     }
 
     #[test]

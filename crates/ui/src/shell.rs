@@ -57,6 +57,7 @@ mod about;
 mod chat_list;
 mod chat_menu;
 mod external_apps;
+mod menu_bar;
 mod navigation;
 mod notices;
 mod panes;
@@ -89,6 +90,10 @@ actions!(
         OpenFileLookup,
         NewSession,
         OpenSettings,
+        /// The Windows menu bar's Exit: routed through the same close gate as
+        /// the window's caption button (see `terminal::lifecycle`), never
+        /// straight to `cx.quit()`.
+        QuitApp,
         NextSession,
         PrevSession,
         ArchiveSession,
@@ -440,6 +445,9 @@ pub struct Shell {
     chat_menu: popover::Popup<ChatMenuState>,
     /// The titlebar's nav menu (Scheduled / Chat manager).
     titlebar_menu: popover::Popup<titlebar::TitlebarMenu>,
+    /// The Windows titlebar strip's File/Edit/View/Help menu (never opens
+    /// off Windows — the strip itself is Windows-only).
+    menu_bar: popover::Popup<menu_bar::MenuBarState>,
     chat_copy_task: Option<Task<()>>,
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
@@ -823,6 +831,7 @@ impl Shell {
             shortcuts_sub: None,
             chat_menu: popover::Popup::default(),
             titlebar_menu: popover::Popup::default(),
+            menu_bar: popover::Popup::default(),
             chat_copy_task: None,
             rename_dialog: None,
             delete_confirm: None,
@@ -961,8 +970,8 @@ impl Shell {
                 // canvas defaults (project) follow it. Otherwise the last
                 // selected project stands.
                 let exists = |id: &String| state.read(cx).space_row(id).is_some();
-                let filter = self.settings.space_filter.clone().filter(&exists);
-                let target = filter.or_else(|| self.settings.last_space_id.clone().filter(&exists));
+                let filter = self.settings.space_filter.clone().filter(exists);
+                let target = filter.or_else(|| self.settings.last_space_id.clone().filter(exists));
                 if target.is_some() {
                     state.update(cx, |s, cx| s.select_space(target.unwrap(), cx));
                 }
@@ -1164,6 +1173,7 @@ impl Shell {
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
         self.close_titlebar_menu(cx);
+        self.close_menu_bar(cx);
         cx.notify();
     }
 
@@ -1180,6 +1190,7 @@ impl Shell {
         self.reveal_chat_manager(cx);
         self.close_chat_menu(cx);
         self.close_titlebar_menu(cx);
+        self.close_menu_bar(cx);
         cx.notify();
     }
 
@@ -1215,6 +1226,7 @@ impl Shell {
         self.reveal_scheduled(cx);
         self.close_chat_menu(cx);
         self.close_titlebar_menu(cx);
+        self.close_menu_bar(cx);
         cx.notify();
     }
 
@@ -1859,7 +1871,12 @@ impl Shell {
                         ),
                 )
                 .into_any_element();
-            overlays.push(popover::top_alert("provider-error-alert", viewport, card));
+            overlays.push(popover::top_alert(
+                "provider-error-alert",
+                viewport,
+                Theme::flow_chrome_height(),
+                card,
+            ));
         }
 
         // The chat-state card (ADR-goal-mode-verified-loop-at-turn-settle's goal card, now also carrying the
@@ -1903,7 +1920,9 @@ impl Shell {
                 .flex_col()
                 .items_end()
                 .gap(px(8.0))
-                .pt(px(Theme::TITLEBAR_HEIGHT + 8.0))
+                // Window-anchored: the stack starts below the WHOLE chrome
+                // band, which is two rows tall on Windows.
+                .pt(px(Theme::window_chrome_height() + 8.0))
                 .pr(px(14.0 + pane_inset));
             if let Some(card) = state_card {
                 stack = stack.child(card);
@@ -1954,7 +1973,7 @@ impl Shell {
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .pt(px(Theme::TITLEBAR_HEIGHT))
+                .pt(px(Theme::chrome_top_inset()))
                 .flex()
                 .flex_col()
                 .child(div().flex_1().min_h_0().child(outlet))
@@ -2129,8 +2148,10 @@ impl Shell {
                             )
                             // Fully faded BY the titlebar's bottom edge (the
                             // title text is opaque — overlap read as collision),
-                            // ramping in the band just below it.
-                            .inset_top(Theme::TITLEBAR_HEIGHT)
+                            // ramping in the band just below it. Windows draws
+                            // the strip in normal flow, so the fade starts at
+                            // the list's own top there.
+                            .inset_top(Theme::chrome_top_inset())
                             .band_top(Theme::TRANSCRIPT_FADE_BAND)
                             .band_bottom(bottom_band),
                         )
@@ -2683,6 +2704,14 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::General, cx)
             }))
+            // The Windows menu bar's Exit is the caption button's twin: it
+            // asks the lifecycle gate first (unsaved drafts, running
+            // terminals) and quits only once that approves. `cx.quit()`
+            // alone would skip the gate — gpui implements `on_should_quit`
+            // on macOS only.
+            .on_action(cx.listener(|_, _: &QuitApp, window, cx| {
+                crate::terminal::lifecycle::request_close(window, cx, true);
+            }))
             // The native About menu item opens the in-app dialog (theme
             // styling + the app logo) rather than a platform alert.
             .on_action(cx.listener(|this, _: &crate::app_menus::About, _, cx| {
@@ -2884,7 +2913,12 @@ impl Render for Shell {
                 } else {
                     Empty.into_any_element()
                 };
+                // Windows runs a dedicated titlebar strip in normal flow
+                // (Kimi-desktop layout) instead of the overlay titlebar +
+                // control cluster; `None` on macOS/Linux.
+                let windows_strip = self.render_windows_strip(cx);
                 let title_bar = self.render_title_bar(cx);
+                let mut title_bar = Some(title_bar);
                 // Sidebar tone: a slightly lighter column behind the sidebar,
                 // spanning the FULL window height (under the traffic lights,
                 // through the titlebar, down to the bottom edge). Its width
@@ -2902,47 +2936,66 @@ impl Render for Shell {
                     .bg(crate::theme::wash(0.05))
                     .border_r_1()
                     .border_color(border_color);
-                // The content row spans the FULL window height — the titlebar
-                // overlays it (glass, no fill), so the transcript can scroll
-                // under the header and fade out at its edge. Columns that
-                // must NOT underlap (sidebar content, the changes panel,
-                // settings) pad themselves down by the titlebar height.
-                let page = div()
+                // The content row spans the FULL window height on
+                // macOS/Linux — the titlebar overlays it (glass, no fill), so
+                // the transcript can scroll under the header and fade out at
+                // its edge. Columns that must NOT underlap (sidebar content,
+                // the changes panel, settings) pad themselves down by the
+                // titlebar height. On Windows the strip takes its own band
+                // and this row starts below it (`chrome_top_inset` is 0).
+                let content_row = div()
                     .size_full()
-                    .relative()
+                    .flex()
+                    .flex_row()
+                    .child(sidebar)
+                    .child(sidebar_seam)
                     .child(
                         div()
-                            .size_full()
+                            .debug_selector(|| "workspace-content".into())
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
                             .flex()
-                            .flex_row()
-                            .child(sidebar)
-                            .child(sidebar_seam)
+                            .flex_col()
+                            // Windows: the session/settings header is a normal
+                            // flow row at the column's top; the overlay layer
+                            // below never mounts there.
+                            .when_some(
+                                if windows_strip.is_some() {
+                                    title_bar.take()
+                                } else {
+                                    None
+                                },
+                                |el, bar| el.child(bar),
+                            )
                             .child(
                                 div()
-                                    .debug_selector(|| "workspace-content".into())
+                                    .debug_selector(|| "workspace-top".into())
                                     .flex_1()
-                                    .min_w_0()
-                                    .h_full()
+                                    .min_h_0()
                                     .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .debug_selector(|| "workspace-top".into())
-                                            .flex_1()
-                                            .min_h_0()
-                                            .flex()
-                                            .child(card)
-                                            .child(right_seam)
-                                            .child(right),
-                                    )
-                                    .when(on_chat, |el| {
-                                        el.child(self.render_terminal_container(cx))
-                                    }),
-                            ),
-                    )
-                    .child(div().absolute().top_0().left_0().right_0().child(title_bar))
-                    .child(self.render_titlebar_cluster(cx))
-                    .children(overlays);
+                                    .child(card)
+                                    .child(right_seam)
+                                    .child(right),
+                            )
+                            .when(on_chat, |el| el.child(self.render_terminal_container(cx))),
+                    );
+                let page = div().size_full().relative();
+                let page =
+                    if let Some(strip) = windows_strip {
+                        page.flex()
+                            .flex_col()
+                            .child(strip)
+                            .child(div().flex_1().min_h_0().relative().child(content_row))
+                            .children(overlays)
+                    } else {
+                        page.child(content_row)
+                            .child(div().absolute().top_0().left_0().right_0().child(
+                                title_bar.take().unwrap_or_else(|| div().into_any_element()),
+                            ))
+                            .child(self.render_titlebar_cluster(cx))
+                            .children(overlays)
+                    };
                 root.child(sidebar_tone)
                     .child(motion::fade_in("phase-app", page))
             }
@@ -3254,7 +3307,32 @@ mod tests {
 
     #[test]
     fn pane_resize_hitboxes_yield_the_titlebar_chrome() {
-        assert_eq!(PANE_RESIZE_HITBOX_TOP, Theme::TITLEBAR_HEIGHT);
+        // The overlay titlebar band on macOS/Linux; Windows runs the strip in
+        // normal flow, so the panes there start below it already.
+        assert_eq!(PANE_RESIZE_HITBOX_TOP, Theme::chrome_top_inset());
+        // Window-anchored overlays clear the WHOLE chrome: one band where the
+        // titlebar is an overlay, the strip + its flow header row on Windows.
+        let chrome = Theme::window_chrome_height();
+        assert_eq!(
+            chrome,
+            Theme::TITLEBAR_HEIGHT
+                * if cfg!(target_os = "windows") {
+                    2.0
+                } else {
+                    1.0
+                }
+        );
+        assert!(chrome >= Theme::chrome_top_inset());
+        // What a window-anchored overlay must clear: the two flow rows on
+        // Windows, nothing where the titlebar is an overlay.
+        assert_eq!(
+            Theme::flow_chrome_height(),
+            if cfg!(target_os = "windows") {
+                Theme::window_chrome_height()
+            } else {
+                0.0
+            }
+        );
     }
 
     #[test]

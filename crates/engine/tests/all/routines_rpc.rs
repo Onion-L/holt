@@ -869,7 +869,7 @@ async fn an_unanswered_question_leaves_the_run_waiting_until_answered() {
 }
 
 fn init_repo(dir: &Path) {
-    let repo = git2::Repository::init(dir).unwrap();
+    let repo = common::init_repo(dir);
     let sig = git2::Signature::now("t", "t@t").unwrap();
     std::fs::write(dir.join("README.md"), "hello\n").unwrap();
     let mut index = repo.index().unwrap();

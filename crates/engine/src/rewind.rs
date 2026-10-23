@@ -248,7 +248,7 @@ pub(crate) fn begin(data_dir: &Path, chat_id: &str, pending: &Pending) -> std::i
     file.write_all(&serde_json::to_vec(pending).map_err(std::io::Error::other)?)?;
     file.sync_all()?;
     std::fs::rename(&temp, &path)?;
-    std::fs::File::open(dir)?.sync_all()
+    crate::store::sync_dir(dir)
 }
 
 /// Carry out a written-down rewind against the chat's conversation, on disk

@@ -33,15 +33,31 @@ import ChangelogController from '../components/ChangelogController';
   .vcol ul { margin: 0; padding: 0; list-style: none; }
   .vcol li { position: relative; }
 
-  /* shared topbar */
-  .topbar { display: flex; justify-content: flex-end; align-items: center; font-size: 12px; letter-spacing: .08em; }
-  .topbar nav { display: flex; gap: 22px; text-transform: uppercase; color: #5b6472; }
-  .topbar nav a { border-bottom: 1px solid transparent; padding-bottom: 2px; }
-  .topbar nav a:hover { color: var(--blue); border-color: var(--blue); }
-
-  /* shared head text */
-  .thead p { margin: 0; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--grey); }
-  .thead p b { color: var(--blue); font-weight: 500; }
+  /* ============ hero band — same artwork, scrim, and type as the landing ============ */
+  .hero { position: relative; overflow: hidden; display: flex; flex-direction: column;
+    min-height: clamp(280px, 38vh, 360px); color: #fff; }
+  .hero-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 38%; }
+  .hero-scrim { position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(5,25,55,.42) 0%, rgba(5,25,55,.12) 32%, rgba(5,20,50,.34) 62%, rgba(5,20,50,.76) 100%); }
+  .hero-top { position: relative; z-index: 2; display: flex; justify-content: flex-end; align-items: center;
+    padding: 26px 2px; width: min(var(--ww, 760px), 100% - 32px); margin: 0 auto; }
+  .nav {
+    display: flex; align-items: center; gap: 22px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    background: rgba(5,25,55,.28); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,.18); padding: 8px 18px; border-radius: 999px;
+  }
+  .nav a { color: rgba(255,255,255,.88); border-bottom: 1px solid transparent; padding-bottom: 1px;
+    transition: color .15s, border-color .15s; }
+  .nav a:hover { color: #fff; border-color: rgba(255,255,255,.6); }
+  .hero-inner { position: relative; z-index: 2; margin-top: auto;
+    width: min(var(--ww, 760px), 100% - 32px); margin-left: auto; margin-right: auto;
+    padding: 0 2px clamp(24px, 4vh, 38px) 38px; }
+  .kicker { margin: 0; font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
+    color: rgba(255,255,255,.9); text-shadow: 0 1px 12px rgba(5,25,55,.6); }
+  .kicker b { color: #fff; font-weight: 500; }
+  .hero h1 { margin: 10px 0 0; font: 700 clamp(40px, 6.8vw, 84px)/0.96 Geist, sans-serif; letter-spacing: -.045em;
+    text-shadow: 0 2px 18px rgba(5,25,55,.65), 0 8px 40px rgba(5,25,55,.45); }
+  .hero h1 span { color: var(--pink); }
 
   /* shared +/– semantics (restyled per variant) */
   .f .cat { color: var(--pink); }
@@ -53,15 +69,8 @@ import ChangelogController from '../components/ChangelogController';
   .foot a:hover { color: var(--blue); }
 
   /* ============ D — Coast road ============ */
-  [data-variant="d"] {
-    --ww: 860px;
-    background: linear-gradient(180deg, #b9d9f0 0%, #e9f4fb 320px, var(--cream) 720px);
-  }
-  [data-variant="d"] .topbar { padding: 26px 2px; width: min(860px, 100% - 32px); margin: 0 auto; }
-  [data-variant="d"] .thead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 14px 0 36px; }
-  [data-variant="d"] .thead h1 { margin: 0; font: 700 clamp(44px, 6.5vw, 68px)/0.95 Geist, sans-serif; letter-spacing: -.045em; }
-  [data-variant="d"] .thead h1 span { color: var(--pink); }
-  [data-variant="d"] .vers { position: relative; padding-left: 36px; }
+  [data-variant="d"] { --ww: 860px; }
+  [data-variant="d"] .vers { position: relative; padding-left: 36px; margin-top: 34px; }
   [data-variant="d"] .vers::before { content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px; border-left: 2px dashed rgba(10,76,156,.45); }
   [data-variant="d"] .ver {
     position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
@@ -85,6 +94,13 @@ import ChangelogController from '../components/ChangelogController';
   [data-variant="d"] .vcol li { padding-left: 16px; margin-bottom: 7px; font: 500 12.5px/1.55 "Geist Mono", Menlo, monospace; color: #3c4658; }
   [data-variant="d"] .vcol li::before { position: absolute; left: 0; }
 
+  @media (max-width: 720px) {
+    .hero { min-height: clamp(260px, 34vh, 320px); }
+    .hero-top { padding: 16px 2px; }
+    .nav { gap: 14px; padding: 6px 14px; font-size: 11px; }
+    .hero h1 { font-size: clamp(34px, 10vw, 44px); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
   }
@@ -92,18 +108,23 @@ import ChangelogController from '../components/ChangelogController';
 </head>
 <body data-variant="d">
 
-<div class="topbar mono">
-  <nav>
-    <a href="/">← Back</a>
-    <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
-  </nav>
-</div>
-
-<div class="wrap">
-  <div class="thead">
+<header class="hero">
+  <img class="hero-bg" src="/assets/hero-coast.webp" alt="" />
+  <div class="hero-scrim"></div>
+  <div class="hero-top">
+    <nav class="nav mono">
+      <a href="/">← Home</a>
+      <a href="/download">Download ↓</a>
+      <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
+    </nav>
+  </div>
+  <div class="hero-inner">
+    <p class="kicker mono">Every release · latest <b>v<span data-version>x.x.x</span></b></p>
     <h1>Changelog<span>.</span></h1>
   </div>
+</header>
 
+<div class="wrap">
   <ol class="vers">
 
     <li class="ver" id="v0.6.0">

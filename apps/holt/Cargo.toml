@@ -9,6 +9,10 @@ publish.workspace = true
 name = "holt"
 path = "src/main.rs"
 
+# The exe's embedded app icon on Windows (see build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 holt-engine.workspace = true
 holt-ui.workspace = true

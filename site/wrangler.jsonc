@@ -1,3 +1,12 @@
+// Deployed by Cloudflare Workers Builds (the dashboard's Git connection), not
+// by a GitHub Actions workflow: root directory `site`, build command
+// `npm run build` (the builder installs dependencies itself — never `npm ci
+// & npm run build`, the single `&` runs both at once and the build reads a
+// node_modules `npm ci` is deleting), deploy command `npx wrangler deploy`
+// on `main`. Branches other than `main` build as previews (`npx wrangler
+// preview`), which requires the `previews` block below and whose URL the
+// Cloudflare GitHub App comments on the pull request. Keep these settings
+// and this file in sync — the dashboard is the only place the others live.
 {
   "name": "holt",
   "account_id": "33cb12c112241599f30db76874a7ecbb",
@@ -7,6 +16,9 @@
     // Multi-page site: unknown paths 404 instead of falling back to /index.html.
     "not_found_handling": "none"
   },
+  // The `previews` block `wrangler preview` (non-main branches) requires;
+  // empty — assets and compatibility stay at the top level.
+  "previews": {},
   "observability": {
     "enabled": true,
     "logs": {

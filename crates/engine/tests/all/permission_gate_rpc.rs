@@ -347,9 +347,8 @@ async fn a_mode_switch_mid_turn_leaves_the_running_turn_gated() {
     ]);
     drop(engine);
     let engine = fixture.engine(&provider2);
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "more").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
     assert!(
         gates(&engine, "chat-1")
             .await
@@ -379,16 +378,34 @@ async fn a_restart_mid_approval_settles_the_gate_on_load() {
 
     // The app dies mid-approval. The reloaded transcript settles aborted…
     drop(engine);
-    let provider2 = ScriptedProvider::new(vec![ScriptedReply::text("next")]);
+    // Two replies: the load relaunches the Turn the quit cut off
+    // (ADR-turns-resume-from-an-intent-journal), then this test's own Turn
+    // asks again. One reply starved the second — the failure this test used
+    // to hit as a 30 s wait on a park that had already settled.
+    let provider2 = ScriptedProvider::new(vec![
+        ScriptedReply::text("resumed"),
+        ScriptedReply::text("after the restart"),
+    ]);
     let engine = fixture.engine(&provider2);
     assert_eq!(
         gates(&engine, "chat-1").await,
         vec![("call-1".into(), "settled:aborted".into())]
     );
     // …and the interrupted-run repair kept the History a valid provider
-    // request: the next Turn's first request carries the call with its
-    // synthetic error result.
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    // request: the resumed Turn's request carries the call with its
+    // synthetic error result. Waiting for that request first pins the
+    // ordering the cross-platform CI raced on — the resumed Turn settling
+    // before the test hooked a watch.
+    common::wait_for_requests(&provider2, 1).await;
+    assert!(
+        common::summarize(&provider2.requests()[0].messages)
+            .iter()
+            .any(|row| row.starts_with("toolresult:call-1:")),
+        "the restarted chat's History lost the aborted call"
+    );
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
+
+    // A fresh Turn still runs behind the settled gate.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "again").await;
     engine
         .handle(
@@ -397,13 +414,8 @@ async fn a_restart_mid_approval_settles_the_gate_on_load() {
         )
         .await
         .unwrap();
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    assert!(
-        common::summarize(&provider2.requests()[0].messages)
-            .iter()
-            .any(|row| row.starts_with("toolresult:call-1:")),
-        "the restarted chat's History lost the aborted call"
-    );
+    common::wait_for_requests(&provider2, 2).await;
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
 }
 
 /// The title task runs beside a gated Turn and is untouched by

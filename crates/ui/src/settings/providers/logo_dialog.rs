@@ -154,10 +154,10 @@ impl ProvidersPage {
     }
 
     fn pick_logo_file(&mut self, cx: &mut Context<Self>) {
-        // `runModal` must run outside every gpui borrow (see the backdrop
+        // The picker must run outside every gpui borrow (see the backdrop
         // picker in Settings → Appearance).
         cx.spawn(async move |page, cx| {
-            let Some(path) = crate::file_dialog::pick_logo() else {
+            let Some(path) = crate::file_dialog::pick_logo(cx).await else {
                 return;
             };
             page.update(cx, |page, cx| page.load_logo_file(&path, cx))

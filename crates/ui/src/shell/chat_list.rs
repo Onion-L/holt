@@ -179,14 +179,15 @@ impl Shell {
         let target = self.sidebar_target();
         // Transparent — the sidebar sits directly on the frost shell; the main
         // card's own border provides the separation. The content row spans the
-        // full window height (the titlebar overlays it), so the column pads
-        // itself below the chrome.
+        // full window height where the titlebar overlays it (macOS/Linux), so
+        // the column pads itself below the chrome; Windows draws a dedicated
+        // strip in normal flow and needs no inset.
         self.pane_container(
             self.sidebar_tween,
             target,
             div()
                 .h_full()
-                .pt(px(Theme::TITLEBAR_HEIGHT))
+                .pt(px(Theme::chrome_top_inset()))
                 .child(inner)
                 .into_any_element(),
         )

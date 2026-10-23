@@ -90,11 +90,14 @@ pub(crate) fn subscribe(
                     let now = Instant::now();
                     if let Some(entry) = watched.get_mut(&root) {
                         for path in &event.paths {
-                            let display = path.display().to_string();
-                            if !entry.pending.contains(&display)
+                            // Frames feed the same string matching as
+                            // listings and rename replies — addressed
+                            // spelling, never a raw `display()`.
+                            let changed = crate::tools::addressed_canonical(path);
+                            if !entry.pending.contains(&changed)
                                 && entry.pending.len() < FRAME_PATH_CAP
                             {
-                                entry.pending.push(display);
+                                entry.pending.push(changed);
                             }
                         }
                         entry.deadline = Some(now + DEBOUNCE_QUIET);

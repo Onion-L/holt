@@ -242,9 +242,11 @@ impl Git {
             };
         };
         // Canonical spelling: the tree's row paths arrive canonicalized by
-        // the listing, so the prefix the UI strips must be too.
+        // the listing, so the prefix the UI strips must be too — and in the
+        // addressed vocabulary (`C:/…`, never Windows's verbatim `\\?\C:\…`)
+        // so the string comparison survives on every platform.
         let workdir = workdir.canonicalize().unwrap_or(workdir);
-        let display = workdir.display().to_string();
+        let display = crate::tools::addressed_canonical(&workdir);
         let workdir_out = display.clone();
         match self
             .with_repo(repo_path, move |repo| {
@@ -1875,10 +1877,13 @@ fn relative_path(repo: &Repository, repo_root: &str, path: &str) -> Option<Strin
     // and every other symlink below tmp), while the tool's path rides
     // the chat's cwd spelling. Resolve through the symlinks — the
     // target may not exist yet (a write tool creating it), so take
-    // the deepest existing ancestor and re-attach the tail.
-    let resolved = resolve_existing(&absolute)?;
+    // the deepest existing ancestor and re-attach the tail. Both sides
+    // drop Windows's verbatim (`\\?\`) prefix first — canonicalize
+    // produces it, git2's workdir never carries it, and a prefix
+    // mismatch silently refuses the strip.
+    let resolved = crate::tools::strip_verbatim(resolve_existing(&absolute)?);
     resolved
-        .strip_prefix(workdir)
+        .strip_prefix(crate::tools::strip_verbatim(workdir.to_path_buf()))
         .ok()
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
@@ -2318,10 +2323,13 @@ fn history_page(
 mod tests {
     use super::{
         MAX_PATCH_BYTES, checkout_identity, classify_status, default_branch, diff_checksum,
-        filter_turn_patch, normalize_path, resolve_existing, status_sides, truncate_patch,
-        turn_start_content,
+        filter_turn_patch, status_sides, truncate_patch, turn_start_content,
     };
+    #[cfg(unix)]
+    use super::{normalize_path, resolve_existing};
+    #[cfg(unix)]
     use git2::Repository;
+    #[cfg(unix)]
     use std::path::Path;
 
     fn names(values: &[&str]) -> Vec<String> {
@@ -2338,6 +2346,8 @@ mod tests {
         out
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn repo_relative_resolves_symlinks_and_missing_targets() {
         // A symlinked root (macOS /var/folders → /private/var/folders) with

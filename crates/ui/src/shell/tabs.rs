@@ -89,6 +89,7 @@ impl Shell {
         self.state
             .update(cx, |s, cx| s.select_chat(Some(chat_id), cx));
         self.close_titlebar_menu(cx);
+        self.close_menu_bar(cx);
         cx.notify();
     }
 
@@ -111,10 +112,219 @@ impl Shell {
             s.select_chat(None, cx);
         });
         self.close_titlebar_menu(cx);
+        self.close_menu_bar(cx);
         cx.notify();
     }
 
-    /// The unified titlebar in chat mode:
+    /// Title/folder/provider/canvas-ness of the current selection — the
+    /// shared facts behind both platform variants of the session title bar.
+    /// The canvas titles as NOTHING (user request — a "New session" header
+    /// over the empty canvas was noise); a session appends its project as a
+    /// muted folder tag right of the title.
+    fn session_title_bits(
+        &self,
+        cx: &App,
+    ) -> (
+        SharedString,
+        Option<SharedString>,
+        Option<holt_proto::ProviderId>,
+        bool,
+    ) {
+        let state = self.state.read(cx);
+        match state.selected_chat_row() {
+            Some(chat) => {
+                let folder = chat
+                    .space_id
+                    .as_deref()
+                    .and_then(|id| state.space_row(id))
+                    .map(|s| s.display_name().to_string())
+                    .unwrap_or_else(|| "~".to_string());
+                (
+                    SharedString::from(transcript::single_line(
+                        &chat.title.clone().unwrap_or_else(|| "New session".into()),
+                    )),
+                    Some(SharedString::from(folder)),
+                    chat.config.as_ref().map(|c| c.provider.clone()),
+                    false,
+                )
+            }
+            None => (SharedString::from(""), None, None, true),
+        }
+    }
+
+    /// The provider icon + title + folder tag group (hidden during pane
+    /// takeover — the pane's header strip owns the whole band then).
+    fn session_title_group(
+        theme: &Theme,
+        title: SharedString,
+        target: Option<SharedString>,
+        provider: Option<holt_proto::ProviderId>,
+        on_canvas: bool,
+    ) -> AnyElement {
+        div()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .when_some(
+                provider
+                    .as_ref()
+                    .and_then(crate::pickers::provider_brand_icon),
+                |el, mark| el.child(mark.render(px(14.0), theme.text_muted)),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(if on_canvas {
+                        theme.text_muted.opacity(0.7)
+                    } else {
+                        theme.text.opacity(0.85)
+                    })
+                    .child(title),
+            )
+            .when_some(target, |el, target| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_muted.opacity(0.5))
+                        .child(target),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The title bar's trailing controls. With the changes pane open this is
+    /// the PANE'S HEADER — a strip exactly as wide as the pane carrying its
+    /// controls (scope dropdown, ref selector, fold-all from the Changes
+    /// entity; expand + close shell-side). On macOS/Linux it lives in the
+    /// overlay titlebar because that overlay owns the band's hit-testing;
+    /// the Windows flow row hosts it directly. Closed, it is just the stable
+    /// open/close toggle. Hidden on the new-session canvas (user request).
+    fn render_session_title_trailing(
+        &mut self,
+        on_canvas: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Stable right-side actions: open-with, the bottom-terminal toggle,
+        // then the shared right-pane controls (expand while open + toggle).
+        // The terminal and pane toggles track their panel state with the
+        // active background.
+        let right_open = self.right_pane_open(cx);
+        // Glyph morph progress rides the pane's own width tween (same clock
+        // as the width). Expand/un-expand tweens move between two nonzero
+        // widths — the pane is open throughout, so the glyph stays put.
+        let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
+        let right_open_t = match self.active_tween_endpoints(self.right_tween) {
+            Some((from, to)) if from > 0.0 && to > 0.0 => 1.0,
+            Some((from, to)) => (right_now / from.max(to).max(1.0)).clamp(0.0, 1.0),
+            None => (right_now / self.settings.right_pane_width.max(1.0)).clamp(0.0, 1.0),
+        };
+        div()
+            .id("right-titlebar-controls")
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .when(
+                cfg!(target_os = "macos") && !self.external_apps.is_empty(),
+                |el| el.child(self.render_external_app_picker(cx)),
+            )
+            // Terminals are chat-scoped: the new-chat canvas carries no
+            // working terminal to toggle. This toggles the BOTTOM terminal
+            // panel (⌘J), not the right pane's terminal surface.
+            .when(!on_canvas, |cluster| {
+                cluster.child(
+                    header_icon_button(
+                        "toggle-terminal",
+                        icons::PROGRAMMING_OUTLINE,
+                        theme,
+                        cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                    )
+                    .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::popover::TextTooltip("Toggle terminal".into()))
+                            .into()
+                    }),
+                )
+            })
+            .when(right_open, |cluster| {
+                cluster.child(
+                    header_icon_button(
+                        "expand-changes",
+                        right_pane_expand_icon(self.right_pane_expanded),
+                        theme,
+                        cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
+                    )
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::popover::TextTooltip("Expand panel".into()))
+                            .into()
+                    }),
+                )
+            })
+            .child(
+                header_icon_button_with(
+                    "toggle-right-pane",
+                    icons::sidebar_glyph(right_open_t, true, 16.0, theme.text_muted)
+                        .into_any_element(),
+                    theme,
+                    cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                )
+                .when(right_open, |el| el.bg(theme.glass_hover()))
+                .tooltip(|_, cx| {
+                    cx.new(|_| crate::popover::TextTooltip("Toggle right panel".into()))
+                        .into()
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// The session title bar on Windows (Kimi-desktop layout): a normal FLOW
+    /// row at the top of the content column. The dedicated strip above owns
+    /// the drag surface, menus, and captions, so this row opens with the
+    /// navigation cluster and needs no overlay clearances. It shares the
+    /// strip's `theme.bg` and carries the chrome block's one separator
+    /// hairline at its bottom edge — the strip itself is borderless, so the
+    /// two rows read as a single titlebar rather than two severed bands.
+    pub(super) fn render_session_title_bar_windows(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let (title, target, provider, on_canvas) = self.session_title_bits(cx);
+        let takeover = !on_canvas && self.right_pane_open(cx) && self.right_pane_expanded;
+        let trailing = self.render_session_title_trailing(on_canvas, &theme, cx);
+        div()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .pl(px(Theme::SPACE_SM))
+            .pr(px(TITLEBAR_ACTION_EDGE_INSET))
+            .bg(theme.bg)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(self.render_windows_nav_cluster(cx))
+            .when(!takeover, |el| {
+                el.child(Self::session_title_group(
+                    &theme, title, target, provider, on_canvas,
+                ))
+            })
+            .child(div().flex_1())
+            .child(trailing)
+            .into_any_element()
+    }
+
+    /// The unified titlebar in chat mode (macOS/Linux):
     /// `[new-session +] [provider icon + session title] … [open with]
     /// [terminal] [expand · right-pane toggle]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
@@ -123,38 +333,7 @@ impl Shell {
     /// File/Terminal/Git surfaces in the right pane.
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        // The canvas titles as NOTHING (user request — a "New session"
-        // header over the empty canvas was noise); the bar keeps its height,
-        // drag region, and buttons. A session appends its project as a muted
-        // folder tag right of the title (the composer footer no longer
-        // carries it).
-        let (title, target, provider, on_canvas): (
-            SharedString,
-            Option<SharedString>,
-            Option<holt_proto::ProviderId>,
-            bool,
-        ) = {
-            let state = self.state.read(cx);
-            match state.selected_chat_row() {
-                Some(chat) => {
-                    let folder = chat
-                        .space_id
-                        .as_deref()
-                        .and_then(|id| state.space_row(id))
-                        .map(|s| s.display_name().to_string())
-                        .unwrap_or_else(|| "~".to_string());
-                    (
-                        SharedString::from(transcript::single_line(
-                            &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                        )),
-                        Some(SharedString::from(folder)),
-                        chat.config.as_ref().map(|c| c.provider.clone()),
-                        false,
-                    )
-                }
-                None => (SharedString::from(""), None, None, true),
-            }
-        };
+        let (title, target, provider, on_canvas) = self.session_title_bits(cx);
 
         // The new-session `+` renders in the WINDOW-CONTROL CLUSTER on every
         // route (`render_titlebar_cluster`) — this row budgets one button
@@ -174,8 +353,7 @@ impl Shell {
         // entity; expand + close shell-side). It lives up here because the
         // titlebar overlay owns this band's hit-testing: controls mounted in
         // the pane itself would sit under the drag region and never see a
-        // click. Closed, it is just the stable open/close toggle. Hidden on
-        // the new-session canvas (user request) — nothing to diff yet.
+        // click.
         let takeover = !on_canvas && self.right_pane_open(cx) && self.right_pane_expanded;
         // In takeover the title hides and the strip owns the whole band, so
         // the row's left inset pulls back to the sidebar seam — the title
@@ -202,79 +380,7 @@ impl Shell {
         } else {
             content_left
         };
-        // Stable right-side actions: open-with, the bottom-terminal toggle,
-        // then the shared right-pane controls (expand while open + toggle).
-        // The terminal and pane toggles track their panel state with the
-        // active background.
-        let right_open = self.right_pane_open(cx);
-        // Glyph morph progress rides the pane's own width tween (same clock
-        // as the width). Expand/un-expand tweens move between two nonzero
-        // widths — the pane is open throughout, so the glyph stays put.
-        let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
-        let right_open_t = match self.active_tween_endpoints(self.right_tween) {
-            Some((from, to)) if from > 0.0 && to > 0.0 => 1.0,
-            Some((from, to)) => (right_now / from.max(to).max(1.0)).clamp(0.0, 1.0),
-            None => (right_now / self.settings.right_pane_width.max(1.0)).clamp(0.0, 1.0),
-        };
-        let trailing = div()
-            .id("right-titlebar-controls")
-            .flex_none()
-            .h_full()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.0))
-            .when(
-                cfg!(target_os = "macos") && !self.external_apps.is_empty(),
-                |el| el.child(self.render_external_app_picker(cx)),
-            )
-            // Terminals are chat-scoped: the new-chat canvas carries no
-            // working terminal to toggle. This toggles the BOTTOM terminal
-            // panel (⌘J), not the right pane's terminal surface.
-            .when(!on_canvas, |cluster| {
-                cluster.child(
-                    header_icon_button(
-                        "toggle-terminal",
-                        icons::PROGRAMMING_OUTLINE,
-                        &theme,
-                        cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
-                    )
-                    .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Toggle terminal".into()))
-                            .into()
-                    }),
-                )
-            })
-            .when(right_open, |cluster| {
-                cluster.child(
-                    header_icon_button(
-                        "expand-changes",
-                        right_pane_expand_icon(self.right_pane_expanded),
-                        &theme,
-                        cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
-                    )
-                    .tooltip(|_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Expand panel".into()))
-                            .into()
-                    }),
-                )
-            })
-            .child(
-                header_icon_button_with(
-                    "toggle-right-pane",
-                    icons::sidebar_glyph(right_open_t, true, 16.0, theme.text_muted)
-                        .into_any_element(),
-                    &theme,
-                    cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
-                )
-                .when(right_open, |el| el.bg(theme.glass_hover()))
-                .tooltip(|_, cx| {
-                    cx.new(|_| crate::popover::TextTooltip("Toggle right panel".into()))
-                        .into()
-                }),
-            )
-            .into_any_element();
+        let trailing = self.render_session_title_trailing(on_canvas, &theme, cx);
 
         let inner = div()
             .size_full()
@@ -288,42 +394,9 @@ impl Shell {
             // title would sit UNDER it (both flex_none, the row overflows and
             // paint order stacks them), so it hides for the duration.
             .when(!takeover, |el| {
-                el.child(
-                    div()
-                        .min_w_0()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .when_some(
-                            provider
-                                .as_ref()
-                                .and_then(crate::pickers::provider_brand_icon),
-                            |el, mark| el.child(mark.render(px(14.0), theme.text_muted)),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(crate::typography::ui_rems(12.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(if on_canvas {
-                                    theme.text_muted.opacity(0.7)
-                                } else {
-                                    theme.text.opacity(0.85)
-                                })
-                                .child(title),
-                        )
-                        .when_some(target, |el, target| {
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .text_size(crate::typography::ui_rems(12.0))
-                                    .text_color(theme.text_muted.opacity(0.5))
-                                    .child(target),
-                            )
-                        }),
-                )
+                el.child(Self::session_title_group(
+                    &theme, title, target, provider, on_canvas,
+                ))
             })
             .child(div().flex_1())
             .child(trailing);

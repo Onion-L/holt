@@ -27,7 +27,12 @@ use holt_engine::{EngineConfig, LocalEngine};
 use holt_rpc::{RpcReply, RpcService, methods};
 use tempfile::TempDir;
 
-const WAIT: Duration = Duration::from_secs(10);
+/// The pump timeout. Headroom, not a load budget: the 10 s this replaced
+/// failed on a state race (a wait that could never see its frame), and the
+/// fix was to read the watch's current value — see `wait_for_chat_status`
+/// and the 2026-10-23 RETROS entry. Keep it generous; widen it only after
+/// proving the frame actually arrives.
+const WAIT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // The scripted provider
@@ -713,31 +718,83 @@ fn uuid_tag(text: &str) -> String {
     format!("m{hash:x}")
 }
 
-/// Pump session frames until `chat_id` carries `status`.
+/// Pump session frames until `chat_id` carries `status`. For a transition
+/// the caller knows is still ahead — [`subscribe`] already consumed the
+/// opening snapshot. A state that may ALREADY hold (a Turn that settled
+/// before this point, a restart's resumed Turn) needs
+/// [`wait_for_chat_status`]: no change would ever wake a frame pump again.
 pub async fn wait_for_session_status<S>(sessions: &mut S, chat_id: &str, status: &str)
 where
     S: StreamExt<Item = serde_json::Value> + Unpin,
 {
     loop {
         let frame = next_frame(sessions).await;
-        let hit = frame.as_array().is_some_and(|rows| {
-            rows.iter()
-                .any(|row| row["chatId"] == chat_id && row["status"] == status)
-        });
-        if hit {
+        if session_frame_reports(&frame, chat_id, status) {
             return;
         }
     }
 }
 
+/// Wait until `chat_id` carries `status`, current value first: every
+/// subscription opens with the watch's present snapshot, so a state reached
+/// before this call counts. The subscription is opened here, never upstream,
+/// which is what makes the wait immune to the ordering it starts from.
+pub async fn wait_for_chat_status(engine: &LocalEngine, chat_id: &str, status: &str) {
+    let RpcReply::Stream(mut sessions) = engine
+        .handle(methods::WATCH_SESSIONS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSessions did not return a stream");
+    };
+    loop {
+        let frame = next_frame(&mut sessions).await;
+        if session_frame_reports(&frame, chat_id, status) {
+            return;
+        }
+    }
+}
+
+fn session_frame_reports(frame: &serde_json::Value, chat_id: &str, status: &str) -> bool {
+    frame.as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|row| row["chatId"] == chat_id && row["status"] == status)
+    })
+}
+
 /// Pump transcript frames until some entry or append carries `needle` (a
-/// text or error part, or a streaming append).
+/// text or error part, or a streaming append). [`subscribe`] already
+/// consumed the whole-history opening reset, so text that landed before
+/// this point is gone: use [`wait_for_transcript`] for that.
 pub async fn wait_for_transcript_text<S>(transcript: &mut S, needle: &str)
 where
     S: StreamExt<Item = serde_json::Value> + Unpin,
 {
     loop {
         let frame = next_frame(transcript).await;
+        if frame.to_string().contains(needle) {
+            return;
+        }
+    }
+}
+
+/// Wait until the transcript carries `needle`, current value first: the
+/// subscription opens with the whole-history `reset`, so text that landed
+/// before this call counts — the restart-shaped wait, where the reply may
+/// have arrived while nothing was watching.
+pub async fn wait_for_transcript(engine: &LocalEngine, chat_id: &str, needle: &str) {
+    let RpcReply::Stream(mut transcript) = engine
+        .handle(
+            methods::WATCH_DOC_MESSAGES,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchDocMessages did not return a stream");
+    };
+    loop {
+        let frame = next_frame(&mut transcript).await;
         if frame.to_string().contains(needle) {
             return;
         }
@@ -789,6 +846,20 @@ pub async fn subscribe(
     };
     let _ = sessions.next().await.expect("sessions watch ended");
     (transcript, sessions)
+}
+
+/// The tool-call ids a transcript snapshot carries, read off its `tool`
+/// parts — the structural spelling of "the transcript shows call X", which
+/// an id inside another field (a device id, a message id) can never spoof.
+pub fn transcript_tool_ids(snapshot: &serde_json::Value) -> Vec<String> {
+    snapshot["reset"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .flat_map(|entry| entry["parts"].as_array().cloned().unwrap_or_default())
+        .filter(|part| part["kind"] == "tool")
+        .filter_map(|part| part["id"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// The transcript watch's opening frame — the whole-history `reset` a
@@ -1040,4 +1111,27 @@ pub async fn serve_loopback_status_with_capture(
         }
     });
     (LoopbackServer { base, task }, captured)
+}
+
+// ---------------------------------------------------------------------------
+// Platform folds for path-spelled fixtures
+// ---------------------------------------------------------------------------
+
+/// A canonicalized path in the addressed vocabulary: verbatim prefix
+/// (`\\?\`) unwrapped, separators `/`. A no-op on unix.
+pub fn addressed(path: &std::path::Path) -> String {
+    let text = path.display().to_string().replace('\\', "/");
+    text.strip_prefix("//?/").map(str::to_owned).unwrap_or(text)
+}
+
+/// Init a fixture repo with hermetic line-ending config: the host's global
+/// `core.autocrlf` (true on many Windows checkouts) would otherwise rewrite
+/// every fixture checkout and break byte-exact assertions.
+pub fn init_repo(path: &std::path::Path) -> git2::Repository {
+    let repo = git2::Repository::init(path).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("core.autocrlf", "false")
+        .unwrap();
+    repo
 }

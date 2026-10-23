@@ -1170,7 +1170,7 @@ impl EngineService {
         let cwd = row
             .cwd
             .clone()
-            .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+            .unwrap_or_else(|| crate::local_fs::home_dir().unwrap_or_else(|| "/".to_string()));
         Ok((config, cwd))
     }
 

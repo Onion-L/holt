@@ -450,7 +450,7 @@ async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
     // compacting Turn edits a tracked file mid-run, and the turn diff must
     // still see it — proof compaction reset nothing Turn-scoped (ADR-compaction-is-not-a-turn).
     let fixture = common::Fixture::new();
-    let repo = git2::Repository::init(fixture.project_dir.path()).unwrap();
+    let repo = common::init_repo(fixture.project_dir.path());
     repo.set_head("refs/heads/main").unwrap();
     {
         let mut index = repo.index().unwrap();
@@ -628,9 +628,8 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     // predates the compaction, so the restart does not compact again
     // (issue #37).
     let engine = fixture.engine(&provider);
-    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::wait_for_transcript_text(&mut transcript, "post-crash reply").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_transcript(&engine, "chat-1", "post-crash reply").await;
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
 
     let requests = provider.requests();
     assert_eq!(

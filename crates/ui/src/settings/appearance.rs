@@ -171,8 +171,10 @@ impl AppearancePage {
         cx.notify();
     }
 
-    /// Open the native image picker and apply the choice. The picker only
-    /// exists on macOS; other platforms keep the field as the entry point.
+    /// Open the native image picker and apply the choice. The picker exists
+    /// on every platform: macOS runs `NSOpenPanel` with the extension filter,
+    /// elsewhere the gpui dialog carries none (a wrong pick fails where the
+    /// bytes are read). The path field stays the keyboard entry point.
     fn browse_for_backdrop(cx: &mut Context<Self>) {
         // `runModal` pumps AppKit's nested event loop: it must run OUTSIDE
         // every gpui borrow, or the loop's re-entrant callbacks (mouse-move,
@@ -181,7 +183,7 @@ impl AppearancePage {
         // runs after this dispatch fully unwinds, on the main thread, with
         // no borrows held.
         cx.spawn(async move |page, cx| {
-            let Some(picked) = crate::file_dialog::pick_image() else {
+            let Some(picked) = crate::file_dialog::pick_image(cx).await else {
                 return;
             };
             let picked = picked.display().to_string();
@@ -489,12 +491,11 @@ impl Render for AppearancePage {
                     }
                 },
             ))
-            .on_click(cx.listener(|page, _, window, cx| {
-                if cfg!(target_os = "macos") {
-                    Self::browse_for_backdrop(cx);
-                } else {
-                    page.start_backdrop_edit(window, cx);
-                }
+            .on_click(cx.listener(|_, _, _, cx| {
+                // The picker is cross-platform (NSOpenPanel on macOS, the
+                // gpui dialog elsewhere); manual entry stays available
+                // through the field's own edit affordance.
+                Self::browse_for_backdrop(cx);
             }))
             .when_some(loaded, |card, loaded| {
                 let wash = crate::chat_backdrop::wash(
@@ -544,11 +545,7 @@ impl Render for AppearancePage {
                 card.border_dashed().child(
                     preview_message(&theme)
                         .child(div().text_color(theme.text_muted).child("Drop an image here"))
-                        .child(if cfg!(target_os = "macos") {
-                            "or click to browse"
-                        } else {
-                            "or paste a path"
-                        }),
+                        .child("or click to browse"),
                 )
             });
         let presence_control = div()

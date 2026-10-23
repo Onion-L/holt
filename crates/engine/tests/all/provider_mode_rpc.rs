@@ -614,6 +614,11 @@ async fn a_draft_key_request_saves_under_the_draft_and_never_leaks_the_key() {
     files_under(fixture.data_dir.path(), &mut files);
     let mut approved = false;
     for path in files {
+        // The instance lock is byte-range locked by the running engine —
+        // a Windows reader gets ERROR_LOCK_VIOLATION, not content.
+        if path.file_name().unwrap() == "engine.lock" {
+            continue;
+        }
         let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
         if path.file_name().unwrap() == "provider-credentials.json" {
             continue;

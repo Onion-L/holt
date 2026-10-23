@@ -816,8 +816,12 @@ mod tests {
 
     #[test]
     fn catalog_skill_md_reads_collapse_to_the_skill_chip() {
+        // The host platform's absolute root — the collapse mechanic is
+        // shape-independent, but its path arguments must be absolute.
+        let root = if cfg!(windows) { "C:/roots" } else { "/roots" };
+        let skill_md = format!("{root}/grill/SKILL.md");
         let skill_files: HashMap<String, String> =
-            HashMap::from([("/roots/grill/SKILL.md".to_string(), "grill".to_string())]);
+            HashMap::from([(skill_md.clone(), "grill".to_string())]);
         let read = |path: &str| {
             let message = AgentMessage::Assistant(Box::new(AssistantMessage {
                 content: vec![AssistantContent::ToolCall(tool_call(
@@ -826,15 +830,15 @@ mod tests {
                 ))],
                 ..Default::default()
             }));
-            assistant_parts(&message, 0, "/roots", &skill_files, false, false)
+            assistant_parts(&message, 0, root, &skill_files, false, false)
         };
         // The advertised location, absolute…
         assert_eq!(
-            read("/roots/grill/SKILL.md"),
+            read(&skill_md),
             vec![MessagePart::Skill {
                 id: "call-1".into(),
                 name: "grill".into(),
-                file: "/roots/grill/SKILL.md".into(),
+                file: skill_md.clone(),
                 content: None,
             }]
         );
@@ -844,18 +848,18 @@ mod tests {
             vec![MessagePart::Skill {
                 id: "call-1".into(),
                 name: "grill".into(),
-                file: "/roots/grill/SKILL.md".into(),
+                file: skill_md.clone(),
                 content: None,
             }]
         );
         // Any other file — including another `.md` inside the skill's own
         // directory — renders as an ordinary read.
         assert_eq!(
-            read("/roots/grill/notes.md"),
+            read(&format!("{root}/grill/notes.md")),
             vec![MessagePart::Tool {
                 id: "call-1".into(),
                 call: TranscriptToolCall::ReadFile {
-                    path: "/roots/grill/notes.md".into(),
+                    path: format!("{root}/grill/notes.md"),
                 },
                 is_error: false,
                 resolved: false,
@@ -877,11 +881,11 @@ mod tests {
         let message = AgentMessage::Assistant(Box::new(AssistantMessage {
             content: vec![AssistantContent::ToolCall(tool_call(
                 "read",
-                serde_json::json!({ "path": "/roots/grill/SKILL.md" }),
+                serde_json::json!({ "path": skill_md }),
             ))],
             ..Default::default()
         }));
-        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new(), false, false);
+        let parts = assistant_parts(&message, 0, root, &HashMap::new(), false, false);
         assert!(matches!(
             &parts[0],
             MessagePart::Tool {

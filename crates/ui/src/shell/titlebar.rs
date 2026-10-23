@@ -17,13 +17,10 @@ pub fn titlebar_cluster_start(fullscreen: bool) -> f32 {
 }
 
 /// Width of the spacer ahead of the control cluster for a strip that already
-/// carries `container_pad` px of its own left padding. macOS only — on
-/// Linux/Windows there are no traffic lights and the cluster hugs the edge.
-pub fn titlebar_spacer_width(is_macos: bool, fullscreen: bool, container_pad: f32) -> f32 {
-    if !is_macos {
-        return 0.0;
-    }
-    (titlebar_cluster_start(fullscreen) - container_pad).max(0.0)
+/// carries `container_pad` px of its own left padding, given the cluster's
+/// (tweened) start.
+pub fn titlebar_spacer_width(cluster_start: f32, container_pad: f32) -> f32 {
+    (cluster_start - container_pad).max(0.0)
 }
 
 /// Within-group rhythm for Back/Forward.
@@ -90,7 +87,8 @@ pub fn caption_buttons_width(count: usize) -> f32 {
 /// Where the cluster's first button starts, from the window's left edge.
 /// `linux_left_captions` is the number of caption buttons holt draws at the
 /// top-left on Linux (GNOME `close:…` layouts) — the app cluster follows them
-/// at the shared 2px rhythm.
+/// at the shared 2px rhythm. Windows never renders the overlay cluster: its
+/// titlebar is the dedicated strip in normal flow.
 pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captions: usize) -> f32 {
     if is_macos {
         titlebar_cluster_start(fullscreen)
@@ -99,19 +97,6 @@ pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captio
     } else {
         10.0
     }
-}
-
-/// Left clearance a full-bleed header (collapsed sidebar) needs so its content
-/// starts past the overlay cluster, given the header's own `container_pad`.
-pub fn cluster_clearance(
-    is_macos: bool,
-    fullscreen: bool,
-    linux_left_captions: usize,
-    container_pad: f32,
-) -> f32 {
-    (cluster_buttons_start(is_macos, fullscreen, linux_left_captions) + CLUSTER_BUTTONS_WIDTH + 8.0
-        - container_pad)
-        .max(0.0)
 }
 
 /// The titlebar's nav menu (Scheduled / Chat manager), `Some` while open.
@@ -168,7 +153,7 @@ impl Shell {
         // The tween runs in cluster-start coordinates; the spacer is that
         // minus the container's own padding.
         let start = self.eval_tween(self.titlebar_tween, titlebar_cluster_start(fullscreen));
-        let width = (start - container_pad).max(0.0);
+        let width = titlebar_spacer_width(start, container_pad);
         Some(div().flex_none().h_full().w(px(width)).into_any_element())
     }
 
@@ -194,7 +179,36 @@ impl Shell {
     /// The unified window titlebar: chat → the session tab strip; settings →
     /// the section label. Full-width on the glass shell; the traffic lights
     /// and control cluster overlay its left end.
+    ///
+    /// On Windows this renders as a normal FLOW row at the top of the content
+    /// column (the dedicated strip above it owns the drag surface, menus, and
+    /// captions): the row carries the navigation cluster — back/forward, the
+    /// new-session `+`, and the "..." nav menu. The row shares the strip's
+    /// `theme.bg` and carries the chrome block's one separator hairline at
+    /// its bottom edge, so the two rows read as a single titlebar.
     pub(super) fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if cfg!(target_os = "windows") {
+            if matches!(self.route, Route::Chat) {
+                return self.render_session_title_bar_windows(cx);
+            }
+            let (bg, border) = {
+                let theme = Theme::of(cx);
+                (theme.bg, theme.border)
+            };
+            let row = div()
+                .h(px(Theme::TITLEBAR_HEIGHT))
+                .w_full()
+                .flex_none()
+                .flex()
+                .items_center()
+                .pl(px(Theme::SPACE_SM))
+                .pr(px(TITLEBAR_ACTION_EDGE_INSET))
+                .bg(bg)
+                .border_b_1()
+                .border_color(border)
+                .child(self.render_windows_nav_cluster(cx));
+            return row.into_any_element();
+        }
         match self.route {
             Route::Chat => self.render_session_title_bar(cx),
             Route::Settings(_) | Route::ChatManager | Route::Scheduled => {
@@ -210,6 +224,171 @@ impl Shell {
                     .into_any_element()
             }
         }
+    }
+
+    /// The Windows titlebar strip (Kimi-desktop layout): a dedicated band in
+    /// normal flow carrying the app identity, the sidebar toggle, and the
+    /// File/Edit/View/Help menus, plus the update pill when the engine
+    /// offers a release. The native caption buttons still overlay its right
+    /// end from the root (`render_windows_caption_controls`); the band
+    /// itself is the window's drag surface. `None` off Windows.
+    ///
+    /// No bottom border here: the session/settings header row directly below
+    /// shares this band's `theme.bg` and carries the chrome block's ONE
+    /// separator hairline at its own bottom edge, so strip + header read as
+    /// a single titlebar instead of two severed bands.
+    pub(super) fn render_windows_strip(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !cfg!(target_os = "windows") {
+            return None;
+        }
+        let theme = Theme::of(cx).clone();
+        let update_version = self.state.read(cx).update.available.clone();
+        let strip = div()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .pl(px(TITLEBAR_CLUSTER_PAD))
+            // The root-level caption overlay owns the right end.
+            .pr(px(WINDOWS_CAPTION_WIDTH))
+            .bg(theme.bg)
+            // The app identity (macOS has the traffic lights here; Linux
+            // follows the desktop's own caption layout). No listeners —
+            // presses fall through to the strip's drag surface.
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .mr(px(Theme::SPACE_SM))
+                    .child(
+                        img(crate::app_icon::logo_image())
+                            .size(px(16.0))
+                            .rounded(px(4.0))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child("holt"),
+                    ),
+            )
+            .child(window_control_button_with(
+                "toggle-sidebar",
+                // The glyph morphs with the pane: progress rides the
+                // sidebar's own width tween, so the icon and the width share
+                // one clock (0-wide collapsed target → closed glyph).
+                icons::sidebar_glyph(
+                    (self.eval_tween(self.sidebar_tween, self.sidebar_target())
+                        / self.settings.sidebar_width.max(1.0))
+                    .clamp(0.0, 1.0),
+                    false,
+                    16.0,
+                    theme.text_muted,
+                )
+                .into_any_element(),
+                &theme,
+                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+            ))
+            .child(div().w(px(6.0)).flex_none())
+            .child(self.render_menu_bar(&theme, cx))
+            .child(div().flex_1())
+            .when_some(update_version, |el, version| {
+                el.child(
+                    div()
+                        .id("strip-update")
+                        .flex_none()
+                        .h(px(22.0))
+                        .px(px(10.0))
+                        .mr(px(Theme::SPACE_SM))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .rounded_full()
+                        .bg(theme.accent)
+                        .cursor_pointer()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.update_dialog = true;
+                            cx.notify();
+                        }))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| {
+                                crate::popover::TextTooltip(
+                                    format!("Update to Holt {version}").into(),
+                                )
+                            })
+                            .into()
+                        })
+                        .child(
+                            icon(icons::DOWNLOAD_MINIMALISTIC)
+                                .size(px(12.0))
+                                .text_color(theme.on_accent),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(11.5))
+                                .text_color(theme.on_accent)
+                                .child("Update"),
+                        ),
+                )
+            });
+        Some(
+            self.titlebar_drag_region("windows-titlebar-strip", strip, cx)
+                .into_any_element(),
+        )
+    }
+
+    /// The Windows navigation cluster at the content header's left — the
+    /// back/forward pair, the new-session `+`, and the "..." nav menu
+    /// (Scheduled / Chat manager). These live in the overlay cluster on
+    /// macOS/Linux; Windows dropped that overlay for the strip.
+    pub(super) fn render_windows_nav_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let can_back = self.nav.can_back();
+        let can_forward = self.nav.can_forward();
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(TITLEBAR_CONTROL_GAP))
+            .child(nav_history_button(
+                "nav-back",
+                icons::ARROW_LEFT,
+                can_back,
+                &theme,
+                cx.listener(|this, _, _, cx| this.navigate_back(cx)),
+            ))
+            .child(nav_history_button(
+                "nav-forward",
+                icons::ARROW_RIGHT,
+                can_forward,
+                &theme,
+                cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
+            ))
+            // The new-session `+`, on every route.
+            .child(
+                div()
+                    .ml(px(TITLEBAR_GROUP_GAP - TITLEBAR_CONTROL_GAP))
+                    .flex_none()
+                    .child(window_control_button(
+                        "titlebar-new-session",
+                        icons::PLUS,
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                    )),
+            )
+            .child(self.render_titlebar_menu(&theme, cx))
+            .into_any_element()
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
@@ -273,6 +452,12 @@ impl Shell {
     /// container has no id/listeners — everything between the buttons falls
     /// through to the titlebar drag strips below.
     pub(super) fn render_titlebar_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // Windows draws the dedicated strip instead: the identity and sidebar
+        // toggle live in it (`render_windows_strip`), the navigation cluster
+        // in the content header (`render_windows_nav_cluster`).
+        if cfg!(target_os = "windows") {
+            return div().into_any_element();
+        }
         let theme = Theme::of(cx).clone();
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
@@ -514,17 +699,23 @@ impl Shell {
 
         // Anchor to the sidebar seam (tracking its tween) so the trigger
         // lines up with the sidebar's view-options button below; a
-        // collapsed or narrow sidebar parks it just past the `+`.
-        let buttons_start = self.eval_tween(
-            self.titlebar_tween,
-            cluster_buttons_start(
-                cfg!(target_os = "macos"),
-                self.fullscreen.unwrap_or(false),
-                self.linux_left_caption_count(),
-            ),
-        );
-        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
-        let menu_ml = titlebar_menu_margin(buttons_start, sidebar_now);
+        // collapsed or narrow sidebar parks it just past the `+`. On Windows
+        // the trigger sits in the content header's nav cluster instead —
+        // one group gap past the `+`, no seam tracking.
+        let menu_ml = if cfg!(target_os = "windows") {
+            TITLEBAR_GROUP_GAP - TITLEBAR_CONTROL_GAP
+        } else {
+            let buttons_start = self.eval_tween(
+                self.titlebar_tween,
+                cluster_buttons_start(
+                    cfg!(target_os = "macos"),
+                    self.fullscreen.unwrap_or(false),
+                    self.linux_left_caption_count(),
+                ),
+            );
+            let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
+            titlebar_menu_margin(buttons_start, sidebar_now)
+        };
         div()
             .ml(px(menu_ml))
             .flex_none()
@@ -794,6 +985,7 @@ impl Shell {
         }
 
         let theme = Theme::of(cx);
+        let active = window.is_window_active();
         let (maximize_id, maximize_glyph) = if window.is_maximized() {
             ("window-restore", "\u{e923}")
         } else {
@@ -805,15 +997,19 @@ impl Shell {
                 .absolute()
                 .top_0()
                 .right_0()
-                .h(px(Theme::TITLEBAR_HEIGHT))
                 .flex()
                 .flex_row()
-                .font_family("Segoe Fluent Icons")
+                // Segoe MDL2 Assets ships on both Windows 10 and 11 and holds
+                // the same Chrome* caption codepoints; Segoe Fluent Icons is
+                // Windows-11-only, and gpui's per-glyph fallback cannot save a
+                // primary family that does not resolve at all.
+                .font_family("Segoe MDL2 Assets")
                 .child(windows_caption_button(
                     "window-minimize",
                     "\u{e921}",
                     WindowControlArea::Min,
                     theme,
+                    active,
                     false,
                 ))
                 .child(windows_caption_button(
@@ -821,6 +1017,7 @@ impl Shell {
                     maximize_glyph,
                     WindowControlArea::Max,
                     theme,
+                    active,
                     false,
                 ))
                 .child(windows_caption_button(
@@ -828,6 +1025,7 @@ impl Shell {
                     "\u{e8bb}",
                     WindowControlArea::Close,
                     theme,
+                    active,
                     true,
                 ))
                 .into_any_element(),
@@ -1134,7 +1332,11 @@ fn window_control_button_with(
         .child(content)
 }
 
-const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
+// Native Windows caption metrics (WinUI / Win32): 46px-wide buttons, 32px
+// tall, flush with the window's top-right corner. The remaining strip of the
+// 38px titlebar below them stays drag surface.
+const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
+const WINDOWS_CAPTION_HEIGHT: f32 = 32.0;
 const WINDOWS_CAPTION_WIDTH: f32 = WINDOWS_CAPTION_BUTTON_WIDTH * 3.0;
 
 /// Right padding for titlebar content: past the native Windows caption
@@ -1150,41 +1352,42 @@ fn titlebar_right_padding(is_windows: bool, linux_right_captions: usize, base: f
     }
 }
 
-/// A Windows-owned caption target using the same system glyphs and native
-/// non-client hit-test areas as GPUI/Zed's platform titlebar.
+/// A Windows-owned caption target at native metrics (46×32) using the system
+/// Segoe glyphs and native non-client hit-test areas as GPUI/Zed's platform
+/// titlebar. `active` follows `Window::is_window_active`: like the native
+/// caption row, the glyphs dim while the window is in the background.
 fn windows_caption_button(
     id: &'static str,
     glyph: &'static str,
     area: WindowControlArea,
     theme: &Theme,
+    active: bool,
     close: bool,
 ) -> impl IntoElement {
+    let fg = if active { theme.text } else { theme.text_muted };
     let (hover_bg, hover_fg, active_bg, active_fg) = if close {
         let red: gpui::Hsla = gpui::rgb(0xe81123).into();
-        (
-            red,
-            gpui::white(),
-            red.opacity(0.8),
-            gpui::white().opacity(0.8),
-        )
+        // Native pressed state: a darker red, not a fade of the hover red.
+        let pressed: gpui::Hsla = gpui::rgb(0xc42b1c).into();
+        (red, gpui::white(), pressed, gpui::white())
     } else {
         (
             theme.glass_hover(),
-            theme.text,
+            fg,
             theme.glass_hover().opacity(0.7),
-            theme.text,
+            fg,
         )
     };
     div()
         .id(id)
         .w(px(WINDOWS_CAPTION_BUTTON_WIDTH))
-        .h_full()
+        .h(px(WINDOWS_CAPTION_HEIGHT))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .text_size(crate::typography::ui_rems(10.0))
-        .text_color(theme.text)
+        .text_color(fg)
         .hover(move |style| style.bg(hover_bg).text_color(hover_fg))
         .active(move |style| style.bg(active_bg).text_color(active_fg))
         .occlude()
@@ -1349,19 +1552,22 @@ mod tests {
 
     #[test]
     fn titlebar_spacer_selects_per_platform_and_fullscreen() {
-        // macOS, lights visible: spacer fills up to the 88px cluster start.
-        assert_eq!(titlebar_spacer_width(true, false, 10.0), 78.0);
-        assert_eq!(titlebar_spacer_width(true, false, 12.0), 76.0);
-        assert_eq!(titlebar_spacer_width(true, false, 26.0), 62.0);
-        // macOS fullscreen: the inset animates away (clamped at zero when the
-        // strip's own padding already exceeds the 12px cluster start).
-        assert_eq!(titlebar_spacer_width(true, true, 10.0), 2.0);
-        assert_eq!(titlebar_spacer_width(true, true, 26.0), 0.0);
-        // Linux / Windows: never any inset.
-        assert_eq!(titlebar_spacer_width(false, false, 10.0), 0.0);
-        assert_eq!(titlebar_spacer_width(false, true, 10.0), 0.0);
+        // macOS, lights visible: the spacer fills up to the 88px cluster
+        // start; fullscreen animates that start to 12 (clamped at zero when
+        // the strip's own padding already exceeds it). The clock source is
+        // `titlebar_cluster_start`, the tween target in the render path.
+        let macos_visible = titlebar_cluster_start(false);
+        let macos_fullscreen = titlebar_cluster_start(true);
+        assert_eq!((macos_visible, macos_fullscreen), (88.0, 12.0));
+        assert_eq!(titlebar_spacer_width(macos_visible, 10.0), 78.0);
+        assert_eq!(titlebar_spacer_width(macos_visible, 12.0), 76.0);
+        assert_eq!(titlebar_spacer_width(macos_visible, 26.0), 62.0);
+        assert_eq!(titlebar_spacer_width(macos_fullscreen, 10.0), 2.0);
+        assert_eq!(titlebar_spacer_width(macos_fullscreen, 26.0), 0.0);
+        // Linux / Windows render no spacer at all (`titlebar_spacer` returns
+        // `None`), so the helper is never reached there.
         assert_eq!(
-            TITLEBAR_CLUSTER_PAD + titlebar_spacer_width(true, false, TITLEBAR_CLUSTER_PAD),
+            TITLEBAR_CLUSTER_PAD + titlebar_spacer_width(macos_visible, TITLEBAR_CLUSTER_PAD),
             titlebar_cluster_start(false),
             "the rendered row padding and spacer must land on the declared cluster start"
         );
@@ -1369,7 +1575,8 @@ mod tests {
 
     #[test]
     fn windows_caption_controls_reserve_titlebar_space() {
-        assert_eq!(titlebar_right_padding(true, 0, 16.0), 124.0);
+        // Native 46px × 3 = 138px caption row.
+        assert_eq!(titlebar_right_padding(true, 0, 16.0), 154.0);
         assert_eq!(titlebar_right_padding(false, 0, 16.0), 16.0);
     }
 
@@ -1411,26 +1618,6 @@ mod tests {
         // gap after the prefix; a collapsed sidebar parks there as well.
         assert_eq!(titlebar_menu_margin(88.0, 208.0), TITLEBAR_GROUP_GAP);
         assert_eq!(titlebar_menu_margin(88.0, 0.0), TITLEBAR_GROUP_GAP);
-    }
-
-    #[test]
-    fn cluster_clearance_clears_the_overlay_buttons() {
-        // Linux: buttons at 10..140; a 16px-padded header needs 116 more px
-        // to put content at 140 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 132.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 138.0);
-        // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 132.0 + 26.0);
-        // macOS: buttons start at the 88px traffic-light cluster start.
-        assert_eq!(
-            cluster_clearance(true, false, 0, 16.0),
-            88.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
-        );
-        // macOS fullscreen: cluster reclaims the inset (starts at 12).
-        assert_eq!(
-            cluster_clearance(true, true, 0, 16.0),
-            12.0 + CLUSTER_BUTTONS_WIDTH + 8.0 - 16.0
-        );
     }
 
     // ---- titlebar nav menu ----

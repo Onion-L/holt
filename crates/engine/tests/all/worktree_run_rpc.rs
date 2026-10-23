@@ -21,7 +21,7 @@ use tempfile::TempDir;
 /// adds feature.txt — so creation-base and branch-reuse semantics have
 /// distinguishable tips while the main working tree stays clean.
 fn setup_repo(dir: &Path) {
-    let repo = Repository::init(dir).unwrap();
+    let repo = common::init_repo(dir);
     repo.set_head("refs/heads/main").unwrap();
     let sig = git2::Signature::now("t", "t@t").unwrap();
     let mut index = repo.index().unwrap();

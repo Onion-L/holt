@@ -71,6 +71,16 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSURL",
 ] }
 
+# The Windows platform arms: Job Objects around shell children (tools), a
+# true no-replace rename (files), and drive enumeration (local_fs). 0.52 is
+# already in the lockfile through other graph members.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+] }
+
 [dev-dependencies]
 png = "0.18"
 tempfile.workspace = true

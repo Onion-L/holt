@@ -171,8 +171,7 @@ async fn a_turn_whose_prompt_was_compacted_away_still_resumes_once() {
     );
 
     let engine = fixture.engine(&provider);
-    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
-    common::wait_for_transcript_text(&mut transcript, "resumed reply").await;
+    common::wait_for_transcript(&engine, "chat-1", "resumed reply").await;
     let requests = provider.requests();
     let resumed = common::summarize(&requests[2].messages);
     assert!(

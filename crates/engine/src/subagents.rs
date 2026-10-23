@@ -281,7 +281,7 @@ pub(crate) struct Delegation {
 /// granularity and the used/limit counts so the model can budget the rest of
 /// its run.
 fn claim_child_slot(count: &AtomicUsize) -> Result<(), String> {
-    match count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+    match count.try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
         (n < MAX_CHILDREN_PER_TURN).then_some(n + 1)
     }) {
         Ok(_) => Ok(()),
@@ -565,7 +565,7 @@ async fn execute(
             text: content,
             ..Default::default()
         })],
-        details: serde_json::json!({"subagentRef": id, "failed": !ok, "resultPath": path, "model": d.model.id, "usage": usage}),
+        details: serde_json::json!({"subagentRef": id, "failed": !ok, "resultPath": crate::tools::addressed_canonical(&path), "model": d.model.id, "usage": usage}),
         usage: Some(usage),
         ..Default::default()
     })
@@ -592,7 +592,7 @@ fn write_result(path: &Path, text: &str) -> std::io::Result<()> {
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     std::fs::rename(temp, path)?;
-    std::fs::File::open(dir)?.sync_all()
+    crate::store::sync_dir(dir)
 }
 
 fn bounded_result(text: &str, path: &Path) -> Result<String, String> {
@@ -607,7 +607,7 @@ fn bounded_result(text: &str, path: &Path) -> Result<String, String> {
     }
     let suffix = format!(
         "\n[Result truncated. Full output: {}. Use read to retrieve omitted content.]",
-        path.display()
+        crate::tools::addressed_canonical(path)
     );
     let mut keep = RESULT_TOKENS.saturating_sub(tokenizer.encode_ordinary(&suffix).len() + 8);
     loop {

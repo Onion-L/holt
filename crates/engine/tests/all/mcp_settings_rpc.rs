@@ -375,6 +375,9 @@ async fn disabling_a_server_shuts_its_child_down() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "turn one").await;
     common::wait_for_transcript_text(&mut transcript, "one").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    // The liveness probe (kill(pid, 0)) is unix-shaped; Windows runs the
+    // prune path without the post-exit assertion.
+    #[cfg(unix)]
     let pid: i32 = std::fs::read_to_string(&marker)
         .unwrap()
         .trim()

@@ -286,7 +286,7 @@ impl Queue {
                 file.sync_all()?;
                 std::fs::rename(&temp, &self.path)?;
                 renamed = true;
-                std::fs::File::open(parent)?.sync_all()?;
+                crate::store::sync_dir(parent)?;
                 Ok(())
             })();
             let _ = std::fs::remove_file(temp);

@@ -115,7 +115,7 @@ pub(crate) fn save(
             file.write_all(&serde_json::to_vec(record)?)?;
             file.sync_all()?;
             std::fs::rename(&temp, &path)?;
-            std::fs::File::open(parent)?.sync_all()?;
+            crate::store::sync_dir(parent)?;
             Ok(())
         })();
         let _ = std::fs::remove_file(temp);

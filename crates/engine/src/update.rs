@@ -4,7 +4,9 @@
 //! the running `.app`. The download streams progress on the status and can
 //! be cancelled until the install starts; restarting onto the new bundle is
 //! the UI's job. A binary not running from an `.app` bundle (`cargo run`)
-//! never checks — debug builds can fake a release with `HOLT_FAKE_UPDATE`.
+//! never checks, and neither does a prerelease build (`-alpha.N` — testers
+//! stay on the build they installed until they replace it by hand). Debug
+//! builds can fake a release with `HOLT_FAKE_UPDATE`.
 
 use std::{
     path::{Path, PathBuf},
@@ -93,7 +95,7 @@ impl Updater {
                 inner.asset_url = Some(String::new());
             }
             self.publish();
-        } else if start && bundle_path().is_some() {
+        } else if start && !CURRENT_VERSION.contains('-') && bundle_path().is_some() {
             tokio::spawn(check_loop(Arc::downgrade(self)));
         }
         self.tx.subscribe()

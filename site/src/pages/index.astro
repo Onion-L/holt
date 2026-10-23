@@ -9,12 +9,12 @@ import HeroController from "../components/HeroController";
         <title>Holt is an agent.</title>
         <meta
             name="description"
-            content="Holt is a native desktop coding agent for macOS. Every step visible, every line yours to review."
+            content="Holt is a native desktop coding agent for macOS, Windows, and Linux. Every step visible, every line yours to review."
         />
         <meta property="og:title" content="Holt is an agent." />
         <meta
             property="og:description"
-            content="A native desktop coding agent for macOS."
+            content="A native desktop coding agent for macOS, Windows, and Linux."
         />
         <!-- Crawlers (X, Slack, …) ignore relative URLs; keep these absolute. -->
         <meta
@@ -187,8 +187,13 @@ import HeroController from "../components/HeroController";
             .va-btn {
                 display: inline-flex;
                 align-items: center;
+                justify-content: center;
                 gap: 0.5em;
                 padding: 13.5px 26px;
+                /* transparent border keeps the solid and ghost pills the same
+                   height; min-width keeps the pair the same width. */
+                border: 1.5px solid transparent;
+                min-width: 176px;
                 border-radius: 999px;
                 font-weight: 700;
                 font-size: 14.5px;
@@ -328,16 +333,10 @@ import HeroController from "../components/HeroController";
                 </nav>
             </header>
             <div class="va-hero">
-                <p class="va-kicker mono">Native coding agent · macOS</p>
+                <p class="va-kicker mono">Native coding agent · macOS, Windows, Linux</p>
                 <h1 class="va-title">Holt is an agent.</h1>
                 <div class="va-cta">
-                    <a
-                        class="va-btn solid"
-                        data-arch="arm64"
-                        href="https://github.com/Onion-L/holt/releases/latest"
-                    >
-                        ↓ Download for macOS
-                    </a>
+                    <a class="va-btn solid" href="/download">↓ Download</a>
                     <a
                         class="va-btn ghost"
                         href="https://github.com/Onion-L/holt"
@@ -346,7 +345,7 @@ import HeroController from "../components/HeroController";
                     </a>
                 </div>
                 <p class="va-sub mono">
-                    Apple Silicon &amp; Intel · GPL-3.0 · v<span data-version>x.x.x</span> ·{" "}
+                    Apple Silicon, Intel, x64 &amp; arm64 · GPL-3.0 · v<span data-version>x.x.x</span> ·{" "}
                     <a href="/changelog">what's new ↗</a>
                 </p>
             </div>

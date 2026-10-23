@@ -6,11 +6,18 @@ page, markup and CSS verbatim from the chosen variant:
 
 - `/` — hero, Billboard (`src/components/HeroController.tsx`)
 - `/changelog` — Coast road layout (`src/components/ChangelogController.tsx`)
+- `/download` — per-platform downloads, Coast road layout
+  (`src/components/DownloadController.tsx`)
 - `/og` — 1200×630 OG card capture template (Billboard), `noindex`
 
-The React controllers render nothing; they resolve the version and dmg links
-from the latest GitHub release, like the prototypes' scripts. The prototype
-variant switcher (bottom bar, `?variant=`, ←/→) is intentionally not shipped.
+`/changelog` and `/download` open on the same hero-coast band as the landing —
+same artwork, scrim, nav pill, and white type — then continue on cream.
+
+The React controllers render nothing; they resolve the version and download
+links from the latest GitHub release, like the prototypes' scripts.
+`src/components/detect.ts` holds their shared platform and chip detection. The
+prototype variant switcher (bottom bar, `?variant=`, ←/→) is intentionally not
+shipped.
 
 ## Commands
 
@@ -23,9 +30,11 @@ npm run preview   # serve the build (serves stale files across rebuilds —
 
 ## Deploy
 
-`wrangler.jsonc` (this directory, `assets.directory: ./dist`) serves the build as static assets of the `holt`
-Worker. The `deploy` workflow builds on push to `main` and deploys; no local
-wrangler needed.
+`wrangler.jsonc` (this directory, `assets.directory: ./dist`) serves the build
+as static assets of the `holt` Worker. Cloudflare Workers Builds deploys it —
+the Git connection configured in the dashboard runs `npm ci && npm run build`
+in `site/` and then `npx wrangler deploy` on `main`. No local wrangler needed,
+and every other branch gets a preview URL commented on its pull request.
 
 ## OG image
 

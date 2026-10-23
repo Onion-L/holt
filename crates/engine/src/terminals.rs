@@ -115,9 +115,13 @@ impl Terminals {
         cols: u16,
         rows: u16,
     ) -> Result<TerminalSession, RpcError> {
-        let mut command = CommandBuilder::new(login_shell());
-        command.arg("-l");
-        command.arg("-i");
+        let shell = login_shell();
+        let mut command = CommandBuilder::new(&shell);
+        // `-l -i` for POSIX shells; cmd.exe — the Windows fallback — takes
+        // no session flags.
+        for arg in crate::shell_env::interactive_login_args(&shell) {
+            command.arg(arg);
+        }
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
@@ -392,10 +396,10 @@ impl Session {
 
     // Both reader and exit watcher can observe shell exit. Clean jobs once,
     // under the child lock, before publishing Exit or allowing later closes.
-    fn cleanup_jobs(&self, child: &(dyn Child + Send + Sync)) {
+    fn cleanup_jobs(&self, _child: &(dyn Child + Send + Sync)) {
         if !self.jobs_cleaned.swap(true, Ordering::SeqCst) {
             #[cfg(unix)]
-            if let Some(pid) = child.process_id() {
+            if let Some(pid) = _child.process_id() {
                 kill_session_jobs(pid as i32);
             }
         }
@@ -509,8 +513,10 @@ fn has_session_jobs(_session: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use futures::StreamExt;
 
+    #[cfg(unix)]
     fn shell(terminals: &Terminals, dir: &Path, script: &str) -> TerminalSession {
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args(["-c", script]);
@@ -520,6 +526,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(unix)]
     async fn collect(reply: RpcReply) -> Vec<TerminalEvent> {
         let RpcReply::Stream(mut stream) = reply else {
             panic!("stream")
@@ -535,6 +542,10 @@ mod tests {
         events
     }
 
+    // The four real-PTY tests drive /bin/sh with sh scripts — a Windows
+    // session would need cmd spellings and the getsid-based job scan has no
+    // counterpart there.
+    #[cfg(unix)]
     #[tokio::test]
     async fn real_pty_input_resize_output_exit_and_replay() {
         let terminals = Terminals::default();
@@ -572,6 +583,7 @@ mod tests {
         assert!(terminals.list().is_empty());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn close_chat_ends_running_process_and_prevents_late_open() {
         let terminals = Terminals::default();
@@ -589,36 +601,62 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn status_distinguishes_idle_shell_from_child_job() {
         let terminals = Terminals::default();
         let dir = tempfile::tempdir().unwrap();
 
-        let idle = shell(&terminals, dir.path(), "read");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let idle_status = terminals
-            .list()
-            .into_iter()
-            .find(|status| status.terminal_id == idle.id)
-            .unwrap();
-        assert!(idle_status.running);
-        assert!(!idle_status.has_running_jobs);
+        // Wait for the observable, never a fixed tick: a loaded CI runner
+        // can take longer than any sleep for the shell to fork its first
+        // command, so the status is polled until it shows the expected
+        // shape (the 2026-10-23 RETROS entry's rule, applied to processes).
+        let idle = shell(&terminals, dir.path(), "read line");
+        let idle_settled = poll_status(&terminals, &idle.id, |status| {
+            status.running && !status.has_running_jobs
+        });
+        assert!(
+            idle_settled,
+            "the idle shell never showed running with no jobs"
+        );
         terminals.close(&idle.id);
 
         // Keep a command after sleep so shells that optimize a final simple
         // command with exec still leave a child process to observe.
         let job = shell(&terminals, dir.path(), "sleep 60; true");
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let job_status = terminals
-            .list()
-            .into_iter()
-            .find(|status| status.terminal_id == job.id)
-            .unwrap();
-        assert!(job_status.running);
-        assert!(job_status.has_running_jobs);
+        let job_settled = poll_status(&terminals, &job.id, |status| {
+            status.running && status.has_running_jobs
+        });
+        assert!(job_settled, "the shell never showed its running child");
         terminals.close(&job.id);
     }
 
+    /// Poll a terminal's status until `expected` answers true, or `WAIT`
+    /// passes. The state a test asserts must be reached, not assumed to have
+    /// been reached by an arbitrary tick of the clock.
+    #[cfg(unix)]
+    fn poll_status(
+        terminals: &Terminals,
+        id: &str,
+        expected: impl Fn(&TerminalStatus) -> bool,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let status = terminals
+                .list()
+                .into_iter()
+                .find(|status| status.terminal_id == id);
+            if status.as_ref().is_some_and(&expected) {
+                return true;
+            }
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn terminal_exit_cleans_background_jobs_with_redirected_output() {
         let terminals = Terminals::default();

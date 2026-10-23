@@ -9,9 +9,26 @@ use std::path::Path;
 
 use common::{Fixture, ScriptedProvider};
 use holt_engine::LocalEngine;
-use holt_proto::{WorkspaceEntryKind, WorkspaceFileRead, WorkspaceLineEndings, WorkspaceListing};
+#[cfg(unix)]
+use holt_proto::WorkspaceEntryKind;
+use holt_proto::{WorkspaceFileRead, WorkspaceLineEndings, WorkspaceListing};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use serde_json::json;
+
+/// An existing file outside any fixture root, for boundary refusals — the
+/// unix fixtures name `/etc`; Windows has no `C:\etc`.
+fn outside_hosts() -> &'static str {
+    if cfg!(windows) {
+        "C:/Windows/System32/drivers/etc/hosts"
+    } else {
+        "/etc/hosts"
+    }
+}
+
+/// An existing directory outside any fixture root.
+fn outside_dir() -> &'static str {
+    if cfg!(windows) { "C:/Windows" } else { "/etc" }
+}
 
 /// Returns the OUTSIDE-root tempdir — the caller must keep it alive or the
 /// outside-link goes broken before the engine lists it.
@@ -22,12 +39,18 @@ fn build_tree(root: &Path) -> tempfile::TempDir {
     fs::write(root.join(".env"), "secret=1\n").unwrap();
     fs::create_dir_all(root.join(".git/refs")).unwrap();
     fs::write(root.join(".git/HEAD"), "ref").unwrap();
-    // Inside-root alias (dir + file), an outside-root link, and a broken one.
-    std::os::unix::fs::symlink(root.join("src"), root.join("lib-alias")).unwrap();
-    std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("main-alias.rs")).unwrap();
     let outside = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(outside.path(), root.join("outside-link")).unwrap();
-    std::os::unix::fs::symlink("/definitely/not/here", root.join("broken-link")).unwrap();
+    // Symlink fixtures are unix-only: on Windows, creating a symlink takes a
+    // privilege (Developer Mode / SeCreateSymbolicLinkPrivilege) test hosts
+    // do not have — CI (macOS) keeps the symlink coverage.
+    #[cfg(unix)]
+    {
+        // Inside-root alias (dir + file), an outside-root link, and a broken one.
+        std::os::unix::fs::symlink(root.join("src"), root.join("lib-alias")).unwrap();
+        std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("main-alias.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("outside-link")).unwrap();
+        std::os::unix::fs::symlink("/definitely/not/here", root.join("broken-link")).unwrap();
+    }
     outside
 }
 
@@ -101,18 +124,20 @@ mod list_workspace_entries {
             json!({ "spaceId": "space-1" }),
         ] {
             let listing = list(&engine, selector).await.unwrap();
-            assert_eq!(
-                names(&listing),
-                [
-                    "lib-alias",
-                    "outside-link",
-                    "src",
-                    ".env",
-                    "broken-link",
-                    "main-alias.rs",
-                    "README.md"
-                ]
-            );
+            // The symlink fixture entries exist on unix only (see build_tree).
+            #[cfg(unix)]
+            let expected = [
+                "lib-alias",
+                "outside-link",
+                "src",
+                ".env",
+                "broken-link",
+                "main-alias.rs",
+                "README.md",
+            ];
+            #[cfg(not(unix))]
+            let expected = ["src", ".env", "README.md"];
+            assert_eq!(names(&listing), expected);
             // `.git` is invisible in any form.
             assert!(!names(&listing).contains(&".git"));
             // Hidden entries are shown.
@@ -142,6 +167,8 @@ mod list_workspace_entries {
         assert!(deep.path.ends_with("src"));
     }
 
+    // The fixture's symlink entries are unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_kinds_report_resolution_and_boundary() {
         let fixture = Fixture::new();
@@ -199,17 +226,20 @@ mod list_workspace_entries {
             matches!(&fault, RpcError::Failed(message) if message.contains("outside")),
             "{fault:?}"
         );
-        // Escape through the outside symlink.
-        let fault = list(
-            &engine,
-            json!({ "spaceId": "space-1", "path": format!("{root}/outside-link") }),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(&fault, RpcError::Failed(message) if message.contains("outside")),
-            "{fault:?}"
-        );
+        // Escape through the outside symlink — unix-only (see build_tree).
+        #[cfg(unix)]
+        {
+            let fault = list(
+                &engine,
+                json!({ "spaceId": "space-1", "path": format!("{root}/outside-link") }),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(&fault, RpcError::Failed(message) if message.contains("outside")),
+                "{fault:?}"
+            );
+        }
         // Dot-dot traversal.
         let fault = list(
             &engine,
@@ -293,6 +323,8 @@ mod read_workspace_file {
         assert_eq!(file.unsupported_reason, None);
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_inside_alias_reads_its_target_and_shares_identity() {
         let fixture = Fixture::new();
@@ -575,7 +607,7 @@ mod save_workspace_file {
             &engine,
             json!({
                 "spaceId": "space-1",
-                "path": "/etc/hosts",
+                "path": outside_hosts(),
                 "text": "no\n",
                 "version": "0:0",
                 "bom": false,
@@ -785,7 +817,7 @@ mod live_refresh_and_resolution {
             &engine,
             json!({
                 "spaceId": "space-1",
-                "path": "/etc/evil.txt",
+                "path": &format!("{}/evil.txt", outside_dir()),
                 "text": "no\n",
                 "bom": false,
             }),
@@ -1104,6 +1136,8 @@ mod create_and_rename {
         assert!(Path::new(&root).join("crate/src").is_dir());
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn renames_act_on_symlink_entries_not_targets() {
         let fixture = Fixture::new();
@@ -1198,6 +1232,8 @@ mod create_rename_guards {
         }
     }
 
+    // Unix-only: the whole scenario runs on POSIX permission bits.
+    #[cfg(unix)]
     #[tokio::test]
     async fn permission_failures_refuse_without_side_effects() {
         let fixture = Fixture::new();
@@ -1636,6 +1672,8 @@ mod move_and_trash {
         );
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn moves_act_on_symlink_entries_and_honor_alias_destinations() {
         let fixture = Fixture::new();
@@ -1797,7 +1835,7 @@ mod move_and_trash {
         let fault = fault_of(
             trash(
                 &engine,
-                json!({ "spaceId": "space-1", "path": "/etc/hosts" }),
+                json!({ "spaceId": "space-1", "path": outside_hosts() }),
             )
             .await,
         );
@@ -1841,12 +1879,114 @@ mod move_and_trash {
     }
 }
 
+/// One path vocabulary for every workspace reply. The UI string-matches
+/// tabs ↔ tree rows ↔ watch frames ↔ resolved identities, so a reply
+/// spelled differently breaks tab bookkeeping: Windows's `canonicalize`
+/// yields `\\?\C:\…`, which through a bare separator swap leaked as
+/// `//?/C:/…` into rename/move replies. On unix these assertions are
+/// trivially true; the Windows CI runner — where canonicalize really
+/// produces the verbatim prefix — is where they bite.
+mod addressed_path_vocabulary {
+    use super::*;
+
+    fn assert_addressed(path: &str) {
+        assert!(Path::new(path).is_absolute(), "not absolute: {path}");
+        assert!(!path.contains('\\'), "backslash separator: {path}");
+        assert!(!path.starts_with("//?/"), "verbatim prefix leaked: {path}");
+    }
+
+    async fn reply_path(engine: &LocalEngine, method: &str, params: serde_json::Value) -> String {
+        match engine.handle(method, params).await.unwrap() {
+            RpcReply::Value(value) => value
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap()
+                .to_string(),
+            _ => panic!("{method} must reply with a value"),
+        }
+    }
+
+    #[tokio::test]
+    async fn listings_reads_renames_and_moves_speak_it() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join("src")).unwrap();
+        fs::create_dir_all(Path::new(&root).join("dest")).unwrap();
+        fs::write(Path::new(&root).join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            Path::new(&root).join("shot.png"),
+            super::read_workspace_image::png_bytes(),
+        )
+        .unwrap();
+        let engine = setup(&fixture).await;
+
+        // Listings: the directory key and every row.
+        let listing = list(&engine, json!({ "spaceId": "space-1" }))
+            .await
+            .unwrap();
+        assert_addressed(&listing.path);
+        for entry in &listing.entries {
+            assert_addressed(&entry.path);
+        }
+        let src = list(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/src") }),
+        )
+        .await
+        .unwrap();
+        assert_addressed(&src.path);
+
+        // Reads: the resolved identity the opening tab records.
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/src/main.rs") }),
+        )
+        .await
+        .unwrap();
+        assert_addressed(&read.path);
+
+        // Image reads: the alias-aware identity.
+        let image = super::read_workspace_image::read_image(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/shot.png") }),
+        )
+        .await
+        .unwrap();
+        assert_addressed(&image.path);
+
+        // Rename and move: the destinations the UI rewrites open tabs with.
+        let renamed = reply_path(
+            &engine,
+            methods::RENAME_WORKSPACE_ENTRY,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/src/main.rs"),
+                "newName": "lib.rs",
+            }),
+        )
+        .await;
+        assert_addressed(&renamed);
+        let moved = reply_path(
+            &engine,
+            methods::MOVE_WORKSPACE_ENTRY,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/src/lib.rs"),
+                "destinationDirectory": format!("{root}/dest"),
+            }),
+        )
+        .await;
+        assert_addressed(&moved);
+    }
+}
+
 mod read_workspace_image {
     use super::*;
+    #[cfg(unix)]
     use base64::Engine as _;
     use holt_rpc::images::WorkspaceImageData;
 
-    fn png_bytes() -> Vec<u8> {
+    pub(super) fn png_bytes() -> Vec<u8> {
         let mut output = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255]))
             .write_to(&mut output, image::ImageFormat::Png)
@@ -1854,7 +1994,7 @@ mod read_workspace_image {
         output.into_inner()
     }
 
-    async fn read_image(
+    pub(super) async fn read_image(
         engine: &LocalEngine,
         params: serde_json::Value,
     ) -> Result<WorkspaceImageData, RpcError> {
@@ -1872,6 +2012,8 @@ mod read_workspace_image {
         }
     }
 
+    // Symlink fixture: unix-only (see build_tree).
+    #[cfg(unix)]
     #[tokio::test]
     async fn reads_validated_bytes_and_reports_the_resolved_path() {
         let fixture = Fixture::new();
@@ -1907,21 +2049,26 @@ mod read_workspace_image {
         let fixture = Fixture::new();
         let _outside = build_tree(fixture.project_dir.path());
         let root = fixture.cwd();
-        // A real PNG outside the root, linked in: the general ReadImage would
-        // happily serve it; the workspace read must refuse at the fence.
         let outside_png = _outside.path().join("secret.png");
         fs::write(&outside_png, png_bytes()).unwrap();
+        // A real PNG outside the root, linked in: the general ReadImage would
+        // happily serve it; the workspace read must refuse at the fence.
+        // Unix-only: the link cannot be created on Windows (see build_tree).
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&outside_png, Path::new(&root).join("escape.png")).unwrap();
         let engine = setup(&fixture).await;
 
-        let fault = fault_of(
-            read_image(
-                &engine,
-                json!({ "spaceId": "space-1", "path": format!("{root}/escape.png") }),
-            )
-            .await,
-        );
-        assert!(fault.contains("outside"), "{fault}");
+        #[cfg(unix)]
+        {
+            let fault = fault_of(
+                read_image(
+                    &engine,
+                    json!({ "spaceId": "space-1", "path": format!("{root}/escape.png") }),
+                )
+                .await,
+            );
+            assert!(fault.contains("outside"), "{fault}");
+        }
 
         let fault = fault_of(
             read_image(

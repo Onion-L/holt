@@ -1,11 +1,12 @@
 //! Port of `pi-core/agent/src/harness/env/nodejs.ts`.
 //!
 //! The Node.js `fs`/`child_process` implementation of `ExecutionEnv`,
-//! rebuilt on `tokio::fs` and `tokio::process`. The Windows shell-discovery
-//! branches (Git Bash probing, `taskkill` process-tree termination, legacy
-//! WSL stdin transport) have no counterpart on this target; the Unix
-//! `/bin/bash` → `which bash` → `sh` fallback chain and process-group
-//! kill are ported exactly.
+//! rebuilt on `tokio::fs` and `tokio::process`. Git Bash probing (PATH
+//! lookup, then the standard install locations) is a Windows-only branch;
+//! `taskkill` process-tree termination and the legacy WSL stdin transport
+//! have no counterpart on this target; the Unix `/bin/bash` →
+//! `which bash` → `sh` fallback chain and process-group kill are ported
+//! exactly.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -58,8 +59,17 @@ fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<u64>, ExecutionErro
 }
 
 fn home_dir() -> PathBuf {
+    // HOME covers unix and git-bash launches; a stock Windows GUI process
+    // carries only USERPROFILE (or HOMEDRIVE+HOMEPATH).
     std::env::var_os("HOME")
         .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(
+            || match (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH")) {
+                (Some(drive), Some(path)) => Some(Path::new(&drive).join(&path)),
+                _ => None,
+            },
+        )
         .unwrap_or_default()
 }
 
@@ -97,7 +107,27 @@ fn file_url_to_path(url: &str) -> Option<String> {
     if !path.starts_with('/') {
         return None;
     }
-    Some(percent_decode(path))
+    let decoded = percent_decode(path);
+    // Node's fileURLToPath keeps the drive root: `file:///C:/x` is `C:/x`,
+    // not the drive-less `/C:/x` — and the legacy pipe form spells the
+    // colon `|`. Unix spellings pass through untouched.
+    #[cfg(windows)]
+    let decoded = {
+        let bytes = decoded.as_bytes();
+        if bytes.first() == Some(&b'/')
+            && bytes.get(1).is_some_and(|byte| byte.is_ascii_alphabetic())
+            && matches!(bytes.get(2), Some(b':') | Some(b'|'))
+        {
+            let mut stripped = decoded[1..].to_string();
+            if stripped.as_bytes()[1] == b'|' {
+                stripped.replace_range(1..2, ":");
+            }
+            stripped
+        } else {
+            decoded
+        }
+    };
+    Some(decoded)
 }
 
 /// Lexically normalizes an absolute path the way Node's `path.resolve`
@@ -251,14 +281,23 @@ fn get_bash_shell_config(shell: &str) -> ShellConfig {
     }
 }
 
+/// Spawn console children without allocating a console window of their own
+/// (their stdio is piped; a GUI-subsystem parent would otherwise flash a
+/// window per spawn).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Runs a short command capturing stdout (`runCommand`).
 async fn run_command(command: &str, args: &[&str], timeout_ms: u64) -> (String, Option<i32>) {
-    let output = tokio::process::Command::new(command)
+    let mut builder = tokio::process::Command::new(command);
+    builder
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output();
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    builder.creation_flags(CREATE_NO_WINDOW);
+    let output = builder.output();
     let Ok(output) = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
         Box::pin(output),
@@ -276,11 +315,12 @@ async fn run_command(command: &str, args: &[&str], timeout_ms: u64) -> (String, 
     }
 }
 
-async fn find_bash_on_path() -> Option<String> {
+/// The first `where`/`which` hit for `program` that still exists on disk.
+async fn first_on_path(program: &str) -> Option<String> {
     let result = if cfg!(windows) {
-        run_command("where", &["bash.exe"], 5000).await
+        run_command("where", &[program], 5000).await
     } else {
-        run_command("which", &["bash"], 5000).await
+        run_command("which", &[program], 5000).await
     };
     if result.1 != Some(0) || result.0.is_empty() {
         return None;
@@ -299,6 +339,70 @@ async fn find_bash_on_path() -> Option<String> {
     Some(first_match)
 }
 
+async fn find_bash_on_path() -> Option<String> {
+    first_on_path(if cfg!(windows) { "bash.exe" } else { "bash" }).await
+}
+
+/// `…\Git\cmd\git.exe` (or `…\Git\bin\git.exe`) → `…\Git\bin\bash.exe`,
+/// derived without touching the filesystem; the caller checks existence.
+fn bash_beside_git(git_exe: &str) -> Option<String> {
+    let root = Path::new(git_exe).parent()?.parent()?;
+    Some(
+        root.join("bin")
+            .join("bash.exe")
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// The standard Git-for-Windows install locations of `bin\bash.exe`, most
+/// canonical first, derived from the profile roots without touching the
+/// filesystem.
+fn standard_git_bash_locations(
+    program_files: Option<&Path>,
+    program_files_x86: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<String> {
+    program_files
+        .into_iter()
+        .chain(program_files_x86)
+        .map(|root| root.join("Git").join("bin").join("bash.exe"))
+        .chain(local_app_data.into_iter().map(|root| {
+            root.join("Programs")
+                .join("Git")
+                .join("bin")
+                .join("bash.exe")
+        }))
+        .map(|bash| bash.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Windows fallback for when no bash is on PATH: Git's stock installer
+/// puts only `Git\cmd` (git.exe) on the user PATH, so a process launched
+/// with the registry PATH — a GUI launch, any shell but Git Bash — sees
+/// git but no bash. Derive the install root from a resolvable git.exe
+/// (covers custom install drives too), then probe the standard locations.
+async fn find_git_bash_off_path() -> Option<String> {
+    if let Some(git_exe) = first_on_path("git.exe").await
+        && let Some(beside_git) = bash_beside_git(&git_exe)
+        && path_exists(&beside_git).await
+    {
+        return Some(beside_git);
+    }
+    for candidate in standard_git_bash_locations(
+        std::env::var_os("ProgramFiles").as_deref().map(Path::new),
+        std::env::var_os("ProgramFiles(x86)")
+            .as_deref()
+            .map(Path::new),
+        std::env::var_os("LocalAppData").as_deref().map(Path::new),
+    ) {
+        if path_exists(&candidate).await {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 async fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig, ExecutionError> {
     if let Some(custom) = custom_shell_path {
         if path_exists(custom).await {
@@ -310,10 +414,14 @@ async fn get_shell_config(custom_shell_path: Option<&str>) -> Result<ShellConfig
         ));
     }
     if cfg!(windows) {
-        // The Windows Git Bash probe has no counterpart on Unix targets;
-        // fall through to the PATH lookup like the TypeScript fallback.
+        // PATH keeps priority: a WSL `System32\bash.exe` found there is
+        // deliberately supported (stdin transport above), so the Git Bash
+        // probe must not leapfrog it.
         if let Some(bash_on_path) = find_bash_on_path().await {
             return Ok(get_bash_shell_config(&bash_on_path));
+        }
+        if let Some(git_bash) = find_git_bash_off_path().await {
+            return Ok(get_bash_shell_config(&git_bash));
         }
         return Err(ExecutionError::new(
             ExecutionErrorCode::ShellUnavailable,
@@ -368,11 +476,13 @@ fn kill_process_tree(pid: u32) {
     }
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
 }
@@ -457,7 +567,10 @@ impl FileSystem for NodeExecutionEnv {
             for part in parts {
                 joined.push(part);
             }
-            Ok(joined.to_string_lossy().into_owned())
+            // The addressed vocabulary (`/` separators) — a native join on
+            // Windows would mix separators whenever the left side already
+            // spells addressed.
+            Ok(normalize_absolute(&joined))
         })
     }
 
@@ -692,7 +805,9 @@ impl FileSystem for NodeExecutionEnv {
                 if is_aborted(abort_signal.as_ref()) {
                     return Err(aborted_error(Some(&resolved)));
                 }
-                entry_paths.push(entry.path().to_string_lossy().into_owned());
+                // Addressed vocabulary: the OS join would append a native
+                // separator to an addressed-spelled directory.
+                entry_paths.push(normalize_absolute(&entry.path()));
             }
             for entry_path in entry_paths {
                 match tokio::fs::symlink_metadata(&entry_path).await {
@@ -884,6 +999,8 @@ impl Shell for NodeExecutionEnv {
                 .stderr(std::process::Stdio::piped());
             #[cfg(unix)]
             child_builder.process_group(0);
+            #[cfg(windows)]
+            child_builder.creation_flags(CREATE_NO_WINDOW);
             for arg in &shell_config.args {
                 child_builder.arg(arg);
             }
@@ -1082,5 +1199,55 @@ async fn read_stream_chunks_for_shell<R: tokio::io::AsyncRead + Unpin>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bash_beside_git_targets_the_install_roots_bin() {
+        // `cmd\git.exe` and `bin\git.exe` both sit two levels under the
+        // install root; a bare name has no root to derive from. Compared
+        // as `Path`s so the assertion holds under either separator.
+        assert_eq!(
+            bash_beside_git("C:/Program Files/Git/cmd/git.exe")
+                .as_deref()
+                .map(Path::new),
+            Some(Path::new("C:/Program Files/Git/bin/bash.exe"))
+        );
+        assert_eq!(
+            bash_beside_git("D:/tools/git/bin/git.exe")
+                .as_deref()
+                .map(Path::new),
+            Some(Path::new("D:/tools/git/bin/bash.exe"))
+        );
+        assert_eq!(bash_beside_git("git.exe").as_deref().map(Path::new), None);
+    }
+
+    #[test]
+    fn standard_locations_cover_both_program_files_and_per_user_installs() {
+        let locations = standard_git_bash_locations(
+            Some(Path::new("C:/Program Files")),
+            Some(Path::new("C:/Program Files (x86)")),
+            Some(Path::new("C:/Users/u/AppData/Local")),
+        );
+        let as_paths: Vec<&Path> = locations.iter().map(|p| Path::new(p.as_str())).collect();
+        assert_eq!(
+            as_paths,
+            vec![
+                Path::new("C:/Program Files/Git/bin/bash.exe"),
+                Path::new("C:/Program Files (x86)/Git/bin/bash.exe"),
+                Path::new("C:/Users/u/AppData/Local/Programs/Git/bin/bash.exe"),
+            ]
+        );
+    }
+
+    #[test]
+    fn standard_locations_skip_missing_roots() {
+        let locations =
+            standard_git_bash_locations(Some(Path::new("C:/Program Files")), None, None);
+        assert_eq!(locations.len(), 1);
     }
 }

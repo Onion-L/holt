@@ -47,6 +47,12 @@ async fn write(env: &Arc<NodeExecutionEnv>, path: &str, content: &str) {
 // prompt-templates.test.ts
 // ---------------------------------------------------------------------------
 
+/// Fold the tempdir's native spelling into the addressed vocabulary the
+/// harness returns (`/` separators) — a no-op on unix.
+fn addressed(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 #[tokio::test]
 async fn loads_templates_from_directories_and_files() {
     let root = common::create_temp_dir();
@@ -218,11 +224,13 @@ async fn loads_skill_md_files_through_the_execution_environment() {
     assert_eq!(loaded.skills[0].content, "Use this skill.");
     assert_eq!(
         loaded.skills[0].file_path,
-        format!("{root}/.agents/skills/example/SKILL.md")
+        addressed(&format!("{root}/.agents/skills/example/SKILL.md"))
     );
     assert_eq!(loaded.skills[0].disable_model_invocation, Some(true));
 }
 
+// Creating a symlink needs a privilege Windows test hosts lack.
+#[cfg(unix)]
 #[tokio::test]
 async fn loads_skills_through_symlinked_directories() {
     let root = common::create_temp_dir();
@@ -289,7 +297,7 @@ async fn preserves_source_info_for_sourced_skills() {
     assert_eq!(skills[0].0.content, "Use this skill.");
     assert_eq!(
         skills[0].0.file_path,
-        format!("{root}/user/example/SKILL.md")
+        addressed(&format!("{root}/user/example/SKILL.md"))
     );
     assert_eq!(skills[0].0.disable_model_invocation, Some(false));
     assert_eq!(skills[0].1, json!({ "type": "user" }));
@@ -324,7 +332,7 @@ async fn attaches_source_info_to_diagnostics() {
     assert_eq!(diagnostics[0].0.message, "description is required",);
     assert_eq!(
         diagnostics[0].0.path,
-        format!("{root}/user/broken/SKILL.md")
+        addressed(&format!("{root}/user/broken/SKILL.md"))
     );
     assert_eq!(diagnostics[0].1, json!({ "type": "user" }));
 }
@@ -647,7 +655,10 @@ async fn attaches_source_info_to_prompt_template_diagnostics() {
 
     assert!(templates.is_empty());
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].diagnostic.path, format!("{root}/broken.md"));
+    assert_eq!(
+        diagnostics[0].diagnostic.path,
+        addressed(&format!("{root}/broken.md"))
+    );
     assert_eq!(diagnostics[0].source, json!({ "type": "user" }));
 }
 

@@ -1,8 +1,11 @@
-//! Native file picker for settings fields. macOS runs a real `NSOpenPanel`
-//! (blocking, from the UI thread — AppKit's `runModal` nested event loop is
-//! how a modal panel works in any AppKit app, so the dialog stays interactive
-//! and the app keeps compositing behind it). Other platforms return `None`
-//! and callers keep their manual-entry affordance.
+//! Native file pickers for settings fields, plus one mixed files-or-dirs
+//! picker shared by the composer and theme import. macOS runs a real
+//! `NSOpenPanel` inside the caller's spawned task (blocking, from the UI
+//! thread — AppKit's `runModal` nested event loop is how a modal panel
+//! works in any AppKit app, and running it inside a gpui dispatch would
+//! collide with held borrows; see the callers). Other platforms request
+//! gpui's own dialog, which carries no extension filter — a wrong choice
+//! surfaces where the bytes are read.
 
 use std::path::PathBuf;
 
@@ -10,21 +13,126 @@ use std::path::PathBuf;
 /// normalizer accepts these rasters and SVG.
 pub const LOGO_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "svg"];
 
-/// Pick one image file. `None` on cancel, or on platforms without a native
-/// dialog.
-pub fn pick_image() -> Option<PathBuf> {
-    pick_file(crate::chat_backdrop::SUPPORTED_EXTENSIONS)
+/// Pick one image file (the chat backdrop). `None` on cancel.
+pub async fn pick_image(cx: &mut gpui::AsyncApp) -> Option<PathBuf> {
+    pick_file(crate::chat_backdrop::SUPPORTED_EXTENSIONS, cx).await
 }
 
-/// Pick one custom provider logo.
-pub fn pick_logo() -> Option<PathBuf> {
-    pick_file(LOGO_EXTENSIONS)
+/// Pick one custom provider logo. `None` on cancel.
+pub async fn pick_logo(cx: &mut gpui::AsyncApp) -> Option<PathBuf> {
+    pick_file(LOGO_EXTENSIONS, cx).await
 }
 
 /// Pick one file with one of `extensions`.
+async fn pick_file(extensions: &[&str], cx: &mut gpui::AsyncApp) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = cx;
+        pick_file_with_panel(extensions)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = extensions;
+        let receiver = cx.update(|cx| {
+            cx.prompt_for_paths(gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("Choose File".into()),
+            })
+        });
+        let mut paths = match receiver.await {
+            Ok(Ok(paths)) => paths?,
+            _ => return None,
+        };
+        paths.pop()
+    }
+}
+
+/// What follows the file pass of a two-pass picker.
+enum AfterFilePass {
+    /// The user picked files: that set is the answer.
+    Done(Vec<PathBuf>),
+    /// Cancelled or empty — offer the folder pass. Declining the file dialog
+    /// is how a folder gets picked, so this pass is offered, not skipped.
+    Folders,
+    /// The dialog itself failed (no portal, no OS dialog). Reported as-is:
+    /// retrying the same failure as a folder picker only doubles it.
+    Failed(anyhow::Error),
+}
+
+/// Pick one file AND/OR folder set. Windows and Linux accept one mode per
+/// dialog (Windows's `FOS_PICKFOLDERS` is exclusive; the XDG portal picks
+/// files *or* directories), so those platforms get two sequential passes:
+/// files first, then folders once the file pass is cancelled or comes back
+/// empty — two cancels to reach “never mind”. macOS mixes both in one
+/// dialog and keeps that single pass.
+pub fn prompt_for_files_and_dirs(
+    prompt: &str,
+    multiple: bool,
+    cx: &mut gpui::App,
+) -> futures::channel::oneshot::Receiver<anyhow::Result<Option<Vec<PathBuf>>>> {
+    if cx.can_select_mixed_files_and_dirs() {
+        return cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple,
+            prompt: Some(prompt.into()),
+        });
+    }
+    let files = cx.prompt_for_paths(gpui::PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple,
+        prompt: Some(prompt.into()),
+    });
+    let prompt = prompt.to_string();
+    let (done_tx, done_rx) = futures::channel::oneshot::channel();
+    cx.spawn(async move |cx| {
+        let next = match files.await {
+            Ok(outcome) => after_file_pass(outcome),
+            // The dialog's sender went away (the window closed mid-pick):
+            // answer by dropping ours, i.e. "cancelled", rather than opening
+            // a second dialog nobody asked for.
+            Err(_) => return,
+        };
+        let reply = match next {
+            AfterFilePass::Done(paths) => Ok(Some(paths)),
+            AfterFilePass::Failed(error) => Err(error),
+            AfterFilePass::Folders => {
+                let folders = cx.update(|cx| {
+                    cx.prompt_for_paths(gpui::PathPromptOptions {
+                        files: false,
+                        directories: true,
+                        multiple,
+                        prompt: Some(prompt.into()),
+                    })
+                });
+                match folders.await {
+                    Ok(Ok(paths)) => Ok(paths),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Ok(None),
+                }
+            }
+        };
+        let _ = done_tx.send(reply);
+    })
+    .detach();
+    done_rx
+}
+
+/// See [`AfterFilePass`].
+fn after_file_pass(outcome: anyhow::Result<Option<Vec<PathBuf>>>) -> AfterFilePass {
+    match outcome {
+        Ok(Some(paths)) if !paths.is_empty() => AfterFilePass::Done(paths),
+        Ok(_) => AfterFilePass::Folders,
+        Err(error) => AfterFilePass::Failed(error),
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // objc 0.2's msg_send carries a cfg(cargo-clippy) branch
-fn pick_file(extensions: &[&str]) -> Option<PathBuf> {
+fn pick_file_with_panel(extensions: &[&str]) -> Option<PathBuf> {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::{CStr, CString};
@@ -78,7 +186,29 @@ fn pick_file(extensions: &[&str]) -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn pick_file(_extensions: &[&str]) -> Option<PathBuf> {
-    None
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_two_pass_pick_only_ends_on_files_that_came_back() {
+        let picked = vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/dir")];
+        assert!(matches!(
+            after_file_pass(Ok(Some(picked.clone()))),
+            AfterFilePass::Done(paths) if paths == picked
+        ));
+        // Cancelled and empty both mean "the file pass declined" — the
+        // folder pass is how a folder is chosen at all.
+        assert!(matches!(after_file_pass(Ok(None)), AfterFilePass::Folders));
+        assert!(matches!(
+            after_file_pass(Ok(Some(Vec::new()))),
+            AfterFilePass::Folders
+        ));
+        // A failing dialog is reported, never retried as a folder picker.
+        let failed = after_file_pass(Err(anyhow::anyhow!("no portal")));
+        assert!(matches!(
+            failed,
+            AfterFilePass::Failed(error) if error.to_string() == "no portal"
+        ));
+    }
 }

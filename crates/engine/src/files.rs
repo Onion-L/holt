@@ -177,7 +177,7 @@ fn classify_entry(canonical_root: &Path, path: &Path) -> WorkspaceEntryKind {
         if inside {
             WorkspaceEntryKind::SymlinkInside {
                 target_is_dir,
-                resolved_path: resolved.display().to_string(),
+                resolved_path: crate::tools::addressed_canonical(&resolved),
             }
         } else {
             WorkspaceEntryKind::SymlinkOutside { target_is_dir }
@@ -260,14 +260,14 @@ pub(crate) fn list_directory(root: &Path, requested: &str) -> Result<WorkspaceLi
         }
         entries.push(WorkspaceEntry {
             name,
-            path: path.display().to_string(),
+            path: crate::tools::addressed_canonical(&path),
             kind,
             size,
         });
     }
     entries.sort_by(entry_order);
     Ok(WorkspaceListing {
-        path: canonical.display().to_string(),
+        path: crate::tools::addressed_canonical(&canonical),
         entries,
         truncated,
     })
@@ -333,9 +333,12 @@ pub(crate) fn read_file(
     }
     let version = version_token(&metadata);
     let bytes_len = metadata.len();
+    // Every path handed to the UI takes the addressed spelling — see
+    // `addressed_canonical`.
+    let addressed = crate::tools::addressed_canonical(&canonical);
     if bytes_len > MAX_TEXT_BYTES {
         return Ok(WorkspaceFileRead {
-            path: canonical.display().to_string(),
+            path: addressed,
             version,
             bytes: bytes_len,
             bom: false,
@@ -354,7 +357,7 @@ pub(crate) fn read_file(
     let sniff = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
     if sniff.contains(&0) {
         return Ok(WorkspaceFileRead {
-            path: canonical.display().to_string(),
+            path: addressed.clone(),
             version,
             bytes: bytes_len,
             bom: false,
@@ -371,7 +374,7 @@ pub(crate) fn read_file(
         Ok(text) => text,
         Err(_) => {
             return Ok(WorkspaceFileRead {
-                path: canonical.display().to_string(),
+                path: addressed.clone(),
                 version,
                 bytes: bytes_len,
                 bom: false,
@@ -385,7 +388,7 @@ pub(crate) fn read_file(
     };
     let endings = line_endings(text.as_bytes());
     Ok(WorkspaceFileRead {
-        path: canonical.display().to_string(),
+        path: addressed,
         version,
         bytes: bytes_len,
         bom,
@@ -698,8 +701,10 @@ fn same_entry_case_insensitive(source: &Path, destination: &Path) -> bool {
 }
 
 /// Rename refusing to replace an existing destination. macOS offers
-/// `renamex_np(RENAME_EXCL)`; elsewhere the pre-checked std rename stands
-/// (its residual race is documented, not widened).
+/// `renamex_np(RENAME_EXCL)`; Windows gets the same guarantee from
+/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`; elsewhere the
+/// pre-checked std rename stands (its residual race is documented, not
+/// widened).
 fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -725,7 +730,26 @@ fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        fn wide(path: &Path) -> Vec<u16> {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        }
+        // SAFETY: the wide buffers outlive the call; no flags means an
+        // existing destination fails with ERROR_ALREADY_EXISTS instead of
+        // being replaced.
+        let moved = unsafe { MoveFileExW(wide(source).as_ptr(), wide(destination).as_ptr(), 0) };
+        if moved == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::fs::rename(source, destination)
     }
@@ -769,7 +793,9 @@ pub(crate) fn rename_entry(root: &Path, from: &str, new_name: &str) -> Result<St
         rename_noreplace(&source, &destination)
     }
     .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
-    Ok(destination.display().to_string())
+    // The addressed spelling — the reply's path feeds the UI's tab and
+    // tree bookkeeping, which string-match against listing spellings.
+    Ok(crate::tools::addressed_canonical(&destination))
 }
 
 /// Move an entry into an EXISTING directory inside the root (ticket 07's
@@ -824,7 +850,8 @@ pub(crate) fn move_entry(
     }
     rename_noreplace(&source, &destination)
         .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
-    Ok(destination.display().to_string())
+    // The addressed spelling — see rename_entry.
+    Ok(crate::tools::addressed_canonical(&destination))
 }
 
 /// Move an entry to the operating system's trash (ticket 07). The ENTRY
@@ -887,6 +914,8 @@ mod tests {
         assert!(matches!(fault, FilesFault::GitExcluded(_)));
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn symlinks_classify_against_the_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -924,15 +953,20 @@ mod tests {
         let root = dir.path();
         let outside = tempfile::tempdir().unwrap();
         write(&outside.path().join("secret.txt"), b"x");
-        std::os::unix::fs::symlink(outside.path(), root.join("elsewhere")).unwrap();
+        // Unix-only: creating a symlink on Windows needs a privilege test
+        // hosts lack.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), root.join("elsewhere")).unwrap();
+            // Escape through a symlinked directory.
+            let fault = list_directory(root, "elsewhere").unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+            let fault = read_file(root, "elsewhere/secret.txt", &[]).unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        }
         // Direct absolute escape.
         let outside_path = outside.path().display().to_string();
         let fault = list_directory(root, &outside_path).unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
-        // Escape through a symlinked directory.
-        let fault = list_directory(root, "elsewhere").unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
-        let fault = read_file(root, "elsewhere/secret.txt", &[]).unwrap_err();
         assert!(matches!(fault, FilesFault::OutsideRoot(_)));
         // Dot-dot traversal canonicalizes away: the parent of the root is
         // outside it.
@@ -954,18 +988,23 @@ mod tests {
         let read = read_file(root, &requested.display().to_string(), &skill_roots).unwrap();
         assert_eq!(read.text.as_deref(), Some("# research\n"));
 
-        // A symlink inside the skill root landing OUTSIDE still refuses —
-        // the fence judges where the path lands, not the spelling.
         let outside = tempfile::tempdir().unwrap();
         write(&outside.path().join("secret.txt"), b"x");
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.txt"),
-            skills.path().join("escape.md"),
-        )
-        .unwrap();
-        let requested = skills.path().join("escape.md");
-        let fault = read_file(root, &requested.display().to_string(), &skill_roots).unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        // A symlink inside the skill root landing OUTSIDE still refuses —
+        // the fence judges where the path lands, not the spelling. Unix-only:
+        // creating the link on Windows needs a privilege test hosts lack.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside.path().join("secret.txt"),
+                skills.path().join("escape.md"),
+            )
+            .unwrap();
+            let requested = skills.path().join("escape.md");
+            let fault =
+                read_file(root, &requested.display().to_string(), &skill_roots).unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        }
 
         // Outside every allowed root stays fenced.
         write(&outside.path().join("plain.txt"), b"x");
@@ -1043,6 +1082,8 @@ mod tests {
         );
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn reads_go_through_inside_aliases_and_read_the_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -1074,6 +1115,8 @@ mod tests {
         assert!(matches!(fault, FilesFault::NotFound(_)));
     }
 
+    // Unix-only: creating a symlink on Windows needs a privilege test hosts lack.
+    #[cfg(unix)]
     #[test]
     fn cyclic_symlink_chains_fail_closed_not_forever() {
         let dir = tempfile::tempdir().unwrap();
@@ -1114,9 +1157,14 @@ mod tests {
         let resolved = resolve_image_target(root, "shot.png").unwrap();
         assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
         // An inside-root file alias reads its target, not the entry spelling.
-        std::os::unix::fs::symlink(root.join("shot.png"), root.join("alias.png")).unwrap();
-        let resolved = resolve_image_target(root, "alias.png").unwrap();
-        assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
+        // Unix-only: creating a symlink on Windows needs a privilege test
+        // hosts lack.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("shot.png"), root.join("alias.png")).unwrap();
+            let resolved = resolve_image_target(root, "alias.png").unwrap();
+            assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
+        }
         // Directories are not images.
         std::fs::create_dir_all(root.join("src")).unwrap();
         let fault = resolve_image_target(root, "src").unwrap_err();
@@ -1128,12 +1176,16 @@ mod tests {
         write(&root.join(".git/shot.png"), b"\x89PNG");
         let fault = resolve_image_target(root, ".git/shot.png").unwrap_err();
         assert!(matches!(fault, FilesFault::GitExcluded(_)));
-        // An outside-root symlink target never escapes the fence.
-        let outside = tempfile::tempdir().unwrap();
-        write(&outside.path().join("secret.png"), b"\x89PNG");
-        std::os::unix::fs::symlink(outside.path().join("secret.png"), root.join("escape.png"))
-            .unwrap();
-        let fault = resolve_image_target(root, "escape.png").unwrap_err();
-        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        // An outside-root symlink target never escapes the fence. Unix-only:
+        // creating the link on Windows needs a privilege test hosts lack.
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            write(&outside.path().join("secret.png"), b"\x89PNG");
+            std::os::unix::fs::symlink(outside.path().join("secret.png"), root.join("escape.png"))
+                .unwrap();
+            let fault = resolve_image_target(root, "escape.png").unwrap_err();
+            assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+        }
     }
 }

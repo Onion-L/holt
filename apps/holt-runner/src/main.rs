@@ -116,7 +116,9 @@ fn parse_args() -> anyhow::Result<Args> {
         Some(dir) => dir,
         None => match std::env::var_os("HOLT_DATA_DIR") {
             Some(dir) => PathBuf::from(dir),
-            None => PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?).join(".holt"),
+            None => std::env::home_dir()
+                .context("could not locate the user's home directory")?
+                .join(".holt"),
         },
     };
     Ok(Args {
