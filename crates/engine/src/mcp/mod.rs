@@ -403,7 +403,10 @@ pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
             let args = args.iter().map(|arg| expand(arg)).collect::<Vec<_>>();
             let env = env
                 .iter()
-                .map(|(name, value)| (name.clone(), expand(value)))
+                // Windows folds names case-insensitively (see `env_key`) so
+                // the PATH checks below and the child's environment map see
+                // the user's `Path` and an inherited `PATH` as one variable.
+                .map(|(name, value)| (config::env_key(name.clone()), expand(value)))
                 .collect::<BTreeMap<_, _>>();
             // The child's working directory is the server's own `cwd` or
             // Holt's process cwd — never the chat's working directory
