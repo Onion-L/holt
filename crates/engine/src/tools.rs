@@ -116,6 +116,15 @@ impl LocalExecutionEnv {
         }
     }
 
+    /// Pin the shell this env runs commands through, replacing the user's
+    /// login shell. `EngineConfig::exec_shell` carries the override here.
+    fn with_exec_shell(mut self, shell: Option<String>) -> Self {
+        if let Some(shell) = shell.filter(|shell| !shell.trim().is_empty()) {
+            self.shell = shell;
+        }
+        self
+    }
+
     #[cfg(test)]
     fn with_shell(cwd: impl Into<String>, shell: impl Into<String>) -> Self {
         Self {
@@ -835,7 +844,7 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 /// (no backend means the tool is absent, never registered-and-erroring).
 #[cfg(test)]
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
-    execution_tools_for_model(cwd, true, None, None, None)
+    execution_tools_for_model(cwd, true, None, None, None, None)
 }
 
 /// The per-Turn write-attribution handle (ADR-turn-change-sets-and-review): the tools record the
@@ -1062,8 +1071,9 @@ pub(crate) fn execution_tools_for_model(
     search_backend: Option<Arc<dyn web_search::SearchBackend>>,
     attribution: Option<ChangeAttribution>,
     shell_groups: Option<std::path::PathBuf>,
+    exec_shell: Option<String>,
 ) -> Vec<AgentTool> {
-    let mut env = LocalExecutionEnv::new(cwd);
+    let mut env = LocalExecutionEnv::new(cwd).with_exec_shell(exec_shell);
     env.shell_groups = shell_groups;
     let env: Arc<dyn ExecutionEnv> = Arc::new(env);
     let context = ExecutionToolContext { env }.into_tool_context();
@@ -1424,7 +1434,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_tool_wraps_execute_without_disturbing_fast_calls() {
-        let tools = execution_tools_for_model(".", true, None, None, None);
+        let tools = execution_tools_for_model(".", true, None, None, None, None);
         let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
         let result = (bash.execute)(
             "test-call",
@@ -1489,6 +1499,45 @@ mod tests {
             "unexpected output: {}",
             result.stdout
         );
+    }
+
+    /// `EngineConfig::exec_shell` replaces the login shell every bash call
+    /// runs through: the eval wraps each command into a task's container
+    /// this way, so the model writes plain shell.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_shell_replaces_the_login_shell_for_every_bash_call() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = dir.path().join("wrapper");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n[ \"$1\" = -lc ] || exit 97\nprintf 'wrapped:%s\\n' \"$2\"\nexec /bin/sh -lc \"$2\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let tools = execution_tools_for_model(
+            ".",
+            true,
+            None,
+            None,
+            None,
+            Some(wrapper.to_str().unwrap().to_string()),
+        );
+        let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
+        let result = (bash.execute)(
+            "test-call",
+            &serde_json::json!({ "command": "printf hello" }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let output = format!("{:?}", result.content);
+        assert!(output.contains("wrapped:printf hello"), "{output}");
+        assert!(output.contains("hello"), "{output}");
     }
 
     #[cfg(unix)]

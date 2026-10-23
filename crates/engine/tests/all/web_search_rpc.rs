@@ -440,6 +440,7 @@ async fn a_corrupt_record_fails_engine_startup() {
         stream_fn: None,
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     }) {
         Err(error) => error.to_string(),
         Ok(_) => panic!("a corrupt web-search record must fail engine startup"),

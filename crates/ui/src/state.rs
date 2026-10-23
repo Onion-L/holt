@@ -106,6 +106,7 @@ impl EngineHandle {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })?);
         let engine_info = engine.engine_info().clone();
         let client = memory_client(engine.clone());

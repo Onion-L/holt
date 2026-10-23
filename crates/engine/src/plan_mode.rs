@@ -289,6 +289,7 @@ mod tests {
             Vec::new(),
             None,
             crate::mcp::McpPool::load(dir.path()).unwrap(),
+            None,
         );
         let chat = runtime.chat("chat-1");
         let part = |id: &str, state: PlanApprovalState| MessagePart::PlanApproval {

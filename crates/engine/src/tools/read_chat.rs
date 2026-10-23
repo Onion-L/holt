@@ -350,6 +350,7 @@ mod tests {
             chats,
             None,
             crate::mcp::McpPool::load(dir).unwrap(),
+            None,
         )
     }
 
