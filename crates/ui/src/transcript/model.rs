@@ -183,18 +183,26 @@ pub fn format_skill_title(name: &str) -> String {
 /// collapsed to `~`: the absolute path is noise in a 12px detail slot, and
 /// `~/.agents/skills/…` reads as the same file at a glance.
 pub(super) fn skill_file_display(file: &str) -> String {
-    let path = file.trim_start_matches("file://").replace('\\', "/");
+    let path = file.trim_start_matches("file://");
     let Some(home) = home_dir() else {
-        return path;
+        return path.to_string();
     };
     // Home arrives from the environment (`C:\Users\…` on Windows) while
     // skill paths ride the RPC's addressed spelling (`C:/Users/…`) —
-    // normalize separators so the collapse survives the trip.
-    let home = home.replace('\\', "/");
-    if path.starts_with(home.as_str()) {
-        format!("~{}", &path[home.len()..])
+    // normalize separators so the collapse survives the trip. Only there:
+    // a backslash in a unix filename is a character, not a separator, so
+    // the display keeps the file's real spelling.
+    let (path, home) = if cfg!(windows) {
+        (path.replace('\\', "/"), home.replace('\\', "/"))
     } else {
-        path
+        (path.to_string(), home)
+    };
+    let home = home.trim_end_matches('/');
+    // A whole component only: `/home/onion2/x` shares the string prefix but
+    // is not under `home`, so it must not collapse to `~2/x`.
+    match path.strip_prefix(home) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+        _ => path,
     }
 }
 
@@ -2258,6 +2266,16 @@ mod tests {
             skill_file_display(&format!("{home}/.agents/skills/ask-matt/SKILL.md")),
             "~/.agents/skills/ask-matt/SKILL.md"
         );
+        // A backslash in a unix skill filename is a character, not a
+        // separator; Windows normalizes it away with the separators.
+        assert_eq!(
+            skill_file_display(&format!("{home}/.agents/skills/back\\slash/SKILL.md")),
+            if cfg!(windows) {
+                "~/.agents/skills/back/slash/SKILL.md"
+            } else {
+                "~/.agents/skills/back\\slash/SKILL.md"
+            }
+        );
         assert_eq!(
             skill_file_display(&format!("file://{home}/SKILL.md")),
             "~/SKILL.md"
@@ -2265,6 +2283,11 @@ mod tests {
         assert_eq!(
             skill_file_display("/opt/skills/ask-matt/SKILL.md"),
             "/opt/skills/ask-matt/SKILL.md"
+        );
+        // A sibling directory sharing the home string prefix is not home.
+        assert_eq!(
+            skill_file_display(&format!("{home}2/.agents/skills/x/SKILL.md")),
+            format!("{home}2/.agents/skills/x/SKILL.md")
         );
     }
 
