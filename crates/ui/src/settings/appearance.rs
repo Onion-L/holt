@@ -171,8 +171,10 @@ impl AppearancePage {
         cx.notify();
     }
 
-    /// Open the native image picker and apply the choice. The picker only
-    /// exists on macOS; other platforms keep the field as the entry point.
+    /// Open the native image picker and apply the choice. The picker exists
+    /// on every platform: macOS runs `NSOpenPanel` with the extension filter,
+    /// elsewhere the gpui dialog carries none (a wrong pick fails where the
+    /// bytes are read). The path field stays the keyboard entry point.
     fn browse_for_backdrop(cx: &mut Context<Self>) {
         // `runModal` pumps AppKit's nested event loop: it must run OUTSIDE
         // every gpui borrow, or the loop's re-entrant callbacks (mouse-move,
@@ -543,11 +545,7 @@ impl Render for AppearancePage {
                 card.border_dashed().child(
                     preview_message(&theme)
                         .child(div().text_color(theme.text_muted).child("Drop an image here"))
-                        .child(if cfg!(target_os = "macos") {
-                            "or click to browse"
-                        } else {
-                            "or paste a path"
-                        }),
+                        .child("or click to browse"),
                 )
             });
         let presence_control = div()
