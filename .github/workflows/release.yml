@@ -15,11 +15,11 @@ jobs:
   # gate consumes the leftover draft, and a single-job re-run would find
   # no release to upload into.
   gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Verify tag matches workspace version
         run: |
@@ -71,7 +71,7 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable, 2026-10-01
@@ -149,7 +149,7 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable, 2026-10-01
@@ -227,7 +227,7 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable, 2026-10-01
@@ -276,7 +276,7 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable, 2026-10-01
@@ -325,14 +325,16 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # fontconfig and freetype are the only link-time C libraries; the
-      # wayland/x11/vulkan backends all load at runtime via dlopen.
+      # gpui's Linux link-time C libraries: fontconfig and freetype plus
+      # the x11 client stack (xcb, xkbcommon, xkbcommon-x11). The
+      # wayland/vulkan backends load at runtime via dlopen.
       - name: Install gpui build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev imagemagick
+          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev imagemagick \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable, 2026-10-01
@@ -370,12 +372,13 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install gpui build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev imagemagick
+          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev imagemagick \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable, 2026-10-01
@@ -405,7 +408,7 @@ jobs:
 
   publish:
     needs: [build-macos-arm64, build-macos-x64, build-windows-x64, build-windows-arm64, build-linux-x64, build-linux-arm64]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Publish release
@@ -427,7 +430,7 @@ jobs:
   cleanup:
     needs: [build-macos-arm64, build-macos-x64, build-windows-x64, build-windows-arm64, build-linux-x64, build-linux-arm64]
     if: failure() || cancelled()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Delete the draft release
