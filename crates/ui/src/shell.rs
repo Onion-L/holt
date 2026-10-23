@@ -1871,7 +1871,12 @@ impl Shell {
                         ),
                 )
                 .into_any_element();
-            overlays.push(popover::top_alert("provider-error-alert", viewport, card));
+            overlays.push(popover::top_alert(
+                "provider-error-alert",
+                viewport,
+                Theme::flow_chrome_height(),
+                card,
+            ));
         }
 
         // The chat-state card (ADR-goal-mode-verified-loop-at-turn-settle's goal card, now also carrying the
@@ -1915,7 +1920,9 @@ impl Shell {
                 .flex_col()
                 .items_end()
                 .gap(px(8.0))
-                .pt(px(Theme::TITLEBAR_HEIGHT + 8.0))
+                // Window-anchored: the stack starts below the WHOLE chrome
+                // band, which is two rows tall on Windows.
+                .pt(px(Theme::window_chrome_height() + 8.0))
                 .pr(px(14.0 + pane_inset));
             if let Some(card) = state_card {
                 stack = stack.child(card);
@@ -3303,6 +3310,29 @@ mod tests {
         // The overlay titlebar band on macOS/Linux; Windows runs the strip in
         // normal flow, so the panes there start below it already.
         assert_eq!(PANE_RESIZE_HITBOX_TOP, Theme::chrome_top_inset());
+        // Window-anchored overlays clear the WHOLE chrome: one band where the
+        // titlebar is an overlay, the strip + its flow header row on Windows.
+        let chrome = Theme::window_chrome_height();
+        assert_eq!(
+            chrome,
+            Theme::TITLEBAR_HEIGHT
+                * if cfg!(target_os = "windows") {
+                    2.0
+                } else {
+                    1.0
+                }
+        );
+        assert!(chrome >= Theme::chrome_top_inset());
+        // What a window-anchored overlay must clear: the two flow rows on
+        // Windows, nothing where the titlebar is an overlay.
+        assert_eq!(
+            Theme::flow_chrome_height(),
+            if cfg!(target_os = "windows") {
+                Theme::window_chrome_height()
+            } else {
+                0.0
+            }
+        );
     }
 
     #[test]

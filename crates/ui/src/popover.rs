@@ -731,10 +731,13 @@ fn modal_with(
 /// A non-blocking top-center alert: floats above all content (priority above
 /// the modals) with NO scrim — the window stays fully interactive underneath.
 /// `card` carries its own styling and dismiss wiring; `occlude()` it so
-/// clicks on the alert don't fall through to the page.
+/// clicks on the alert don't fall through to the page. `top_inset` is the
+/// chrome that must be cleared first (`Theme::flow_chrome_height`: the flow
+/// titlebar rows on Windows, 0 where the titlebar is an overlay).
 pub fn top_alert(
     id: impl Into<ElementId>,
     viewport: gpui::Size<Pixels>,
+    top_inset: f32,
     card: AnyElement,
 ) -> AnyElement {
     gpui::deferred(
@@ -746,7 +749,9 @@ pub fn top_alert(
                     .flex()
                     .flex_col()
                     .items_center()
-                    .pt(px(14.0))
+                    // Window-anchored: clear the whole chrome band, which is
+                    // two rows tall where the titlebar runs in normal flow.
+                    .pt(px(top_inset + 14.0))
                     .child(motion::dialog_in(id, div().child(card))),
             ),
     )

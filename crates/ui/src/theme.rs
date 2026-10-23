@@ -788,12 +788,31 @@ impl Theme {
     /// content pads itself down by [`Self::TITLEBAR_HEIGHT`]; Windows draws a
     /// dedicated strip in normal flow (Kimi-desktop layout), where content
     /// already starts below it and needs no inset at all.
-    pub fn chrome_top_inset() -> f32 {
+    pub const fn chrome_top_inset() -> f32 {
         if cfg!(target_os = "windows") {
             0.0
         } else {
             Self::TITLEBAR_HEIGHT
         }
+    }
+    /// Height the window chrome occupies from the window's top edge: the one
+    /// overlaid titlebar band elsewhere, the strip PLUS its flow header row on
+    /// Windows. Window-anchored overlays (the notice stack, the top alert) pad
+    /// themselves down by this; in-flow content uses [`Self::chrome_top_inset`].
+    pub const fn window_chrome_height() -> f32 {
+        if cfg!(target_os = "windows") {
+            Self::TITLEBAR_HEIGHT * 2.0
+        } else {
+            Self::TITLEBAR_HEIGHT
+        }
+    }
+    /// The chrome that sits in normal flow above the content instead of
+    /// overlaying it — Windows's strip plus header row, 0 where the titlebar is
+    /// an overlay. A window-anchored overlay that should clear the chrome adds
+    /// this to its own offset; on macOS/Linux the titlebar is painted over the
+    /// content on purpose, so its overlays stay put.
+    pub const fn flow_chrome_height() -> f32 {
+        Self::window_chrome_height() - Self::chrome_top_inset()
     }
     /// Reserved status strip under the content outlet (holt `h-6`) — the
     /// WorkingIndicator row; reserving it keeps the composer from shifting.
