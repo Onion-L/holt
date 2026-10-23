@@ -23,7 +23,8 @@ import DownloadController from '../components/DownloadController';
 <link rel="icon" type="image/png" href="/assets/favicon.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://api.github.com" />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;700&family=Geist+Mono:wght@500&display=swap" rel="stylesheet" />
 <style is:inline>
   *, *::before, *::after { box-sizing: border-box; }
   :root {
@@ -136,7 +137,7 @@ import DownloadController from '../components/DownloadController';
 <body>
 
 <header class="hero">
-  <img class="hero-bg" src="/assets/hero-coast.webp" alt="" />
+  <img class="hero-bg" src="/assets/hero-coast.webp" alt="" fetchpriority="high" decoding="async" />
   <div class="hero-scrim"></div>
   <div class="hero-top">
     <nav class="nav mono">
@@ -153,7 +154,7 @@ import DownloadController from '../components/DownloadController';
 
 <main class="wrap">
   <section class="dl">
-    <img class="dl-icon" src="/assets/app-icon.png" alt="Holt" width="132" height="132" />
+    <img class="dl-icon" src="/assets/app-icon.webp" alt="Holt" width="132" height="132" decoding="async" />
     <div>
       <div class="vhead">
         <span class="vnum">v<span data-version>x.x.x</span></span>
