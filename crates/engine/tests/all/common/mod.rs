@@ -564,6 +564,7 @@ impl Fixture {
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap()
     }
@@ -582,6 +583,7 @@ impl Fixture {
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: Some(resolver),
             clock: None,
+            exec_shell: None,
         })
         .unwrap()
     }
@@ -598,6 +600,7 @@ impl Fixture {
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: None,
             clock: Some(clock),
+            exec_shell: None,
         })
         .unwrap()
     }

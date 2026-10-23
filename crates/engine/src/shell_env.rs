@@ -86,6 +86,8 @@ pub(crate) fn interactive_login_args(shell: &str) -> &'static [&'static str] {
     if !is_sh_like(shell) {
         return &[];
     }
+    #[cfg(not(windows))]
+    let _ = shell;
     &["-l", "-i"]
 }
 

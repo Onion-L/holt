@@ -23,6 +23,7 @@ fn reassemble(fixture: &common::Fixture) -> LocalEngine {
         stream_fn: None,
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap()
 }
@@ -553,6 +554,7 @@ async fn an_existing_user_prompt_blocks_title_generation_after_reload() {
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     engine

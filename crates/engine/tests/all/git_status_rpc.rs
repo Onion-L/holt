@@ -73,6 +73,7 @@ impl GitFixture {
             stream_fn: Some(ScriptedProvider::new(Vec::new()).stream_fn()),
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap()
     }

@@ -56,6 +56,7 @@ async fn enter_exit_round_trip_and_survive_restart() {
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     assert!(provider_active(&engine, "chat-1").await);
@@ -453,6 +454,7 @@ async fn card_states_and_pending_proposals_survive_a_restart() {
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     let states: Vec<String> = cards(&engine, "chat-1", "modelProposal")
@@ -1150,6 +1152,7 @@ async fn legacy_model_setup_chats_are_deleted_on_startup() {
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     let RpcReply::Stream(mut chats) = engine

@@ -76,6 +76,7 @@ impl Fixture {
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap()
     }

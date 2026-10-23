@@ -91,6 +91,7 @@ async fn a_turns_provider_retries_fan_out_as_live_notices() {
         stream_fn: Some(stream_fn),
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     common::setup_chat(&engine, "chat-1").await;

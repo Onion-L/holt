@@ -148,6 +148,7 @@ fn engine(data_dir: &Path) -> LocalEngine {
         stream_fn: None,
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap()
 }

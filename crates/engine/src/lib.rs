@@ -133,6 +133,12 @@ pub struct EngineConfig {
     /// manual clock lets scheduling tests advance time. Production leaves
     /// it unset and the engine reads the system time.
     pub clock: Option<Clock>,
+    /// Overrides the shell every agent command runs through. Unset in the
+    /// app, where the user's login shell (passwd, then `$SHELL`) owns PATH
+    /// and the profiles it assembles; the crash eval sets it to a wrapper
+    /// that forwards each command into a task's container, so the model
+    /// writes plain shell instead of a `docker exec` prefix on every call.
+    pub exec_shell: Option<String>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -148,6 +154,7 @@ impl std::fmt::Debug for EngineConfig {
                 &self.search_backend_resolver.as_ref().map(|_| "injected"),
             )
             .field("clock", &self.clock)
+            .field("exec_shell", &self.exec_shell)
             .finish()
     }
 }
@@ -285,6 +292,7 @@ impl LocalEngine {
             chats,
             config.stream_fn.clone(),
             crate::mcp::McpPool::load(&config.data_dir)?,
+            config.exec_shell.clone(),
         ));
         for chat_id in &retired {
             runtime.remove_chat(chat_id);
@@ -468,6 +476,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let first = LocalEngine::assemble(&config).unwrap();
         let id = first.engine_info().device_id.clone();
@@ -484,6 +493,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         }
     }
 
@@ -670,6 +680,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let _first = LocalEngine::assemble(&config).unwrap();
         assert!(LocalEngine::assemble(&config).is_err());
@@ -684,6 +695,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let store: serde_json::Value =
@@ -716,6 +728,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         drop(engine);
@@ -768,6 +781,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let path = dir.path().join("provider-store.json");
         std::fs::write(&path, b"{broken").unwrap();
@@ -789,6 +803,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         // A directory at the destination is unreadable as a store: the load
         // falls back to the compiled catalog while the rest of the data dir
@@ -815,6 +830,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -875,6 +891,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -979,6 +996,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -1092,6 +1110,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
 
@@ -1151,6 +1170,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap();
         engine
@@ -1243,6 +1263,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap();
         engine
@@ -1302,6 +1323,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -1403,6 +1425,7 @@ mod tests {
             stream_fn: Some(stream_fn),
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -1511,6 +1534,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
 
@@ -1568,6 +1592,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -1632,6 +1657,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         })
         .unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1683,6 +1709,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1771,6 +1798,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1858,6 +1886,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1941,6 +1970,7 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
             clock: None,
+            exec_shell: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine

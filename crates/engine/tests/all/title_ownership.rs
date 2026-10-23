@@ -41,6 +41,7 @@ fn reassemble(fixture: &common::Fixture) -> LocalEngine {
         stream_fn: None,
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap()
 }

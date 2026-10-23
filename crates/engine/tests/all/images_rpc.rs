@@ -471,6 +471,7 @@ async fn live_kimi_reads_image_pixels() {
         stream_fn: None,
         search_backend_resolver: None,
         clock: None,
+        exec_shell: None,
     })
     .unwrap();
     let image = fixture.project_dir.path().join("color.png");
