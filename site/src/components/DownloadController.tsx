@@ -61,38 +61,53 @@ export default function DownloadController() {
           const asset = suffix
             ? release.assets.find((candidate) => candidate.name.endsWith(suffix))
             : undefined;
-          if (!asset) return hide(anchor);
-          anchor.href = asset.browser_download_url;
-          // A format the markup ships hidden (one we may not build yet)
-          // appears only once the release carries it.
-          anchor.removeAttribute('hidden');
+          if (asset) {
+            anchor.href = asset.browser_download_url;
+            // A format the markup ships hidden (one we may not build yet)
+            // appears only once the release carries it.
+            anchor.removeAttribute('hidden');
+            anchor.removeAttribute('data-unavailable');
+            return;
+          }
+          // Formats we have not committed to stay out of the layout; the
+          // builds we do ship stay visible but go grey and inert, so the
+          // platform matrix never collapses to whatever is published today.
+          if (anchor.classList.contains('fmt') && anchor.hasAttribute('hidden')) return;
+          anchor.setAttribute('data-unavailable', '');
         });
 
-        // A macOS/Windows row holds one artifact; a Linux card holds one
-        // button per format and survives as long as one of them does.
         document.querySelectorAll<HTMLElement>('.row').forEach((row) => {
-          if (!visibleAssetLinks(row).length) hide(row);
+          const anchor = row.querySelector<HTMLAnchorElement>('a[data-asset]');
+          if (anchor?.hasAttribute('data-unavailable')) row.setAttribute('data-unavailable', '');
         });
         document.querySelectorAll<HTMLElement>('.card').forEach((card) => {
-          if (!visibleAssetLinks(card).length) hide(card);
+          const formats = Array.from(
+            card.querySelectorAll<HTMLAnchorElement>('.fmt:not([hidden])'),
+          );
+          if (formats.length && formats.every((f) => f.hasAttribute('data-unavailable'))) {
+            card.setAttribute('data-unavailable', '');
+          }
         });
-        // A platform the release carries nothing for leaves the page rather
-        // than explaining itself: three columns is the layout, and an empty
-        // one is noise. The grid keeps its column widths for what is left.
-        const grid = document.querySelector<HTMLElement>('.cols');
         cols.forEach((col) => {
-          if (!col.querySelector('[data-arch]:not([hidden])')) hide(col);
+          const offered = col.querySelector(
+            'a[data-asset]:not([hidden]):not([data-unavailable])',
+          );
+          const soon = col.querySelector<HTMLElement>('.soon');
+          if (offered) {
+            soon?.setAttribute('hidden', '');
+            return;
+          }
+          col.setAttribute('data-unavailable', '');
+          soon?.removeAttribute('hidden');
         });
-        if (grid) {
-          const remaining = cols.filter((col) => !col.hasAttribute('hidden')).length;
-          if (remaining > 0 && remaining < 3) grid.dataset.n = String(remaining);
-        }
 
         // The format to lead with inside the visitor's Linux card: the first
         // one this release actually shipped (`.deb` before `.AppImage`).
         cols.forEach((col) => {
           const picked = col.querySelector<HTMLElement>('[data-arch][data-pick]');
-          picked?.querySelector<HTMLAnchorElement>('.fmt:not([hidden])')?.setAttribute('data-pick', '');
+          picked
+            ?.querySelector<HTMLAnchorElement>('.fmt:not([hidden]):not([data-unavailable])')
+            ?.setAttribute('data-pick', '');
         });
       } catch {
         // offline or rate-limited: the static hrefs (the releases page) remain
