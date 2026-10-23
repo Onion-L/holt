@@ -628,9 +628,8 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     // predates the compaction, so the restart does not compact again
     // (issue #37).
     let engine = fixture.engine(&provider);
-    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::wait_for_transcript_text(&mut transcript, "post-crash reply").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_transcript(&engine, "chat-1", "post-crash reply").await;
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
 
     let requests = provider.requests();
     assert_eq!(

@@ -165,9 +165,8 @@ async fn a_crash_mid_turn_resumes_after_its_last_completed_tool_result() {
     // A fresh engine resumes the Turn from the record: the tool call and
     // its result are there even though the Turn never ended.
     let engine = fixture.engine(&provider);
-    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::wait_for_transcript_text(&mut transcript, "post-crash reply").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_transcript(&engine, "chat-1", "post-crash reply").await;
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);

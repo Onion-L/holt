@@ -717,31 +717,83 @@ fn uuid_tag(text: &str) -> String {
     format!("m{hash:x}")
 }
 
-/// Pump session frames until `chat_id` carries `status`.
+/// Pump session frames until `chat_id` carries `status`. For a transition
+/// the caller knows is still ahead — [`subscribe`] already consumed the
+/// opening snapshot. A state that may ALREADY hold (a Turn that settled
+/// before this point, a restart's resumed Turn) needs
+/// [`wait_for_chat_status`]: no change would ever wake a frame pump again.
 pub async fn wait_for_session_status<S>(sessions: &mut S, chat_id: &str, status: &str)
 where
     S: StreamExt<Item = serde_json::Value> + Unpin,
 {
     loop {
         let frame = next_frame(sessions).await;
-        let hit = frame.as_array().is_some_and(|rows| {
-            rows.iter()
-                .any(|row| row["chatId"] == chat_id && row["status"] == status)
-        });
-        if hit {
+        if session_frame_reports(&frame, chat_id, status) {
             return;
         }
     }
 }
 
+/// Wait until `chat_id` carries `status`, current value first: every
+/// subscription opens with the watch's present snapshot, so a state reached
+/// before this call counts. The subscription is opened here, never upstream,
+/// which is what makes the wait immune to the ordering it starts from.
+pub async fn wait_for_chat_status(engine: &LocalEngine, chat_id: &str, status: &str) {
+    let RpcReply::Stream(mut sessions) = engine
+        .handle(methods::WATCH_SESSIONS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSessions did not return a stream");
+    };
+    loop {
+        let frame = next_frame(&mut sessions).await;
+        if session_frame_reports(&frame, chat_id, status) {
+            return;
+        }
+    }
+}
+
+fn session_frame_reports(frame: &serde_json::Value, chat_id: &str, status: &str) -> bool {
+    frame.as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|row| row["chatId"] == chat_id && row["status"] == status)
+    })
+}
+
 /// Pump transcript frames until some entry or append carries `needle` (a
-/// text or error part, or a streaming append).
+/// text or error part, or a streaming append). [`subscribe`] already
+/// consumed the whole-history opening reset, so text that landed before
+/// this point is gone: use [`wait_for_transcript`] for that.
 pub async fn wait_for_transcript_text<S>(transcript: &mut S, needle: &str)
 where
     S: StreamExt<Item = serde_json::Value> + Unpin,
 {
     loop {
         let frame = next_frame(transcript).await;
+        if frame.to_string().contains(needle) {
+            return;
+        }
+    }
+}
+
+/// Wait until the transcript carries `needle`, current value first: the
+/// subscription opens with the whole-history `reset`, so text that landed
+/// before this call counts — the restart-shaped wait, where the reply may
+/// have arrived while nothing was watching.
+pub async fn wait_for_transcript(engine: &LocalEngine, chat_id: &str, needle: &str) {
+    let RpcReply::Stream(mut transcript) = engine
+        .handle(
+            methods::WATCH_DOC_MESSAGES,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchDocMessages did not return a stream");
+    };
+    loop {
+        let frame = next_frame(&mut transcript).await;
         if frame.to_string().contains(needle) {
             return;
         }
@@ -793,6 +845,20 @@ pub async fn subscribe(
     };
     let _ = sessions.next().await.expect("sessions watch ended");
     (transcript, sessions)
+}
+
+/// The tool-call ids a transcript snapshot carries, read off its `tool`
+/// parts — the structural spelling of "the transcript shows call X", which
+/// an id inside another field (a device id, a message id) can never spoof.
+pub fn transcript_tool_ids(snapshot: &serde_json::Value) -> Vec<String> {
+    snapshot["reset"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .flat_map(|entry| entry["parts"].as_array().cloned().unwrap_or_default())
+        .filter(|part| part["kind"] == "tool")
+        .filter_map(|part| part["id"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// The transcript watch's opening frame — the whole-history `reset` a

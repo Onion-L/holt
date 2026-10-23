@@ -1865,8 +1865,7 @@ async fn a_call_a_crash_cut_off_tells_the_resumed_model_what_it_changed() {
     std::fs::write(&running, start).unwrap();
 
     let engine = fixture.engine(&provider);
-    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
-    common::wait_for_transcript_text(&mut transcript, "resumed").await;
+    common::wait_for_transcript(&engine, "chat-1", "resumed").await;
 
     let requests = provider.requests();
     let result = common::summarize(&requests[1].messages)
@@ -1997,13 +1996,9 @@ async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_after_the_step()
         "hello\n"
     );
     assert!(!fixture.path("b.txt").exists());
-    let transcript = common::transcript_snapshot(&engine, "chat-1")
-        .await
-        .to_string();
-    assert!(
-        transcript.contains("w-1") && !transcript.contains("b-1"),
-        "{transcript}"
-    );
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let shown = common::transcript_tool_ids(&snapshot);
+    assert_eq!(shown, ["w-1"], "the undone step leaves the conversation");
     let calls: Vec<String> = steps(&fixture)
         .iter()
         .map(|step| step["toolCallId"].as_str().unwrap().to_string())
@@ -2050,10 +2045,12 @@ async fn a_file_that_moved_on_refuses_the_whole_rewind() {
     );
     assert!(fixture.path("b.txt").exists(), "nothing was written");
     assert!(!fixture.path("README.md").exists());
-    let transcript = common::transcript_snapshot(&engine, "chat-1")
-        .await
-        .to_string();
-    assert!(transcript.contains("b-1"), "the conversation is untouched");
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let shown = common::transcript_tool_ids(&snapshot);
+    assert!(
+        shown.iter().any(|id| id == "b-1"),
+        "the conversation is untouched: {shown:?}"
+    );
     assert_eq!(steps(&fixture).len(), 2);
 }
 
@@ -2101,12 +2098,12 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
     std::fs::write(fixture.path("a.txt"), "one\n").unwrap();
 
     let engine = fixture.engine(&provider);
-    let transcript = common::transcript_snapshot(&engine, "chat-1")
-        .await
-        .to_string();
-    assert!(
-        transcript.contains("w-1") && !transcript.contains("b-1"),
-        "{transcript}"
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let shown = common::transcript_tool_ids(&snapshot);
+    assert_eq!(
+        shown,
+        ["w-1"],
+        "the rewind cut the conversation after the kept step"
     );
     assert_eq!(
         std::fs::read_to_string(fixture.path("a.txt")).unwrap(),

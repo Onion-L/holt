@@ -69,6 +69,17 @@ intuition — three strikes is the only gate.
   pre-split `conversation-runtime`, `toolset`, and `ui-shell` pages
   (cffdd0c, fixed again in 9219a26). Seen 1× (2026-10-14).
 
+- A flaky test is diagnosed by tracing the frames it actually waits for, never
+  by widening its timeout. The engine harness's 10 s → 30 s bump on a
+  cross-platform CI hang (ec5f19c) read the symptom as a slow runner; the test
+  waited for an `idle` frame that could never come, because the restarted
+  engine resumed the interrupted Turn, the resume consumed the scripted reply,
+  and its own Turn then errored — a state that had already settled before the
+  test subscribed. A test that waits for a state must read the watch's current
+  value (its opening frame), not only its next change
+  (`crates/engine/tests/all/common/mod.rs`, `wait_for_chat_status`).
+  Seen 1× (2026-10-23).
+
 ## Moved
 
 (none yet)
