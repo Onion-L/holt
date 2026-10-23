@@ -14,5 +14,9 @@
   (unprocessed, so it stays byte-identical to the prototypes).
 - Static assets live in `site/public/assets/` (served at `/assets/…`; use
   absolute paths from pages — both `/changelog` and `/changelog/` resolve).
-- `wrangler.jsonc` (this directory) deploys `dist/`; the `deploy` workflow
-  runs `npm ci && npm run build` first. Building locally requires Node ≥ 22.12.
+- `wrangler.jsonc` (this directory) deploys `dist/`. The deploy runs on
+  Cloudflare's Workers Builds (the dashboard's Git connection: root `site`,
+  build `npm ci && npm run build`, deploy `npx wrangler deploy`) — there is no
+  deploy workflow in `.github/workflows/`, and branches other than `main` build
+  as previews that the Cloudflare GitHub App links on the pull request.
+  Building locally requires Node ≥ 22.12.

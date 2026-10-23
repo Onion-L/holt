@@ -1,3 +1,9 @@
+// Deployed by Cloudflare Workers Builds (the dashboard's Git connection), not
+// by a GitHub Actions workflow: root directory `site`, build command
+// `npm ci && npm run build`, deploy command `npx wrangler deploy`. Branches
+// other than `main` build as previews, whose URL the Cloudflare GitHub App
+// comments on the pull request. Keep these three settings and this file in
+// sync — the dashboard is the only place the other two live.
 {
   "name": "holt",
   "account_id": "33cb12c112241599f30db76874a7ecbb",
