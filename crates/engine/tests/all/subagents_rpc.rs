@@ -400,8 +400,13 @@ async fn long_child_results_have_a_token_budget_and_a_readable_full_file() {
         .join("\n");
     assert!(text.contains("Result truncated"));
     // The result names the file — spelled addressed or native by platform.
+    // The engine names the CANONICAL file (subagents.rs canonicalizes
+    // before spelling the suffix): Windows TMP's 8.3 short name
+    // (`RUNNER~1`) and macOS's `/var` symlink both make the fixture's own
+    // spelling differ, so the expectation canonicalizes too.
+    let canonical = file.canonicalize().unwrap();
     assert!(
-        text.contains(&common::addressed(&file)) || text.contains(file.to_str().unwrap()),
+        text.contains(&common::addressed(&canonical)) || text.contains(canonical.to_str().unwrap()),
         "result does not name the file: {text}"
     );
     assert!(

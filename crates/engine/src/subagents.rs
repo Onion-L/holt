@@ -565,7 +565,7 @@ async fn execute(
             text: content,
             ..Default::default()
         })],
-        details: serde_json::json!({"subagentRef": id, "failed": !ok, "resultPath": path, "model": d.model.id, "usage": usage}),
+        details: serde_json::json!({"subagentRef": id, "failed": !ok, "resultPath": crate::tools::addressed_canonical(&path), "model": d.model.id, "usage": usage}),
         usage: Some(usage),
         ..Default::default()
     })
@@ -607,7 +607,7 @@ fn bounded_result(text: &str, path: &Path) -> Result<String, String> {
     }
     let suffix = format!(
         "\n[Result truncated. Full output: {}. Use read to retrieve omitted content.]",
-        crate::tools::addressed_spelling(path)
+        crate::tools::addressed_canonical(path)
     );
     let mut keep = RESULT_TOKENS.saturating_sub(tokenizer.encode_ordinary(&suffix).len() + 8);
     loop {
