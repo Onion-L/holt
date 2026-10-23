@@ -2,89 +2,94 @@ import { useEffect } from 'react';
 import { detectArch, detectPlatform, isMobile } from './detect';
 
 // React controller for the download page (/download). The page is static
-// Astro markup; this island renders nothing and only
-//  - marks the visitor's platform card and, on that card, the chip that
-//    matches,
-//  - fills the version stamp and every link from the latest GitHub release,
-//  - demotes a platform the release carries no asset for (the stamp says so
-//    and the highlight comes off), so the page never advertises a build that
-//    is not downloadable.
-// A link matches its asset by the `data-asset` suffix (the tail of the
-// release asset name) and fills the size in its `data-download` cell, so a
-// platform shipping builds only needs its markup updated — give the cell an
-// anchor with the suffix.
+// Astro markup — one column per OS, one row per build — and this island
+// renders nothing. It only
+//  - marks the visitor's column and, inside it, the build for their chip,
+//  - fills every version stamp and every link from the latest GitHub release,
+//  - hides a build (and then a column) the release carries no asset for, so
+//    the page never offers a download that is not there.
+// A link matches its asset by the `data-asset` suffix — the tail of the
+// release asset name (`-arm64.dmg`, `-x64-win.zip`, `-x64.AppImage`) — so
+// shipping a new format only needs its anchor in the markup.
 
 type Asset = { name: string; size: number; browser_download_url: string };
 type Release = { tag_name: string; assets: Asset[] };
 
 const RELEASE_API = 'https://api.github.com/repos/Onion-L/holt/releases/latest';
 
-function megabytes(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+/** The `hidden` attribute, which CSS cannot outrank on its own. */
+function hide(el: Element) {
+  el.setAttribute('hidden', '');
 }
 
-/**
- * Mark a platform card as absent from this release: no asset matched any of
- * its links, so the card drops the highlight and says so instead of offering
- * a download that does not exist.
- */
-function markMissing(card: HTMLElement) {
-  card.setAttribute('data-missing', '');
-  card
-    .querySelectorAll<HTMLAnchorElement>('a[data-pick]')
-    .forEach((a) => a.removeAttribute('data-pick'));
-  const stamp = card.querySelector<HTMLElement>('[data-stamp]');
-  if (stamp) stamp.textContent = 'next release';
+function visibleAssetLinks(root: ParentNode): HTMLAnchorElement[] {
+  return Array.from(root.querySelectorAll<HTMLAnchorElement>('a[data-asset]:not([hidden])'));
 }
 
 export default function DownloadController() {
   useEffect(() => {
     (async () => {
-      const cards = Array.from(
-        document.querySelectorAll<HTMLElement>('[data-platform]'),
-      );
-      const yours = isMobile()
-        ? null
-        : (cards.find((card) => card.dataset.platform === detectPlatform()) ?? null);
-      if (yours) {
-        yours.setAttribute('data-yours', '');
-        // The chip highlight only means something inside the visitor's own
-        // card: an arm64 Windows box must not light up the Linux arm64 build.
-        const arch = await detectArch();
-        if (arch) {
-          yours.querySelectorAll<HTMLAnchorElement>('a[data-arch]').forEach((a) => {
-            a.toggleAttribute('data-pick', a.dataset.arch === arch);
-          });
+      const cols = Array.from(document.querySelectorAll<HTMLElement>('.col[data-platform]'));
+
+      // The visitor's own column, and the build for the chip we could detect.
+      // A phone gets no "your system" mark: every artifact here is a desktop
+      // binary it cannot run.
+      if (!isMobile()) {
+        const yours = cols.find((col) => col.dataset.platform === detectPlatform());
+        if (yours) {
+          yours.setAttribute('data-yours', '');
+          const arch = await detectArch();
+          if (arch) {
+            yours
+              .querySelector<HTMLElement>(`[data-arch="${arch}"]`)
+              ?.setAttribute('data-pick', '');
+          }
         }
       }
+
       try {
-        const r = await fetch(RELEASE_API);
-        if (!r.ok) return;
-        const rel: Release = await r.json();
-        document
-          .querySelectorAll('[data-version]')
-          .forEach((el) => (el.textContent = rel.tag_name.replace(/^v/, '')));
-        const found = new Map<HTMLElement, boolean>();
-        const missing = new Set<HTMLElement>();
-        document.querySelectorAll<HTMLAnchorElement>('a[data-asset]').forEach((a) => {
-          const suffix = a.dataset.asset;
-          const card = a.closest<HTMLElement>('[data-platform]');
-          const asset = suffix ? rel.assets.find((x) => x.name.endsWith(suffix)) : undefined;
-          if (card) {
-            found.set(card, (found.get(card) ?? false) || Boolean(asset));
-            if (!asset) missing.add(card);
-          }
-          if (!asset) return;
-          a.href = asset.browser_download_url;
-          const cell = a.closest('[data-download]') ?? a;
-          cell.querySelector<HTMLElement>('[data-size]')?.replaceChildren(` · ${megabytes(asset.size)}`);
+        const response = await fetch(RELEASE_API);
+        if (!response.ok) return;
+        const release: Release = await response.json();
+
+        document.querySelectorAll('[data-version]').forEach((el) => {
+          el.textContent = release.tag_name.replace(/^v/, '');
         });
-        // A card whose every link missed ships nothing in this release.
-        missing.forEach((card) => {
-          if (!found.get(card)) markMissing(card);
+
+        document.querySelectorAll<HTMLAnchorElement>('a[data-asset]').forEach((anchor) => {
+          const suffix = anchor.dataset.asset;
+          const asset = suffix
+            ? release.assets.find((candidate) => candidate.name.endsWith(suffix))
+            : undefined;
+          if (!asset) return hide(anchor);
+          anchor.href = asset.browser_download_url;
+          // A format the markup ships hidden (one we may not build yet)
+          // appears only once the release carries it.
+          anchor.removeAttribute('hidden');
+        });
+
+        // A macOS/Windows row holds one artifact; a Linux card holds one
+        // button per format and survives as long as one of them does.
+        document.querySelectorAll<HTMLElement>('.row').forEach((row) => {
+          if (!visibleAssetLinks(row).length) hide(row);
+        });
+        document.querySelectorAll<HTMLElement>('.card').forEach((card) => {
+          if (!visibleAssetLinks(card).length) hide(card);
+        });
+        cols.forEach((col) => {
+          if (!col.querySelector('[data-arch]:not([hidden])')) {
+            col.setAttribute('data-missing', '');
+          }
+        });
+
+        // The format to lead with inside the visitor's Linux card: the first
+        // one this release actually shipped (`.deb` before `.AppImage`).
+        cols.forEach((col) => {
+          const picked = col.querySelector<HTMLElement>('[data-arch][data-pick]');
+          picked?.querySelector<HTMLAnchorElement>('.fmt:not([hidden])')?.setAttribute('data-pick', '');
         });
       } catch {
-        // offline or rate-limited: static hrefs (the releases page) remain
+        // offline or rate-limited: the static hrefs (the releases page) remain
       }
     })();
   }, []);
