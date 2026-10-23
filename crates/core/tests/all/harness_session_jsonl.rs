@@ -63,7 +63,12 @@ fn golden(name: &str) -> String {
         "{}/tests/goldens/session-jsonl/{name}",
         env!("CARGO_MANIFEST_DIR")
     );
-    std::fs::read_to_string(path).unwrap_or_else(|error| panic!("missing golden {name}: {error}"))
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("missing golden {name}: {error}"));
+    // Golden files are LF-authored; a core.autocrlf Windows checkout hands
+    // them back with CRLF. Normalize so the byte-oracle comparison holds on
+    // every platform.
+    content.replace("\r\n", "\n")
 }
 
 fn usage_fixture() -> Usage {
@@ -453,7 +458,9 @@ async fn repo_exposes_the_complete_metadata_contract() {
         .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, "session");
-    assert_eq!(listed[0].cwd, root.to_string());
+    // The repo stores the addressed spelling; fold the native tempdir
+    // spelling to compare (a no-op on unix).
+    assert_eq!(listed[0].cwd, root.to_string().replace('\\', "/"));
     assert_eq!(listed[0].parent_session_id.as_deref(), Some("parent"));
     assert_eq!(
         listed[0].metadata,

@@ -26,6 +26,12 @@ fn env_for(cwd: &str) -> NodeExecutionEnv {
     })
 }
 
+/// Fold the tempdir's native spelling into the addressed vocabulary the
+/// harness returns (`/` separators) — a no-op on unix.
+fn addressed(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn shell_env_for(cwd: &str, shell_env: Vec<(&str, &str)>) -> NodeExecutionEnv {
     NodeExecutionEnv::new(NodeExecutionEnvOptions {
         cwd: cwd.to_string(),
@@ -46,7 +52,7 @@ async fn reads_writes_lists_and_removes_files_and_directories() {
     env.absolute_path("nested/child", None).await.unwrap();
     assert_eq!(
         env.absolute_path("nested/child", None).await.unwrap(),
-        format!("{root}/nested/child")
+        addressed(&format!("{root}/nested/child"))
     );
     assert_eq!(
         env.join_path(
@@ -55,7 +61,7 @@ async fn reads_writes_lists_and_removes_files_and_directories() {
         )
         .await
         .unwrap(),
-        format!("{root}/nested/child")
+        addressed(&format!("{root}/nested/child"))
     );
     env.create_dir("nested/child", CreateDirOptions::default(), None)
         .await
@@ -103,7 +109,10 @@ async fn reads_writes_lists_and_removes_files_and_directories() {
     let entries = env.list_dir("nested/child", None).await.unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "file.txt");
-    assert_eq!(entries[0].path, format!("{root}/nested/child/file.txt"));
+    assert_eq!(
+        entries[0].path,
+        addressed(&format!("{root}/nested/child/file.txt"))
+    );
     assert_eq!(entries[0].kind, FileKind::File);
     assert_eq!(entries[0].size, 5);
 
@@ -118,15 +127,21 @@ async fn reads_writes_lists_and_removes_files_and_directories() {
 async fn expands_home_relative_paths_and_file_urls() {
     let root = common::create_temp_dir();
     let env = env_for(&root);
-    let home = std::env::var("HOME").unwrap();
+    // The same chain the harness resolves (HOME, else USERPROFILE).
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap();
     assert_eq!(
         env.absolute_path("~/pi-node-env-test", None).await.unwrap(),
-        format!("{home}/pi-node-env-test")
+        addressed(&format!("{home}/pi-node-env-test"))
     );
-    let file_path = format!("{root}/file with spaces.txt");
+    // The URL spells the addressed vocabulary — a leading `/` before a
+    // Windows drive (`file:///C:/…`), exactly the unix shape on unix.
+    let file_path = addressed(&format!("{root}/file with spaces.txt"));
     let url = format!(
-        "file://{}",
+        "file:///{}",
         file_path
+            .trim_start_matches('/')
             .split('/')
             .map(|segment| segment.replace('%', "%25").replace(' ', "%20"))
             .collect::<Vec<_>>()
@@ -135,6 +150,8 @@ async fn expands_home_relative_paths_and_file_urls() {
     assert_eq!(env.absolute_path(&url, None).await.unwrap(), file_path);
 }
 
+// Creating symlinks needs a privilege Windows test hosts lack.
+#[cfg(unix)]
 #[tokio::test]
 async fn returns_file_info_without_following_symlinks() {
     let root = common::create_temp_dir();
@@ -178,6 +195,8 @@ async fn returns_file_info_without_following_symlinks() {
     );
 }
 
+// Creating symlinks needs a privilege Windows test hosts lack.
+#[cfg(unix)]
 #[tokio::test]
 async fn lists_symlinks_as_symlinks() {
     let root = common::create_temp_dir();
@@ -234,7 +253,7 @@ async fn returns_file_error_for_missing_paths() {
         error.code,
         holt_core::agent::harness::types::FileErrorCode::NotFound
     );
-    assert_eq!(error.path, Some(format!("{root}/missing.txt")));
+    assert_eq!(error.path, Some(addressed(&format!("{root}/missing.txt"))));
     assert!(!env.exists("missing.txt", None).await.unwrap());
 }
 
@@ -324,7 +343,10 @@ async fn reports_the_source_path_when_rename_fails_because_the_source_is_missing
         error.code,
         holt_core::agent::harness::types::FileErrorCode::NotFound
     );
-    assert_eq!(error.path, Some(format!("{root}/missing-source.txt")));
+    assert_eq!(
+        error.path,
+        Some(addressed(&format!("{root}/missing-source.txt")))
+    );
     assert_eq!(
         env.read_text_file("destination.txt", None).await.unwrap(),
         "unchanged"
@@ -504,11 +526,19 @@ async fn executes_commands_in_cwd_with_env_overrides() {
         )
         .await
         .unwrap();
-    let canonical = std::fs::canonicalize(root.as_ref())
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    assert_eq!(result.stdout, format!("{canonical}:ok"));
+    // git-bash reports $PWD in msys spelling (`/tmp/…`), never comparable to
+    // the Windows canonical path — the var propagation is the assertion
+    // there; unix keeps the exact compare.
+    #[cfg(unix)]
+    {
+        let canonical = std::fs::canonicalize(root.as_ref())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(result.stdout, format!("{canonical}:ok"));
+    }
+    #[cfg(windows)]
+    assert!(result.stdout.ends_with(":ok"), "stdout: {}", result.stdout);
     assert_eq!(result.stderr, "");
     assert_eq!(result.exit_code, 0);
 }

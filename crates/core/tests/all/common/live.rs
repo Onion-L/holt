@@ -162,16 +162,26 @@ fn auth_storage_path() -> Option<std::path::PathBuf> {
 }
 
 fn save_auth_storage(path: &std::path::Path, storage: &serde_json::Map<String, serde_json::Value>) {
-    use std::os::unix::fs::PermissionsExt;
+    fn harden(path: &std::path::Path, mode: u32) {
+        // The unix mode bits have no Windows counterpart; the credential
+        // file still lands under the user's own profile directory there.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        }
+        #[cfg(not(unix))]
+        let _ = (path, mode);
+    }
     if let Some(dir) = path.parent()
         && std::fs::create_dir_all(dir).is_ok()
     {
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        harden(dir, 0o700);
     }
     if let Ok(json) = serde_json::to_string_pretty(storage)
         && std::fs::write(path, json).is_ok()
     {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        harden(path, 0o600);
     }
 }
 
@@ -601,9 +611,12 @@ pub struct OllamaServer(pub std::process::Child);
 
 impl Drop for OllamaServer {
     fn drop(&mut self) {
+        #[cfg(unix)]
         unsafe {
             libc::kill(self.0.id() as i32, libc::SIGTERM);
         }
+        #[cfg(not(unix))]
+        let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }

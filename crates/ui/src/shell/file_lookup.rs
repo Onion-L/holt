@@ -46,7 +46,10 @@ pub(super) struct FileLookup {
 /// under — the absolute path every downstream action (tab open, tree
 /// reveal, chip attach) binds to. Pure; unit-tested for spaces/Unicode.
 fn absolute_result(root: &std::path::Path, relative: &str) -> String {
-    root.join(relative).to_string_lossy().into_owned()
+    // The addressed vocabulary: search results are `/`-separated, and the
+    // join keeps that spelling on every platform (a native Windows join
+    // would mix separators mid-path).
+    root.join(relative).to_string_lossy().replace('\\', "/")
 }
 
 impl Shell {

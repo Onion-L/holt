@@ -450,7 +450,7 @@ async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
     // compacting Turn edits a tracked file mid-run, and the turn diff must
     // still see it — proof compaction reset nothing Turn-scoped (ADR-compaction-is-not-a-turn).
     let fixture = common::Fixture::new();
-    let repo = git2::Repository::init(fixture.project_dir.path()).unwrap();
+    let repo = common::init_repo(fixture.project_dir.path());
     repo.set_head("refs/heads/main").unwrap();
     {
         let mut index = repo.index().unwrap();

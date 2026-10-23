@@ -104,12 +104,8 @@ impl AppearancePage {
     }
 
     pub(super) fn choose_import_source(&mut self, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose Theme Source".into()),
-        });
+        let receiver =
+            crate::file_dialog::prompt_for_files_and_dirs("Choose Theme Source", false, cx);
         cx.spawn(async move |this, cx| {
             let path = match receiver.await {
                 Ok(Ok(Some(mut paths))) => paths.pop(),

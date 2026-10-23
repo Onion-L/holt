@@ -791,59 +791,59 @@ mod tests {
 
     #[test]
     fn grants_record_and_pass_calls_resolved_against_the_cwd() {
+        // The host platform's absolute root: the grant scenarios hold under
+        // either spelling.
+        let root = if cfg!(windows) { "C:/repo" } else { "/repo" };
         let mut grants = GateGrants::default();
         grants.record(
             "bash",
             &serde_json::json!({ "command": "cargo test" }),
-            "/repo",
+            root,
         );
         grants.record(
             "write",
             &serde_json::json!({ "path": "src/a.rs", "content": "x" }),
-            "/repo",
+            root,
         );
         // Bash: the allowed prefix and its extensions pass; others don't.
         assert!(grants.passes(
             "bash",
             &serde_json::json!({ "command": "cargo test -- --nocapture" }),
-            "/repo"
+            root
         ));
         assert!(!grants.passes(
             "bash",
             &serde_json::json!({ "command": "cargo build" }),
-            "/repo"
+            root
         ));
         // Write/edit: the exact resolved path — reached relative or
         // absolute — passes; sibling paths don't.
-        assert!(grants.passes("write", &serde_json::json!({ "path": "src/a.rs" }), "/repo"));
+        assert!(grants.passes("write", &serde_json::json!({ "path": "src/a.rs" }), root));
         assert!(grants.passes(
             "write",
-            &serde_json::json!({ "path": "/repo/src/a.rs" }),
-            "/repo"
+            &serde_json::json!({ "path": format!("{root}/src/a.rs") }),
+            root
         ));
-        assert!(!grants.passes("edit", &serde_json::json!({ "path": "src/b.rs" }), "/repo"));
+        assert!(!grants.passes("edit", &serde_json::json!({ "path": "src/b.rs" }), root));
         // Reads are never granted.
-        assert!(!grants.passes("read", &serde_json::json!({ "path": "src/a.rs" }), "/repo"));
+        assert!(!grants.passes("read", &serde_json::json!({ "path": "src/a.rs" }), root));
         // A different cwd resolves the same relative path elsewhere.
-        assert!(!grants.passes(
-            "write",
-            &serde_json::json!({ "path": "src/a.rs" }),
-            "/other"
-        ));
+        let other = if cfg!(windows) { "C:/other" } else { "/other" };
+        assert!(!grants.passes("write", &serde_json::json!({ "path": "src/a.rs" }), other));
         // Recording twice keeps one grant of each kind.
         grants.record(
             "bash",
             &serde_json::json!({ "command": "cargo test" }),
-            "/repo",
+            root,
         );
-        grants.record("write", &serde_json::json!({ "path": "src/a.rs" }), "/repo");
+        grants.record("write", &serde_json::json!({ "path": "src/a.rs" }), root);
         let GateGrants {
             bash_prefixes,
             file_paths,
             mcp_tools,
         } = grants;
         assert_eq!(bash_prefixes, ["cargo test"]);
-        assert_eq!(file_paths, ["/repo/src/a.rs"]);
+        assert_eq!(file_paths, [format!("{root}/src/a.rs")]);
         assert!(mcp_tools.is_empty());
     }
 

@@ -392,7 +392,7 @@ fn mean_luminance(rgba: &image::RgbaImage) -> f32 {
 
 /// RGBA8 → gpui BGRA frame (same swap as `images.rs`).
 fn to_render(mut rgba: image::RgbaImage) -> Arc<RenderImage> {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(

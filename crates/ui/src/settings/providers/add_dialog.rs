@@ -370,10 +370,10 @@ impl ProvidersPage {
 
     /// Choose the Add dialog's logo file; it uploads with the definition.
     pub(super) fn pick_new_provider_logo(&mut self, cx: &mut Context<Self>) {
-        // `runModal` must run outside every gpui borrow (see the backdrop
+        // The picker must run outside every gpui borrow (see the backdrop
         // picker in Settings → Appearance).
         cx.spawn(async move |page, cx| {
-            let Some(path) = crate::file_dialog::pick_logo() else {
+            let Some(path) = crate::file_dialog::pick_logo(cx).await else {
                 return;
             };
             page.update(cx, |page, cx| {

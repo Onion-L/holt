@@ -181,7 +181,7 @@ impl AppearancePage {
         // runs after this dispatch fully unwinds, on the main thread, with
         // no borrows held.
         cx.spawn(async move |page, cx| {
-            let Some(picked) = crate::file_dialog::pick_image() else {
+            let Some(picked) = crate::file_dialog::pick_image(cx).await else {
                 return;
             };
             let picked = picked.display().to_string();

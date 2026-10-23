@@ -1875,10 +1875,13 @@ fn relative_path(repo: &Repository, repo_root: &str, path: &str) -> Option<Strin
     // and every other symlink below tmp), while the tool's path rides
     // the chat's cwd spelling. Resolve through the symlinks — the
     // target may not exist yet (a write tool creating it), so take
-    // the deepest existing ancestor and re-attach the tail.
-    let resolved = resolve_existing(&absolute)?;
+    // the deepest existing ancestor and re-attach the tail. Both sides
+    // drop Windows's verbatim (`\\?\`) prefix first — canonicalize
+    // produces it, git2's workdir never carries it, and a prefix
+    // mismatch silently refuses the strip.
+    let resolved = crate::tools::strip_verbatim(resolve_existing(&absolute)?);
     resolved
-        .strip_prefix(workdir)
+        .strip_prefix(crate::tools::strip_verbatim(workdir.to_path_buf()))
         .ok()
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }

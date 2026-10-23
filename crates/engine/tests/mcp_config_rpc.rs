@@ -111,9 +111,11 @@ async fn the_child_runs_in_the_configured_cwd_or_holts_own() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let seen = std::fs::read_to_string(fixture.data_dir.path().join("cwd-1")).unwrap();
+    // Fold both spellings to the addressed vocabulary: `current_dir` reports
+    // native, the test's canonicalize is verbatim-prefixed on Windows.
     assert_eq!(
-        seen,
-        configured.canonicalize().unwrap().display().to_string(),
+        common::addressed(std::path::Path::new(&seen)),
+        common::addressed(&configured.canonicalize().unwrap()),
         "the child must run in the configured cwd"
     );
     assert_ne!(

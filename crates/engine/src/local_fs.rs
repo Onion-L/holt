@@ -1,8 +1,6 @@
 //! Local-machine surfaces for the add-space palette: folder browsing,
 //! mounted volumes, hostname, and the local device row.
 
-use std::path::Path;
-
 use holt_proto::{Device, DriveEntry, DriveListing, FolderEntry, FolderListing};
 
 /// The local machine as a device row — enough for the add-space palette to
@@ -72,7 +70,13 @@ pub(crate) fn expand_tilde(path: &str) -> String {
     if path == "~" {
         return home_dir().unwrap_or_else(|| path.to_string());
     }
-    if let Some(rest) = path.strip_prefix("~/")
+    let rest = match path.strip_prefix("~/") {
+        Some(rest) => Some(rest),
+        // A Windows-spelled home path; on unix `~\` is a plain filename.
+        None if cfg!(windows) => path.strip_prefix("~\\"),
+        None => None,
+    };
+    if let Some(rest) = rest
         && let Some(home) = home_dir()
     {
         return format!("{home}/{rest}");
@@ -133,29 +137,79 @@ pub(crate) fn list_folders(params: &serde_json::Value) -> Result<FolderListing, 
 
 /// Browse roots beyond home: the system root plus mounted volumes. macOS
 /// keeps mounts under `/Volumes`; the boot volume's alias there resolves to
-/// `/`, so it is deduped against the System row.
+/// `/`, so it is deduped against the System row. Windows enumerates drive
+/// letters (home itself is the rail's separate Home row).
 pub(crate) fn list_drives() -> DriveListing {
-    let mut drives = vec![DriveEntry {
-        name: "System".to_string(),
-        path: "/".to_string(),
-    }];
-    if let Ok(read) = std::fs::read_dir("/Volumes") {
-        for item in read.flatten() {
-            let path = item.path();
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if !meta.is_dir() {
-                continue;
+    #[cfg(windows)]
+    {
+        windows_drives()
+    }
+    #[cfg(not(windows))]
+    {
+        let mut drives = vec![DriveEntry {
+            name: "System".to_string(),
+            path: "/".to_string(),
+        }];
+        if let Ok(read) = std::fs::read_dir("/Volumes") {
+            for item in read.flatten() {
+                let path = item.path();
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                if !meta.is_dir() {
+                    continue;
+                }
+                if std::fs::canonicalize(&path)
+                    .is_ok_and(|canon| canon == std::path::Path::new("/"))
+                {
+                    continue;
+                }
+                drives.push(DriveEntry {
+                    name: item.file_name().to_string_lossy().to_string(),
+                    path: path.to_string_lossy().to_string(),
+                });
             }
-            if std::fs::canonicalize(&path).is_ok_and(|canon| canon == Path::new("/")) {
-                continue;
-            }
-            drives.push(DriveEntry {
-                name: item.file_name().to_string_lossy().to_string(),
-                path: path.to_string_lossy().to_string(),
-            });
         }
+        DriveListing { drives }
+    }
+}
+
+/// The drive letters a folder browse can descend into: local, removable,
+/// and network drives (an empty optical drive is noise, not a destination).
+#[cfg(windows)]
+fn windows_drives() -> DriveListing {
+    // GetDriveTypeW's return codes (winuser.h) — windows-sys 0.52 does not
+    // export the constants.
+    const DRIVE_REMOVABLE: u32 = 2;
+    const DRIVE_FIXED: u32 = 3;
+    const DRIVE_REMOTE: u32 = 4;
+    const DRIVE_RAMDISK: u32 = 6;
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDriveStringsW};
+    let mut buffer = [0u16; 256];
+    // SAFETY: the buffer is 256 wchars — the DOS device namespace caps a
+    // drive string at 4 — and the returned length is in wchars, NUL included.
+    let len = unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) };
+    if len == 0 || len as usize > buffer.len() {
+        return DriveListing { drives: Vec::new() };
+    }
+    let mut drives = Vec::new();
+    for raw in buffer[..len as usize]
+        .split(|&c| c == 0)
+        .filter(|s| !s.is_empty())
+    {
+        // SAFETY: each string is NUL-terminated within the returned range.
+        let kind = unsafe { GetDriveTypeW(raw.as_ptr()) };
+        if !matches!(
+            kind,
+            DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_REMOTE | DRIVE_RAMDISK
+        ) {
+            continue;
+        }
+        let letter = String::from_utf16_lossy(raw);
+        drives.push(DriveEntry {
+            name: letter.trim_end_matches('\\').to_string(),
+            path: letter,
+        });
     }
     DriveListing { drives }
 }
@@ -196,20 +250,32 @@ mod tests {
 
     #[test]
     fn expand_tilde_resolves_against_home() {
-        let home = std::env::var("HOME").unwrap();
+        // The module's own resolution chain — HOME, else USERPROFILE — so
+        // the test holds wherever home actually comes from.
+        let home = home_dir().unwrap();
         assert_eq!(expand_tilde("~"), home);
         assert_eq!(expand_tilde("~/dev"), format!("{home}/dev"));
         assert_eq!(expand_tilde("/abs"), "/abs");
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn list_drives_always_offers_the_system_root() {
         let drives = list_drives();
         assert!(drives.drives.iter().any(|d| d.path == "/"));
         // The boot volume's /Volumes alias must not duplicate the System row.
+        assert!(!drives.drives.iter().any(|d| d.path != "/"
+            && std::fs::canonicalize(&d.path).is_ok_and(|p| p == std::path::Path::new("/"))));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn list_drives_offers_the_system_drive() {
+        let drives = list_drives();
         assert!(
-            !drives.drives.iter().any(|d| d.path != "/"
-                && std::fs::canonicalize(&d.path).is_ok_and(|p| p == Path::new("/")))
+            drives.drives.iter().any(|d| d.path == "C:\\"),
+            "system drive missing: {:?}",
+            drives.drives
         );
     }
 }

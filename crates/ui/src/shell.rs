@@ -966,8 +966,8 @@ impl Shell {
                 // canvas defaults (project) follow it. Otherwise the last
                 // selected project stands.
                 let exists = |id: &String| state.read(cx).space_row(id).is_some();
-                let filter = self.settings.space_filter.clone().filter(&exists);
-                let target = filter.or_else(|| self.settings.last_space_id.clone().filter(&exists));
+                let filter = self.settings.space_filter.clone().filter(exists);
+                let target = filter.or_else(|| self.settings.last_space_id.clone().filter(exists));
                 if target.is_some() {
                     state.update(cx, |s, cx| s.select_space(target.unwrap(), cx));
                 }

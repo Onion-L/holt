@@ -84,11 +84,13 @@ impl Catalog {
     /// authoritative, so the skill the link points at wins over any
     /// same-name skill in a nearer root.
     fn by_path(&self, path: &Path) -> Option<&Skill> {
-        let wanted = path.to_string_lossy();
+        // The mention side is Path-joined (native spelling), the catalog
+        // side loader-produced (addressed spelling) — compare as paths,
+        // which is separator-agnostic, never as strings.
         self.winners
             .iter()
             .chain(self.shadowed.iter())
-            .find(|(skill, _)| skill.file_path == wanted)
+            .find(|(skill, _)| Path::new(&skill.file_path) == path)
             .map(|(skill, _)| skill)
     }
 }
@@ -226,7 +228,15 @@ impl Skills {
     /// invalid entries. Missing roots are skipped silently (fresh machines
     /// get an empty catalog, never an error).
     pub(crate) async fn catalog(&self, cwd: Option<&str>) -> Catalog {
-        let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new("/"));
+        // The anchor is a placeholder — every scanned root is absolute, so
+        // the env's cwd never joins into a probe path — but it must be a
+        // valid root spelling on the host platform (LocalExecutionEnv
+        // canonicalizes the anchor).
+        let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new(if cfg!(windows) {
+            "C:\\"
+        } else {
+            "/"
+        }));
         let mut scans = Vec::new();
         for (root, dir) in self.roots(cwd) {
             let LoadedSkills {
@@ -317,13 +327,18 @@ impl Skills {
 /// `~` at the start of a mention path expands against the user's home
 /// directory; anything else passes through untouched.
 fn expand_home(path: &str) -> String {
-    path.strip_prefix("~/")
-        .map(|rest| {
-            crate::local_fs::home_dir()
-                .map(|home| Path::new(&home).join(rest).to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string())
-        })
-        .unwrap_or_else(|| path.to_string())
+    let rest = match path.strip_prefix("~/") {
+        Some(rest) => Some(rest),
+        // A Windows-spelled home path; on unix `~\` is a plain filename.
+        None if cfg!(windows) => path.strip_prefix("~\\"),
+        None => None,
+    };
+    rest.map(|rest| {
+        crate::local_fs::home_dir()
+            .map(|home| Path::new(&home).join(rest).to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    })
+    .unwrap_or_else(|| path.to_string())
 }
 
 /// The model-visible prompt of a `/skill` invocation: the upstream
@@ -490,7 +505,7 @@ mod tests {
             range: 0..0,
         };
         let resolved = skills.resolve_mention(Some(&cwd), &linked).await.unwrap();
-        assert_eq!(resolved.file_path, shadowed_file);
+        assert_eq!(resolved.file_path, addressed(&shadowed_file));
         // Invalid and absent names stay unresolved even via link fallback.
         assert!(
             skills
@@ -525,7 +540,7 @@ mod tests {
         assert!(matches!(
             &chips[0],
             holt_doc::MessagePart::Skill { file: chip_file, .. }
-                if chip_file == &file
+                if chip_file == &addressed(&file)
         ));
         // No mention resolves → the text is returned untouched, no chips.
         let (prompt, chips) = skills
@@ -573,6 +588,16 @@ mod tests {
         file.to_string_lossy().into_owned()
     }
 
+    /// Catalog paths are in the addressed spelling (`/` separators); the
+    /// tempdir fixtures spell natively on Windows.
+    fn addressed(path: &str) -> String {
+        if cfg!(windows) {
+            path.replace('\\', "/")
+        } else {
+            path.to_string()
+        }
+    }
+
     #[tokio::test]
     async fn fresh_machine_yields_an_empty_catalog() {
         let base = tempfile::tempdir().unwrap();
@@ -610,7 +635,7 @@ mod tests {
         );
         let listing = skills.catalog(Some(&cwd)).await.listing();
         assert_eq!(listing.skills.len(), 1);
-        assert_eq!(listing.skills[0].file, personal_file);
+        assert_eq!(listing.skills[0].file, addressed(&personal_file));
         assert_eq!(listing.skills[0].root, SkillRoot::Personal);
 
         // Same name in a nearer root shadows the personal entry.
@@ -622,7 +647,7 @@ mod tests {
         );
         let listing = skills.catalog(Some(&cwd)).await.listing();
         assert_eq!(listing.skills.len(), 1);
-        assert_eq!(listing.skills[0].file, project_file);
+        assert_eq!(listing.skills[0].file, addressed(&project_file));
         assert_eq!(listing.skills[0].root, SkillRoot::Project);
         assert_eq!(listing.shadowed.len(), 1);
         assert_eq!(listing.shadowed[0].root, SkillRoot::Personal);

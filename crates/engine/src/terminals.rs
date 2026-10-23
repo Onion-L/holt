@@ -115,9 +115,13 @@ impl Terminals {
         cols: u16,
         rows: u16,
     ) -> Result<TerminalSession, RpcError> {
-        let mut command = CommandBuilder::new(login_shell());
-        command.arg("-l");
-        command.arg("-i");
+        let shell = login_shell();
+        let mut command = CommandBuilder::new(&shell);
+        // `-l -i` for POSIX shells; cmd.exe — the Windows fallback — takes
+        // no session flags.
+        for arg in crate::shell_env::interactive_login_args(&shell) {
+            command.arg(arg);
+        }
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
@@ -392,10 +396,10 @@ impl Session {
 
     // Both reader and exit watcher can observe shell exit. Clean jobs once,
     // under the child lock, before publishing Exit or allowing later closes.
-    fn cleanup_jobs(&self, child: &(dyn Child + Send + Sync)) {
+    fn cleanup_jobs(&self, _child: &(dyn Child + Send + Sync)) {
         if !self.jobs_cleaned.swap(true, Ordering::SeqCst) {
             #[cfg(unix)]
-            if let Some(pid) = child.process_id() {
+            if let Some(pid) = _child.process_id() {
                 kill_session_jobs(pid as i32);
             }
         }
@@ -509,8 +513,10 @@ fn has_session_jobs(_session: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use futures::StreamExt;
 
+    #[cfg(unix)]
     fn shell(terminals: &Terminals, dir: &Path, script: &str) -> TerminalSession {
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args(["-c", script]);
@@ -520,6 +526,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(unix)]
     async fn collect(reply: RpcReply) -> Vec<TerminalEvent> {
         let RpcReply::Stream(mut stream) = reply else {
             panic!("stream")
@@ -535,6 +542,10 @@ mod tests {
         events
     }
 
+    // The four real-PTY tests drive /bin/sh with sh scripts — a Windows
+    // session would need cmd spellings and the getsid-based job scan has no
+    // counterpart there.
+    #[cfg(unix)]
     #[tokio::test]
     async fn real_pty_input_resize_output_exit_and_replay() {
         let terminals = Terminals::default();
@@ -572,6 +583,7 @@ mod tests {
         assert!(terminals.list().is_empty());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn close_chat_ends_running_process_and_prevents_late_open() {
         let terminals = Terminals::default();
@@ -589,6 +601,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn status_distinguishes_idle_shell_from_child_job() {
         let terminals = Terminals::default();
@@ -619,6 +632,7 @@ mod tests {
         terminals.close(&job.id);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn terminal_exit_cleans_background_jobs_with_redirected_output() {
         let terminals = Terminals::default();

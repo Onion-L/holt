@@ -426,6 +426,10 @@ pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
                 .unwrap_or(command);
             let mut process = tokio::process::Command::new(&command);
             process.args(&args).env_clear().envs(&sanitized);
+            // A GUI-subsystem parent would flash a console window per stdio
+            // child; the transport pipes everything anyway.
+            #[cfg(windows)]
+            process.creation_flags(crate::shell_env::CREATE_NO_WINDOW);
             if let Some(cwd) = cwd {
                 process.current_dir(cwd);
             }

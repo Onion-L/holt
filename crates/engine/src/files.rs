@@ -698,8 +698,10 @@ fn same_entry_case_insensitive(source: &Path, destination: &Path) -> bool {
 }
 
 /// Rename refusing to replace an existing destination. macOS offers
-/// `renamex_np(RENAME_EXCL)`; elsewhere the pre-checked std rename stands
-/// (its residual race is documented, not widened).
+/// `renamex_np(RENAME_EXCL)`; Windows gets the same guarantee from
+/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`; elsewhere the
+/// pre-checked std rename stands (its residual race is documented, not
+/// widened).
 fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -725,7 +727,26 @@ fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        fn wide(path: &Path) -> Vec<u16> {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        }
+        // SAFETY: the wide buffers outlive the call; no flags means an
+        // existing destination fails with ERROR_ALREADY_EXISTS instead of
+        // being replaced.
+        let moved = unsafe { MoveFileExW(wide(source).as_ptr(), wide(destination).as_ptr(), 0) };
+        if moved == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::fs::rename(source, destination)
     }
@@ -769,7 +790,9 @@ pub(crate) fn rename_entry(root: &Path, from: &str, new_name: &str) -> Result<St
         rename_noreplace(&source, &destination)
     }
     .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
-    Ok(destination.display().to_string())
+    // The addressed spelling: a canonicalized root carries Windows's
+    // verbatim prefix otherwise.
+    Ok(crate::tools::addressed_spelling(&destination))
 }
 
 /// Move an entry into an EXISTING directory inside the root (ticket 07's
@@ -824,7 +847,8 @@ pub(crate) fn move_entry(
     }
     rename_noreplace(&source, &destination)
         .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
-    Ok(destination.display().to_string())
+    // The addressed spelling — see rename_entry.
+    Ok(crate::tools::addressed_spelling(&destination))
 }
 
 /// Move an entry to the operating system's trash (ticket 07). The ENTRY

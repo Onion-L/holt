@@ -206,6 +206,10 @@ fn restore_file(
 /// the work tree: non-normal components, `.git`, a symlinked target, or an
 /// existing ancestor that canonicalizes outside the root.
 pub(crate) fn safe_target(root: &Path, relative: &str) -> Option<PathBuf> {
+    // The root may arrive in any of the platform's spellings — a crash
+    // journal's canonicalized workdir carries Windows's verbatim prefix —
+    // unwrap it so the containment check below compares like with like.
+    let root = crate::tools::strip_verbatim(root.to_path_buf());
     let relative = Path::new(relative);
     let mut clean = PathBuf::new();
     for component in relative.components() {
@@ -222,11 +226,14 @@ pub(crate) fn safe_target(root: &Path, relative: &str) -> Option<PathBuf> {
         return None;
     }
     let ancestor = target.ancestors().find(|path| path.exists())?;
-    ancestor
+    // Strip Windows's verbatim prefix first: `\\?\C:\…` and `C:\…` parse to
+    // different prefix components, so the containment check would refuse
+    // every target otherwise.
+    let ancestor = ancestor
         .canonicalize()
-        .ok()?
-        .starts_with(root)
-        .then_some(target)
+        .ok()
+        .map(crate::tools::strip_verbatim)?;
+    ancestor.starts_with(root).then_some(target)
 }
 
 /// Write via a sibling temp file + rename so a crash never leaves a

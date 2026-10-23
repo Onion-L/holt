@@ -18,6 +18,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Spawn console children without allocating a console window of their own
+/// (their stdio is piped; a GUI-subsystem parent would otherwise flash a
+/// window per spawn).
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// The user's login shell: the password database's record on unix, cmd.exe
 /// via COMSPEC on Windows (which names the command processor by contract).
 pub(crate) fn login_shell() -> String {
@@ -40,6 +46,19 @@ pub(crate) fn login_shell() -> String {
     }
 }
 
+/// How a shell program classifies by basename: POSIX-sh-shaped (sh, bash,
+/// zsh — git-bash's bash included) or not.
+#[cfg(windows)]
+fn is_sh_like(shell: &str) -> bool {
+    let name = shell
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(name, "sh" | "bash" | "zsh")
+}
+
 /// The argv a one-shot command string runs under: `shell -lc <cmd>` on
 /// unix — a login shell assembles PATH from the user's profiles. On Windows
 /// the same `-lc` holds when the resolved shell IS an sh (git-bash);
@@ -49,19 +68,25 @@ pub(crate) fn login_shell() -> String {
 pub(crate) fn command_args(shell: &str) -> Vec<&'static str> {
     #[cfg(windows)]
     {
-        let name = shell
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or(shell)
-            .to_ascii_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        if !matches!(name, "sh" | "bash" | "zsh") {
+        if !is_sh_like(shell) {
             return vec!["/d", "/s", "/c"];
         }
     }
     #[cfg(not(windows))]
     let _ = shell;
     vec!["-lc"]
+}
+
+/// The argv flags that open the shell as a login+interactive session for a
+/// user-facing terminal. POSIX shells take `-l -i`; cmd.exe — the Windows
+/// fallback — takes none (`/k` and friends are one-shot command spellings,
+/// not session flags).
+pub(crate) fn interactive_login_args(shell: &str) -> &'static [&'static str] {
+    #[cfg(windows)]
+    if !is_sh_like(shell) {
+        return &[];
+    }
+    &["-l", "-i"]
 }
 
 /// The shell recorded for this user in the password database, if any.
@@ -213,8 +238,34 @@ pub(crate) async fn login_path() -> Option<String> {
     None
 }
 
-#[cfg(not(unix))]
-pub(crate) fn resolve_command(_name: &str, _path: &str) -> Option<PathBuf> {
+/// A bare command name resolved against a PATH value on Windows: the first
+/// directory holding the name — as written when it carries an extension,
+/// else through each PATHEXT extension (CreateProcess appends only `.exe`,
+/// so a bare `npx` — really `npx.cmd` — resolves nowhere without this
+/// walk). A name carrying a path separator — or one that resolves nowhere —
+/// is `None`, meaning "spawn it as written".
+#[cfg(windows)]
+pub(crate) fn resolve_command(name: &str, path: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains(['\\', '/']) {
+        return None;
+    }
+    let pathtext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let candidates: Vec<String> = pathtext
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!("{name}{extension}"))
+        .collect();
+    for dir in path.split(';').filter(|dir| !dir.is_empty()) {
+        for candidate in std::iter::once(name).chain(candidates.iter().map(String::as_str)) {
+            // Absolute candidates only: resolution must never depend on the
+            // directory Holt happens to run from (relative PATH entries are
+            // skipped, as on unix).
+            let candidate = Path::new(dir).join(candidate);
+            if candidate.is_absolute() && candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     None
 }
 
@@ -272,8 +323,10 @@ mod tests {
 
     #[test]
     fn resolver_falls_back_without_any_value() {
-        assert_eq!(resolve_login_shell(None, None), "/bin/sh");
-        assert_eq!(resolve_login_shell(Some(OsStr::new("")), None), "/bin/sh");
+        // The one shell each platform guarantees (see resolve_login_shell).
+        let fallback = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
+        assert_eq!(resolve_login_shell(None, None), fallback);
+        assert_eq!(resolve_login_shell(Some(OsStr::new("")), None), fallback);
     }
 
     #[cfg(unix)]
@@ -319,8 +372,9 @@ mod tests {
 
     #[test]
     fn login_shell_is_an_absolute_path() {
-        // getpwuid_r is the source; the env fallback only fires without one.
-        assert!(login_shell().starts_with('/'));
+        // getpwuid_r (COMSPEC on Windows) is the source; the env fallback
+        // only fires without one. Absolute in the platform's own grammar.
+        assert!(std::path::Path::new(&login_shell()).is_absolute());
     }
 
     /// A stand-in shell whose whole behavior is a canned script body, so

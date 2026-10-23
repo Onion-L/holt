@@ -1038,3 +1038,26 @@ pub async fn serve_loopback_status_with_capture(
     });
     (LoopbackServer { base, task }, captured)
 }
+
+// ---------------------------------------------------------------------------
+// Platform folds for path-spelled fixtures
+// ---------------------------------------------------------------------------
+
+/// A canonicalized path in the addressed vocabulary: verbatim prefix
+/// (`\\?\`) unwrapped, separators `/`. A no-op on unix.
+pub fn addressed(path: &std::path::Path) -> String {
+    let text = path.display().to_string().replace('\\', "/");
+    text.strip_prefix("//?/").map(str::to_owned).unwrap_or(text)
+}
+
+/// Init a fixture repo with hermetic line-ending config: the host's global
+/// `core.autocrlf` (true on many Windows checkouts) would otherwise rewrite
+/// every fixture checkout and break byte-exact assertions.
+pub fn init_repo(path: &std::path::Path) -> git2::Repository {
+    let repo = git2::Repository::init(path).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("core.autocrlf", "false")
+        .unwrap();
+    repo
+}

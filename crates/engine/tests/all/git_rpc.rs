@@ -33,7 +33,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let repo_dir = TempDir::new().unwrap();
-        let repo = Repository::init(repo_dir.path()).unwrap();
+        let repo = common::init_repo(repo_dir.path());
         repo.set_head("refs/heads/main").unwrap();
         let movable: &'static str = Box::leak(movable_body().into_boxed_str());
         let base = commit_on(
@@ -791,10 +791,7 @@ async fn watch_emits_snapshot_then_live_frames_and_rekeys_on_commit() {
     assert!(list[0].files.is_empty());
     assert_eq!(
         list[0].cwd,
-        std::fs::canonicalize(fixture.repo_dir.path())
-            .unwrap()
-            .display()
-            .to_string(),
+        common::addressed(&std::fs::canonicalize(fixture.repo_dir.path()).unwrap()),
         "the frame's cwd is the canonical checkout root"
     );
     let clean_checksum = list[0].checksum.clone();
@@ -1635,8 +1632,15 @@ async fn fetch_all_updates_remote_refs_and_prunes_without_touching_the_checkout(
             .id();
         repo.reference("refs/remotes/origin/feature", stale_ref, true, "stale")
             .unwrap();
-        repo.remote("origin", &format!("file://{}", remote_dir.path().display()))
-            .unwrap();
+        // A file URL needs a root path: `file:///C:/…` on Windows (the
+        // native spelling would read as a host), `file:///tmp/…` on unix.
+        let remote_path = remote_dir.path().display().to_string().replace('\\', "/");
+        let remote_url = if remote_path.starts_with('/') {
+            format!("file://{remote_path}")
+        } else {
+            format!("file:///{remote_path}")
+        };
+        repo.remote("origin", &remote_url).unwrap();
         drop(repo);
     }
     // Push main into the bare remote so the fetch has something to bring.

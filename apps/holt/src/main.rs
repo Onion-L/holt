@@ -2,6 +2,11 @@
 //! in-process over the memory RPC transport. There is no daemon, no CLI, no
 //! cloud — the backend slot lives in `holt-engine` (currently a stub).
 
+// The release binary is a GUI app: no console host window beside it. Debug
+// builds keep the console — `cargo run -p holt` is the documented dev loop,
+// and its stdout logging relies on it.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 /// mimalloc: system malloc (macOS libmalloc especially) never returns the
 /// streaming churn's high-water pages, so transient allocation became
 /// permanent RSS.

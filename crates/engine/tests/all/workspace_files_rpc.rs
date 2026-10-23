@@ -15,6 +15,21 @@ use holt_proto::{WorkspaceFileRead, WorkspaceLineEndings, WorkspaceListing};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use serde_json::json;
 
+/// An existing file outside any fixture root, for boundary refusals — the
+/// unix fixtures name `/etc`; Windows has no `C:\etc`.
+fn outside_hosts() -> &'static str {
+    if cfg!(windows) {
+        "C:/Windows/System32/drivers/etc/hosts"
+    } else {
+        "/etc/hosts"
+    }
+}
+
+/// An existing directory outside any fixture root.
+fn outside_dir() -> &'static str {
+    if cfg!(windows) { "C:/Windows" } else { "/etc" }
+}
+
 /// Returns the OUTSIDE-root tempdir — the caller must keep it alive or the
 /// outside-link goes broken before the engine lists it.
 fn build_tree(root: &Path) -> tempfile::TempDir {
@@ -592,7 +607,7 @@ mod save_workspace_file {
             &engine,
             json!({
                 "spaceId": "space-1",
-                "path": "/etc/hosts",
+                "path": outside_hosts(),
                 "text": "no\n",
                 "version": "0:0",
                 "bom": false,
@@ -802,7 +817,7 @@ mod live_refresh_and_resolution {
             &engine,
             json!({
                 "spaceId": "space-1",
-                "path": "/etc/evil.txt",
+                "path": &format!("{}/evil.txt", outside_dir()),
                 "text": "no\n",
                 "bom": false,
             }),
@@ -1820,7 +1835,7 @@ mod move_and_trash {
         let fault = fault_of(
             trash(
                 &engine,
-                json!({ "spaceId": "space-1", "path": "/etc/hosts" }),
+                json!({ "spaceId": "space-1", "path": outside_hosts() }),
             )
             .await,
         );

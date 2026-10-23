@@ -138,11 +138,10 @@ fn parse_spec(cwd: &str, params: &serde_json::Value) -> Result<SearchSpec, Strin
 }
 
 /// Paths display relative to the chat's cwd when they live under it (fewer
-/// tokens), absolute otherwise.
+/// tokens), absolute otherwise — always in the addressed vocabulary (`/`
+/// separators), the shape the model should answer in.
 fn display_path(cwd: &Path, path: &Path) -> String {
-    path.strip_prefix(cwd)
-        .map(|relative| relative.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
+    super::addressed_spelling(path.strip_prefix(cwd).unwrap_or(path))
 }
 
 fn truncate_line(bytes: &[u8]) -> String {
@@ -754,7 +753,15 @@ mod tests {
         let outcome = run_search(&s, &CancellationToken::new()).unwrap();
         assert_eq!(
             outcome.lines,
-            vec![format!("{}:1:needle", outside.join("f.txt").display())]
+            // The output speaks the addressed vocabulary (`/` separators).
+            vec![format!(
+                "{}:1:needle",
+                outside
+                    .join("f.txt")
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            )]
         );
     }
 

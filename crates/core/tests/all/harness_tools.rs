@@ -491,6 +491,8 @@ async fn edit_not_found_diagnoses_sequential_edit_assumption() {
     );
 }
 
+// Creating a symlink needs a privilege Windows test hosts lack.
+#[cfg(unix)]
 #[tokio::test]
 async fn edit_serializes_concurrent_edits_through_canonical_and_symlink_paths() {
     let root = common::create_temp_dir();
@@ -591,6 +593,8 @@ async fn bash_reports_nonzero_exits_and_timeouts() {
     );
 }
 
+// The fixture is a shell script made executable with the unix mode bits.
+#[cfg(unix)]
 #[tokio::test]
 async fn bash_preserves_truncated_output_when_a_command_times_out() {
     let root = common::create_temp_dir();
@@ -658,6 +662,8 @@ async fn bash_supports_command_prefixes_and_prepare_hooks() {
     assert!(output.contains("yes"), "{output}");
 }
 
+// The fixture is a shell script made executable with the unix mode bits.
+#[cfg(unix)]
 #[tokio::test]
 async fn bash_reports_the_total_size_of_an_oversized_final_line() {
     let root = common::create_temp_dir();

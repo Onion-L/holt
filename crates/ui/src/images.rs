@@ -600,7 +600,7 @@ pub(crate) fn decode_to_render(
 /// first-frame by decode, never eagerly decoded whole).
 fn rgba_to_render(rgba: image::RgbaImage) -> Arc<RenderImage> {
     let mut buffer = rgba;
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Arc::new(RenderImage::new(smallvec![image::Frame::new(buffer)]))

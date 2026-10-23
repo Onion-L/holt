@@ -60,7 +60,7 @@ impl Fixture {
 }
 
 /// Write a valid skill directory (`<name>/SKILL.md`) under `root` and
-/// return the SKILL.md path.
+/// return the SKILL.md path in the addressed spelling the listing serves.
 fn skill(root: &std::path::Path, name: &str, description: &str) -> String {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -70,16 +70,17 @@ fn skill(root: &std::path::Path, name: &str, description: &str) -> String {
         format!("---\nname: {name}\ndescription: {description}\n---\n# {name}\n"),
     )
     .unwrap();
-    file.display().to_string()
+    file.display().to_string().replace('\\', "/")
 }
 
-/// Write a `SKILL.md` with arbitrary frontmatter under `<root>/<dir-name>`.
+/// Write a `SKILL.md` with arbitrary frontmatter under `<root>/<dir-name>`,
+/// in the addressed spelling the loader's diagnostics serve.
 fn raw_skill(root: &std::path::Path, dir_name: &str, frontmatter: &str) -> String {
     let dir = root.join(dir_name);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("SKILL.md");
     std::fs::write(&file, format!("---\n{frontmatter}---\nbody\n")).unwrap();
-    file.display().to_string()
+    file.display().to_string().replace('\\', "/")
 }
 
 fn project_root(fixture: &Fixture) -> std::path::PathBuf {

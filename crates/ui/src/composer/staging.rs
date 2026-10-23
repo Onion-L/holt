@@ -29,10 +29,7 @@ use super::layout::{REF_CHIP_LABEL_MAX, STRIP_GAP, STRIP_PAD_TOP, STRIP_PAD_X, S
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use gpui::{
-    App, Context, ObjectFit, PathPromptOptions, SharedString, StyledImage as _, div, img,
-    prelude::*, px,
-};
+use gpui::{App, Context, ObjectFit, SharedString, StyledImage as _, div, img, prelude::*, px};
 
 use crate::image_viewer::ViewerTarget;
 use crate::images as image_store;
@@ -475,12 +472,7 @@ impl Composer {
     /// a path reference (images included — bytes stay on disk).
     pub(super) fn open_file_picker(&mut self, cx: &mut Context<Self>) {
         let draft_key = self.current_key.clone();
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: true,
-            multiple: true,
-            prompt: Some("Attach".into()),
-        });
+        let rx = crate::file_dialog::prompt_for_files_and_dirs("Attach", true, cx);
         self.picker_task = Some(cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
                 this.update(cx, |composer, cx| {

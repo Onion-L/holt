@@ -58,8 +58,17 @@ fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<u64>, ExecutionErro
 }
 
 fn home_dir() -> PathBuf {
+    // HOME covers unix and git-bash launches; a stock Windows GUI process
+    // carries only USERPROFILE (or HOMEDRIVE+HOMEPATH).
     std::env::var_os("HOME")
         .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(
+            || match (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH")) {
+                (Some(drive), Some(path)) => Some(Path::new(&drive).join(&path)),
+                _ => None,
+            },
+        )
         .unwrap_or_default()
 }
 
@@ -97,7 +106,27 @@ fn file_url_to_path(url: &str) -> Option<String> {
     if !path.starts_with('/') {
         return None;
     }
-    Some(percent_decode(path))
+    let decoded = percent_decode(path);
+    // Node's fileURLToPath keeps the drive root: `file:///C:/x` is `C:/x`,
+    // not the drive-less `/C:/x` — and the legacy pipe form spells the
+    // colon `|`. Unix spellings pass through untouched.
+    #[cfg(windows)]
+    let decoded = {
+        let bytes = decoded.as_bytes();
+        if bytes.first() == Some(&b'/')
+            && bytes.get(1).is_some_and(|byte| byte.is_ascii_alphabetic())
+            && matches!(bytes.get(2), Some(b':') | Some(b'|'))
+        {
+            let mut stripped = decoded[1..].to_string();
+            if stripped.as_bytes()[1] == b'|' {
+                stripped.replace_range(1..2, ":");
+            }
+            stripped
+        } else {
+            decoded
+        }
+    };
+    Some(decoded)
 }
 
 /// Lexically normalizes an absolute path the way Node's `path.resolve`
@@ -251,14 +280,23 @@ fn get_bash_shell_config(shell: &str) -> ShellConfig {
     }
 }
 
+/// Spawn console children without allocating a console window of their own
+/// (their stdio is piped; a GUI-subsystem parent would otherwise flash a
+/// window per spawn).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Runs a short command capturing stdout (`runCommand`).
 async fn run_command(command: &str, args: &[&str], timeout_ms: u64) -> (String, Option<i32>) {
-    let output = tokio::process::Command::new(command)
+    let mut builder = tokio::process::Command::new(command);
+    builder
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output();
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    builder.creation_flags(CREATE_NO_WINDOW);
+    let output = builder.output();
     let Ok(output) = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
         Box::pin(output),
@@ -368,11 +406,13 @@ fn kill_process_tree(pid: u32) {
     }
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
 }
@@ -457,7 +497,10 @@ impl FileSystem for NodeExecutionEnv {
             for part in parts {
                 joined.push(part);
             }
-            Ok(joined.to_string_lossy().into_owned())
+            // The addressed vocabulary (`/` separators) — a native join on
+            // Windows would mix separators whenever the left side already
+            // spells addressed.
+            Ok(normalize_absolute(&joined))
         })
     }
 
@@ -692,7 +735,9 @@ impl FileSystem for NodeExecutionEnv {
                 if is_aborted(abort_signal.as_ref()) {
                     return Err(aborted_error(Some(&resolved)));
                 }
-                entry_paths.push(entry.path().to_string_lossy().into_owned());
+                // Addressed vocabulary: the OS join would append a native
+                // separator to an addressed-spelled directory.
+                entry_paths.push(normalize_absolute(&entry.path()));
             }
             for entry_path in entry_paths {
                 match tokio::fs::symlink_metadata(&entry_path).await {
@@ -884,6 +929,8 @@ impl Shell for NodeExecutionEnv {
                 .stderr(std::process::Stdio::piped());
             #[cfg(unix)]
             child_builder.process_group(0);
+            #[cfg(windows)]
+            child_builder.creation_flags(CREATE_NO_WINDOW);
             for arg in &shell_config.args {
                 child_builder.arg(arg);
             }

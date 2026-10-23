@@ -105,18 +105,23 @@ impl LocalExecutionEnv {
             // itself so a symlinked cwd (macOS /tmp, a user-mounted alias)
             // doesn't make every write "traverse a symlink" under
             // `write_to_file`'s landing check. An unresolvable cwd (empty,
-            // not yet created) keeps its spelling.
+            // not yet created) keeps its spelling. The anchor then takes
+            // the addressed spelling: Windows's canonicalize returns a
+            // verbatim `\\?\C:\…` string, which unwraps and normalizes to
+            // `C:/…`.
             cwd: Path::new(&cwd)
                 .canonicalize()
                 .ok()
+                .map(strip_verbatim)
                 .and_then(|path| path.to_str().map(str::to_owned))
+                .map(|path| normalize_absolute(&path))
                 .unwrap_or(cwd),
             shell: login_shell(),
             shell_groups: None,
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_shell(cwd: impl Into<String>, shell: impl Into<String>) -> Self {
         Self {
             cwd: cwd.into(),
@@ -138,11 +143,36 @@ fn io_file_error(error: &std::io::Error, path: &str) -> FileError {
 
 /// Lexically normalize an absolute path (`.`/`..` collapsed, no symlink
 /// resolution, trailing slash stripped) — the "addressed path" shape the
-/// contract asks for.
+/// contract asks for. One vocabulary on every platform: separators become
+/// `/`, a Windows drive letter uppercases (`C:/foo`), a verbatim prefix
+/// (`\\?\C:\foo`) unwraps, and a UNC share keeps its `//server/share`
+/// root. `..` clamps at the root.
 fn normalize_absolute(path: &str) -> String {
-    debug_assert!(path.starts_with('/'));
+    debug_assert!(
+        path.starts_with('/') || has_windows_root(path),
+        "addressed path must be absolute, got {path:?}"
+    );
+    let replaced;
+    let mut path = if path.contains('\\') {
+        replaced = path.replace('\\', "/");
+        &replaced
+    } else {
+        path
+    };
+    // A Windows verbatim prefix unwraps first: `//?/C:/foo` stays a drive
+    // path, `//?/UNC/server/share/foo` becomes the plain UNC spelling.
+    let unwrapped;
+    if let Some(rest) = path.strip_prefix("//?/") {
+        if let Some(unc) = rest.strip_prefix("UNC/") {
+            unwrapped = format!("//{unc}");
+            path = &unwrapped;
+        } else {
+            path = rest;
+        }
+    }
+    let (root, rest) = peel_root(path);
     let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
+    for part in rest.split('/') {
         match part {
             "" | "." => {}
             ".." => {
@@ -152,14 +182,116 @@ fn normalize_absolute(path: &str) -> String {
         }
     }
     let mut out = String::with_capacity(path.len());
-    for part in parts {
+    out.push_str(&root);
+    for part in &parts {
         out.push('/');
         out.push_str(part);
     }
-    if out.is_empty() {
-        out.push('/');
+    match out.as_str() {
+        // The unix root is an empty prefix — the parts join supplies the
+        // leading `/`; with no parts it must be added.
+        "" => out.push('/'),
+        // A bare drive root spells `C:/`, never the drive-relative `C:`.
+        _ if out.ends_with(':') => out.push('/'),
+        _ => {}
     }
     out
+}
+
+/// Whether the spelling is rooted on Windows: a drive (`C:\`, `C:/`), a
+/// UNC share (`\\server\share`, `//server/share`), or a verbatim path.
+/// `\foo` alone is drive-RELATIVE — not rooted.
+fn has_windows_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+        || path.starts_with(r"\\")
+        || path.starts_with("//")
+}
+
+/// Split an absolute path into its root spelling and the rest below it:
+/// a drive (`C:`, uppercased), a UNC share (`//server/share`), or the unix
+/// root (an empty string — the rebuild's join supplies the leading `/`).
+/// Input uses `/` separators already.
+fn peel_root(path: &str) -> (String, &str) {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return (path[..2].to_uppercase(), &path[2..]);
+    }
+    if let Some(unc) = path.strip_prefix("//") {
+        // A UNC root names exactly server and share; a bare `//foo` has no
+        // share and falls through to the unix root.
+        let bytes = unc.as_bytes();
+        let mut names = [""; 2];
+        let mut found = 0;
+        let mut index = 0;
+        while found < 2 {
+            while index < bytes.len() && bytes[index] == b'/' {
+                index += 1;
+            }
+            let start = index;
+            while index < bytes.len() && bytes[index] != b'/' {
+                index += 1;
+            }
+            if start == index {
+                break;
+            }
+            names[found] = &unc[start..index];
+            found += 1;
+        }
+        if found == 2 {
+            return (format!("//{}/{}", names[0], names[1]), &unc[index..]);
+        }
+    }
+    (String::new(), path)
+}
+
+/// Drop the `\\?\` verbatim prefix Windows's canonicalize returns, so a
+/// resolved path spells like a typed one and can be compared against it.
+/// Other platforms return the path unchanged.
+pub(crate) fn strip_verbatim(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return path;
+        };
+        let mut out = match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => {
+                PathBuf::from(format!("{}:\\", (drive as char).to_ascii_uppercase()))
+            }
+            Prefix::VerbatimUNC(server, share) => PathBuf::from(format!(
+                r"\\{}\{}\",
+                server.to_string_lossy(),
+                share.to_string_lossy()
+            )),
+            _ => return path,
+        };
+        // The root component is folded into the fresh prefix spelling.
+        for component in components {
+            if let Component::RootDir = component {
+                continue;
+            }
+            out.push(component.as_os_str());
+        }
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
+}
+
+/// The addressed spelling of a filesystem path: separators become `/` on
+/// Windows, matching `normalize_absolute`'s vocabulary; elsewhere the
+/// display spelling is unchanged.
+pub(crate) fn addressed_spelling(path: &Path) -> String {
+    let spelled = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        spelled.replace('\\', "/")
+    } else {
+        spelled
+    }
 }
 
 /// Resolve a tool-call path argument against `cwd` (the env's "addressed
@@ -168,6 +300,11 @@ fn normalize_absolute(path: &str) -> String {
 pub(crate) fn to_absolute(cwd: &str, path: &str) -> String {
     let joined = if Path::new(path).is_absolute() {
         path.to_string()
+    } else if cfg!(windows) {
+        // `\foo` is drive-relative (not rooted), and unix-trained models
+        // emit `/tmp/x` shapes — both join the cwd, which keeps them inside
+        // the workspace fence.
+        format!("{cwd}/{}", path.trim_start_matches(['/', '\\']))
     } else {
         format!("{cwd}/{path}")
     };
@@ -197,7 +334,7 @@ fn entry_info(path: &Path, metadata: std::fs::Metadata) -> FileInfo {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        path: path.to_string_lossy().into_owned(),
+        path: addressed_spelling(path),
         kind: path_kind(&metadata),
         size: metadata.len(),
         mtime_ms,
@@ -254,7 +391,13 @@ fn write_to_file(
     // their spelling carries no workspace entry to impersonate.
     let confined = addressed.starts_with(root);
     if confined {
-        let landing = resolve_landing(addressed).map_err(|error| io_file_error(&error, path))?;
+        // The landing canonicalizes: on Windows that spells verbatim
+        // (`\\?\C:\…`), so compare against the unwrapped form — an
+        // unresolved case difference still refuses (fail-safe), and the
+        // error names the resolved spelling for the retry.
+        let landing = strip_verbatim(
+            resolve_landing(addressed).map_err(|error| io_file_error(&error, path))?,
+        );
         if landing != addressed {
             return Err(FileError::with_path(
                 FileErrorCode::PermissionDenied,
@@ -517,7 +660,7 @@ use the ls tool to list a directory's entries."
         Box::pin(async move {
             let path = to_absolute(&self.cwd, path);
             std::fs::canonicalize(&path)
-                .map(|path| path.to_string_lossy().into_owned())
+                .map(|path| addressed_spelling(&strip_verbatim(path)))
                 .map_err(|error| io_file_error(&error, &path))
         })
     }
@@ -655,6 +798,92 @@ impl Drop for ShellProcessGroup {
     }
 }
 
+/// A Windows Job Object around one shell execution. `kill_on_drop` reaches
+/// only the direct child; the job's KILL_ON_JOB_CLOSE limit extends that to
+/// every descendant — closing the last handle (this guard's drop: abort,
+/// timeout, or Holt's exit) kills whatever survives, the moral equivalent
+/// of the unix process group's signals.
+#[cfg(windows)]
+struct ShellJob(Option<windows_sys::Win32::Foundation::HANDLE>);
+
+#[cfg(windows)]
+impl ShellJob {
+    fn assign(child: &tokio::process::Child) -> Self {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        // SAFETY: the job handle is ours to close on every path; the child's
+        // process handle is borrowed for the assignment call only.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job == 0 {
+                return Self(None);
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            let assigned = child.raw_handle().is_some_and(|process| {
+                AssignProcessToJobObject(job, process as windows_sys::Win32::Foundation::HANDLE)
+                    != 0
+            });
+            if configured != 0 && assigned {
+                Self(Some(job))
+            } else {
+                CloseHandle(job);
+                Self(None)
+            }
+        }
+    }
+
+    /// Processes still alive in the job. Called after the direct child was
+    /// reaped, so any count is descendants the command left behind.
+    fn active_processes(&self) -> u32 {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            QueryInformationJobObject,
+        };
+        let Some(job) = self.0 else {
+            return 0;
+        };
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION;
+        // SAFETY: the handle is owned and outlives the call; `zeroed` is the
+        // documented initialization for this POD struct, which is then
+        // written by value into caller-owned memory.
+        let queried = unsafe {
+            info = std::mem::zeroed();
+            QueryInformationJobObject(
+                job,
+                JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as *mut std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            0
+        } else {
+            info.ActiveProcesses
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ShellJob {
+    fn drop(&mut self) {
+        if let Some(job) = self.0.take() {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(job) };
+        }
+    }
+}
+
 impl Shell for LocalExecutionEnv {
     fn exec<'a>(
         &'a self,
@@ -681,6 +910,10 @@ impl Shell for LocalExecutionEnv {
                 .kill_on_drop(true);
             #[cfg(unix)]
             cmd.process_group(0);
+            // A console child of a GUI-subsystem parent would flash its own
+            // window per command; stdio here is fully piped.
+            #[cfg(windows)]
+            cmd.creation_flags(crate::shell_env::CREATE_NO_WINDOW);
             match options.and_then(|options| options.inherit_env) {
                 Some(false) => {
                     cmd.env_clear();
@@ -712,6 +945,10 @@ impl Shell for LocalExecutionEnv {
                     .zip(child.id())
                     .and_then(|(dir, id)| crate::shell_groups::record(dir, id)),
             };
+            // The job extends kill_on_drop's reach to the whole descendant
+            // tree; its handle closes at abort/timeout, killing survivors.
+            #[cfg(windows)]
+            let job = ShellJob::assign(&child);
             // Readers own their pipes; capped so `cat huge.log` cannot balloon
             // memory ahead of the bash tool's own truncation.
             async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut pipe: Option<R>) -> String {
@@ -767,6 +1004,14 @@ impl Shell for LocalExecutionEnv {
                     {
                         group.id = None;
                     }
+                    // A completed command's survivors are not ours to kill
+                    // (the unix group is disarmed above). With nobody left,
+                    // the job handle closes here; with survivors, detach it —
+                    // they die, with the job, when Holt exits.
+                    #[cfg(windows)]
+                    if job.active_processes() > 0 {
+                        std::mem::forget(job);
+                    }
                     result
                 }
                 Err(error) => {
@@ -778,6 +1023,10 @@ impl Shell for LocalExecutionEnv {
                         group.signal(libc::SIGKILL);
                         group.id = None;
                     }
+                    // Closing the job's last handle kills the surviving
+                    // descendants before the direct child is reaped.
+                    #[cfg(windows)]
+                    drop(job);
                     // Reap the direct child even if the shell already exited
                     // and it was only a descendant's output pipe holding us up.
                     let _ = child.start_kill();
@@ -1238,6 +1487,76 @@ mod tests {
         (path, dir)
     }
 
+    #[test]
+    fn normalize_absolute_keeps_unix_shapes() {
+        assert_eq!(normalize_absolute("/"), "/");
+        assert_eq!(normalize_absolute("/foo/bar/"), "/foo/bar");
+        assert_eq!(normalize_absolute("/a/./b/../c"), "/a/c");
+        assert_eq!(normalize_absolute("//foo"), "/foo");
+        assert_eq!(normalize_absolute("/../../.."), "/");
+    }
+
+    #[test]
+    fn normalize_absolute_normalizes_windows_shapes() {
+        assert_eq!(normalize_absolute(r"C:\foo\bar"), "C:/foo/bar");
+        assert_eq!(normalize_absolute("c:/foo"), "C:/foo");
+        assert_eq!(normalize_absolute(r"\\?\C:\foo"), "C:/foo");
+        assert_eq!(
+            normalize_absolute(r"\\?\UNC\server\share\foo\bar"),
+            "//server/share/foo/bar"
+        );
+        assert_eq!(
+            normalize_absolute(r"\\server\share\foo\.."),
+            "//server/share"
+        );
+        assert_eq!(normalize_absolute("C:/.."), "C:/");
+        assert_eq!(normalize_absolute("C:/"), "C:/");
+        assert_eq!(normalize_absolute("C:"), "C:/");
+    }
+
+    // Unix spellings pin the unix join; Windows spellings are covered by
+    // the cfg(windows) test below.
+    #[cfg(unix)]
+    #[test]
+    fn to_absolute_resolves_against_the_cwd() {
+        assert_eq!(to_absolute("/repo", "src/main.rs"), "/repo/src/main.rs");
+        assert_eq!(to_absolute("/repo", "/etc/passwd"), "/etc/passwd");
+        assert_eq!(to_absolute("/repo", "a/./b/../c"), "/repo/a/c");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn to_absolute_treats_drive_relative_and_unix_shapes_as_relative_on_windows() {
+        assert_eq!(
+            to_absolute(r"C:\repo", r"src\main.rs"),
+            "C:/repo/src/main.rs"
+        );
+        // A bare `/x` or `\x` has no root of its own on Windows; joining
+        // the cwd keeps it inside the workspace fence.
+        assert_eq!(to_absolute(r"C:\repo", "/etc/passwd"), "C:/repo/etc/passwd");
+        assert_eq!(
+            to_absolute(r"C:\repo", r"\etc\passwd"),
+            "C:/repo/etc/passwd"
+        );
+        assert_eq!(to_absolute(r"C:\repo", r"D:\other\x"), "D:/other/x");
+        assert_eq!(
+            to_absolute(r"C:\repo", r"\\server\share\x"),
+            "//server/share/x"
+        );
+    }
+
+    #[test]
+    fn the_env_anchor_takes_the_addressed_spelling() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let cwd = env.cwd();
+        // Canonicalized, never verbatim, and in the addressed vocabulary.
+        assert!(!cwd.starts_with(r"\\?\"), "{cwd}");
+        assert!(!cwd.contains('\\'), "{cwd}");
+        let stripped = strip_verbatim(std::fs::canonicalize(&root).unwrap());
+        assert_eq!(cwd, addressed_spelling(&stripped));
+    }
+
     #[tokio::test]
     async fn reads_and_writes_relative_to_cwd() {
         let (root, _guard) = temp_root();
@@ -1304,7 +1623,8 @@ mod tests {
         assert!(!outside.path().join("newdir").exists());
     }
 
-    #[cfg(unix)]
+    // No symlink needed: the write must land when the resolved (possibly
+    // verbatim-prefixed) spelling addresses the file.
     #[tokio::test]
     async fn write_lands_when_addressed_by_the_resolved_path() {
         let (root, _guard) = temp_root();

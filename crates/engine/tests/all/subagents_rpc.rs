@@ -399,7 +399,11 @@ async fn long_child_results_have_a_token_budget_and_a_readable_full_file() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("Result truncated"));
-    assert!(text.contains(file.to_str().unwrap()));
+    // The result names the file — spelled addressed or native by platform.
+    assert!(
+        text.contains(&common::addressed(&file)) || text.contains(file.to_str().unwrap()),
+        "result does not name the file: {text}"
+    );
     assert!(
         tiktoken_rs::o200k_base()
             .unwrap()

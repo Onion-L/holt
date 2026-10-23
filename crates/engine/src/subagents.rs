@@ -281,7 +281,7 @@ pub(crate) struct Delegation {
 /// granularity and the used/limit counts so the model can budget the rest of
 /// its run.
 fn claim_child_slot(count: &AtomicUsize) -> Result<(), String> {
-    match count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+    match count.try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
         (n < MAX_CHILDREN_PER_TURN).then_some(n + 1)
     }) {
         Ok(_) => Ok(()),
@@ -607,7 +607,7 @@ fn bounded_result(text: &str, path: &Path) -> Result<String, String> {
     }
     let suffix = format!(
         "\n[Result truncated. Full output: {}. Use read to retrieve omitted content.]",
-        path.display()
+        crate::tools::addressed_spelling(path)
     );
     let mut keep = RESULT_TOKENS.saturating_sub(tokenizer.encode_ordinary(&suffix).len() + 8);
     loop {

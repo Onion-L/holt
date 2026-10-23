@@ -48,7 +48,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let repo_dir = TempDir::new().unwrap();
-        let repo = Repository::init(repo_dir.path()).unwrap();
+        let repo = common::init_repo(repo_dir.path());
         repo.set_head("refs/heads/main").unwrap();
         let movable: &'static str = Box::leak(movable_body().into_boxed_str());
         commit_on(
