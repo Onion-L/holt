@@ -127,11 +127,40 @@ import ChangelogController from '../components/ChangelogController';
 <div class="wrap">
   <ol class="vers">
 
+    <li class="ver" id="v0.6.1">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.6.1">0.6.1</a>
+        <span class="vdate mono">Oct 24, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Holt runs on Windows and Linux — native builds for macOS (Apple Silicon and Intel), Windows (x64 and ARM64), and Linux (x64 and ARM64); the download page picks your platform and chip, and greys out a build a release does not carry</li>
+            <li>Windows gets a titlebar with native caption metrics and a menu-bar strip in the layout, plus the app icon embedded in the executable</li>
+            <li>Agent commands on Windows run under Git Bash when it is installed and fall back to <code>cmd.exe</code> otherwise; each execution is contained in a Job Object, so an abort or timeout takes its whole process tree with it</li>
+            <li>Windows gains a real single-instance lock and drive enumeration for the add-space palette</li>
+            <li>Linux ships as an AppImage built against glibc 2.35, so it runs on older distributions</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>Every path a Windows surface hands the UI — sidebar rows, reads, renames, watch frames, git status — uses one spelling, so tabs, tree rows, and decorations stay aligned</li>
+            <li>The DirectX renderer no longer drops quads and sprites on drivers that truncate large structured-buffer views: instance draws go in chunks and the HLSL structs match the Rust layout</li>
+            <li>A file dialog that fails to open reports the failure instead of reopening itself as a folder picker</li>
+            <li>Skill chips resolve <code>~</code> on Windows, and the backdrop picker opens on every platform</li>
+            <li>Prerelease builds no longer poll for updates — testers stay on the build they installed until they replace it by hand</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.6.0">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.6.0">0.6.0</a>
         <span class="vdate mono">Oct 21, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
@@ -151,7 +180,6 @@ import ChangelogController from '../components/ChangelogController';
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.5.4">0.5.4</a>
         <span class="vdate mono">Oct 20, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
