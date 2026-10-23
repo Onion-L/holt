@@ -14,7 +14,16 @@ concurrency:
 
 jobs:
   check:
-    runs-on: macos-latest
+    # One job per desktop platform: the engine's Windows/Linux branches
+    # (path spellings, noreplace renames, watcher backends) only execute
+    # where they are the host, so the macOS run alone cannot catch them.
+    # fail-fast stays off — a Windows-only failure must not mask the
+    # other platforms' results.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     env:
       # sccache caches per-rustc-call by content hash, so the third_party gpui
       # crates (path deps outside the workspace, which rust-cache evicts)
@@ -33,6 +42,15 @@ jobs:
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      # fontconfig and freetype are gpui's only link-time C libraries on
+      # Linux; the wayland/x11/vulkan backends load at runtime via dlopen,
+      # so the test suite needs no display.
+      - name: Install gpui build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype6-dev
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
