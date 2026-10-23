@@ -3315,6 +3315,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "winresource",
 ]
 
 [[package]]
@@ -7342,7 +7343,7 @@ version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "nohash-hasher",
  "num-traits",
  "serde_core",
@@ -10257,6 +10258,16 @@ checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
 dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "toml 1.1.6+spec-1.1.0",
+ "version_check",
 ]
 
 [[package]]
