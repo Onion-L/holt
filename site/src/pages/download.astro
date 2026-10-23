@@ -85,6 +85,12 @@ import DownloadController from '../components/DownloadController';
     color: var(--pink); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
   .phere { display: none; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--blue); }
   .plat[data-yours] .phere { display: inline; }
+  /* The latest release carries no asset for this platform (the controller
+     proved it when it filled the links): say so instead of offering a
+     download that does not exist. */
+  .plat[data-missing] .stamp { border-color: var(--grey); color: var(--grey); }
+  .plat[data-missing] .dls { opacity: .55; }
+  .plat[data-missing] .dl[data-pick] { background: transparent; border-color: rgba(10,76,156,.35); color: var(--blue); box-shadow: none; }
   .pnote { margin: 7px 0 0; font-size: 12.5px; line-height: 1.55; color: #5b6472; }
 
   .dls { display: flex; gap: 16px; align-items: flex-start; justify-content: flex-end; align-self: center; }
@@ -170,7 +176,7 @@ import DownloadController from '../components/DownloadController';
       <div class="pbody">
         <div class="phead">
           <h2 class="pname">macOS</h2>
-          <span class="stamp mono">available</span>
+          <span class="stamp mono" data-stamp>available</span>
           <span class="phere mono">your system</span>
         </div>
         <p class="pnote">Signed and notarized. Pick the build that matches your chip — Apple menu → About This Mac says which.</p>
@@ -196,10 +202,10 @@ import DownloadController from '../components/DownloadController';
       <div class="pbody">
         <div class="phead">
           <h2 class="pname">Windows</h2>
-          <span class="stamp mono">available</span>
+          <span class="stamp mono" data-stamp>available</span>
           <span class="phere mono">your system</span>
         </div>
-        <p class="pnote">An unsigned holt.exe in a plain zip — SmartScreen may ask you to keep it. Pick the zip that matches your machine.</p>
+        <p class="pnote">An unsigned holt.exe in a plain zip — Windows shows “Windows protected your PC” on first run; choose More info → Run anyway. Pick the zip that matches your machine.</p>
       </div>
       <div class="dls">
         <div class="dlc" data-download>
@@ -222,7 +228,7 @@ import DownloadController from '../components/DownloadController';
       <div class="pbody">
         <div class="phead">
           <h2 class="pname">Linux</h2>
-          <span class="stamp mono">available</span>
+          <span class="stamp mono" data-stamp>available</span>
           <span class="phere mono">your system</span>
         </div>
         <p class="pnote">An AppImage on the glibc 2.35 baseline — runs on most distros. Make it executable, then run.</p>
@@ -253,7 +259,7 @@ import DownloadController from '../components/DownloadController';
     </div>
     <div>
       <h3 class="mono">Everything else</h3>
-      <p>No accounts, no telemetry — chats and checkpoints stay under <span class="mono">~/.holt</span>. GPL-3.0, <a href="https://github.com/Onion-L/holt">source on GitHub ↗</a>.</p>
+      <p>No accounts, no telemetry — chats and checkpoints stay under <span class="mono">~/.holt</span> (<span class="mono">%USERPROFILE%\.holt</span> on Windows). GPL-3.0, <a href="https://github.com/Onion-L/holt">source on GitHub ↗</a>.</p>
     </div>
   </div>
 
