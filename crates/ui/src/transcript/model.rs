@@ -183,14 +183,38 @@ pub fn format_skill_title(name: &str) -> String {
 /// collapsed to `~`: the absolute path is noise in a 12px detail slot, and
 /// `~/.agents/skills/…` reads as the same file at a glance.
 pub(super) fn skill_file_display(file: &str) -> String {
-    let path = file.trim_start_matches("file://");
-    let home = std::env::var_os("HOME").unwrap_or_default();
-    let home = home.to_string_lossy();
-    if !home.is_empty() && path.starts_with(home.as_ref()) {
+    let path = file.trim_start_matches("file://").replace('\\', "/");
+    let Some(home) = home_dir() else {
+        return path;
+    };
+    // Home arrives from the environment (`C:\Users\…` on Windows) while
+    // skill paths ride the RPC's addressed spelling (`C:/Users/…`) —
+    // normalize separators so the collapse survives the trip.
+    let home = home.replace('\\', "/");
+    if path.starts_with(home.as_str()) {
         format!("~{}", &path[home.len()..])
     } else {
-        path.to_string()
+        path
     }
+}
+
+/// The user's home directory — the same resolution chain the engine's
+/// `local_fs::home_dir` uses (the UI cannot import it across the RPC
+/// boundary): `HOME`, else `USERPROFILE`, else `HOMEDRIVE`+`HOMEPATH`. A
+/// plain Windows process has no `HOME`, and without the fallback the `~`
+/// collapse silently stops working there.
+fn home_dir() -> Option<String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            let mut home = drive;
+            home.push(path);
+            Some(home)
+        })
+        .map(|home| home.to_string_lossy().to_string())
+        .filter(|home| !home.is_empty())
 }
 
 #[derive(Clone)]
@@ -2229,7 +2253,7 @@ mod tests {
 
     #[test]
     fn skill_file_display_collapses_home_and_strips_file_scheme() {
-        let home = std::env::var("HOME").expect("HOME is set in test env");
+        let home = home_dir().expect("a home directory resolves in the test env");
         assert_eq!(
             skill_file_display(&format!("{home}/.agents/skills/ask-matt/SKILL.md")),
             "~/.agents/skills/ask-matt/SKILL.md"
