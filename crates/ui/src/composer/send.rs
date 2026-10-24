@@ -246,7 +246,7 @@ impl Composer {
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::engine_not_connected().into());
+            self.fail_offline();
             self.failure_key = None;
             cx.notify();
             return;
@@ -295,7 +295,7 @@ impl Composer {
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, mut text: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::engine_not_connected().into());
+            self.fail_offline();
             self.failure_key = None; // global — meaningful on every chat
             cx.notify();
             return;
@@ -955,7 +955,7 @@ impl Composer {
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::engine_not_connected().into());
+            self.fail_offline();
             self.failure_key = None;
             cx.notify();
             return;
@@ -1023,7 +1023,7 @@ impl Composer {
             return;
         };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::engine_not_connected().into());
+            self.fail_offline();
             self.failure_key = None;
             cx.notify();
             return;

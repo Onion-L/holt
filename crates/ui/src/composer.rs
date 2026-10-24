@@ -34,6 +34,7 @@ use approval_bar::{ApprovalBar, PendingApproval};
 use layout::composer_width_changed;
 use popups::{FileMentionState, SlashState};
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -113,7 +114,14 @@ pub struct Composer {
     plan_mode_draft: bool,
     sending: bool,
     failed_submissions: std::collections::HashMap<String, FailedSubmission>,
-    failure: Option<SharedString>,
+    /// The composer's failure notice: the text snapshot rendered as-is,
+    /// and whether it is the engine-not-connected class — the one styled
+    /// amber. The class is a TYPED flag, never derived from comparing the
+    /// text: the snapshot freezes the locale it was written in, while the
+    /// styling decision renders in the current one, so a language switch
+    /// between the failure and this frame would re-file the notice from
+    /// amber to red if the text were the key.
+    failure: Option<FailureNotice>,
     /// The chat key `failure` belongs to (`None` = global, e.g. "Engine not
     /// connected"). Chat-scoped failures survive navigation and render only
     /// under their own chat — a blanket clear-on-switch erased the one
@@ -221,9 +229,64 @@ pub(crate) struct FailedSubmission {
     pub(crate) managed_refs: Vec<PathRef>,
 }
 
+/// One composer failure: catalog text plus its class. Built from any
+/// string at the call sites (`.into()`), with [`FailureNotice::offline`]
+/// marking the engine-not-connected class.
+#[derive(Clone)]
+pub(crate) struct FailureNotice {
+    pub(crate) text: SharedString,
+    engine_not_connected: bool,
+}
+
+impl FailureNotice {
+    /// The engine-not-connected notice — the amber class. Routed through
+    /// [`Composer::fail_offline`] so the flag and the text never drift.
+    fn offline() -> Self {
+        Self {
+            text: crate::state::engine_not_connected().into(),
+            engine_not_connected: true,
+        }
+    }
+}
+
+impl From<SharedString> for FailureNotice {
+    fn from(text: SharedString) -> Self {
+        Self {
+            text,
+            engine_not_connected: false,
+        }
+    }
+}
+
+impl From<Cow<'static, str>> for FailureNotice {
+    fn from(text: Cow<'static, str>) -> Self {
+        Self {
+            text: text.into_owned().into(),
+            engine_not_connected: false,
+        }
+    }
+}
+
+impl From<String> for FailureNotice {
+    fn from(text: String) -> Self {
+        Self {
+            text: text.into(),
+            engine_not_connected: false,
+        }
+    }
+}
+
 impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
+    /// Record the engine-not-connected failure — the one class styled
+    /// amber. Routed through here so the typed class flag and the text
+    /// never drift apart; every other failure writes its text with
+    /// `.into()` and defaults to the red class.
+    pub(crate) fn fail_offline(&mut self) {
+        self.failure = Some(FailureNotice::offline());
+    }
+
     /// The picker entity, for the shell's canvas target selectors.
     pub fn pickers(&self) -> &Entity<Pickers> {
         &self.pickers
@@ -778,11 +841,11 @@ impl Render for Composer {
                 // DangerTriangle — a subtle tinted wash, not a bare red
                 // stroke. Amber for the offline-ish case (engine not
                 // connected), red for send/run failures. Click dismisses.
-                // Equality against the same helper the guard sites use:
-                // both sides read one locale within a frame, so the styling
-                // match holds in every language (a switch lands between
-                // frames).
-                let offline = message.as_ref() == crate::state::engine_not_connected().as_ref();
+                // The typed flag decides: the text snapshot froze the
+                // locale it was written in, so comparing it against the
+                // live catalog would mis-file the notice after a language
+                // switch (amber would degrade to red).
+                let offline = message.engine_not_connected;
                 let (border_c, wash, text_c) = if offline {
                     let amber = theme.warning; // amber-400
                     let amber_200 = theme.warning_muted;
@@ -832,7 +895,7 @@ impl Render for Composer {
                                 .mt(px(2.0))
                                 .text_color(text_c),
                         )
-                        .child(div().min_w_0().flex_1().child(message))
+                        .child(div().min_w_0().flex_1().child(message.text))
                         .when(
                             self.failed_submissions.contains_key(&self.current_key),
                             |el| {

@@ -147,7 +147,7 @@ impl Composer {
                             cx.notify();
                         }
                         Err(message) => {
-                            composer.failure = Some(message);
+                            composer.failure = Some(message.into());
                             composer.failure_key = Some(draft_key.clone());
                             cx.notify();
                         }
