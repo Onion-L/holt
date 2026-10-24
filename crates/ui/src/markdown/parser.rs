@@ -610,13 +610,18 @@ fn find_url_start(text: &str) -> Option<usize> {
 }
 
 /// Byte length of the bare URL at the start of `text`: run to whitespace (or
-/// a delimiter that never appears in pasted URLs), then trim the trailing
-/// punctuation GFM excludes — a closing paren only stays when an opener
-/// inside the URL balances it ("…/Foo_(bar))" keeps one, sheds one).
+/// a delimiter that never appears in pasted URLs — ASCII quotes/backticks, or
+/// the CJK/full-width marks of [`is_cjk_url_terminal`]), then trim the
+/// trailing punctuation GFM excludes — a closing paren only stays when an
+/// opener inside the URL balances it ("…/Foo_(bar))" keeps one, sheds one).
 fn bare_url_len(text: &str) -> usize {
     let end = text
         .char_indices()
-        .find(|(_, c)| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
+        .find(|(_, c)| {
+            c.is_whitespace()
+                || matches!(c, '<' | '>' | '"' | '\'' | '`')
+                || is_cjk_url_terminal(*c)
+        })
         .map_or(text.len(), |(i, _)| i);
     let mut url = &text[..end];
     while let Some(last) = url.chars().next_back() {
@@ -631,6 +636,46 @@ fn bare_url_len(text: &str) -> usize {
         url = &url[..url.len() - last.len_utf8()];
     }
     url.len()
+}
+
+/// CJK/full-width punctuation that terminates a bare URL run. GFM's autolink
+/// rule knows only ASCII, so in prose like `…/issues/61（enhancement）` these
+/// marks glue onto the URL and the link opens the wrong page. They cut the
+/// run (they are not merely trailing-trimmed) because CJK text usually
+/// follows the mark — `…/a，后续` would swallow the tail into the link.
+/// Non-punctuation non-ASCII (IDN hosts, CJK path segments) is untouched.
+fn is_cjk_url_terminal(c: char) -> bool {
+    matches!(
+        c,
+        '，' | '。'
+            | '、'
+            | '；'
+            | '：'
+            | '！'
+            | '？'
+            | '（'
+            | '）'
+            | '［'
+            | '］'
+            | '｛'
+            | '｝'
+            | '「'
+            | '」'
+            | '『'
+            | '』'
+            | '〈'
+            | '〉'
+            | '《'
+            | '》'
+            | '【'
+            | '】'
+            | '〔'
+            | '〕'
+            | '“'
+            | '”'
+            | '‘'
+            | '’'
+    )
 }
 
 /// Merge adjacent identically-styled runs (keeps run counts small and makes the
@@ -1114,6 +1159,68 @@ mod tests {
         let link = runs.iter().find(|r| r.style.link.is_some()).unwrap();
         assert!(link.style.bold);
         assert_eq!(link.style.link.as_deref(), Some("https://x.dev"));
+    }
+
+    /// CJK/full-width punctuation right after a bare URL ends the link; the
+    /// mark and everything after it stay plain text (report #62: the target
+    /// `…/61（` opened GitHub's created_by filter instead of the issue).
+    #[test]
+    fn bare_urls_stop_at_cjk_punctuation() {
+        // The exact reproduction: target ends at `/61`, not `/61（`.
+        let report = "已创建：https://github.com/Onion-L/holt/issues/61（`enhancement`）\n";
+        let tree = parse_full(report);
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!()
+        };
+        let links: Vec<_> = runs.iter().filter(|r| r.style.link.is_some()).collect();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].style.link.as_deref(),
+            Some("https://github.com/Onion-L/holt/issues/61")
+        );
+        assert_eq!(links[0].text, "https://github.com/Onion-L/holt/issues/61");
+        let after: String = runs
+            .iter()
+            .filter(|r| r.style.link.is_none())
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(after, "已创建：（enhancement）");
+        // Streaming the same sentence stays parity-exact with the full parse.
+        assert_eq!(stream(3, report).tree(), &tree);
+
+        // Every punctuation family: the mark never leaks into the target,
+        // whatever follows it stays plain.
+        for mark in [
+            '（', '）', '，', '。', '、', '；', '：', '！', '？', '【', '】', '「', '」', '《',
+            '》', '“', '”',
+        ] {
+            let source = format!("见 https://x.dev/a{mark}后续文字。\n");
+            assert_eq!(
+                only_link(&source).map(|l| l.1),
+                Some("https://x.dev/a".into()),
+                "mark {mark} leaked into the URL"
+            );
+        }
+        // A wrapping fullwidth paren is shed, mirroring the ASCII `)` rule.
+        assert_eq!(
+            only_link("（见 https://x.dev/a）\n").map(|l| l.1),
+            Some("https://x.dev/a".into())
+        );
+    }
+
+    /// Non-ASCII that belongs in the URL — IDN host, CJK path segment —
+    /// still linkifies in full; only trailing/terminal punctuation is cut.
+    #[test]
+    fn bare_urls_keep_non_ascii_path_intact() {
+        assert_eq!(
+            only_link("https://例え.jp/テスト/路径\n").map(|l| l.1),
+            Some("https://例え.jp/テスト/路径".into())
+        );
+        // Punctuation after the URL still ends the run, not before it.
+        assert_eq!(
+            only_link("详见 https://例え.jp/テスト/路径，其余。\n").map(|l| l.1),
+            Some("https://例え.jp/テスト/路径".into())
+        );
     }
 
     /// Non-links stay text: glued schemes, bare schemes, code spans, and the
