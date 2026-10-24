@@ -506,56 +506,62 @@ pub(crate) mod tests {
         let needle = concat!("t", "!(");
         for file in walk_rs_files(&src) {
             let text = std::fs::read_to_string(&file).unwrap();
-            let mut at = 0;
-            while let Some(hit) = text[at..].find(needle) {
-                let start = at + hit;
-                at = start + 3;
-                // The byte before `t` must not be a name character.
-                let boundary = text[..start]
-                    .chars()
-                    .next_back()
-                    .map(|prev| !prev.is_ascii_alphanumeric() && prev != '_')
-                    .unwrap_or(true);
-                // Skip whole-line comments: find the line start and see if
-                // anything but `//` precedes the hit.
-                let line_start = text[..start].rfind('\n').map(|at| at + 1).unwrap_or(0);
-                let comment = text[line_start..start].trim_start().starts_with("//");
-                if !boundary || comment {
-                    continue;
-                }
-                // rustfmt may put the literal on its own line after `t!(`.
-                let after_paren = text[at..].trim_start();
-                let Some(body) = after_paren.strip_prefix('"') else {
-                    continue; // a non-literal first argument (`ts` path)
-                };
-                let mut key = String::new();
-                let mut chars = body.chars().peekable();
-                let mut closed = false;
-                while let Some(c) = chars.next() {
-                    match c {
-                        '"' => {
-                            closed = true;
-                            break;
-                        }
-                        // `\` + newline: a string continuation — the compiler
-                        // drops the newline and the next line's leading
-                        // whitespace, so the scan does the same.
-                        '\\' if chars.peek() == Some(&'\n') => {
-                            chars.next();
-                            while chars.peek().is_some_and(|c| c.is_whitespace()) {
-                                chars.next();
-                            }
-                        }
-                        '\\' => {
-                            if let Some(escaped) = chars.next() {
-                                key.push(escaped);
-                            }
-                        }
-                        other => key.push(other),
+            let lf_text = text.replace("\r\n", "\n");
+            let crlf_text = lf_text.replace('\n', "\r\n");
+            for text in [lf_text.as_str(), crlf_text.as_str()] {
+                let mut at = 0;
+                while let Some(hit) = text[at..].find(needle) {
+                    let start = at + hit;
+                    at = start + 3;
+                    // The byte before `t` must not be a name character.
+                    let boundary = text[..start]
+                        .chars()
+                        .next_back()
+                        .map(|prev| !prev.is_ascii_alphanumeric() && prev != '_')
+                        .unwrap_or(true);
+                    // Skip whole-line comments: find the line start and see if
+                    // anything but `//` precedes the hit.
+                    let line_start = text[..start].rfind('\n').map(|at| at + 1).unwrap_or(0);
+                    let comment = text[line_start..start].trim_start().starts_with("//");
+                    if !boundary || comment {
+                        continue;
                     }
-                }
-                if closed {
-                    used.insert(key);
+                    // rustfmt may put the literal on its own line after `t!(`.
+                    let after_paren = text[at..].trim_start();
+                    let Some(body) = after_paren.strip_prefix('"') else {
+                        continue; // a non-literal first argument (`ts` path)
+                    };
+                    let mut key = String::new();
+                    let mut chars = body.chars().peekable();
+                    let mut closed = false;
+                    while let Some(c) = chars.next() {
+                        match c {
+                            '"' => {
+                                closed = true;
+                                break;
+                            }
+                            // `\` + LF/CRLF: a string continuation — the
+                            // compiler drops the line ending and the next line's
+                            // leading whitespace, so the scan does the same.
+                            '\\' if matches!(chars.peek(), Some(&'\n') | Some(&'\r')) => {
+                                if chars.next() == Some('\r') && chars.peek() == Some(&'\n') {
+                                    chars.next();
+                                }
+                                while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                                    chars.next();
+                                }
+                            }
+                            '\\' => {
+                                if let Some(escaped) = chars.next() {
+                                    key.push(escaped);
+                                }
+                            }
+                            other => key.push(other),
+                        }
+                    }
+                    if closed {
+                        used.insert(key);
+                    }
                 }
             }
         }
