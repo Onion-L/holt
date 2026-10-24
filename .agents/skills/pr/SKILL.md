@@ -37,8 +37,13 @@ Pre-flight:
    excluded; never push unreviewed user changes.
 2. The work is on a branch, not `main` (the default branch). If it sits on
    `main`, ask before creating a branch from it.
-3. Identify the origin Issue number (e.g. `#12`). Every PR must link to its
-   guiding Issue Spec.
+3. A guiding spec. The default is a linked Issue Spec (`Closes #<N>` /
+   `Relates to #<N>`). A self-authored change may carry its spec in the PR
+   instead: an ADR in the same branch naming the decision, plus a PR body
+   with spec-grade sections — What/Why (trigger, before, after), a `Fence`
+   (allowed and forbidden scope), and Verification (a command per
+   criterion). With neither a linked issue nor that body, file the issue
+   with the `issue` skill first.
 4. Commit messages follow `type(crate): summary`; scopes in use: `core`,
    `engine`, `ui` — comma-joined when a change spans several (AGENTS.md).
 5. If the change touches any documented contract, its owning subsystem page
@@ -64,6 +69,9 @@ Body template:
 ```markdown
 ## Issue
 Closes #<N> (or Relates to #<N>)
+<!-- In-PR spec instead: "None — spec in this PR (ADR <slug>)", and then
+     What/Why below, a Fence section, and Verification must be spec-grade —
+     they are the acceptance criteria the review closes against. -->
 
 ## What / Why
 <one short paragraph: the user-visible change, trigger, and motivation>
@@ -75,7 +83,8 @@ Closes #<N> (or Relates to #<N>)
 - <one line per commit, from `git log origin/main..HEAD --oneline`>
 
 ## Verification
-- <commands proving each Acceptance Criterion from the linked Issue Spec>
+- <commands proving each acceptance criterion — from the linked Issue Spec,
+  or from this body when the spec is in-PR>
 - <checks skipped, and why>
 
 ## Changelog
@@ -85,8 +94,9 @@ Closes #<N> (or Relates to #<N>)
 ## Checks / merge
 
 - Report `gh pr checks` results; GitHub CI may differ from local runs.
-- Review: invoke the `code-review` skill to audit the diff against the linked
-  Issue's Acceptance Criteria and Fence before merging.
+- Review: invoke the `code-review` skill to audit the diff against the spec
+  — the linked Issue's Acceptance Criteria and Fence, or the PR body's
+  when the spec is in-PR — before merging.
 - If asked to merge: confirm the exact command first —
   `gh pr merge <N> --squash --delete-branch` unless the user specifies
   otherwise — and note that a release bump/changelog commit still happens

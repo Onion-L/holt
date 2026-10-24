@@ -51,7 +51,10 @@ the user's problem and satisfies the agreed spec without introducing collateral 
   for a broken callee invariant.
 
 ### 2. Spec Acceptance Criteria (验收项逐一闭环)
-- Read `## Acceptance Criteria` in the linked Issue Spec.
+- Read `## Acceptance Criteria` in the linked Issue Spec. With no linked
+  issue, the spec is the PR body itself (ADR + spec-grade What/Why, Fence,
+  and Verification — see the `pr` skill); review against those sections,
+  and a body that cannot serve as the spec is itself the finding.
 - Every single bullet point must have concrete verification evidence in the diff (an automated
   unit/integration test or an explicit verification command output).
 - **Red flag**: Criteria claimed as "tested manually" without reproducible automated assertions.
@@ -64,7 +67,9 @@ the user's problem and satisfies the agreed spec without introducing collateral 
 - **Red flag**: Happy-path-only testing; failure modes left to unwrap or panic.
 
 ### 4. Fence & Blast Radius (修改边界防守)
-- Read `## Fence` in the Issue Spec: did the diff stay strictly within permitted crates/modules?
+- Read `## Fence` in the Issue Spec — or the PR body's Fence section when
+  the spec is in-PR: did the diff stay strictly within permitted
+  crates/modules?
 - Did the author sneak in unrelated refactors, format churn, or drive-by renames?
 - **Red flag**: Diff touching shared core types or config files outside the agreed fence.
 
@@ -124,7 +129,7 @@ Every review report must strictly follow this dual-axis structure:
 
 ```markdown
 # Code Review: <PR #N or Branch Name>
-**Linked Spec**: Issue #<ID> (<Issue Title>)
+**Linked Spec**: Issue #<ID> (<Issue Title>) — or "in-PR spec (ADR <slug>)"
 **Verdict**: `APPROVE` | `REQUEST_CHANGES` | `BLOCKED`
 
 ---
