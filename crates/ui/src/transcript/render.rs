@@ -625,9 +625,9 @@ impl Transcript {
             RowKind::RetryChip {
                 attempt,
                 max_retries,
-                delay_secs,
+                retry_at_ms,
                 error,
-            } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
+            } => retry_chip(*attempt, *max_retries, *retry_at_ms, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
             RowKind::GoalEnd { message, event } => goal_end_row(message.clone(), *event, &theme),
             RowKind::GoalRound {
@@ -1466,16 +1466,18 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
 /// provider request hit a transient failure and is backing off. Same shape
 /// as the ErrorChip but in the busy wash — it reports a recoverable pause
 /// in the working stream, not a verdict, so it rides the accent family
-/// like the streaming indicator it interrupts — with a small spinner
-/// standing in for the retry clock. The chip only exists while the stream
-/// is quiet: transcript frames resume it away.
+/// like the streaming indicator it interrupts — with a small spinner and a
+/// countdown read off the notice's `retry_at_ms` (so the shell's ticker is
+/// what keeps it moving). The chip only exists while the stream is quiet:
+/// transcript frames resume it away.
 fn retry_chip(
     attempt: u32,
     max_retries: u32,
-    delay_secs: u64,
+    retry_at_ms: i64,
     error: SharedString,
     theme: &Theme,
 ) -> AnyElement {
+    let secs = remaining_retry_secs(retry_at_ms, chrono::Utc::now().timestamp_millis());
     let busy = theme.busy;
     div()
         .py(px(4.0))
@@ -1526,7 +1528,7 @@ fn retry_chip(
                 )
                 .child(div().flex_none().text_color(theme.text.opacity(0.6)).child(
                     SharedString::from(
-                        t!("conversation_transcript.retry.in", secs = delay_secs).into_owned(),
+                        t!("conversation_transcript.retry.in", secs = secs).into_owned(),
                     ),
                 ))
                 .child(
@@ -1538,6 +1540,15 @@ fn retry_chip(
                 ),
         )
         .into_any_element()
+}
+
+/// The seconds a retry chip shows: the engine-stamped `retry_at_ms` against
+/// the wall clock, so the label counts down instead of naming the attempt's
+/// total backoff. Rounds up and floors at 1 — a live chip never reads
+/// "in 0s" while the retry is already firing.
+fn remaining_retry_secs(retry_at_ms: i64, now_ms: i64) -> u64 {
+    let remaining_ms = (retry_at_ms - now_ms).max(0) as u64;
+    remaining_ms.div_ceil(1000).max(1)
 }
 
 /// The transcript notice row (ADR-history-is-a-separate-persisted-record): a quiet full-width line of
@@ -2463,6 +2474,21 @@ mod tests {
         // A user pin masks the auto rule entirely, either way.
         assert!(!auto_flip_armed(Some(true), Some(true), false));
         assert!(!auto_flip_armed(Some(false), Some(false), true));
+    }
+
+    /// The retry chip counts down off the notice's deadline: the same notice
+    /// read a second later must read one second less, instead of repeating
+    /// the attempt's total backoff until the next attempt splices a new chip.
+    #[test]
+    fn retry_chip_counts_down_from_the_notice_deadline() {
+        let retry_at_ms = 10_000;
+        assert_eq!(remaining_retry_secs(retry_at_ms, 1_000), 9);
+        assert_eq!(remaining_retry_secs(retry_at_ms, 8_200), 2);
+        // Sub-second remainders round up, and a fired deadline floors at 1 s
+        // until the next notice (or the first resumed frame) drops the chip.
+        assert_eq!(remaining_retry_secs(1_500, 0), 2);
+        assert_eq!(remaining_retry_secs(0, 0), 1);
+        assert_eq!(remaining_retry_secs(0, 5_000), 1);
     }
 
     #[test]

@@ -17,7 +17,7 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 | Streaming to the transcript | Agent events are translated into transcript parts in decode and published on a throttled cadence; session status beats on a heartbeat while work runs | `agent.rs` (`STREAM_PUBLISH_INTERVAL`, `SESSION_HEARTBEAT_INTERVAL`), [`decode.rs`](../../crates/engine/src/decode.rs) |
 | Terminal events | `WatchTurnTerminalEvents` carries one typed event per real main-chat Turn, published only after the Turn's transcript, History, and queue completion are durably settled — fire-and-forget, live-only, never able to fail the Turn or delay the queue | [`turn_events.rs`](../../crates/engine/src/turn_events.rs) |
 | Overflow detection | A run that ends on a request the provider rejected as too long before producing anything is the one overflow shape a compaction can retry without taking content back — the detection seam conversation-policy's trigger rides on | `agent.rs` (`ends_on_rejected_overflow`) |
-| UI cutaways | The streaming entry under the composer; the transient retry chip (dropped when frames resume); the OS notification on terminal events | [`crates/ui/src/notifications.rs`](../../crates/ui/src/notifications.rs), transcript render |
+| UI cutaways | The streaming entry under the composer; the transient retry chip (a per-second countdown off the notice's `retry_at_ms`, dropped when frames resume); the OS notification on terminal events | [`crates/ui/src/notifications.rs`](../../crates/ui/src/notifications.rs), transcript render |
 
 ## Runtime path
 

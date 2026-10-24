@@ -416,8 +416,9 @@ pub enum RowKind {
         attempt: u32,
         /// The configured retry budget.
         max_retries: u32,
-        /// Seconds until the retry fires (the engine-stamped backoff).
-        delay_secs: u64,
+        /// Engine-stamped epoch ms at which the retry fires; the chip reads
+        /// it against the clock on every render, so its label counts down.
+        retry_at_ms: i64,
         /// The provider error that triggered the retry.
         error: SharedString,
     },
@@ -1505,7 +1506,7 @@ pub fn retry_chip_row(entry_id: SharedString, notice: &TurnRetryNotice) -> Row {
         kind: RowKind::RetryChip {
             attempt: notice.attempt,
             max_retries: notice.max_retries,
-            delay_secs: notice.delay_ms.div_ceil(1000),
+            retry_at_ms: notice.retry_at_ms,
             error: notice.error.clone().into(),
         },
         entry_id,
@@ -2897,12 +2898,14 @@ mod tests {
             RowKind::RetryChip {
                 attempt,
                 max_retries,
-                delay_secs,
+                retry_at_ms,
                 error,
             } => {
                 assert_eq!(attempt, 2);
                 assert_eq!(max_retries, 5);
-                assert_eq!(delay_secs, 2); // 1500 ms rounds up so the chip never reads "in 0s"
+                // The chip counts down from this stamp, never from the
+                // attempt's total backoff.
+                assert_eq!(retry_at_ms, 1234);
                 assert_eq!(&*error, "connection reset by peer");
             }
             _ => panic!("wrong row kind"),

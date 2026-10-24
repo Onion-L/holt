@@ -454,6 +454,7 @@ impl AppState {
             self.turn_change_sets.clear();
             self.turn_restores.clear();
             self.turn_change_set_task = None;
+            self.turn_retry = None;
         } else if let Some(chat) = self
             .selected_chat
             .as_deref()
@@ -715,6 +716,13 @@ impl AppState {
     /// A subagent doc's live provider-retry notice, if it is backing off.
     pub fn sub_retry(&self, doc_id: &str) -> Option<&TurnRetryNotice> {
         self.sub_retries.get(doc_id)
+    }
+
+    /// Is any retry chip live — the selected chat backing off, or a watched
+    /// subagent doc? Their countdown labels are clock-derived, so the shell's
+    /// one-second ticker reads this to keep repainting while one is up.
+    pub fn any_retry_pending(&self) -> bool {
+        self.turn_retry.is_some() || !self.sub_retries.is_empty()
     }
 
     /// Watch a SUBAGENT doc (`WatchDocMessages` works for any doc id).
@@ -1114,6 +1122,7 @@ impl AppState {
         self.turn_change_sets.clear();
         self.turn_restores.clear();
         self.turn_change_set_task = None;
+        self.turn_retry = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
         self.connection = ConnectionStatus::Connecting;
@@ -1388,6 +1397,9 @@ impl AppState {
         self.turn_change_sets.clear();
         self.turn_restores.clear();
         self.turn_change_set_task = None;
+        // The dropped transcript watch can no longer clear a retry notice,
+        // and the notice belongs to the chat we are leaving.
+        self.turn_retry = None;
         if let Some(id) = chat_id.as_deref() {
             // A chat implies its space; `select_chat(None)` (the new-session
             // canvas) keeps the current space pick.

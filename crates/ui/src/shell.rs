@@ -718,6 +718,9 @@ impl Shell {
                                 holt_proto::ConnectivityState::Offline
                                     | holt_proto::ConnectivityState::Reconnecting
                             )
+                            // So does the transcript retry chip: its label is
+                            // the notice's deadline against the clock.
+                            || s.any_retry_pending()
                     };
                     if live {
                         cx.notify();
