@@ -644,6 +644,10 @@ fn bare_url_len(text: &str) -> usize {
 /// run (they are not merely trailing-trimmed) because CJK text usually
 /// follows the mark — `…/a，后续` would swallow the tail into the link.
 /// Non-punctuation non-ASCII (IDN hosts, CJK path segments) is untouched.
+///
+/// A URL that EMBEDS a full-width bracket (`…/東京（区）`) is cut at the
+/// opener too: the prose case and the embedded case are indistinguishable
+/// here, and a wrong target is worse than a short one.
 fn is_cjk_url_terminal(c: char) -> bool {
     matches!(
         c,
@@ -653,6 +657,9 @@ fn is_cjk_url_terminal(c: char) -> bool {
             | '：'
             | '！'
             | '？'
+            | '…'
+            | '—'
+            | '～'
             | '（'
             | '）'
             | '［'
@@ -1131,6 +1138,16 @@ mod tests {
         links.into_iter().next()
     }
 
+    /// The paragraph's visible text with every style stripped — what the user
+    /// actually reads, so a URL cut never silently drops characters.
+    fn visible_text(source: &str) -> String {
+        let tree = parse_full(source);
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!()
+        };
+        runs.iter().map(|r| r.text.as_str()).collect()
+    }
+
     /// Bare URLs autolink (the GFM extension pulldown-cmark lacks): the URL
     /// becomes a clickable run, trailing sentence punctuation stays text.
     #[test]
@@ -1188,17 +1205,33 @@ mod tests {
         // Streaming the same sentence stays parity-exact with the full parse.
         assert_eq!(stream(3, report).tree(), &tree);
 
-        // Every punctuation family: the mark never leaks into the target,
-        // whatever follows it stays plain.
+        // Every punctuation family — sentence marks, the paired CJK
+        // ellipsis/dash/tilde, and the bracket/quote shapes: the mark never
+        // leaks into the target, and the mark plus the prose after it stay
+        // plain (nothing is swallowed on the way out either).
         for mark in [
-            '（', '）', '，', '。', '、', '；', '：', '！', '？', '【', '】', '「', '」', '《',
-            '》', '“', '”',
+            '（', '）', '，', '。', '、', '；', '：', '！', '？', '…', '—', '～', '【', '】', '「',
+            '」', '《', '》', '“', '”',
         ] {
             let source = format!("见 https://x.dev/a{mark}后续文字。\n");
             assert_eq!(
                 only_link(&source).map(|l| l.1),
                 Some("https://x.dev/a".into()),
                 "mark {mark} leaked into the URL"
+            );
+            assert_eq!(
+                visible_text(&source),
+                source.trim_end_matches('\n'),
+                "mark {mark} was dropped from the visible text"
+            );
+        }
+        // The doubled forms (`……`, `——`) cut at their first character.
+        for tail in ["……", "——", "～～"] {
+            let source = format!("见 https://x.dev/a{tail}后续\n");
+            assert_eq!(
+                only_link(&source).map(|l| l.1),
+                Some("https://x.dev/a".into()),
+                "{tail} leaked into the URL"
             );
         }
         // A wrapping fullwidth paren is shed, mirroring the ASCII `)` rule.
