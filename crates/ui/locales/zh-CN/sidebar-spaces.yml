@@ -239,7 +239,7 @@ sidebar_spaces:
     filter_archived:
       zh-CN: 已归档
     all_routines:
-      zh-CN: 所有例行任务
+      zh-CN: 所有定时任务
     col_title:
       zh-CN: 标题
     col_project:
