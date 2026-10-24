@@ -15,9 +15,13 @@
 //! therefore goes through [`set_language`], which persists the choice, swaps
 //! the global, marks every window dirty via `App::refresh_windows`, and
 //! rebuilds the native menus (`cx.set_menus` snapshots titles at set time —
-//! see `app_menus`). Already-posted notification chips and open menu cards
-//! are build-time snapshots too; they re-translate on their next
-//! construction.
+//! see `app_menus`). Build-time snapshots re-translate on their next
+//! construction: already-posted notification chips, open menu cards, the
+//! composer's failure notice, per-page entity state holding placeholder
+//! text (a settings page built with `ComposerInput::new(t!(…))` keeps the
+//! old language until re-entered), error strings cached inside
+//! `Loadable::Error`/`save_error`/`images.rs`'s process-wide `ImageCache`
+//! (until the next load retries), and staged-failure snapshots in `send`.
 
 use std::borrow::Cow;
 
@@ -292,7 +296,13 @@ pub(crate) mod tests {
                         "{}: key {key} is tagged {tag}; the tag must name the directory",
                         path.display()
                     );
-                    catalog.entry(key).or_default().insert(tag, value);
+                    let tags = catalog.entry(key.clone()).or_default();
+                    assert!(
+                        tags.insert(tag.clone(), value.clone()).is_none(),
+                        "{}: key {key} is defined twice for {tag} — the later \
+                         line would silently win",
+                        path.display()
+                    );
                 }
             }
         }
@@ -485,6 +495,66 @@ pub(crate) mod tests {
             }
         }
         assert!(missing.is_empty(), "missing from the catalog: {missing:?}");
+    }
+
+    /// The `{name}` tokens an interpolated value carries, as a sorted
+    /// multiset: order may differ across languages, names and counts may
+    /// not — a translation that drops or renames one renders without its
+    /// variable at runtime, and nothing else catches it.
+    fn placeholder_names(value: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut chars = value.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '{' {
+                continue;
+            }
+            let mut name = String::new();
+            let mut closed = false;
+            for c in chars.by_ref() {
+                match c {
+                    '}' if !name.is_empty() => {
+                        closed = true;
+                        break;
+                    }
+                    c if c.is_ascii_alphanumeric() || c == '_' => name.push(c),
+                    _ => break,
+                }
+            }
+            if closed {
+                names.push(name);
+            } else if !name.is_empty() {
+                // `{` followed by a name that never closes — surface it as
+                // its own token so the mismatch names the broken value.
+                names.push(format!("UNCLOSED_{name}"));
+            }
+        }
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn placeholder_names_match_across_languages() {
+        let catalog = read_catalog();
+        let mut mismatches = Vec::new();
+        for (key, tags) in &catalog {
+            let Some(en) = tags.get("en-US") else {
+                continue;
+            };
+            for (tag, value) in tags {
+                if tag != "en-US" && placeholder_names(en) != placeholder_names(value) {
+                    mismatches.push(format!(
+                        "{key} ({tag}): en-US {:?} vs {tag} {:?}",
+                        placeholder_names(en),
+                        placeholder_names(value)
+                    ));
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "interpolation tokens diverge: {}",
+            mismatches.join("; ")
+        );
     }
 
     #[test]
