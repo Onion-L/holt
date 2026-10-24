@@ -15,7 +15,7 @@ settings_general_appearance:
     title:
       zh-CN: 通用
     subtitle:
-      zh-CN: 语言、通知、自动聊天标题，以及内置工具的密钥。
+      zh-CN: 语言、通知、自动会话标题，以及内置工具的密钥。
     instruction_placeholder:
       zh-CN: 随首条提示一同发送的指令
     titles:
@@ -37,19 +37,19 @@ settings_general_appearance:
         zh-CN: 保存
     groups:
       titles_title:
-        zh-CN: 自动聊天标题
+        zh-CN: 自动会话标题
       titles_description:
-        zh-CN: 新聊天会先保留首行标题，随后一次发往该模型的后台请求可以替换它。手动重命名始终优先。
+        zh-CN: 新会话会先保留首行标题，随后一次发往该模型的后台请求可以替换它。手动重命名始终优先。
       verifier_title:
-        zh-CN: 目标校验器
+        zh-CN: 目标验证器
       verifier_description:
-        zh-CN: 评判每个目标循环 Turn 的模型。换一个——最好跨提供商——的模型能发现工作模型遗漏的问题。以最低推理强度校验；未设置或未配置时回退到各聊天自己的模型。
+        zh-CN: 评判每个目标循环轮次的模型。换一个——最好跨提供商——的模型能发现工作模型遗漏的问题。以最低推理强度验证；未设置或未配置时回退到各会话自己的模型。
       verifier_row_title:
-        zh-CN: 校验模型
+        zh-CN: 验证模型
       verifier_row_description:
-        zh-CN: 在每个目标循环 Turn 结束后以最低推理强度运行一次。
+        zh-CN: 在每个目标循环轮次结束后以最低推理强度运行一次。
       no_providers:
-        zh-CN: 暂无已配置的提供商——添加提供商密钥后才能选择校验模型
+        zh-CN: 暂无已配置的提供商——添加提供商密钥后才能选择验证模型
     notifications:
       title:
         zh-CN: 通知
@@ -58,7 +58,7 @@ settings_general_appearance:
       completion:
         zh-CN: 任务完成通知
       completion_description:
-        zh-CN: 后台 Turn 成功或失败时显示系统横幅。
+        zh-CN: 后台轮次成功或失败时显示系统横幅。
       sound:
         zh-CN: 播放声音
       sound_description:
@@ -69,9 +69,9 @@ settings_general_appearance:
       disabled_description:
         zh-CN: 保留首行标题——不发起后台命名请求
       chat_model:
-        zh-CN: 聊天模型
+        zh-CN: 会话模型
       chat_model_description:
-        zh-CN: 每个聊天的目标循环用自身模型校验
+        zh-CN: 每个会话的目标循环用自身模型验证
       not_in_catalog:
         zh-CN: 不在当前提供商目录中
       unavailable:
@@ -304,7 +304,7 @@ settings_general_appearance:
           zh-CN: "%{role} ← %{key}"
     backdrop:
       field_label:
-        zh-CN: 聊天背景
+        zh-CN: 会话背景
       placeholder:
         zh-CN: 图片路径——支持 ~/… 形式
       enter_path:

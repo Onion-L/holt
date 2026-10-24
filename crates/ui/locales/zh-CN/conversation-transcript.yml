@@ -81,24 +81,24 @@ conversation_transcript:
     search_in:
       zh-CN: "在 %{path} 中搜索 %{pattern}"
     tokens:
-      zh-CN: "%{count} tokens"
+      zh-CN: "%{count} token"
     what:
       diff:
         zh-CN: diff
       output:
         zh-CN: 输出
     show_full:
-      zh-CN: 查看完整%{what}
+      zh-CN: 查看完整 %{what}
     show_full_size:
-      zh-CN: "查看完整%{what}（%{size}）"
+      zh-CN: "查看完整 %{what}（%{size}）"
     loading_full:
-      zh-CN: 正在加载完整%{what}…
+      zh-CN: 正在加载完整 %{what}…
     load_failed:
-      zh-CN: 无法加载完整%{what}——点击重试
+      zh-CN: 无法加载完整 %{what}——点击重试
     more_lines:
       zh-CN: "… 还有 %{count} 行"
     subagent:
-      zh-CN: 子代理
+      zh-CN: Subagent
   turn_card:
     edited_files:
       one:
@@ -172,7 +172,7 @@ conversation_transcript:
       zh-CN: " · 补跑"
   provider:
     stale:
-      zh-CN: 目录已更改——请让助手重新提议。
+      zh-CN: 目录已更改——请重新提议。
     write:
       zh-CN: 写入
     writing:
@@ -262,9 +262,9 @@ conversation_transcript:
   usage:
     kind:
       turn:
-        zh-CN: 对话轮
+        zh-CN: 轮次
       subagent:
-        zh-CN: 子代理
+        zh-CN: Subagent
       compaction:
         zh-CN: 上下文压缩
       auto_review:
@@ -317,7 +317,7 @@ conversation_transcript:
     pondering:
       zh-CN: 沉思中
     scheming:
-      zh-CN: 盘算中
+      zh-CN: 谋划中
     brewing:
       zh-CN: 酝酿中
     weaving:
@@ -341,11 +341,11 @@ conversation_transcript:
     riffing:
       zh-CN: 即兴中
     combobulating:
-      zh-CN: 捋顺中
+      zh-CN: 理顺中
     percolating:
-      zh-CN: 滴滤中
+      zh-CN: 沉淀中
     marinating:
-      zh-CN: 腌制中
+      zh-CN: 发酵中
     noodling:
       zh-CN: 琢磨中
     puzzling:

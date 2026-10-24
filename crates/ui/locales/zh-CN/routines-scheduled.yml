@@ -2,18 +2,18 @@ _version: 2
 routines_scheduled:
   page:
     title:
-      zh-CN: 计划任务
+      zh-CN: 定时任务
     new_routine:
-      zh-CN: 新建计划任务
+      zh-CN: 新建定时任务
     count:
       zero:
-        zh-CN: 暂无计划任务
+        zh-CN: 暂无定时任务
       one:
-        zh-CN: 1个计划任务
+        zh-CN: 1个定时任务
       other:
-        zh-CN: "%{n}个计划任务"
+        zh-CN: "%{n}个定时任务"
     empty_title:
-      zh-CN: 还没有计划任务
+      zh-CN: 还没有定时任务
     empty_hint:
       zh-CN: 按计划运行提示词，每次都在全新的会话中进行。
   card:
@@ -33,7 +33,7 @@ routines_scheduled:
       resume:
         zh-CN: 恢复
       edit:
-        zh-CN: 编辑计划任务
+        zh-CN: 编辑定时任务
       delete:
         zh-CN: 删除
   outcome:
@@ -140,9 +140,9 @@ routines_scheduled:
       zh-CN: 新建工作树
   form:
     title_new:
-      zh-CN: 新建计划任务
+      zh-CN: 新建定时任务
     title_edit:
-      zh-CN: 编辑计划任务
+      zh-CN: 编辑定时任务
     subtitle:
       zh-CN: 何时触发、运行什么、如何运行。
     save_hint:
@@ -156,7 +156,7 @@ routines_scheduled:
     name_placeholder:
       zh-CN: 早间巡检
     prompt_placeholder:
-      zh-CN: 每次运行时，智能体应该做什么？
+      zh-CN: 每次运行时，Agent 应该做什么？
     search_models:
       zh-CN: 搜索模型
     pick_project:
@@ -186,7 +186,7 @@ routines_scheduled:
     bad_time:
       zh-CN: 请使用 24 小时制时间，例如 09:00。
     name_required:
-      zh-CN: 请为计划任务命名。
+      zh-CN: 请为定时任务命名。
     prompt_required:
       zh-CN: 请填写每次运行时使用的提示词。
     pick_project:

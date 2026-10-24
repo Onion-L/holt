@@ -130,17 +130,17 @@ sidebar_spaces:
     archive:
       zh-CN: 归档
     copy:
-      zh-CN: 拷贝
+      zh-CN: 复制
     delete:
       zh-CN: 删除…
     copy_directory:
-      zh-CN: 拷贝工作目录
+      zh-CN: 复制工作目录
     copy_link:
-      zh-CN: 拷贝深层链接
+      zh-CN: 复制深层链接
     copy_markdown:
-      zh-CN: 拷贝为 Markdown
+      zh-CN: 复制为 Markdown
     copied_directory:
-      zh-CN: 已拷贝工作目录
+      zh-CN: 已复制工作目录
     no_directory:
       zh-CN: 此会话没有工作目录
     copy_unavailable:
@@ -239,7 +239,7 @@ sidebar_spaces:
     filter_archived:
       zh-CN: 已归档
     all_routines:
-      zh-CN: 所有例程
+      zh-CN: 所有定时任务
     col_title:
       zh-CN: 标题
     col_project:
@@ -263,7 +263,7 @@ sidebar_spaces:
     clear_selection:
       zh-CN: 清除选择
     batch_failed:
-      zh-CN: "%{action}失败：%{error}"
+      zh-CN: "%{action} 失败：%{error}"
     selected:
       zh-CN: 已选 %{count} 个
     selected_hidden:

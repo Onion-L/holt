@@ -70,7 +70,7 @@ files_sidebar:
       save_as:
         zh-CN: "另存为…"
       reload:
-        zh-CN: 重新加载（丢弃草稿）
+        zh-CN: 重新加载（放弃草稿）
       overwrite:
         zh-CN: 覆盖磁盘文件
       destination_placeholder:
@@ -149,7 +149,7 @@ files_sidebar:
     title:
       zh-CN: 连未保存的文件一起移到废纸篓？
     body:
-      zh-CN: "“%{name}”下有 %{count} 个打开的文件存在未保存的修改。移到废纸篓前要保存吗？选择放弃将随移动一并丢失。"
+      zh-CN: "“%{name}”下有 %{count} 个打开的文件存在未保存的修改。移到废纸篓前要保存吗？若选择放弃，未保存的修改将在移动后丢失。"
   errors:
     save_all_failed_space:
       zh-CN: "未能保存全部已修改的文件 — 空间已保留。"

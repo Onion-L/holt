@@ -348,7 +348,7 @@ settings_providers_usage:
     status_manual_only:
       zh-CN: 仅手动
     status_shadowed:
-      zh-CN: "被 %{root} 覆盖"
+      zh-CN: "被 %{root} 遮蔽"
     status_invalid:
       zh-CN: 无效
   usage:
@@ -369,7 +369,7 @@ settings_providers_usage:
     empty_title:
       zh-CN: 暂无模型用量
     empty_detail:
-      zh-CN: 用量数据来自你在 holt 中运行的会话。运行几个会话后，用量会显示在这里。
+      zh-CN: Token 用量数据来自你在 holt 中运行的会话。运行几个会话后，用量会显示在这里。
     daily_usage:
       zh-CN: 每日用量
     total_tokens:
@@ -417,9 +417,9 @@ settings_providers_usage:
     metric_output:
       zh-CN: 输出
     metric_cache_read:
-      zh-CN: 缓存读
+      zh-CN: 缓存读取
     metric_cache_write:
-      zh-CN: 缓存写
+      zh-CN: 缓存写入
     metric_cache_hit:
       zh-CN: 缓存命中
     metric_active_days:

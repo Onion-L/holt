@@ -28,7 +28,7 @@ composer_input:
       zh-CN: 尚不确定此模型是否支持图片。
   failure:
     skill_disabled:
-      zh-CN: 技能“%{name}”已禁用 — 请在「设置 → 技能」中重新启用
+      zh-CN: 技能“%{name}”已禁用 — 请在“设置 → 技能”中重新启用
     usage_compact:
       zh-CN: "用法：/compact（不带参数）"
     usage_init:
@@ -76,7 +76,7 @@ composer_input:
       zh-CN: 提供商模式已关闭
   send_button:
     interrupt_aria:
-      zh-CN: 中断正在运行的回合
+      zh-CN: 中断正在运行的轮次
     interrupt_tooltip:
       zh-CN: 再按一次 Esc 停止
     stop_aria:
@@ -133,7 +133,7 @@ composer_input:
     commands_unsupported:
       zh-CN: 无法列出命令 — 当前引擎尚不支持
     commands_failed:
-      zh-CN: 无法加载此智能体的命令
+      zh-CN: 无法加载此 Agent 的命令
     skills_unsupported:
       zh-CN: 技能不可用 — 当前引擎尚不支持
     skills_failed:
