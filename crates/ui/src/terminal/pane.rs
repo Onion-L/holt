@@ -2418,6 +2418,10 @@ mod tests {
 
     #[test]
     fn exit_message_format() {
+        // The production call and this assertion are two separate catalog
+        // reads; hold the locale so a concurrent switching test cannot flip
+        // the language between them.
+        let _locale = crate::i18n::tests::locale_lock();
         let text = String::from_utf8(exit_message(0)).unwrap();
         assert!(text.contains(t!("terminal_panel.notice.process_exited", code = 0).as_ref()));
         let text = String::from_utf8(exit_message(137)).unwrap();
@@ -2480,6 +2484,7 @@ mod tests {
 
     #[test]
     fn exit_message_feeds_cleanly_through_the_emulator() {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut emulator = Emulator::new(40, 4);
         emulator.feed(b"$ done");
         emulator.feed(&exit_message(1));

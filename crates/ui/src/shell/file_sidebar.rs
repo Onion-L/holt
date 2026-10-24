@@ -2383,8 +2383,11 @@ mod cut_paste_trash_tests {
 
     #[test]
     fn paste_destinations_validate_like_the_engine() {
-        // Expected strings read through the same catalog keys the function
-        // returns — same-source, so the assertions hold in any locale.
+        // Same-source assertions (both sides read the same catalog keys),
+        // but still two separate reads: hold the locale so a concurrent
+        // switching test cannot flip the language between the production
+        // call and the expectation.
+        let _locale = crate::i18n::tests::locale_lock();
         // Pasting into the entry's current directory is a no-op.
         assert_eq!(
             paste_invalid_reason("/r/src/main.rs", "/r/src"),
