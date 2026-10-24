@@ -2046,7 +2046,7 @@ impl Transcript {
     fn attachment_state(&mut self, path: &str, cx: &mut Context<Self>) -> crate::images::Snapshot {
         if crate::images::begin_load(path) {
             let Some(engine) = self.state.read(cx).engine().cloned() else {
-                crate::images::store_error(path, "Engine not connected.");
+                crate::images::store_error(path, crate::state::engine_not_connected());
                 return crate::images::snapshot(path);
             };
             let path = path.to_string();
@@ -2185,7 +2185,12 @@ impl Transcript {
         // re-appends on Send — the `Referenced paths:` transport never
         // enters the editing text.
         let (body, references) = crate::path_refs::split_sent_references(&text);
-        let input = cx.new(|cx| ComposerInput::new("Edit message", cx));
+        let input = cx.new(|cx| {
+            ComposerInput::new(
+                crate::i18n::t!("conversation_transcript.edit.placeholder"),
+                cx,
+            )
+        });
         input.update(cx, |input, cx| input.set_text(body, cx));
         let events = cx.subscribe(&input, |this, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.submit_message_edit(cx),
@@ -2237,7 +2242,7 @@ impl Transcript {
         if prompt.trim().is_empty() {
             // Body cleared and every attachment removed — nothing left to
             // send. Surface the reason instead of swallowing the Send.
-            edit.error = Some(crate::path_refs::EMPTY_EDIT_MESSAGE.into());
+            edit.error = Some(crate::path_refs::empty_edit_message().into());
             cx.notify();
             return;
         }
@@ -2285,8 +2290,13 @@ impl Transcript {
                         Err(error) => {
                             if let Some(edit) = this.message_edit.as_mut() {
                                 edit.pending = false;
-                                edit.error =
-                                    Some(format!("Could not send the edit: {error}").into());
+                                edit.error = Some(
+                                    crate::i18n::t!(
+                                        "conversation_transcript.edit.send_failed",
+                                        error = error.to_string()
+                                    )
+                                    .into(),
+                                );
                             }
                         }
                     }

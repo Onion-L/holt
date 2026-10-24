@@ -1,0 +1,186 @@
+_version: 2
+changes_git:
+  common:
+    cancel:
+      en-US: Cancel
+  scope:
+    working_tree:
+      en-US: Working tree
+    branch:
+      en-US: Branch changes
+    latest_turn:
+      en-US: Latest turn
+    history:
+      en-US: History
+    commit:
+      en-US: Commit
+  header:
+    uncommitted:
+      one:
+        en-US: 1 Uncommitted change
+      other:
+        en-US: "%{count} Uncommitted changes"
+    changed:
+      one:
+        en-US: "%{count} Changed file"
+      other:
+        en-US: "%{count} Changed files"
+    changed_vs_base:
+      one:
+        en-US: "%{count} Changed file vs %{base}"
+      other:
+        en-US: "%{count} Changed files vs %{base}"
+    changed_this_turn:
+      one:
+        en-US: "%{count} Changed file this turn"
+      other:
+        en-US: "%{count} Changed files this turn"
+    changed_in_commit:
+      one:
+        en-US: "%{count} Changed file in this commit"
+      other:
+        en-US: "%{count} Changed files in this commit"
+    partial_snapshot:
+      en-US: Partial snapshot
+  empty:
+    no_uncommitted:
+      en-US: No uncommitted changes
+    none_vs_base:
+      en-US: No changes vs %{base}
+    no_branch:
+      en-US: No branch changes
+    none_this_turn:
+      en-US: No changes this turn
+    no_commits:
+      en-US: No commits found
+    empty_commit:
+      en-US: Empty commit
+  state:
+    preparing:
+      en-US: Preparing diff…
+  notice:
+    no_turn_recorded:
+      en-US: No turn recorded yet — send a message first
+    version_skew:
+      en-US: This Holt build doesn't support branch and turn diffs yet
+  watch:
+    interrupted:
+      en-US: Diff stream interrupted — retrying
+    unavailable:
+      en-US: "Diff watch unavailable: %{error}"
+  file:
+    new_file:
+      en-US: New file
+    deleted_file:
+      en-US: Deleted file
+    renamed_from:
+      en-US: Renamed from %{from}
+    binary:
+      en-US: Binary file — contents not shown
+    binary_badge:
+      en-US: BIN
+    mode_changed:
+      en-US: Mode changed to %{mode}
+    diff_truncated:
+      en-US: Diff truncated — showing first %{shown} of %{total} lines
+  ref_menu:
+    search_placeholder:
+      en-US: Search branches…
+    no_branches:
+      en-US: No branches
+    no_matching:
+      en-US: No matching branches
+  comment:
+    submit:
+      en-US: Comment
+    request_placeholder:
+      en-US: Request a change…
+  comments:
+    chip:
+      one:
+        en-US: 1 comment
+      other:
+        en-US: "%{count} comments"
+  pr:
+    state:
+      open:
+        en-US: Open
+      merged:
+        en-US: Merged
+      closed:
+        en-US: Closed
+    tooltip:
+      en-US: PR %{number} · %{state}
+  review:
+    no_file_selected:
+      en-US: no file selected
+    empty:
+      en-US: Nothing to review — the Turn changed no files.
+    loading:
+      en-US: Reviewing %{path}…
+    binary:
+      en-US: Binary file — its content has no text diff. Status and size changes live on the card.
+    retry:
+      en-US: Retry
+    content_truncated:
+      en-US: content truncated
+    error:
+      no_engine:
+        en-US: the engine is not connected
+      no_cwd:
+        en-US: the chat has no working directory
+      unreadable:
+        en-US: the diff could not be read
+      malformed:
+        en-US: malformed diff reply
+  restore:
+    confirm:
+      en-US: Restore
+    running:
+      en-US: Restoring…
+    engine_not_connected:
+      en-US: The engine is not connected.
+    failed:
+      en-US: "Restore failed: %{error}"
+    failed_malformed:
+      en-US: "Restore failed: malformed reply"
+    title:
+      file:
+        en-US: Restore file?
+      all:
+        en-US: Restore all files?
+    question:
+      file:
+        en-US: "%{path} will be restored to its content before this Turn."
+      rename_back:
+        en-US: Move %{path} back to %{old} with its pre-Turn content? The file at %{path} will be removed.
+      all:
+        one:
+          en-US: "%{count} file will be restored to their content before this Turn."
+        other:
+          en-US: "%{count} files will be restored to their content before this Turn."
+      moved_suffix:
+        en-US: Moved files return to their pre-Turn paths.
+    summary:
+      restored:
+        one:
+          en-US: Restored %{count} file.
+        other:
+          en-US: Restored %{count} files.
+      already:
+        en-US: "%{count} already restored."
+      refused_line:
+        en-US: "%{path}: %{reason}."
+    refusal:
+      conflict:
+        en-US: changed since the Turn
+      later_turn:
+        en-US: changed by a later Turn
+      truncated:
+        en-US: stored content is truncated
+      binary:
+        en-US: binary file
+      lossy:
+        en-US: not valid UTF-8
+      unsafe_path:
+        en-US: path outside the working tree

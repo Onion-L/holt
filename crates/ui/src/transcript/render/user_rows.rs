@@ -4,6 +4,8 @@
 
 use super::*;
 
+use crate::i18n::t;
+
 impl Transcript {
     /// The invocation chip that OPENS the agent's reply (seeded by the
     /// engine ahead of any thinking): a flush-left process row in the
@@ -154,7 +156,9 @@ impl Transcript {
                             div()
                                 .text_size(crate::typography::ui_rems(10.5))
                                 .text_color(theme.accent.opacity(0.8))
-                                .child(SharedString::from("Open SKILL.md")),
+                                .child(SharedString::from(t!(
+                                    "conversation_transcript.user_row.open_skill"
+                                ))),
                         ),
                 );
             if open {
@@ -352,9 +356,9 @@ impl Transcript {
                 ))
             })
             .child(if compacting {
-                "Compacting Context"
+                t!("conversation_transcript.user_row.compacting")
             } else {
-                "Context Compacted"
+                t!("conversation_transcript.user_row.compacted")
             })
     }
 
@@ -648,7 +652,9 @@ impl Transcript {
                         .text_color(theme.danger)
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| this.retry_send(cx)))
-                        .child(SharedString::from("Not delivered — click to retry"))
+                        .child(SharedString::from(t!(
+                            "conversation_transcript.user_row.not_delivered_retry"
+                        )))
                         .into_any_element(),
                 );
             }
@@ -678,7 +684,9 @@ impl Transcript {
                             div()
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text_muted)
-                                .child(SharedString::from("Checking the goal…")),
+                                .child(SharedString::from(t!(
+                                    "conversation_transcript.user_row.checking_goal"
+                                ))),
                         )
                         .into_any_element(),
                 );
@@ -709,10 +717,13 @@ impl Transcript {
             };
             (sending, queued, elapsed, flavour_seed(&chat_id))
         };
-        let word = if queued {
-            "Queued — will send automatically"
+        // All three arms are `Cow<'static, str>` — the flavour table went
+        // through the catalog with the rest of this group, so the branches
+        // unify on the translated type.
+        let word: std::borrow::Cow<'static, str> = if queued {
+            t!("conversation_transcript.user_row.queued_hint")
         } else if sending {
-            "Sending"
+            t!("conversation_transcript.user_row.sending")
         } else {
             flavour_word(seed, elapsed_secs)
         };
@@ -786,7 +797,9 @@ impl Transcript {
                                     .line_height(px(14.0))
                                     .child("Esc"),
                             )
-                            .child(" to interrupt"),
+                            // The key glyph is identity (a keyboard key
+                            // name, like ⌘); only the hint text translates.
+                            .child(t!("conversation_transcript.user_row.to_interrupt")),
                     )
                 })
                 .into_any_element(),

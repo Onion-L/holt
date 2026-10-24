@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::files::viewer::FileViewer;
+use crate::i18n::t;
 
 /// Drag marker for the File-tree column resize handle.
 pub(super) struct FileTreeResize;
@@ -597,7 +598,7 @@ impl Shell {
                 } else {
                     this.push_holt_notice(
                         HoltNoticeKind::Error,
-                        "Could not save every modified file — the space was kept.".into(),
+                        t!("files_sidebar.errors.save_all_failed_space").into(),
                         cx,
                     );
                 }
@@ -754,7 +755,7 @@ impl Shell {
                     .min_w_0()
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted)
-                    .child("Search files"),
+                    .child(t!("files_sidebar.tree.search_files")),
             )
             .child(
                 div()
@@ -785,8 +786,12 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|style| style.bg(crate::theme::ink(0.09)))
                     .tooltip(|_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Hide file sidebar".into()))
-                            .into()
+                        cx.new(|_| {
+                            crate::popover::TextTooltip(
+                                t!("files_sidebar.tree.hide_tooltip").into(),
+                            )
+                        })
+                        .into()
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
@@ -844,17 +849,22 @@ impl Shell {
         let Some(space) = self.file_space_key(cx) else {
             return;
         };
-        let (title, initial) = match &kind {
-            FileOpKind::NewFile { .. } => ("New file", ""),
-            FileOpKind::NewDirectory { .. } => ("New directory", ""),
+        let (title, initial): (std::borrow::Cow<'static, str>, &str) = match &kind {
+            FileOpKind::NewFile { .. } => (t!("files_sidebar.dialog.new_file"), ""),
+            FileOpKind::NewDirectory { .. } => (t!("files_sidebar.dialog.new_directory"), ""),
             FileOpKind::Rename { path } => (
-                "Rename",
+                t!("files_sidebar.dialog.rename"),
                 path.trim_end_matches('/').rsplit('/').next().unwrap_or(""),
             ),
         };
         let _ = title;
-        let input =
-            cx.new(|cx| crate::composer::ComposerInput::with_context("Name", "PaletteSearch", cx));
+        let input = cx.new(|cx| {
+            crate::composer::ComposerInput::with_context(
+                t!("files_sidebar.dialog.name_placeholder"),
+                "PaletteSearch",
+                cx,
+            )
+        });
         input.update(cx, |input, cx| input.set_text(initial, cx));
         let events = cx.subscribe(
             &input,
@@ -885,10 +895,14 @@ impl Shell {
     /// authoritative); this just fails fast without a round trip.
     fn validate_entry_name(name: &str) -> Result<(), String> {
         if name.trim().is_empty() {
-            return Err("The name must not be empty.".into());
+            return Err(t!("files_sidebar.dialog.name_empty").into_owned());
         }
         if name.contains('/') || name == "." || name == ".." || name == ".git" {
-            return Err(format!("{name:?} is not a valid name."));
+            return Err(t!(
+                "files_sidebar.dialog.name_invalid",
+                name = format!("{name:?}")
+            )
+            .into_owned());
         }
         Ok(())
     }
@@ -1155,16 +1169,20 @@ fn entry_affects(tab_path: &str, tab_resolved: Option<&str>, entry: &str) -> boo
 /// Why a paste of the cut entry into `destination_dir` cannot work, if any.
 /// Same-directory no-ops and pasting into the entry's own subtree are
 /// refused here for an immediate, actionable message; the engine re-raises
-/// them (and everything else) behind its own fence. Pure; unit-tested.
-fn paste_invalid_reason(cut_path: &str, destination_dir: &str) -> Option<&'static str> {
+/// them (and everything else) behind its own fence. Pure; unit-tested (the
+/// expected strings come from the same catalog keys — any locale agrees).
+fn paste_invalid_reason(
+    cut_path: &str,
+    destination_dir: &str,
+) -> Option<std::borrow::Cow<'static, str>> {
     let cut = cut_path.trim_end_matches('/');
     let dir = destination_dir.trim_end_matches('/');
     let parent = cut.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
     if dir == parent {
-        return Some("It is already in that directory.");
+        return Some(t!("files_sidebar.menu.paste_already_there"));
     }
     if dir == cut || dir.starts_with(&format!("{cut}/")) {
-        return Some("An entry can't be pasted into itself or its own descendant.");
+        return Some(t!("files_sidebar.menu.paste_into_itself"));
     }
     None
 }
@@ -1417,8 +1435,7 @@ impl Shell {
                     // A failed (or conflicting) save prevents the deletion.
                     this.push_holt_notice(
                         HoltNoticeKind::Error,
-                        "Could not save every modified file — nothing was moved to the Trash."
-                            .into(),
+                        t!("files_sidebar.errors.save_all_failed_trash").into(),
                         cx,
                     );
                 }
@@ -1542,12 +1559,13 @@ impl Shell {
                         cx.notify();
                     }
                 }))
-                .child(popover::dialog_title(&theme, "Save changes?"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("files_sidebar.close_dialog.title"),
+                ))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
-                    format!(
-                        "\u{201C}{title}\u{201D} has unsaved changes. Save them before the tab closes?"
-                    ),
+                    t!("files_sidebar.close_dialog.body", title = title),
                 )))
                 .child(
                     div()
@@ -1557,22 +1575,26 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "file-close-cancel")
-                                .id("file-close-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.dirty_file_close = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("files_sidebar.common.cancel"),
+                                "file-close-cancel",
+                            )
+                            .id("file-close-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.dirty_file_close = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_danger(&theme, "Discard")
+                            popover::btn_danger(&theme, &t!("files_sidebar.common.discard"))
                                 .id("file-close-discard")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.resolve_dirty_file_close(false, window, cx);
                                 })),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Save")
+                            popover::btn_primary(&theme, &t!("files_sidebar.common.save"))
                                 .id("file-close-save")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.resolve_dirty_file_close(true, window, cx);
@@ -1591,7 +1613,7 @@ impl Shell {
                 .read(cx)
                 .space_row(&space)
                 .map(|row| row.display_name().to_string())
-                .unwrap_or_else(|| "This space".into());
+                .unwrap_or_else(|| t!("files_sidebar.space_dialog.this_space").into_owned());
             let card = popover::dialog_card(&theme)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.dirty_space_close = None;
@@ -1603,11 +1625,16 @@ impl Shell {
                         cx.notify();
                     }
                 }))
-                .child(popover::dialog_title(&theme, "Remove space with unsaved files?"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("files_sidebar.space_dialog.title"),
+                ))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
-                    format!(
-                        "{name} has {count} file(s) with unsaved changes. Save them before the space is removed?"
+                    t!(
+                        "files_sidebar.space_dialog.body",
+                        name = name,
+                        count = count
                     ),
                 )))
                 .child(
@@ -1618,22 +1645,26 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "space-draft-cancel")
-                                .id("space-draft-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.dirty_space_close = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("files_sidebar.common.cancel"),
+                                "space-draft-cancel",
+                            )
+                            .id("space-draft-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.dirty_space_close = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_danger(&theme, "Discard")
+                            popover::btn_danger(&theme, &t!("files_sidebar.common.discard"))
                                 .id("space-draft-discard")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.resolve_dirty_space_close(false, cx);
                                 })),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Save all")
+                            popover::btn_primary(&theme, &t!("files_sidebar.common.save_all"))
                                 .id("space-draft-save")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.resolve_dirty_space_close(true, cx);
@@ -1670,12 +1701,14 @@ impl Shell {
                 }))
                 .child(popover::dialog_title(
                     &theme,
-                    "Move to Trash with unsaved files?",
+                    &t!("files_sidebar.trash_dialog.title"),
                 ))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
-                    format!(
-                        "{count} open file(s) under \u{201C}{name}\u{201D} have unsaved changes. Save them before the Trash move? Discarding loses them with the move."
+                    t!(
+                        "files_sidebar.trash_dialog.body",
+                        count = count,
+                        name = name
                     ),
                 )))
                 .child(
@@ -1686,21 +1719,25 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "file-trash-cancel")
-                                .id("file-trash-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_trash_confirm(cx);
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("files_sidebar.common.cancel"),
+                                "file-trash-cancel",
+                            )
+                            .id("file-trash-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cancel_trash_confirm(cx);
+                            })),
                         )
                         .child(
-                            popover::btn_danger(&theme, "Discard all")
+                            popover::btn_danger(&theme, &t!("files_sidebar.common.discard_all"))
                                 .id("file-trash-discard")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.resolve_trash_confirm(false, cx);
                                 })),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Save all")
+                            popover::btn_primary(&theme, &t!("files_sidebar.common.save_all"))
                                 .id("file-trash-save")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.resolve_trash_confirm(true, cx);
@@ -1758,7 +1795,7 @@ impl Shell {
                     Some(reason) => row.opacity(0.45).tooltip(move |_, cx| {
                         cx.new(|_| {
                             crate::popover::TextTooltip(
-                                format!("Can't paste here: {reason}").into(),
+                                t!("files_sidebar.menu.cant_paste", reason = reason).into(),
                             )
                         })
                         .into()
@@ -1775,7 +1812,10 @@ impl Shell {
                                 .size(px(15.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from(format!("Paste “{}”", cut.name))),
+                        .child(SharedString::from(t!(
+                            "files_sidebar.menu.paste",
+                            name = cut.name
+                        ))),
                     )
                     .child(popover::menu_separator());
             }
@@ -1796,7 +1836,7 @@ impl Shell {
                                 .size(px(15.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from("New file")),
+                        .child(SharedString::from(t!("files_sidebar.menu.new_file"))),
                 )
                 .child(
                     popover::menu_row(&theme, false, "file-menu-new-dir")
@@ -1813,7 +1853,7 @@ impl Shell {
                                 .size(px(15.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from("New directory")),
+                        .child(SharedString::from(t!("files_sidebar.menu.new_directory"))),
                 );
 
             // Entry operations: add-to-chat (ticket 09), cut/paste-move,
@@ -1835,7 +1875,7 @@ impl Shell {
                                     .size(px(15.0))
                                     .text_color(theme.text_muted),
                             )
-                            .child(SharedString::from("Add to Chat")),
+                            .child(SharedString::from(t!("files_sidebar.menu.add_to_chat"))),
                     );
                 }
                 let cut_path = path.clone();
@@ -1851,7 +1891,7 @@ impl Shell {
                                 .size(px(15.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from("Cut")),
+                        .child(SharedString::from(t!("files_sidebar.menu.cut"))),
                 );
                 let rename_path = path.clone();
                 let trash_path = path.clone();
@@ -1868,7 +1908,7 @@ impl Shell {
                             );
                         }))
                         .child(icon(icons::PEN).size(px(15.0)).text_color(theme.text_muted))
-                        .child(SharedString::from("Rename…")),
+                        .child(SharedString::from(t!("files_sidebar.menu.rename"))),
                 );
                 menu = menu.child(popover::menu_separator()).child(
                     popover::menu_row(&theme, false, "file-menu-trash")
@@ -1882,7 +1922,7 @@ impl Shell {
                                 .size(px(15.0))
                                 .text_color(theme.danger),
                         )
-                        .child(SharedString::from("Move to Trash")),
+                        .child(SharedString::from(t!("files_sidebar.menu.move_to_trash"))),
                 );
             }
             let menu = menu.into_any_element();
@@ -1900,14 +1940,28 @@ impl Shell {
                 window.focus(&handle, cx);
             }
             let theme = theme.clone();
-            let (title, hint) = match &dialog.kind {
-                FileOpKind::NewFile { parent } => ("New file", destination_hint(parent)),
-                FileOpKind::NewDirectory { parent } => ("New directory", destination_hint(parent)),
-                FileOpKind::Rename { .. } => ("Rename", String::new()),
+            let (title, hint): (
+                std::borrow::Cow<'static, str>,
+                std::borrow::Cow<'static, str>,
+            ) = match &dialog.kind {
+                FileOpKind::NewFile { parent } => (
+                    t!("files_sidebar.dialog.new_file"),
+                    destination_hint(parent),
+                ),
+                FileOpKind::NewDirectory { parent } => (
+                    t!("files_sidebar.dialog.new_directory"),
+                    destination_hint(parent),
+                ),
+                FileOpKind::Rename { .. } => (t!("files_sidebar.dialog.rename"), Cow::from("")),
             };
             let error = dialog.error.clone();
             let pending = dialog.pending;
             let input = dialog.input.clone();
+            // Bind the submit button's possible labels up front: a `t!` in an
+            // if/else arm borrows a temporary that dies with the arm's block.
+            let working = t!("files_sidebar.dialog.working");
+            let rename = t!("files_sidebar.dialog.rename");
+            let create = t!("files_sidebar.dialog.create");
             let card = popover::dialog_card(&theme)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.close_file_op_dialog(cx);
@@ -1917,7 +1971,7 @@ impl Shell {
                         this.close_file_op_dialog(cx);
                     }
                 }))
-                .child(popover::dialog_title(&theme, title))
+                .child(popover::dialog_title(&theme, &title))
                 .when(!hint.is_empty(), |card| {
                     card.child(
                         div().mt(px(4.0)).child(
@@ -1951,21 +2005,25 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "file-op-cancel")
-                                .id("file-op-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_file_op_dialog(cx);
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("files_sidebar.common.cancel"),
+                                "file-op-cancel",
+                            )
+                            .id("file-op-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_file_op_dialog(cx);
+                            })),
                         )
                         .child(
                             popover::btn_primary(
                                 &theme,
                                 if pending {
-                                    "Working…"
+                                    &working
                                 } else if matches!(dialog.kind, FileOpKind::Rename { .. }) {
-                                    "Rename"
+                                    &rename
                                 } else {
-                                    "Create"
+                                    &create
                                 },
                             )
                             .id("file-op-submit")
@@ -2002,11 +2060,11 @@ fn file_sidebar_kind_new_dir(parent: &str) -> FileOpKind {
 }
 
 /// The muted "lands in …" hint under a create dialog's title.
-fn destination_hint(parent: &str) -> String {
+fn destination_hint(parent: &str) -> Cow<'static, str> {
     if parent.is_empty() {
-        String::new()
+        Cow::from("")
     } else {
-        format!("In {}", parent)
+        t!("files_sidebar.dialog.in_hint", path = parent)
     }
 }
 
@@ -2325,22 +2383,24 @@ mod cut_paste_trash_tests {
 
     #[test]
     fn paste_destinations_validate_like_the_engine() {
+        // Expected strings read through the same catalog keys the function
+        // returns — same-source, so the assertions hold in any locale.
         // Pasting into the entry's current directory is a no-op.
         assert_eq!(
             paste_invalid_reason("/r/src/main.rs", "/r/src"),
-            Some("It is already in that directory.")
+            Some(t!("files_sidebar.menu.paste_already_there"))
         );
         // Trailing slashes and root-relative shapes normalize the same way.
         assert_eq!(
             paste_invalid_reason("/r/src/main.rs", "/r/src/"),
-            Some("It is already in that directory.")
+            Some(t!("files_sidebar.menu.paste_already_there"))
         );
         // A top-level entry pasted into the root's canonical spelling is
         // caught here; the root's "" spelling needs the engine's canonical
         // comparison (it refuses as a same-directory no-op).
         assert_eq!(
             paste_invalid_reason("/r/pkg", "/r"),
-            Some("It is already in that directory.")
+            Some(t!("files_sidebar.menu.paste_already_there"))
         );
         assert_eq!(paste_invalid_reason("/r/pkg", ""), None);
         // Into itself and into its own descendant.

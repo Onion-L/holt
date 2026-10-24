@@ -2,7 +2,10 @@
 //! platform caption buttons. Child module of `shell` so it renders straight
 //! off `Shell`'s private state.
 
+use std::borrow::Cow;
+
 use super::*;
+use crate::i18n::t;
 
 // ---------------------------------------------------------------------------
 // Traffic-light-aware titlebar layout (feature-inventory §1.1)
@@ -125,10 +128,10 @@ const TITLEBAR_MENU_ROWS: [TitlebarMenuRow; 2] =
     [TitlebarMenuRow::Scheduled, TitlebarMenuRow::ChatManager];
 
 impl TitlebarMenuRow {
-    fn label(self) -> &'static str {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            TitlebarMenuRow::Scheduled => "Scheduled",
-            TitlebarMenuRow::ChatManager => "Chat manager",
+            TitlebarMenuRow::Scheduled => t!("shell_chrome.titlebar.nav_scheduled"),
+            TitlebarMenuRow::ChatManager => t!("shell_chrome.titlebar.nav_chat_manager"),
         }
     }
 
@@ -299,6 +302,8 @@ impl Shell {
             .child(self.render_menu_bar(&theme, cx))
             .child(div().flex_1())
             .when_some(update_version, |el, version| {
+                let tooltip: SharedString =
+                    t!("shell_chrome.update.tooltip_available", version = version).into();
                 el.child(
                     div()
                         .id("strip-update")
@@ -321,12 +326,8 @@ impl Shell {
                             cx.notify();
                         }))
                         .tooltip(move |_, cx| {
-                            cx.new(|_| {
-                                crate::popover::TextTooltip(
-                                    format!("Update to Holt {version}").into(),
-                                )
-                            })
-                            .into()
+                            cx.new(|_| crate::popover::TextTooltip(tooltip.clone()))
+                                .into()
                         })
                         .child(
                             icon(icons::DOWNLOAD_MINIMALISTIC)
@@ -337,7 +338,7 @@ impl Shell {
                             div()
                                 .text_size(crate::typography::ui_rems(11.5))
                                 .text_color(theme.on_accent)
-                                .child("Update"),
+                                .child(t!("shell_chrome.titlebar.update_pill")),
                         ),
                 )
             });
@@ -814,7 +815,7 @@ impl Shell {
         let Some(cwd) = self.state.read(cx).skills_cwd() else {
             self.push_holt_notice(
                 HoltNoticeKind::Warning,
-                "No workspace is selected".into(),
+                t!("shell_chrome.titlebar.no_workspace_selected").into(),
                 cx,
             );
             return;
@@ -834,7 +835,12 @@ impl Shell {
         {
             self.push_holt_notice(
                 HoltNoticeKind::Error,
-                format!("Could not open {}: {error}", app.label()).into(),
+                t!(
+                    "shell_chrome.titlebar.could_not_open_app",
+                    app = app.label(),
+                    error = error
+                )
+                .into(),
                 cx,
             );
         }
@@ -845,6 +851,13 @@ impl Shell {
         let selected = self.selected_external_app();
         let menu_open = self.external_app_menu.is_open();
         let closing = self.external_app_menu.closing_since();
+        // The app name is identity (`ExternalApp::label` keys the persisted
+        // choice), interpolated into the localized sentence.
+        let open_tooltip: SharedString = t!(
+            "shell_chrome.titlebar.tooltip_open_workspace_in",
+            app = selected.label()
+        )
+        .into();
         let mut trigger = div()
             .id("open-with-trigger")
             .h(px(28.0))
@@ -876,12 +889,8 @@ impl Shell {
                         this.open_workspace_in(selected, cx);
                     }))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| {
-                            crate::popover::TextTooltip(
-                                format!("Open workspace in {}", selected.label()).into(),
-                            )
-                        })
-                        .into()
+                        cx.new(|_| crate::popover::TextTooltip(open_tooltip.clone()))
+                            .into()
                     })
                     .child(
                         img(selected.icon(theme.appearance))

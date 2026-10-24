@@ -1,0 +1,396 @@
+_version: 2
+settings_general_appearance:
+  language:
+    group_title:
+      zh-CN: 语言
+    group_description:
+      zh-CN: 仅本设备生效，立即应用；已打开的卡片与提示在下次构建时更新。
+    row_title:
+      zh-CN: 界面语言
+    row_description:
+      zh-CN: 跟随系统语言，或固定一种。
+    follow_system:
+      zh-CN: 跟随系统
+  general:
+    title:
+      zh-CN: 通用
+    subtitle:
+      zh-CN: 语言、通知、自动聊天标题，以及内置工具的密钥。
+    instruction_placeholder:
+      zh-CN: 随首条提示一同发送的指令
+    titles:
+      title_model:
+        zh-CN: 标题模型
+      title_model_description:
+        zh-CN: 选择一个已配置提供商的模型；禁用则保留回退标题。
+      custom_style:
+        zh-CN: 自定义标题风格
+      custom_style_description:
+        zh-CN: 自动标题的风格说明——语言、语气、命名习惯。核心命名规则已内置。
+      notes_label:
+        zh-CN: 标题风格说明
+      restore_default:
+        zh-CN: 恢复默认
+      unsaved:
+        zh-CN: 未保存的修改
+      save:
+        zh-CN: 保存
+    groups:
+      titles_title:
+        zh-CN: 自动聊天标题
+      titles_description:
+        zh-CN: 新聊天会先保留首行标题，随后一次发往该模型的后台请求可以替换它。手动重命名始终优先。
+      verifier_title:
+        zh-CN: 目标校验器
+      verifier_description:
+        zh-CN: 评判每个目标循环 Turn 的模型。换一个——最好跨提供商——的模型能发现工作模型遗漏的问题。以最低推理强度校验；未设置或未配置时回退到各聊天自己的模型。
+      verifier_row_title:
+        zh-CN: 校验模型
+      verifier_row_description:
+        zh-CN: 在每个目标循环 Turn 结束后以最低推理强度运行一次。
+      no_providers:
+        zh-CN: 暂无已配置的提供商——添加提供商密钥后才能选择校验模型
+    notifications:
+      title:
+        zh-CN: 通知
+      description:
+        zh-CN: 仅本设备生效。仅在没有 Holt 窗口处于活动状态时显示横幅。
+      completion:
+        zh-CN: 任务完成通知
+      completion_description:
+        zh-CN: 后台 Turn 成功或失败时显示系统横幅。
+      sound:
+        zh-CN: 播放声音
+      sound_description:
+        zh-CN: 每条横幅附带播放系统通知音。
+    model_rows:
+      disabled:
+        zh-CN: 已禁用
+      disabled_description:
+        zh-CN: 保留首行标题——不发起后台命名请求
+      chat_model:
+        zh-CN: 聊天模型
+      chat_model_description:
+        zh-CN: 每个聊天的目标循环用自身模型校验
+      not_in_catalog:
+        zh-CN: 不在当前提供商目录中
+      unavailable:
+        zh-CN: 不可用
+    errors:
+      titles_unavailable:
+        zh-CN: 标题设置不可用——引擎尚不支持
+      verifier_unavailable:
+        zh-CN: 目标校验设置不可用——引擎尚不支持
+  web_search:
+    title:
+      zh-CN: 网页搜索
+    description:
+      zh-CN: 让 Agent 搜索网页。Exa 无需密钥；其余服务使用你自己的 API 密钥。
+    service_row_title:
+      zh-CN: 搜索服务
+    service_row_description:
+      zh-CN: Agent 进行搜索时使用的服务。
+    api_key_row_title:
+      zh-CN: API 密钥
+    api_key_row_description:
+      zh-CN: 存储在本设备，与提供商密钥相互独立。
+    api_key_placeholder:
+      zh-CN: API 密钥
+    off_state:
+      zh-CN: 关闭
+    off_description:
+      zh-CN: Agent 无法搜索网页
+    no_key_needed:
+      zh-CN: 无需 API 密钥
+    key_saved:
+      zh-CN: 已保存 API 密钥
+    uses_key:
+      zh-CN: 使用你的 API 密钥
+    cancel:
+      zh-CN: 取消
+    remove:
+      zh-CN: 移除
+    save:
+      zh-CN: 保存
+    your_own:
+      zh-CN: 你自己的服务
+    add_them:
+      zh-CN: 将它们添加到 %{file}，然后在上方选择。
+    format:
+      zh-CN: 格式
+    errors:
+      unavailable:
+        zh-CN: 网页搜索设置不可用——引擎尚不支持
+      no_key_stored:
+        zh-CN: 尚未存储 API 密钥
+      enter_key:
+        zh-CN: 请输入 API 密钥
+  appearance:
+    title:
+      zh-CN: 外观
+    subtitle:
+      zh-CN: 自定义 Holt 的外观。这些设置仅保存在本设备。
+    field_appearance:
+      zh-CN: 外观
+    modes:
+      system:
+        zh-CN: 跟随系统
+      light:
+        zh-CN: 浅色
+      dark:
+        zh-CN: 深色
+    light_theme:
+      zh-CN: 浅色主题
+    dark_theme:
+      zh-CN: 深色主题
+    theme_row_description:
+      zh-CN: 该外观激活时使用。
+    light_themes:
+      zh-CN: 浅色主题
+    dark_themes:
+      zh-CN: 深色主题
+    accent_row_title:
+      zh-CN: 强调色
+    glass_row_title:
+      zh-CN: 玻璃质感
+    accents:
+      holt:
+        zh-CN: Holt
+      orange:
+        zh-CN: 橙色
+      amber:
+        zh-CN: 琥珀色
+      green:
+        zh-CN: 绿色
+      cyan:
+        zh-CN: 青色
+      blue:
+        zh-CN: 蓝色
+      pink:
+        zh-CN: 粉色
+    accent_default_helper:
+      zh-CN: "主题默认 · 使用配色预期的强调色。"
+    accent_preset_helper:
+      zh-CN: "%{preset} · 影响控件、图标、选区、代码与活动状态。"
+    surfaces:
+      theme_default:
+        zh-CN: 主题默认
+      frosted:
+        zh-CN: 磨砂
+      opaque:
+        zh-CN: 不透明
+    surface_default_frosted_helper:
+      zh-CN: 使用该主题默认的磨砂效果。
+    surface_default_opaque_helper:
+      zh-CN: 使用该主题默认的不透明表面。
+    surface_frosted_helper:
+      zh-CN: 在支持的平台呈现主题色玻璃效果。
+    surface_opaque_helper:
+      zh-CN: 所有主题一律使用不透明表面。
+    library:
+      title:
+        zh-CN: 主题库
+      description:
+        zh-CN: 导入或链接自定义主题。
+      add:
+        zh-CN: 添加主题
+      imported:
+        zh-CN: 已导入
+      linked:
+        zh-CN: 已链接
+      snapshot:
+        zh-CN: 自包含快照
+      status:
+        one:
+          zh-CN: "%{source} · %{count} 个变体 · %{detail}"
+        other:
+          zh-CN: "%{source} · %{count} 个变体 · %{detail}"
+      using_last_good:
+        zh-CN: 使用最后已知良好版本 · %{message}
+      reload:
+        zh-CN: 重新加载
+      reveal:
+        zh-CN: 显示位置
+      review:
+        zh-CN: 查看映射
+      duplicate:
+        zh-CN: 复制为可编辑
+      unlink:
+        zh-CN: 取消链接
+      remove:
+        zh-CN: 移除
+      done:
+        zh-CN: 完成
+      sources:
+        imported:
+          zh-CN: 已导入
+        linked_file:
+          zh-CN: 链接文件
+        linked_package:
+          zh-CN: 链接扩展包
+        editable_file:
+          zh-CN: 可编辑文件
+      review_title:
+        zh-CN: 主题映射
+      review_body:
+        zh-CN: "%{name} · %{source}"
+    import:
+      placeholder:
+        zh-CN: 主题文件、package.json 或扩展文件夹
+      choose_source_dialog:
+        zh-CN: 选择主题来源
+      browse:
+        zh-CN: 浏览…
+      source:
+        zh-CN: 来源
+      keep_updated:
+        zh-CN: 保持更新
+      mode_copy:
+        zh-CN: 导入副本
+      mode_copy_description:
+        zh-CN: 与原文件相互独立。
+      mode_link:
+        zh-CN: 链接到源文件
+      mode_link_description:
+        zh-CN: 从磁盘上的文件重新加载变更。
+      detected:
+        zh-CN: 识别到的主题
+      variants:
+        one:
+          zh-CN: "%{count} 个变体"
+        other:
+          zh-CN: "%{count} 个变体"
+      variant_dark:
+        zh-CN: 深色
+      variant_light:
+        zh-CN: 浅色
+      details:
+        zh-CN: 详情
+      hide_details:
+        zh-CN: 收起详情
+      failure:
+        zh-CN: "%{name} 无法编译 · %{message}"
+      auto_note:
+        zh-CN: Holt 会自动识别浅色与深色变体。
+      dialog_title:
+        zh-CN: 添加主题
+      dialog_body:
+        zh-CN: 将本地主题导入主题库，或保持与其源文件链接。
+      cancel:
+        zh-CN: 取消
+      import_selected:
+        zh-CN: 导入所选
+      analyze:
+        zh-CN: 分析主题
+      errors:
+        choose_source:
+          zh-CN: 请选择本地主题文件或扩展文件夹。
+        select_variant:
+          zh-CN: 请至少选择一个要导入的变体。
+      report:
+        summary:
+          zh-CN: "已映射 %{mapped} · 已调整 %{adjusted} · 推断/回退 %{fallback} · 不支持 %{unsupported} · 警告 %{warnings} · 校验 %{validation}"
+        adjusted:
+          zh-CN: "已调整 · %{role} %{from} → %{to} · %{reason}"
+        fallback:
+          zh-CN: "回退 · %{message}"
+        warning:
+          zh-CN: "警告 · %{message}"
+        validation:
+          zh-CN: "校验 %{category} %{severity} · %{message}"
+        unsupported:
+          zh-CN: "不支持 · %{message}"
+        mapping:
+          zh-CN: "%{role} ← %{key}"
+    backdrop:
+      field_label:
+        zh-CN: 聊天背景
+      placeholder:
+        zh-CN: 图片路径——支持 ~/… 形式
+      enter_path:
+        zh-CN: 输入路径…
+      drop_here:
+        zh-CN: 将图片拖到此处
+      or_browse:
+        zh-CN: 或点击浏览
+      loading:
+        zh-CN: 加载中…
+      not_decodable:
+        zh-CN: 不是可解码的图片
+      subtle:
+        zh-CN: 轻柔
+      balanced:
+        zh-CN: 均衡
+      bold:
+        zh-CN: 醒目
+      error_not_exists:
+        zh-CN: 该文件不存在——请修正路径（或清空字段）后应用。
+      error_not_image:
+        zh-CN: 拖入的不是 Holt 可解码的图片——请使用 png、jpeg、webp 或 gif。
+      error_failed_decode:
+        zh-CN: 文件存在，但 Holt 无法将其解码为图片——请使用 png、jpeg、webp 或 gif。
+    fonts:
+      interface_font:
+        zh-CN: 界面字体
+      description:
+        zh-CN: 用于界面与对话文本。代码、Diff 与终端保持现有的字体和字号。
+      load_error:
+        zh-CN: 无法加载该字体，Holt 正在使用 Geist。
+  shortcuts:
+    title:
+      zh-CN: 键盘快捷键
+    subtitle:
+      zh-CN: 点击某个按键组合，再按下你想使用的组合。更改立即生效，且仅保存在本设备。
+    restore_defaults:
+      zh-CN: 恢复默认
+    reset:
+      zh-CN: 重置
+    press_keys:
+      zh-CN: 请按键…
+    press_escape:
+      zh-CN: 按 Esc 取消。
+    unique:
+      zh-CN: 快捷键不能重复。
+    conflict:
+      zh-CN: "%{combo} 已分配给 %{label}。"
+    groups:
+      panels:
+        zh-CN: 面板
+      sessions:
+        zh-CN: 会话
+      jump:
+        zh-CN: 跳转到会话
+    labels:
+      toggle_sidebar:
+        zh-CN: 切换左侧栏
+      toggle_changes:
+        zh-CN: 切换右侧栏
+      toggle_terminal:
+        zh-CN: 切换终端
+      new_session:
+        zh-CN: 新建会话
+      next_session:
+        zh-CN: 下一个会话
+      prev_session:
+        zh-CN: 上一个会话
+      archive_session:
+        zh-CN: 归档会话
+      jump_session:
+        zh-CN: 跳转到会话 %{slot}
+    descriptions:
+      toggle_sidebar:
+        zh-CN: 显示或隐藏会话与设置导航。
+      toggle_changes:
+        zh-CN: 显示或隐藏当前会话的变更。
+      toggle_terminal:
+        zh-CN: 显示或隐藏当前会话的终端。
+      new_session:
+        zh-CN: 打开空白会话画布，开始一个新会话。
+      next_session:
+        zh-CN: 选择侧栏中的下一个会话，到末尾循环。
+      prev_session:
+        zh-CN: 选择侧栏中的上一个会话，到开头循环。
+      archive_session:
+        zh-CN: 将当前会话移入归档。
+      jump_session:
+        zh-CN: 打开侧栏列表中该位置的会话。

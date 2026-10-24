@@ -9,6 +9,7 @@ use gpui::SharedString;
 use holt_proto::ToolCall;
 
 use super::ToolItem;
+use crate::i18n::t;
 use crate::markdown::parser::InlineRun;
 /// Tool chip row height / gap — analytic, so fold heights need no measurement.
 /// A row is a FLAT quiet line (no card chrome): the header row is the whole
@@ -152,9 +153,16 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
             None => path.clone(),
         },
         ToolCall::EditFile { path, .. } => path.clone(),
-        ToolCall::ApplyPatch { path } => path.clone().unwrap_or_else(|| "workspace".into()),
+        ToolCall::ApplyPatch { path } => path
+            .clone()
+            .unwrap_or_else(|| t!("conversation_transcript.common.workspace").into_owned()),
         ToolCall::Search { pattern, path } => match path {
-            Some(path) => format!("{pattern} in {path}"),
+            Some(path) => t!(
+                "conversation_transcript.tool.search_in",
+                pattern = pattern.as_str(),
+                path = path.as_str()
+            )
+            .into_owned(),
             None => pattern.clone(),
         },
         ToolCall::ListDir { path } => path.clone().unwrap_or_else(|| ".".to_string()),
@@ -251,10 +259,19 @@ pub fn tool_group_summary(tools: &[ToolItem]) -> String {
     // view summary never sees them): name them on the collapsed line.
     match (base.is_empty(), thoughts) {
         (_, 0) => base,
-        (true, 1) => "Thought process".into(),
-        (true, n) => format!("Thought {n} times"),
-        (false, 1) => format!("Thought · {base}"),
-        (false, n) => format!("Thought {n} times · {base}"),
+        (true, 1) => t!("conversation_transcript.tool.thought_process").into_owned(),
+        (true, n) => t!("conversation_transcript.tool.thought_times", count = n).into_owned(),
+        (false, 1) => t!(
+            "conversation_transcript.tool.thought_with_base",
+            base = base
+        )
+        .into_owned(),
+        (false, n) => t!(
+            "conversation_transcript.tool.thought_times_with_base",
+            count = n,
+            base = base
+        )
+        .into_owned(),
     }
 }
 

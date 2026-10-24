@@ -8,6 +8,7 @@ use gpui::{
 use holt_proto::Chat;
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -67,7 +68,13 @@ impl ArchivedPage {
             this.update(cx, |page, cx| {
                 page.busy = None;
                 if let Err(err) = result {
-                    page.error = Some(format!("Unarchive failed: {err}").into());
+                    page.error = Some(
+                        t!(
+                            "settings_providers_usage.archived.unarchive_failed",
+                            error = err
+                        )
+                        .into(),
+                    );
                 }
                 cx.notify();
             })
@@ -97,7 +104,13 @@ impl ArchivedPage {
             this.update(cx, |page, cx| {
                 page.clearing = false;
                 if let Some(err) = failure {
-                    page.error = Some(format!("Clear failed: {err}").into());
+                    page.error = Some(
+                        t!(
+                            "settings_providers_usage.archived.clear_failed",
+                            error = err
+                        )
+                        .into(),
+                    );
                 }
                 cx.notify();
             })
@@ -126,7 +139,7 @@ impl Render for ArchivedPage {
                 let title: SharedString = chat
                     .title
                     .clone()
-                    .unwrap_or_else(|| "Untitled session".into())
+                    .unwrap_or_else(|| t!("settings_providers_usage.archived.untitled").into())
                     .into();
                 let time_ago: SharedString = crate::state::format_time_ago(
                     chat.last_message_at.unwrap_or(chat.created_at),
@@ -250,11 +263,11 @@ impl Render for ArchivedPage {
                                     .size(px(14.0))
                                     .text_color(theme.text_muted),
                             )
-                            .child(SharedString::from(if is_busy {
-                                "Unarchiving…"
+                            .child(if is_busy {
+                                t!("settings_providers_usage.archived.unarchiving")
                             } else {
-                                "Unarchive"
-                            })),
+                                t!("settings_providers_usage.archived.unarchive")
+                            }),
                     )
                     .into_any_element()
             })
@@ -280,16 +293,14 @@ impl Render for ArchivedPage {
                     div()
                         .mt(px(12.0))
                         .text_size(crate::typography::ui_rems(14.0))
-                        .child(SharedString::from("Nothing archived")),
+                        .child(t!("settings_providers_usage.archived.empty_title")),
                 )
                 .child(
                     div()
                         .mt(px(4.0))
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted.opacity(0.4))
-                        .child(SharedString::from(
-                            "Right-click a session in the sidebar to archive it.",
-                        )),
+                        .child(t!("settings_providers_usage.archived.empty_hint")),
                 )
                 .into_any_element()
         } else {
@@ -334,22 +345,23 @@ impl Render for ArchivedPage {
                     .size(px(14.0))
                     .text_color(theme.danger_muted),
             )
-            .child(SharedString::from(if self.clearing {
-                "Clearing…"
+            .child(if self.clearing {
+                t!("settings_providers_usage.archived.clearing")
             } else {
-                "Clear all"
-            }));
+                t!("settings_providers_usage.archived.clear_all")
+            });
 
         // The confirm mirrors the sidebar's delete-session dialog: destructive,
         // permanent, counted.
         let confirm_dialog = self.confirm_clear.then(|| {
             let copy = if count == 1 {
-                "1 archived session will be permanently deleted. This can\u{2019}t be undone."
-                    .to_string()
+                t!("settings_providers_usage.archived.confirm.one").into_owned()
             } else {
-                format!(
-                    "{count} archived sessions will be permanently deleted. This can\u{2019}t be undone."
+                t!(
+                    "settings_providers_usage.archived.confirm.other",
+                    count = count
                 )
+                .into_owned()
             };
             let card = crate::popover::dialog_card(&theme)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -358,13 +370,12 @@ impl Render for ArchivedPage {
                 }))
                 .child(crate::popover::dialog_title(
                     &theme,
-                    "Clear archived sessions?",
+                    &t!("settings_providers_usage.archived.confirm_title"),
                 ))
                 .child(
-                    div().mt(px(6.0)).child(crate::popover::dialog_body(
-                        &theme,
-                        copy,
-                    )),
+                    div()
+                        .mt(px(6.0))
+                        .child(crate::popover::dialog_body(&theme, copy)),
                 )
                 .child(
                     div()
@@ -374,27 +385,34 @@ impl Render for ArchivedPage {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            crate::popover::btn_ghost(&theme, "Cancel", "clear-archived-cancel")
-                                .id("clear-archived-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirm_clear = false;
-                                    cx.notify();
-                                })),
+                            crate::popover::btn_ghost(
+                                &theme,
+                                &t!("settings_providers_usage.archived.cancel"),
+                                "clear-archived-cancel",
+                            )
+                            .id("clear-archived-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_clear = false;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            crate::popover::btn_danger(&theme, "Clear all")
-                                .id("clear-archived-confirm")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let ids: Vec<String> = this
-                                        .state
-                                        .read(cx)
-                                        .chats
-                                        .iter()
-                                        .filter(|chat| chat.archived)
-                                        .map(|chat| chat.id.clone())
-                                        .collect();
-                                    this.clear_all(ids, cx);
-                                })),
+                            crate::popover::btn_danger(
+                                &theme,
+                                &t!("settings_providers_usage.archived.clear_all"),
+                            )
+                            .id("clear-archived-confirm")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let ids: Vec<String> = this
+                                    .state
+                                    .read(cx)
+                                    .chats
+                                    .iter()
+                                    .filter(|chat| chat.archived)
+                                    .map(|chat| chat.id.clone())
+                                    .collect();
+                                this.clear_all(ids, cx);
+                            })),
                         ),
                 )
                 .into_any_element();
@@ -416,14 +434,14 @@ impl Render for ArchivedPage {
                             .gap(px(16.0))
                             .child(widgets::page_header(
                                 &theme,
-                                "Archived sessions",
+                                &t!("settings_providers_usage.archived.page_title"),
                                 (count > 0).then_some(count),
                             ))
                             .when(count > 0, |el| el.child(clear_button)),
                     )
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Hidden from the sidebar until you unarchive them. Clearing permanently deletes every session here.",
+                        t!("settings_providers_usage.archived.page_subtitle"),
                     ))
                     .when_some(self.error.clone(), |el, message| {
                         el.child(

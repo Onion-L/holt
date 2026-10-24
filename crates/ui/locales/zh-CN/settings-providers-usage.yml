@@ -1,0 +1,430 @@
+_version: 2
+settings_providers_usage:
+  archived:
+    page_title:
+      zh-CN: 已归档会话
+    page_subtitle:
+      zh-CN: 归档会话会从侧边栏隐藏，直到你取消归档。清除会永久删除这里的所有会话。
+    untitled:
+      zh-CN: 未命名会话
+    unarchive:
+      zh-CN: 取消归档
+    unarchiving:
+      zh-CN: 正在取消归档…
+    unarchive_failed:
+      zh-CN: "取消归档失败：%{error}"
+    clear_all:
+      zh-CN: 全部清除
+    clearing:
+      zh-CN: 正在清除…
+    clear_failed:
+      zh-CN: "清除失败：%{error}"
+    confirm_title:
+      zh-CN: 清除已归档会话？
+    empty_title:
+      zh-CN: 没有归档
+    empty_hint:
+      zh-CN: 在侧边栏中右键点击会话即可归档。
+    confirm:
+      one:
+        zh-CN: 将永久删除 1 个已归档会话。此操作无法撤销。
+      other:
+        zh-CN: "将永久删除 %{count} 个已归档会话。此操作无法撤销。"
+    cancel:
+      zh-CN: 取消
+  mcp:
+    page_title:
+      zh-CN: MCP 服务器
+    page_subtitle:
+      zh-CN: "外部工具提供方；其工具将在同一权限门槛下加入每个会话。"
+    version_skew:
+      zh-CN: MCP 服务器不可用 — 引擎尚不支持该功能
+    empty:
+      zh-CN: 尚未配置服务器。
+    add_server:
+      zh-CN: 添加服务器
+    invalid_file:
+      zh-CN: "mcp.json 无效，未应用：%{error}"
+    no_transport:
+      zh-CN: 无传输方式
+    testing:
+      zh-CN: 正在测试…
+    tools_count:
+      zh-CN: "✓ %{count} 个工具"
+    test:
+      zh-CN: 测试
+    edit:
+      zh-CN: 编辑
+    remove:
+      zh-CN: 移除
+    remove_confirm_title:
+      zh-CN: "移除 %{name}？"
+    test_failed:
+      zh-CN: "测试失败：%{reason}"
+    cancel:
+      zh-CN: 取消
+    import:
+      zh-CN: 导入
+    save:
+      zh-CN: 保存
+    add_title:
+      zh-CN: 添加 MCP 服务器
+    edit_title:
+      zh-CN: "编辑 %{name}"
+    add_hint:
+      zh-CN: "工具在每个会话中以 mcp__<name>__tool 的形式出现，并受同一权限门槛约束。"
+    mode_form:
+      zh-CN: 表单
+    mode_json:
+      zh-CN: JSON
+    field_name:
+      zh-CN: 名称
+    field_transport:
+      zh-CN: 传输方式
+    transport_stdio:
+      zh-CN: 本地 (stdio)
+    transport_http:
+      zh-CN: 远程 (http)
+    field_command:
+      zh-CN: 命令
+    field_arguments:
+      zh-CN: 参数
+    field_environment:
+      zh-CN: 环境变量
+    field_cwd:
+      zh-CN: 工作目录
+    field_startup_timeout:
+      zh-CN: 启动超时 (ms)
+    field_call_timeout:
+      zh-CN: 调用超时 (ms)
+    field_url:
+      zh-CN: URL
+    field_headers:
+      zh-CN: 请求头
+    field_bearer:
+      zh-CN: Bearer token 环境变量
+    field_enabled:
+      zh-CN: 启用
+    placeholder_name:
+      zh-CN: "name — 工具将变为 mcp__<name>__tool"
+    placeholder_args:
+      zh-CN: 每行一个参数
+    placeholder_env:
+      zh-CN: 每行一个 KEY=VALUE
+    placeholder_cwd:
+      zh-CN: "默认为 holt 自身目录"
+    placeholder_headers:
+      zh-CN: "每行一个 Name: value"
+    error_name_invalid:
+      zh-CN: "名称只能使用 [A-Za-z0-9_-] — 它会出现在每个 mcp__name__tool 中。"
+    error_timeout:
+      zh-CN: "%{text} 不是合法的毫秒超时值"
+    error_command_required:
+      zh-CN: stdio 服务器需要填写命令。
+    error_url_required:
+      zh-CN: http 服务器需要填写 URL。
+    import_not_json:
+      zh-CN: "不是有效的 JSON：%{error}"
+    import_bare_name:
+      zh-CN: 单个服务器对象需要 name 字段 — 或将其包在 mcpServers 对象中
+    import_expected:
+      zh-CN: 应为 mcpServers 对象
+    import_no_servers:
+      zh-CN: JSON 中未找到服务器
+    import_bad_name:
+      zh-CN: "服务器名 %{name} 无效：名称只能使用 [A-Za-z0-9_-]"
+    import_needs_transport:
+      zh-CN: "服务器 %{name} 需要提供 command（stdio）或 url（http）"
+    import_entry_failed:
+      zh-CN: "%{name}：%{error}"
+  providers:
+    page_title:
+      zh-CN: 提供商
+    page_subtitle:
+      zh-CN: 为 Holt 可用的提供商配置 API 密钥。拥有多个端点的组织会按端点分别配置。
+    status_configured:
+      zh-CN: 已配置
+    status_not_configured:
+      zh-CN: 未配置
+    save:
+      zh-CN: 保存
+    test:
+      zh-CN: 测试
+    api_key_label:
+      zh-CN: API 密钥
+    remove_key:
+      zh-CN: 移除密钥
+    models_label:
+      zh-CN: 模型
+    fetch_models:
+      zh-CN: 拉取模型
+    add_model:
+      zh-CN: 添加模型
+    endpoint_label:
+      zh-CN: 端点
+    no_models:
+      zh-CN: 没有可用模型
+    hidden_label:
+      zh-CN: 已隐藏
+    error_api_key_required:
+      zh-CN: 需要填写 API 密钥
+    remove:
+      zh-CN: 移除
+    cancel:
+      zh-CN: 取消
+    probe:
+      testing:
+        zh-CN: 正在测试…
+      ok:
+        zh-CN: "端点可达 · %{count} 个模型"
+      ok_latency:
+        zh-CN: "端点可达 · %{count} 个模型 · %{ms} ms"
+      key_rejected:
+        zh-CN: 端点拒绝了此密钥 — 请更换后保存
+      unverifiable:
+        zh-CN: "无法验证 — %{error}"
+    reset_to_catalog:
+      zh-CN: 重置为目录
+    reset_confirm:
+      zh-CN: "确认重置 — 将丢弃你为此提供商手动添加的条目"
+    remove_provider:
+      zh-CN: 移除提供商
+    remove_dialog_title:
+      zh-CN: "移除 %{name}？"
+    remove_dialog_body:
+      zh-CN: 将删除该提供商的定义、自定义模型、模型记录、隐藏列表和徽标。API 密钥会保留。此操作无法撤销。
+    reset_all_title:
+      zh-CN: 重置所有提供商？
+    reset_all_body:
+      zh-CN: 所有提供商的自定义模型、模型记录、隐藏列表和端点覆盖都将恢复为内置目录。API 密钥会保留。此操作无法撤销。
+    reset_all:
+      zh-CN: 全部重置
+    logo_not_saved:
+      zh-CN: "徽标未保存：%{error}"
+    add_dialog:
+      add_provider:
+        zh-CN: 添加提供商
+      reset_all_providers:
+        zh-CN: 重置所有提供商
+      logo_optional:
+        zh-CN: 徽标（可选）
+      choose_image:
+        zh-CN: 选择图片…
+      logo_hint:
+        zh-CN: PNG、JPG、WebP 或 SVG（将按主题着色）
+      clear:
+        zh-CN: 清除
+      field_provider_id:
+        zh-CN: 提供商 ID
+      field_display_name:
+        zh-CN: 显示名称
+      field_base_url:
+        zh-CN: Base URL
+      field_default_api:
+        zh-CN: 默认 API 方言
+      field_api_key:
+        zh-CN: API 密钥（可选）
+      save_provider:
+        zh-CN: 保存提供商
+      placeholder_provider_id:
+        zh-CN: "提供商 ID（如 acme）"
+      placeholder_display_name:
+        zh-CN: 显示名称
+      placeholder_base_url:
+        zh-CN: https://acme.example/v1
+      placeholder_default_api:
+        zh-CN: openai-completions
+      placeholder_api_key:
+        zh-CN: API 密钥（可选）
+      error_base_url_scheme:
+        zh-CN: Base URL 必须以 http:// 或 https:// 开头
+      error_plaintext_http:
+        zh-CN: 只有 localhost 端点允许使用明文 http
+      error_id_required:
+        zh-CN: 必须填写提供商 ID
+      error_id_slash:
+        zh-CN: "提供商 ID 不能包含“/”"
+      error_api_required:
+        zh-CN: 必须填写默认 API 方言
+    logo_dialog:
+      title:
+        zh-CN: 提供商徽标
+      error_size_limit:
+        zh-CN: 徽标超过 8 MB 限制
+      error_not_image:
+        zh-CN: 不是可识别的图片
+      status_preview:
+        zh-CN: 预览 — 尚未保存
+      status_current:
+        zh-CN: 当前徽标
+      status_none:
+        zh-CN: 暂无徽标 — 显示首字母组合
+      tab_file:
+        zh-CN: 上传文件
+      tab_svg:
+        zh-CN: 粘贴 SVG
+      choose_another:
+        zh-CN: 点击选择其他文件
+      choose_image:
+        zh-CN: 选择图片
+      file_hint:
+        zh-CN: "PNG、JPG、WebP 或 SVG · 最大 8 MB"
+      svg_hint:
+        zh-CN: 将渲染为按主题着色的单色蒙版。按回车保存。
+      error_not_svg:
+        zh-CN: 这看起来不是 SVG 标记
+      saving:
+        zh-CN: 保存中…
+      remove_logo:
+        zh-CN: 移除徽标
+    record_form:
+      title:
+        zh-CN: 添加模型记录
+      api_dialect_label:
+        zh-CN: API 方言
+      field_model_id:
+        zh-CN: 模型 ID
+      field_name:
+        zh-CN: 名称
+      field_context_window:
+        zh-CN: 上下文窗口
+      field_max_tokens:
+        zh-CN: 最大 token 数
+      field_input_cost:
+        zh-CN: 输入成本/M
+      field_output_cost:
+        zh-CN: 输出成本/M
+      field_cache_read_cost:
+        zh-CN: 缓存读取成本/M
+      field_cache_write_cost:
+        zh-CN: 缓存写入成本/M
+      reasoning:
+        zh-CN: 推理
+      image_input:
+        zh-CN: 图片输入
+      advanced_json:
+        zh-CN: 高级 JSON
+      save_record:
+        zh-CN: 保存记录
+      fetch_title:
+        zh-CN: "从 %{provider} 拉取模型"
+      add_one:
+        zh-CN: "添加 %{count} 个模型"
+      add_other:
+        zh-CN: "添加 %{count} 个模型"
+      error_id_required:
+        zh-CN: 必须填写模型 ID
+      error_api_required:
+        zh-CN: 必须填写 API 方言
+      error_whole_number:
+        zh-CN: "%{field}必须为整数"
+      error_number:
+        zh-CN: "%{field}必须为数字"
+      error_window_zero:
+        zh-CN: 上下文窗口必须大于零
+      error_advanced_parse:
+        zh-CN: "高级 JSON 解析失败：%{error}"
+      error_advanced_object:
+        zh-CN: 高级 JSON 必须是对象
+      error_no_transport:
+        zh-CN: 探测未能确定传输方式
+      error_nothing_new:
+        zh-CN: 厂商列表中没有该提供商尚未提供的模型
+  skills:
+    page_title:
+      zh-CN: 技能
+    page_subtitle:
+      zh-CN: "在你的项目、个人与 Holt 根目录中发现的所有技能 — 就地引用，从不复制。同名冲突时最近的根目录优先；损坏的条目会在这里说明原因。"
+    version_skew:
+      zh-CN: 技能不可用 — 引擎尚不支持该功能
+    empty:
+      zh-CN: "未找到技能。将技能目录放在项目的 .agents/skills、~/.agents/skills 或 ~/.holt/skills 下，它就会出现在这里。"
+    root_project:
+      zh-CN: 项目
+    root_personal:
+      zh-CN: 个人
+    root_holt:
+      zh-CN: holt
+    status_manual_only:
+      zh-CN: 仅手动
+    status_shadowed:
+      zh-CN: "被 %{root} 覆盖"
+    status_invalid:
+      zh-CN: 无效
+  usage:
+    page_title:
+      zh-CN: 用量
+    page_description:
+      zh-CN: 模型 token 用量
+    header_count:
+      zh-CN: "%{chats} 个会话 · 最近 %{days} 天"
+    version_skew:
+      zh-CN: 用量统计不可用 — 引擎尚不支持该功能
+    error_title:
+      zh-CN: 无法加载模型用量
+    retry:
+      zh-CN: 重试
+    refresh_tooltip:
+      zh-CN: 刷新用量统计
+    empty_title:
+      zh-CN: 暂无模型用量
+    empty_detail:
+      zh-CN: 用量数据来自你在 holt 中运行的会话。运行几个会话后，用量会显示在这里。
+    daily_usage:
+      zh-CN: 每日用量
+    total_tokens:
+      zh-CN: 总 token
+    tokens_count:
+      zh-CN: "%{count} 个 token"
+    more:
+      zh-CN: "还有 %{count} 个"
+    show_less:
+      zh-CN: 收起
+    no_usage_range:
+      zh-CN: 此范围内暂无用量
+    no_usage:
+      zh-CN: 暂无用量
+    total:
+      zh-CN: 合计
+    activity:
+      zh-CN: 活跃度
+    weekday_mon:
+      zh-CN: 周一
+    weekday_wed:
+      zh-CN: 周三
+    weekday_fri:
+      zh-CN: 周五
+    less:
+      zh-CN: 少
+    more_scale:
+      zh-CN: 多
+    heat_tooltip:
+      zh-CN: "%{date} · %{count} 个 token"
+    breakdown:
+      zh-CN: 明细
+    by_model:
+      zh-CN: 按模型
+    by_project:
+      zh-CN: 按项目
+    others:
+      zh-CN: 其他
+    deleted_chats:
+      zh-CN: 已删除的会话
+    donut_tokens:
+      zh-CN: token
+    metric_input:
+      zh-CN: 输入
+    metric_output:
+      zh-CN: 输出
+    metric_cache_read:
+      zh-CN: 缓存读
+    metric_cache_write:
+      zh-CN: 缓存写
+    metric_cache_hit:
+      zh-CN: 缓存命中
+    metric_active_days:
+      zh-CN: 活跃天数
+    metric_cache_hit_detail:
+      zh-CN: "提示词 token 中有 %{read} 个来自缓存（共 %{prompt} 个）"
+    metric_active_days_detail:
+      zh-CN: "范围内 %{days} 天中有 %{active} 天有用量"

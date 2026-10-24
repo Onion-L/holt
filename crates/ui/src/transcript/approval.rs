@@ -17,6 +17,7 @@ use holt_rpc::methods;
 
 use super::model::skill_file_display;
 use super::tool_chip_content;
+use crate::i18n::t;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -77,7 +78,11 @@ pub fn resolve_approval(
 /// The bar's terse working-directory line (its header already carries the
 /// confirm-changes contract).
 pub fn approval_cwd_line(cwd: &str) -> String {
-    format!("cwd: {}", skill_file_display(cwd))
+    t!(
+        "conversation_transcript.approval.cwd_line",
+        path = skill_file_display(cwd)
+    )
+    .into_owned()
 }
 
 /// The gated target rendered as the bar's mono lead line. Bash commands
@@ -86,7 +91,9 @@ pub fn approval_target(call: &ToolCall) -> String {
     match call {
         ToolCall::Exec { command } => format!("$ {command}"),
         ToolCall::WriteFile { path, .. } | ToolCall::EditFile { path, .. } => path.clone(),
-        ToolCall::ApplyPatch { path } => path.clone().unwrap_or_else(|| "workspace".into()),
+        ToolCall::ApplyPatch { path } => path
+            .clone()
+            .unwrap_or_else(|| t!("conversation_transcript.common.workspace").into_owned()),
         _ => tool_chip_content(call).1,
     }
 }
@@ -108,28 +115,48 @@ pub enum VerdictTint {
 /// — that text is the reason the model received, so the transcript shows it.
 pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
     match verdict {
-        GateVerdict::Allowed => ("✓ Approved".to_string(), VerdictTint::Neutral),
-        GateVerdict::AlwaysAllowed => ("✓ Always allowed".to_string(), VerdictTint::Neutral),
-        GateVerdict::Exempted => (
-            "⚡ Prefix exempt · auto-passed".to_string(),
+        GateVerdict::Allowed => (
+            t!("conversation_transcript.approval.verdict.allowed").into_owned(),
             VerdictTint::Neutral,
         ),
-        GateVerdict::ReviewPassed => ("Auto review · passed".to_string(), VerdictTint::AutoReview),
+        GateVerdict::AlwaysAllowed => (
+            t!("conversation_transcript.approval.verdict.always_allowed").into_owned(),
+            VerdictTint::Neutral,
+        ),
+        GateVerdict::Exempted => (
+            t!("conversation_transcript.approval.verdict.exempted").into_owned(),
+            VerdictTint::Neutral,
+        ),
+        GateVerdict::ReviewPassed => (
+            t!("conversation_transcript.approval.verdict.review_passed").into_owned(),
+            VerdictTint::AutoReview,
+        ),
         GateVerdict::ReviewRejected { reason } => {
             let text = match reason {
-                Some(reason) => format!("Auto review · rejected · \"{reason}\""),
-                None => "Auto review · rejected".to_string(),
+                Some(reason) => t!(
+                    "conversation_transcript.approval.verdict.review_rejected_reason",
+                    reason = reason.as_str()
+                )
+                .into_owned(),
+                None => t!("conversation_transcript.approval.verdict.review_rejected").into_owned(),
             };
             (text, VerdictTint::Danger)
         }
         GateVerdict::Denied { note } => {
             let text = match note {
-                Some(note) => format!("⊘ Denied · \"{note}\""),
-                None => "⊘ Denied".to_string(),
+                Some(note) => t!(
+                    "conversation_transcript.approval.verdict.denied_note",
+                    note = note.as_str()
+                )
+                .into_owned(),
+                None => t!("conversation_transcript.approval.verdict.denied").into_owned(),
             };
             (text, VerdictTint::Danger)
         }
-        GateVerdict::Aborted => ("⊘ Interrupted".to_string(), VerdictTint::Danger),
+        GateVerdict::Aborted => (
+            t!("conversation_transcript.approval.verdict.aborted").into_owned(),
+            VerdictTint::Danger,
+        ),
     }
 }
 
@@ -224,6 +251,7 @@ mod tests {
 
     #[test]
     fn targets_render_with_a_shell_prefix_only_for_bash() {
+        let _locale = crate::i18n::tests::locale_lock();
         assert_eq!(
             approval_target(&ToolCall::Exec {
                 command: "cargo test".into()
@@ -239,57 +267,74 @@ mod tests {
         );
         assert_eq!(
             approval_target(&ToolCall::ApplyPatch { path: None }),
-            "workspace".to_string()
+            t!("conversation_transcript.common.workspace").into_owned()
         );
     }
 
     #[test]
     fn verdict_chips_cover_every_flavor() {
-        let cases: [(GateVerdict, &str, VerdictTint); 9] = [
-            (GateVerdict::Allowed, "✓ Approved", VerdictTint::Neutral),
+        let _locale = crate::i18n::tests::locale_lock();
+        let cases = [
+            (
+                GateVerdict::Allowed,
+                t!("conversation_transcript.approval.verdict.allowed").into_owned(),
+                VerdictTint::Neutral,
+            ),
             (
                 GateVerdict::AlwaysAllowed,
-                "✓ Always allowed",
+                t!("conversation_transcript.approval.verdict.always_allowed").into_owned(),
                 VerdictTint::Neutral,
             ),
             (
                 GateVerdict::Exempted,
-                "⚡ Prefix exempt · auto-passed",
+                t!("conversation_transcript.approval.verdict.exempted").into_owned(),
                 VerdictTint::Neutral,
             ),
             (
                 GateVerdict::ReviewPassed,
-                "Auto review · passed",
+                t!("conversation_transcript.approval.verdict.review_passed").into_owned(),
                 VerdictTint::AutoReview,
             ),
             (
                 GateVerdict::ReviewRejected { reason: None },
-                "Auto review · rejected",
+                t!("conversation_transcript.approval.verdict.review_rejected").into_owned(),
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::ReviewRejected {
                     reason: Some("no tests".into()),
                 },
-                "Auto review · rejected · \"no tests\"",
+                t!(
+                    "conversation_transcript.approval.verdict.review_rejected_reason",
+                    reason = "no tests"
+                )
+                .into_owned(),
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::Denied { note: None },
-                "⊘ Denied",
+                t!("conversation_transcript.approval.verdict.denied").into_owned(),
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::Denied {
                     note: Some("not now".into()),
                 },
-                "⊘ Denied · \"not now\"",
+                t!(
+                    "conversation_transcript.approval.verdict.denied_note",
+                    note = "not now"
+                )
+                .into_owned(),
                 VerdictTint::Danger,
             ),
-            (GateVerdict::Aborted, "⊘ Interrupted", VerdictTint::Danger),
+            (
+                GateVerdict::Aborted,
+                t!("conversation_transcript.approval.verdict.aborted").into_owned(),
+                VerdictTint::Danger,
+            ),
         ];
         for (verdict, text, tint) in cases {
-            assert_eq!(verdict_chip(&verdict), (text.to_string(), tint));
+            assert_eq!(verdict_chip(&verdict), (text, tint));
         }
     }
 

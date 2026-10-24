@@ -12,6 +12,7 @@ use holt_doc::SessionCommandPayload;
 use holt_proto::{UserInputAnswer, UserInputQuestion};
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::motion;
 use crate::theme::Theme;
 
@@ -174,9 +175,9 @@ impl Composer {
         self.input.update(cx, |input, cx| {
             input.set_placeholder(
                 if has_pick {
-                    "Type your own answer, or leave this blank to use the selected option"
+                    t!("composer_input.placeholder.wizard_picked")
                 } else {
-                    "Type your own answer, or pick an option above"
+                    t!("composer_input.placeholder.wizard_pick")
                 },
                 cx,
             )
@@ -230,7 +231,7 @@ impl Composer {
         self.input.update(cx, |input, cx| {
             input.set_text("", cx);
             // The panel borrowed the composer input; hand back its identity.
-            input.set_placeholder("Do anything…", cx);
+            input.set_placeholder(t!("composer_input.placeholder.idle"), cx);
         });
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -253,7 +254,8 @@ impl Composer {
             let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
-                    composer.failure = Some(format!("Answer failed: {err}").into());
+                    composer.failure =
+                        Some(t!("composer_input.failure.answer_failed", error = err).into());
                     composer.failure_key = Some(failure_chat);
                     // The answer never left this device — put the panel back.
                     composer.answered_requests.remove(&request_id);
@@ -471,7 +473,7 @@ impl Composer {
                                 .mt(px(4.0))
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text_muted.opacity(0.65))
-                                .child(SharedString::from("Select one or more options.")),
+                                .child(t!("composer_input.wizard.multi_select_hint")),
                         )
                     })
                     .child(
@@ -505,19 +507,30 @@ impl Composer {
                     .pb(px(16.0))
                     .pt(px(4.0))
                     .child(if page > 0 {
-                        crate::popover::btn_ghost(&theme, "Back", "wizard-back")
-                            .id("wizard-back")
-                            .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
-                            .into_any_element()
+                        crate::popover::btn_ghost(
+                            &theme,
+                            &t!("composer_input.wizard.back"),
+                            "wizard-back",
+                        )
+                        .id("wizard-back")
+                        .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
+                        .into_any_element()
                     } else {
                         gpui::Empty.into_any_element()
                     })
                     .child(
-                        crate::popover::btn_primary(&theme, if last { "Submit" } else { "Next" })
-                            .id("wizard-submit")
-                            .px(px(16.0))
-                            .when(!can_advance, |el| el.opacity(0.4))
-                            .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
+                        crate::popover::btn_primary(
+                            &theme,
+                            &if last {
+                                t!("composer_input.wizard.submit")
+                            } else {
+                                t!("composer_input.wizard.next")
+                            },
+                        )
+                        .id("wizard-submit")
+                        .px(px(16.0))
+                        .when(!can_advance, |el| el.opacity(0.4))
+                        .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
                     ),
             )
             .into_any_element()

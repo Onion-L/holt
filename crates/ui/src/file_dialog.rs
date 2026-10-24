@@ -38,7 +38,7 @@ async fn pick_file(extensions: &[&str], cx: &mut gpui::AsyncApp) -> Option<PathB
                 files: true,
                 directories: false,
                 multiple: false,
-                prompt: Some("Choose File".into()),
+                prompt: Some(crate::i18n::t!("pickers_dialogs.file_dialog.choose_file").into()),
             })
         });
         let mut paths = match receiver.await {

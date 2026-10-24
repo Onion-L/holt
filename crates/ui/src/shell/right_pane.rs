@@ -3,6 +3,8 @@
 //! straight off `Shell`'s private state.
 
 use super::*;
+use crate::i18n::t;
+use std::borrow::Cow;
 
 /// Maximum width the right pane may occupy while retaining the conversation
 /// floor. On unusually small windows this deliberately falls below the right
@@ -217,14 +219,18 @@ impl Shell {
                     .subagent_tabs
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone())),
-                RightSurface::Git(id) => self
-                    .git_panels
-                    .get(id)
-                    .map(|_| (*surface, SharedString::from("Git"))),
-                RightSurface::TurnReview(id) => self
-                    .turn_reviews
-                    .get(id)
-                    .map(|_| (*surface, SharedString::from("Review"))),
+                RightSurface::Git(id) => self.git_panels.get(id).map(|_| {
+                    (
+                        *surface,
+                        SharedString::from(t!("terminal_panel.surface.git")),
+                    )
+                }),
+                RightSurface::TurnReview(id) => self.turn_reviews.get(id).map(|_| {
+                    (
+                        *surface,
+                        SharedString::from(t!("terminal_panel.surface.review")),
+                    )
+                }),
                 RightSurface::Picker => None,
                 RightSurface::File(id) => self
                     .file_space_key(cx)
@@ -588,7 +594,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 HoltNoticeKind::Error,
-                "The engine is not connected.".into(),
+                crate::state::engine_not_connected().into(),
                 cx,
             );
             return;
@@ -634,7 +640,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 HoltNoticeKind::Error,
-                "The engine is not connected.".into(),
+                crate::state::engine_not_connected().into(),
                 cx,
             );
             return;
@@ -962,7 +968,9 @@ impl Shell {
                                 .hover(|style| style.bg(crate::theme::ink(0.09)))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| {
-                                        crate::popover::TextTooltip("Show file sidebar".into())
+                                        crate::popover::TextTooltip(
+                                            t!("terminal_panel.surface.show_file_sidebar").into(),
+                                        )
                                     })
                                     .into()
                                 })
@@ -1067,7 +1075,7 @@ impl Shell {
                                         .text_size(crate::typography::ui_rems(11.5))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(theme.text)
-                                        .child("Review"),
+                                        .child(t!("terminal_panel.surface.review")),
                                 )
                                 .child(
                                     div()
@@ -1205,7 +1213,7 @@ impl Shell {
         let muted = theme.text_muted;
         let border = theme.border;
         let border_strong = theme.border_strong;
-        let row = |id: &'static str, icon_path: &'static str, title: &'static str| {
+        let row = |id: &'static str, icon_path: &'static str, title: Cow<'static, str>| {
             div()
                 .id(id)
                 .w_full()
@@ -1248,31 +1256,46 @@ impl Shell {
                     // needs a workspace: the no-project empty state offers
                     // terminals only.
                     .when(self.file_space_key(cx).is_some(), |el| {
-                        el.child(row("surface-card-file", icons::DOCUMENT, "File").on_click(
-                            cx.listener(|this, _, window, cx| {
-                                if this.add_file_surface(cx) {
-                                    this.focus_file_tree(window, cx);
-                                }
-                            }),
-                        ))
+                        el.child(
+                            row(
+                                "surface-card-file",
+                                icons::DOCUMENT,
+                                t!("terminal_panel.surface.file"),
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    if this.add_file_surface(cx) {
+                                        this.focus_file_tree(window, cx);
+                                    }
+                                },
+                            )),
+                        )
                     })
                     .child(
-                        row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.add_terminal_surface(cx);
-                            }),
-                        ),
+                        row(
+                            "surface-card-terminal",
+                            icons::TERMINAL,
+                            t!("terminal_panel.surface.terminal"),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.add_terminal_surface(cx);
+                        })),
                     )
                     // Git only where there IS git — the pane itself no
                     // longer gates on it (terminals work anywhere). The card
                     // opens the Git panel's commit graph (ticket 03); the
                     // diff viewer keeps its own Diff row in the `+` menu.
                     .when(self.space_git_detected(cx), |el| {
-                        el.child(row("surface-card-git", icons::GIT_BRANCH, "Git").on_click(
-                            cx.listener(|this, _, _, cx| {
+                        el.child(
+                            row(
+                                "surface-card-git",
+                                icons::GIT_BRANCH,
+                                t!("terminal_panel.surface.git"),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.add_git_surface(cx);
-                            }),
-                        ))
+                            })),
+                        )
                     }),
             )
             .into_any_element()
@@ -1617,7 +1640,7 @@ impl Shell {
                                             .size(px(13.0))
                                             .text_color(theme.text_muted),
                                     )
-                                    .child(SharedString::from("File")),
+                                    .child(SharedString::from(t!("terminal_panel.surface.file"))),
                             )
                         })
                         .child(
@@ -1632,7 +1655,7 @@ impl Shell {
                                         .size(px(13.0))
                                         .text_color(theme.text_muted),
                                 )
-                                .child(SharedString::from("Terminal")),
+                                .child(SharedString::from(t!("terminal_panel.surface.terminal"))),
                         )
                         .when(self.space_git_detected(cx), |menu| {
                             menu.child(
@@ -1648,7 +1671,7 @@ impl Shell {
                                             .text_color(theme.text_muted),
                                     )
                                     // The Git panel's Status tab (ticket 03).
-                                    .child(SharedString::from("Git")),
+                                    .child(SharedString::from(t!("terminal_panel.surface.git"))),
                             )
                             // The Changes diff viewer keeps its own entry
                             // here — the picker's Git card moved to the
@@ -1665,7 +1688,7 @@ impl Shell {
                                             .size(px(13.0))
                                             .text_color(theme.text_muted),
                                     )
-                                    .child(SharedString::from("Diff")),
+                                    .child(SharedString::from(t!("terminal_panel.surface.diff"))),
                             )
                         }),
                 )

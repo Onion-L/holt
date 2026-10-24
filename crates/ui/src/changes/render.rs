@@ -4,6 +4,7 @@
 //! Changes`. Entity state, sync, and events stay in the facade; this
 //! module only reads and transitions them.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use gpui::{
@@ -15,6 +16,7 @@ use holt_rpc::methods;
 
 use crate::comments::{self, CommentSide, DiffComment};
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::markdown::render;
 use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
 use crate::popover;
@@ -52,8 +54,13 @@ impl Changes {
     fn open_ref_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
         // to the card's key handler.
-        let search =
-            cx.new(|cx| ComposerInput::with_context("Search branches…", "PaletteSearch", cx));
+        let search = cx.new(|cx| {
+            ComposerInput::with_context(
+                t!("changes_git.ref_menu.search_placeholder"),
+                "PaletteSearch",
+                cx,
+            )
+        });
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 if let Some(menu) = this.ref_menu.open_mut() {
@@ -622,7 +629,7 @@ impl Changes {
                         .flex_none()
                         .text_size(px(10.0))
                         .text_color(theme.text_faint)
-                        .child(SharedString::from("BIN")),
+                        .child(SharedString::from(t!("changes_git.file.binary_badge"))),
                 )
             })
             .when(adds > 0 || !file.binary, |el| {
@@ -1114,11 +1121,11 @@ impl Changes {
                 .py(px(6.0))
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from(if branches.is_empty() {
-                    "No branches"
+                .child(if branches.is_empty() {
+                    t!("changes_git.ref_menu.no_branches")
                 } else {
-                    "No matching branches"
-                }))
+                    t!("changes_git.ref_menu.no_matching")
+                })
                 .into_any_element()
         } else {
             div()
@@ -1224,7 +1231,7 @@ impl Changes {
                             .rounded(px(4.0))
                             .bg(theme.warning.opacity(0.08))
                             .text_color(theme.warning.opacity(0.75))
-                            .child(SharedString::from("Partial snapshot")),
+                            .child(t!("changes_git.header.partial_snapshot")),
                     )
                 })
                 .into_any_element(),
@@ -1834,12 +1841,22 @@ fn render_comment_draft(
                         .justify_end()
                         .gap(px(6.0))
                         .child(
-                            comment_action("cmt-cancel", "Cancel", false, theme)
-                                .on_click(cx.listener(|this, _, _, cx| this.cancel_draft(cx))),
+                            comment_action(
+                                "cmt-cancel",
+                                t!("changes_git.common.cancel"),
+                                false,
+                                theme,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_draft(cx))),
                         )
                         .child(
-                            comment_action("cmt-commit", "Comment", true, theme)
-                                .on_click(cx.listener(|this, _, _, cx| this.commit_draft(cx))),
+                            comment_action(
+                                "cmt-commit",
+                                t!("changes_git.comment.submit"),
+                                true,
+                                theme,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.commit_draft(cx))),
                         ),
                 ),
         )
@@ -1848,7 +1865,7 @@ fn render_comment_draft(
 
 fn comment_action(
     id: &'static str,
-    label: &'static str,
+    label: Cow<'static, str>,
     primary: bool,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
@@ -1872,7 +1889,7 @@ fn comment_action(
                 ))
                 .on_hover(motion::hover_listener(id))
         })
-        .child(SharedString::from(label))
+        .child(label)
 }
 
 /// The expanded body of one file section: notices, hunk headers, +/-/context
@@ -2069,11 +2086,11 @@ impl Render for Changes {
             .flatten()
             .map(|error| match error {
                 ScopedDiffError::NoTurnRecorded => (
-                    SharedString::from("No turn recorded yet — send a message first"),
+                    SharedString::from(t!("changes_git.notice.no_turn_recorded")),
                     false,
                 ),
                 ScopedDiffError::VersionSkew => (
-                    SharedString::from("This Holt build doesn't support branch and turn diffs yet"),
+                    SharedString::from(t!("changes_git.notice.version_skew")),
                     false,
                 ),
                 ScopedDiffError::Other(message) => (message, true),
@@ -2114,7 +2131,7 @@ impl Render for Changes {
                         div()
                             .text_size(px(12.0))
                             .text_color(theme.text_faint)
-                            .child(SharedString::from("Preparing diff…")),
+                            .child(t!("changes_git.state.preparing")),
                     )
                     .into_any_element(),
                 DiffPhase::Clean => div()

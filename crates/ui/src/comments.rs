@@ -4,6 +4,8 @@
 //! [`with_comments`] appends them; [`extract_badge`] reads the same block back
 //! out for the transcript. There is no second data model.
 
+use crate::i18n::t;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommentSide {
     Old,
@@ -164,11 +166,13 @@ fn parse_bullets(block: &str) -> Vec<crate::badges::BadgeDetail> {
     details
 }
 
+/// The transcript chip over the staged-comment block. Manual plural
+/// selection (no CLDR): the call site picks `.one`/`.other`.
 pub fn chip_label(count: usize) -> String {
     if count == 1 {
-        "1 comment".to_string()
+        t!("changes_git.comments.chip.one").into_owned()
     } else {
-        format!("{count} comments")
+        t!("changes_git.comments.chip.other", count = count).into_owned()
     }
 }
 
@@ -232,9 +236,16 @@ mod tests {
 
     #[test]
     fn chip_label_pluralizes() {
-        assert_eq!(chip_label(1), "1 comment");
-        assert_eq!(chip_label(2), "2 comments");
-        assert_eq!(chip_label(0), "0 comments");
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(chip_label(1), t!("changes_git.comments.chip.one"));
+        assert_eq!(
+            chip_label(2),
+            t!("changes_git.comments.chip.other", count = 2)
+        );
+        assert_eq!(
+            chip_label(0),
+            t!("changes_git.comments.chip.other", count = 0)
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, ac
 
 use crate::appearance::{self, AppearanceMode};
 use crate::composer;
+use crate::i18n::t;
 use crate::shell;
 
 actions!(
@@ -160,28 +161,37 @@ fn app_key_bindings(macos: bool) -> Vec<KeyBinding> {
 
 /// The holt menu bar. macOS renders this natively; mac-only entries are gated
 /// at runtime (`cfg!`) so the whole module compiles and tests on Linux.
+///
+/// Labels come from the catalog (`shell_chrome.app_menus.*`) read at build
+/// time — a snapshot, so a language switch rebuilds the bar by re-running
+/// this through `cx.set_menus` (`i18n::set_language` does). The first menu's
+/// name stays the literal app name: macOS titles it from the bundle anyway,
+/// and it is identity, not copy.
 pub fn app_menus() -> Vec<Menu> {
     let macos = cfg!(target_os = "macos");
 
     // macOS titles the first menu with the bundle/process name regardless of
     // what we pass, but gpui still wants a name.
     let mut app_items = vec![
-        MenuItem::action("About Holt", About),
+        MenuItem::action(t!("shell_chrome.app_menus.about"), About),
         MenuItem::separator(),
-        MenuItem::action("Settings", shell::OpenSettings),
+        MenuItem::action(t!("shell_chrome.app_menus.settings"), shell::OpenSettings),
         MenuItem::separator(),
     ];
     if macos {
         app_items.extend([
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::os_submenu(
+                t!("shell_chrome.app_menus.services"),
+                SystemMenuType::Services,
+            ),
             MenuItem::separator(),
-            MenuItem::action("Hide Holt", Hide),
-            MenuItem::action("Hide Others", HideOthers),
-            MenuItem::action("Show All", ShowAll),
+            MenuItem::action(t!("shell_chrome.app_menus.hide_app"), Hide),
+            MenuItem::action(t!("shell_chrome.app_menus.hide_others"), HideOthers),
+            MenuItem::action(t!("shell_chrome.app_menus.show_all"), ShowAll),
             MenuItem::separator(),
         ]);
     }
-    app_items.push(MenuItem::action("Quit Holt", Quit));
+    app_items.push(MenuItem::action(t!("shell_chrome.app_menus.quit"), Quit));
 
     let mut menus = vec![
         Menu::new("Holt").items(app_items),
@@ -190,36 +200,58 @@ pub fn app_menus() -> Vec<Menu> {
         // so the OS Edit menu routes through the responder chain to the focused
         // input — zed wires its editor actions identically
         // (crates/zed/src/zed/app_menus.rs, Edit/Selection menus).
-        Menu::new("Edit").items([
+        Menu::new(t!("shell_chrome.app_menus.menu_edit")).items([
             // Undo/Redo have no `OsAction` counterpart — they dispatch as plain
             // actions to the focused input, same as the composer keymap.
-            MenuItem::action("Undo", composer::Undo),
-            MenuItem::action("Redo", composer::Redo),
+            MenuItem::action(t!("shell_chrome.app_menus.undo"), composer::Undo),
+            MenuItem::action(t!("shell_chrome.app_menus.redo"), composer::Redo),
             MenuItem::separator(),
-            MenuItem::os_action("Cut", composer::Cut, OsAction::Cut),
-            MenuItem::os_action("Copy", composer::Copy, OsAction::Copy),
-            MenuItem::os_action("Paste", composer::Paste, OsAction::Paste),
+            MenuItem::os_action(
+                t!("shell_chrome.app_menus.cut"),
+                composer::Cut,
+                OsAction::Cut,
+            ),
+            MenuItem::os_action(
+                t!("shell_chrome.app_menus.copy"),
+                composer::Copy,
+                OsAction::Copy,
+            ),
+            MenuItem::os_action(
+                t!("shell_chrome.app_menus.paste"),
+                composer::Paste,
+                OsAction::Paste,
+            ),
             MenuItem::separator(),
-            MenuItem::os_action("Select All", composer::SelectAll, OsAction::SelectAll),
+            MenuItem::os_action(
+                t!("shell_chrome.app_menus.select_all"),
+                composer::SelectAll,
+                OsAction::SelectAll,
+            ),
         ]),
     ];
     // Appearance and interface zoom live under View on every platform —
     // "Appearance" as a top-level menu would read oddly next to Edit.
-    menus.push(Menu::new("View").items([
-        MenuItem::action("Appearance: System", AppearanceSystem),
-        MenuItem::action("Appearance: Light", AppearanceLight),
-        MenuItem::action("Appearance: Dark", AppearanceDark),
+    menus.push(Menu::new(t!("shell_chrome.app_menus.menu_view")).items([
+        MenuItem::action(
+            t!("shell_chrome.app_menus.appearance_system"),
+            AppearanceSystem,
+        ),
+        MenuItem::action(
+            t!("shell_chrome.app_menus.appearance_light"),
+            AppearanceLight,
+        ),
+        MenuItem::action(t!("shell_chrome.app_menus.appearance_dark"), AppearanceDark),
         MenuItem::separator(),
-        MenuItem::action("Zoom In", ZoomIn),
-        MenuItem::action("Zoom Out", ZoomOut),
+        MenuItem::action(t!("shell_chrome.app_menus.zoom_in"), ZoomIn),
+        MenuItem::action(t!("shell_chrome.app_menus.zoom_out"), ZoomOut),
     ]));
     if macos {
         // Standard Window menu; macOS appends the open-window list itself.
-        menus.push(Menu::new("Window").items([
-            MenuItem::action("Minimize", Minimize),
-            MenuItem::action("Zoom", Zoom),
+        menus.push(Menu::new(t!("shell_chrome.app_menus.menu_window")).items([
+            MenuItem::action(t!("shell_chrome.app_menus.minimize"), Minimize),
+            MenuItem::action(t!("shell_chrome.app_menus.zoom"), Zoom),
             MenuItem::separator(),
-            MenuItem::action("Close Window", CloseWindow),
+            MenuItem::action(t!("shell_chrome.app_menus.close_window"), CloseWindow),
         ]));
     }
     menus
@@ -242,23 +274,26 @@ mod tests {
 
     #[test]
     fn app_menu_ends_with_quit() {
+        let _locale = crate::i18n::tests::locale_lock();
         let menus = app_menus();
         assert_eq!(menus[0].name.as_ref(), "Holt");
         let Some(MenuItem::Action { name, action, .. }) = menus[0].items.last() else {
             panic!("last app-menu item must be an action");
         };
-        assert_eq!(name.as_ref(), "Quit Holt");
+        assert_eq!(name.as_ref(), t!("shell_chrome.app_menus.quit").as_ref());
         assert_eq!(action.name(), Quit.name());
     }
 
     #[test]
     fn app_menu_offers_settings() {
+        let _locale = crate::i18n::tests::locale_lock();
         let menus = app_menus();
         assert!(
             menus[0].items.iter().any(|item| matches!(
                 item,
                 MenuItem::Action { name, action, .. }
-                    if name.as_ref() == "Settings" && action.name() == shell::OpenSettings.name()
+                    if name.as_ref() == t!("shell_chrome.app_menus.settings").as_ref()
+                        && action.name() == shell::OpenSettings.name()
             )),
             "the application menu should expose Settings"
         );
@@ -266,21 +301,23 @@ mod tests {
 
     #[test]
     fn about_is_the_first_enabled_app_menu_item() {
+        let _locale = crate::i18n::tests::locale_lock();
         let menus = app_menus();
         let MenuItem::Action { name, action, .. } = &menus[0].items[0] else {
             panic!("first app-menu item must be the About action");
         };
-        assert_eq!(name.as_ref(), "About Holt");
+        assert_eq!(name.as_ref(), t!("shell_chrome.app_menus.about").as_ref());
         assert_eq!(action.name(), About.name());
         assert!(!menus[0].items[0].is_disabled());
     }
 
     #[test]
     fn edit_menu_uses_composer_clipboard_os_actions() {
+        let _locale = crate::i18n::tests::locale_lock();
         let menus = app_menus();
         let edit = menus
             .iter()
-            .find(|m| m.name.as_ref() == "Edit")
+            .find(|m| m.name.as_ref() == t!("shell_chrome.app_menus.menu_edit").as_ref())
             .expect("Edit menu present");
         // `OsAction` has no `Debug` impl at the pinned rev, so compare
         // per-field.
@@ -311,10 +348,11 @@ mod tests {
 
     #[test]
     fn view_menu_offers_all_three_appearance_modes() {
+        let _locale = crate::i18n::tests::locale_lock();
         let menus = app_menus();
         let view = menus
             .iter()
-            .find(|m| m.name.as_ref() == "View")
+            .find(|m| m.name.as_ref() == t!("shell_chrome.app_menus.menu_view").as_ref())
             .expect("View menu present");
         assert_eq!(
             action_names(view)[..3],
@@ -328,12 +366,48 @@ mod tests {
 
     #[test]
     fn view_menu_offers_interface_zoom() {
+        let _locale = crate::i18n::tests::locale_lock();
         let menus = app_menus();
         let view = menus
             .iter()
-            .find(|m| m.name.as_ref() == "View")
+            .find(|m| m.name.as_ref() == t!("shell_chrome.app_menus.menu_view").as_ref())
             .expect("View menu present");
         assert_eq!(action_names(view)[3..], [ZoomIn.name(), ZoomOut.name()]);
+    }
+
+    /// Labels come from the catalog, so the menu bar re-translates when the
+    /// process locale moves — the property `i18n::set_language` relies on
+    /// when it re-runs `app_menus` through `cx.set_menus`. Expected values
+    /// assert literal zh-CN text (not `t!` again — the test must observe
+    /// the switch, not assume it). Holds the locale lock: another test
+    /// must not flip the language mid-assert, and the locale resets after.
+    #[test]
+    fn menu_labels_follow_the_locale() {
+        let _guard = crate::i18n::tests::locale_lock();
+        let menus = app_menus();
+        let MenuItem::Action { name, .. } = &menus[0].items[0] else {
+            panic!("first app-menu item must be an action");
+        };
+        assert_eq!(name.as_ref(), "About Holt");
+
+        rust_i18n::set_locale("zh-CN");
+        let menus = app_menus();
+        let MenuItem::Action { name, .. } = &menus[0].items[0] else {
+            panic!("first app-menu item must be an action");
+        };
+        assert_eq!(name.as_ref(), "关于 Holt");
+        let MenuItem::Action { name, .. } = menus[0].items.last().unwrap() else {
+            panic!("last app-menu item must be an action");
+        };
+        assert_eq!(name.as_ref(), "退出 Holt");
+        let edit = menus
+            .iter()
+            .find(|m| m.name.as_ref() == "编辑")
+            .expect("Edit menu follows the locale");
+        // Undo, Redo, Cut, Copy, Paste, Select All, and the two separators.
+        assert_eq!(edit.items.len(), 8);
+
+        crate::i18n::tests::reset_locale();
     }
 
     #[test]

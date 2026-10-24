@@ -3,6 +3,7 @@
 //! the theme instead of the platform's alert chrome.
 
 use super::*;
+use crate::i18n::t;
 
 impl Shell {
     pub(super) fn render_about_dialog(
@@ -31,20 +32,25 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
+                    // The name is identity (the bundle/process name), not
+                    // copy — only the version line localizes.
                     .child(popover::dialog_title(theme, "Holt"))
                     .child(
                         div()
                             .text_size(crate::typography::ui_rems(12.0))
                             .font_family(theme.font_mono.clone())
                             .text_color(theme.text_muted)
-                            .child(SharedString::from(format!(
-                                "Version {}",
-                                env!("CARGO_PKG_VERSION")
-                            ))),
+                            .child(SharedString::from(
+                                t!(
+                                    "shell_chrome.about.version",
+                                    version = env!("CARGO_PKG_VERSION")
+                                )
+                                .into_owned(),
+                            )),
                     ),
             );
         let footer = div().flex().flex_row().justify_end().child(
-            popover::btn_primary(theme, "OK")
+            popover::btn_primary(theme, &t!("shell_chrome.about.ok"))
                 .id("about-ok")
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.about_dialog = false;

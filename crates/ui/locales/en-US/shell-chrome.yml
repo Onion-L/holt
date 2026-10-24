@@ -1,0 +1,207 @@
+_version: 2
+shell_chrome:
+  app_menus:
+    about:
+      en-US: About Holt
+    settings:
+      en-US: Settings
+    services:
+      en-US: Services
+    hide_app:
+      en-US: Hide Holt
+    hide_others:
+      en-US: Hide Others
+    show_all:
+      en-US: Show All
+    quit:
+      en-US: Quit Holt
+    menu_edit:
+      en-US: Edit
+    menu_view:
+      en-US: View
+    menu_window:
+      en-US: Window
+    undo:
+      en-US: Undo
+    redo:
+      en-US: Redo
+    cut:
+      en-US: Cut
+    copy:
+      en-US: Copy
+    paste:
+      en-US: Paste
+    select_all:
+      en-US: Select All
+    appearance_system:
+      en-US: "Appearance: System"
+    appearance_light:
+      en-US: "Appearance: Light"
+    appearance_dark:
+      en-US: "Appearance: Dark"
+    zoom_in:
+      en-US: Zoom In
+    zoom_out:
+      en-US: Zoom Out
+    minimize:
+      en-US: Minimize
+    zoom:
+      en-US: Zoom
+    close_window:
+      en-US: Close Window
+  common:
+    cancel:
+      en-US: Cancel
+  menu_bar:
+    menu_file:
+      en-US: File
+    menu_help:
+      en-US: Help
+    new_session:
+      en-US: New Session
+    settings:
+      en-US: Settings…
+    exit:
+      en-US: Exit
+    toggle_sidebar:
+      en-US: Toggle Sidebar
+    toggle_terminal:
+      en-US: Toggle Terminal
+    toggle_changes:
+      en-US: Toggle Changes
+  titlebar:
+    nav_scheduled:
+      en-US: Scheduled
+    nav_chat_manager:
+      en-US: Chat manager
+    update_pill:
+      en-US: Update
+    tooltip_toggle_terminal:
+      en-US: Toggle terminal
+    tooltip_expand_panel:
+      en-US: Expand panel
+    tooltip_toggle_right_panel:
+      en-US: Toggle right panel
+    tooltip_open_workspace_in:
+      en-US: Open workspace in %{app}
+    no_workspace_selected:
+      en-US: No workspace is selected
+    could_not_open_app:
+      en-US: "Could not open %{app}: %{error}"
+  session:
+    default_title:
+      en-US: New session
+  settings_section:
+    general:
+      en-US: General
+    providers:
+      en-US: Providers
+    appearance:
+      en-US: Appearance
+    shortcuts:
+      en-US: Shortcuts
+    skills:
+      en-US: Skills
+    mcp:
+      en-US: MCP Servers
+    usage:
+      en-US: Usage
+    archived:
+      en-US: Archived sessions
+  about:
+    version:
+      en-US: Version %{version}
+    ok:
+      en-US: OK
+  update:
+    tooltip_available:
+      en-US: Update to Holt %{version}
+    tooltip_downloading:
+      en-US: Downloading Holt %{version}…
+    tooltip_installing:
+      en-US: Installing Holt %{version}…
+    tooltip_restart:
+      en-US: Restart to update
+    title_available:
+      en-US: Update available
+    title_downloading:
+      en-US: Downloading update
+    title_installing:
+      en-US: Installing update
+    title_ready:
+      en-US: Ready to restart
+    body_available:
+      en-US: Holt %{version} is ready to download. You can keep working while it downloads; Holt restarts only when you say so.
+    last_attempt_failed:
+      en-US: "Last attempt failed: %{error}"
+    progress_of:
+      en-US: "%{done} of %{total}"
+    verifying_installing:
+      en-US: Verifying and installing…
+    body_ready:
+      en-US: Holt %{version} is installed. Restart Holt to finish updating.
+    later:
+      en-US: Later
+    try_again:
+      en-US: Try again
+    download:
+      en-US: Download
+    cancel:
+      en-US: Cancel
+    hide:
+      en-US: Hide
+    restart_now:
+      en-US: Restart now
+    failed_notice:
+      en-US: "Update failed: %{error}"
+  chat_link:
+    copied:
+      en-US: Holt Chat link copied
+    not_ready:
+      en-US: Chat link is not ready yet
+  rename_dialog:
+    title:
+      en-US: Rename session
+    placeholder:
+      en-US: Session title
+    confirm:
+      en-US: Rename
+  delete_dialog:
+    title:
+      en-US: Delete session?
+    body:
+      en-US: "“%{title}” will be permanently deleted. Its terminals and running programs will also end. This can’t be undone."
+    confirm:
+      en-US: Delete
+  archive_dialog:
+    title:
+      en-US: Archive session?
+    body:
+      en-US: "“%{title}” will move to Settings → Archived. You can unarchive it there anytime."
+    confirm:
+      en-US: Archive
+  canvas:
+    prompt_in_project:
+      en-US: What should we build in %{name}?
+    prompt:
+      en-US: What should we build?
+    add_project:
+      en-US: Add a project
+    dismiss:
+      en-US: Dismiss
+  dropzone:
+    drop_images:
+      en-US: Drop images to attach
+    drop_to_attach:
+      en-US: Drop to attach
+  jump_pill:
+    scroll_to_bottom:
+      en-US: Scroll to bottom
+  status_strip:
+    run_failed:
+      en-US: Run failed
+    sending:
+      en-US: Sending…
+  gate:
+    retry:
+      en-US: Retry

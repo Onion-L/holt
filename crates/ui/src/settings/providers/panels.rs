@@ -58,30 +58,35 @@ pub(super) fn probe_status_line(
 ) -> Option<AnyElement> {
     let probe = probe?;
     let (text, tone) = match probe {
-        ProbeState::Running => (Some("Testing…".to_string()), theme.text_muted),
+        ProbeState::Running => (
+            Some(t!("settings_providers_usage.providers.probe.testing").into_owned()),
+            theme.text_muted,
+        ),
         ProbeState::Done(outcome) => match outcome.status.as_str() {
             "ok" => {
-                let latency = outcome
-                    .latency_ms
-                    .map(|ms| format!(" · {ms} ms"))
-                    .unwrap_or_default();
-                (
-                    Some(format!(
-                        "Endpoint reachable · {} models{latency}",
-                        outcome.model_ids.len()
-                    )),
-                    theme.text_muted,
-                )
+                let count = outcome.model_ids.len();
+                let line = match outcome.latency_ms {
+                    Some(ms) => t!(
+                        "settings_providers_usage.providers.probe.ok_latency",
+                        count = count,
+                        ms = ms
+                    ),
+                    None => t!("settings_providers_usage.providers.probe.ok", count = count),
+                };
+                (Some(line.into_owned()), theme.text_muted)
             }
             "key_rejected" => (
-                Some("The endpoint rejected this key — replace it and save".to_string()),
+                Some(t!("settings_providers_usage.providers.probe.key_rejected").into_owned()),
                 theme.danger_muted,
             ),
             _ => (
-                outcome
-                    .error
-                    .clone()
-                    .map(|error| format!("Could not verify — {error}")),
+                outcome.error.clone().map(|error| {
+                    t!(
+                        "settings_providers_usage.providers.probe.unverifiable",
+                        error = error
+                    )
+                    .into_owned()
+                }),
                 theme.text_muted,
             ),
         },
@@ -157,7 +162,10 @@ pub(super) fn variant_selector(
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(widgets::field_label(theme, "Endpoint"))
+            .child(widgets::field_label(
+                theme,
+                t!("settings_providers_usage.providers.endpoint_label"),
+            ))
             .child(row)
             .into_any_element(),
     )
@@ -180,7 +188,7 @@ pub(super) fn provider_model_list(
             .py(px(8.0))
             .text_size(crate::typography::ui_rems(12.0))
             .text_color(theme.text_muted)
-            .child("No models available")
+            .child(t!("settings_providers_usage.providers.no_models"))
             .into_any_element(),
         Loadable::Ready(models) => {
             let count = models.len();
@@ -360,9 +368,9 @@ pub(super) fn panel_danger_row(
                             page.arm_or_reset(reset_provider.clone(), cx)
                         }))
                         .child(if armed {
-                            "Confirm reset — drops this provider's user-written entries"
+                            t!("settings_providers_usage.providers.reset_confirm")
                         } else {
-                            "Reset to catalog"
+                            t!("settings_providers_usage.providers.reset_to_catalog")
                         }),
                 )
                 .children(custom.then(|| {
@@ -377,7 +385,7 @@ pub(super) fn panel_danger_row(
                             });
                             cx.notify();
                         }))
-                        .child("Remove provider")
+                        .child(t!("settings_providers_usage.providers.remove_provider"))
                 })),
         )
         .into_any_element()
@@ -398,12 +406,14 @@ pub(super) fn remove_provider_dialog(
         }))
         .child(popover::dialog_title(
             theme,
-            &format!("Remove {}?", confirm.name),
+            &t!(
+                "settings_providers_usage.providers.remove_dialog_title",
+                name = confirm.name.as_str()
+            ),
         ))
         .child(div().mt(px(6.0)).child(popover::dialog_body(
             theme,
-            "The provider definition, custom models, model records, hidden list, and logo \
-             are deleted. The API key is kept. This can't be undone.",
+            t!("settings_providers_usage.providers.remove_dialog_body"),
         )))
         .child(
             div()
@@ -413,16 +423,20 @@ pub(super) fn remove_provider_dialog(
                 .justify_end()
                 .gap(px(8.0))
                 .child(
-                    popover::btn_ghost(theme, "Cancel", "remove-provider-cancel")
-                        .id("remove-provider-cancel")
-                        .debug_selector(|| "remove-provider-cancel".into())
-                        .on_click(cx.listener(|page, _, _, cx| {
-                            page.confirm_remove = None;
-                            cx.notify();
-                        })),
+                    popover::btn_ghost(
+                        theme,
+                        &t!("settings_providers_usage.providers.cancel"),
+                        "remove-provider-cancel",
+                    )
+                    .id("remove-provider-cancel")
+                    .debug_selector(|| "remove-provider-cancel".into())
+                    .on_click(cx.listener(|page, _, _, cx| {
+                        page.confirm_remove = None;
+                        cx.notify();
+                    })),
                 )
                 .child(
-                    popover::btn_danger(theme, "Remove")
+                    popover::btn_danger(theme, &t!("settings_providers_usage.providers.remove"))
                         .id("remove-provider-confirm")
                         .debug_selector(|| "remove-provider-confirm".into())
                         .on_click(cx.listener(move |page, _, _, cx| {
@@ -442,12 +456,13 @@ pub(super) fn reset_all_dialog(theme: &Theme, cx: &mut Context<ProvidersPage>) -
             page.confirm_reset_all = false;
             cx.notify();
         }))
-        .child(popover::dialog_title(theme, "Reset all providers?"))
+        .child(popover::dialog_title(
+            theme,
+            &t!("settings_providers_usage.providers.reset_all_title"),
+        ))
         .child(div().mt(px(6.0)).child(popover::dialog_body(
             theme,
-            "Custom models, model records, hidden lists, and endpoint overrides return to \
-                 the compiled catalog for every provider. API keys are kept. This can\u{2019}t \
-                 be undone.",
+            t!("settings_providers_usage.providers.reset_all_body"),
         )))
         .child(
             div()
@@ -457,15 +472,19 @@ pub(super) fn reset_all_dialog(theme: &Theme, cx: &mut Context<ProvidersPage>) -
                 .justify_end()
                 .gap(px(8.0))
                 .child(
-                    popover::btn_ghost(theme, "Cancel", "reset-all-cancel")
-                        .id("reset-all-cancel")
-                        .on_click(cx.listener(|page, _, _, cx| {
-                            page.confirm_reset_all = false;
-                            cx.notify();
-                        })),
+                    popover::btn_ghost(
+                        theme,
+                        &t!("settings_providers_usage.providers.cancel"),
+                        "reset-all-cancel",
+                    )
+                    .id("reset-all-cancel")
+                    .on_click(cx.listener(|page, _, _, cx| {
+                        page.confirm_reset_all = false;
+                        cx.notify();
+                    })),
                 )
                 .child(
-                    popover::btn_danger(theme, "Reset all")
+                    popover::btn_danger(theme, &t!("settings_providers_usage.providers.reset_all"))
                         .id("reset-all-confirm")
                         .debug_selector(|| "reset-all-confirm".into())
                         .on_click(cx.listener(|page, _, _, cx| {
@@ -512,7 +531,10 @@ pub(super) fn hidden_rows(
                 .size(px(11.0))
                 .text_color(theme.text_muted),
         )
-        .child(widgets::field_label(theme, "Hidden"))
+        .child(widgets::field_label(
+            theme,
+            t!("settings_providers_usage.providers.hidden_label"),
+        ))
         .child(
             div()
                 .text_size(crate::typography::ui_rems(11.0))
@@ -704,7 +726,14 @@ impl ProvidersPage {
     pub(super) fn ensure_variant_inputs(&mut self, variant_id: &str, cx: &mut Context<Self>) {
         self.inputs
             .entry(variant_id.to_string())
-            .or_insert_with(|| cx.new(|cx| ComposerInput::new_secret("API key", cx)));
+            .or_insert_with(|| {
+                cx.new(|cx| {
+                    ComposerInput::new_secret(
+                        t!("settings_providers_usage.providers.api_key_label"),
+                        cx,
+                    )
+                })
+            });
     }
 
     /// Fetch the stored key and populate the variant's input. A return visit
@@ -1130,7 +1159,10 @@ impl ProvidersPage {
             .map(|input| input.read(cx).text().to_string())
             .unwrap_or_default();
         if key.trim().is_empty() {
-            self.fail("API key is required", cx);
+            self.fail(
+                t!("settings_providers_usage.providers.error_api_key_required"),
+                cx,
+            );
             return;
         }
         self.task = Some(cx.spawn(async move |this, cx| {

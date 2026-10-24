@@ -11,12 +11,15 @@
 //! the close control, the empty backdrop, and Escape dismiss it, and the
 //! owner restores focus on the `Closed` event.
 
+use std::borrow::Cow;
+
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Render,
     ScrollDelta, ScrollWheelEvent, SharedString, Size, Window, anchored, deferred, div, img, point,
     prelude::*, px, size,
 };
 
+use crate::i18n::t;
 use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
 
@@ -166,7 +169,7 @@ impl ImageViewer {
         self.load_gen += 1;
         let load_gen = self.load_gen;
         let Some(engine) = self.engine(cx) else {
-            self.load = LoadState::Failed("Engine not connected.".into());
+            self.load = LoadState::Failed(crate::state::engine_not_connected().into());
             cx.notify();
             return;
         };
@@ -305,7 +308,8 @@ impl ImageViewer {
                 let Some(destination) = destination else {
                     return Ok(());
                 };
-                let engine = engine.ok_or_else(|| SharedString::from("Engine not connected."))?;
+                let engine = engine
+                    .ok_or_else(|| SharedString::from(crate::state::engine_not_connected()))?;
                 crate::images::save_original(
                     &engine,
                     &source,
@@ -324,9 +328,9 @@ impl ImageViewer {
                 cx.update_window(window, |_, window, cx| {
                     drop(window.prompt(
                         gpui::PromptLevel::Critical,
-                        "Could not download image",
+                        &t!("pickers_dialogs.image_viewer.download_failed_title"),
                         Some(&error),
-                        &["OK"],
+                        &[t!("pickers_dialogs.image_viewer.ok").as_ref()],
                         cx,
                     ));
                 })
@@ -338,14 +342,15 @@ impl ImageViewer {
 
     fn toolbar_button(
         id: &'static str,
-        tooltip: &'static str,
+        tooltip: Cow<'static, str>,
         child: impl IntoElement,
     ) -> gpui::Stateful<gpui::Div> {
+        let aria = tooltip.clone();
         div()
             .id(id)
             .debug_selector(|| id.to_string())
             .role(gpui::Role::Button)
-            .aria_label(tooltip)
+            .aria_label(aria)
             .focusable()
             .occlude()
             .flex_none()
@@ -360,7 +365,7 @@ impl ImageViewer {
             .hover(|el| el.bg(gpui::rgb(0x444444)))
             .cursor_pointer()
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
+                cx.new(|_| crate::popover::TextTooltip(tooltip.clone().into()))
                     .into()
             })
             .child(child)
@@ -386,7 +391,7 @@ impl ImageViewer {
                     .child(
                         Self::toolbar_button(
                             "viewer-download",
-                            "Download original image",
+                            t!("pickers_dialogs.image_viewer.download_original"),
                             glyph(crate::icons::DOWNLOAD_MINIMALISTIC),
                         )
                         .when(self.downloading, |el| el.opacity(0.5))
@@ -395,7 +400,7 @@ impl ImageViewer {
                     .child(
                         Self::toolbar_button(
                             "viewer-close",
-                            "Close (Esc)",
+                            t!("pickers_dialogs.image_viewer.close"),
                             glyph(crate::icons::CLOSE),
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
@@ -405,7 +410,7 @@ impl ImageViewer {
                 el.child(
                     Self::toolbar_button(
                         "viewer-prev",
-                        "Previous image (←)",
+                        t!("pickers_dialogs.image_viewer.previous"),
                         glyph(crate::icons::ALT_ARROW_LEFT),
                     )
                     .absolute()
@@ -417,7 +422,7 @@ impl ImageViewer {
                 .child(
                     Self::toolbar_button(
                         "viewer-next",
-                        "Next image (→)",
+                        t!("pickers_dialogs.image_viewer.next"),
                         glyph(crate::icons::ALT_ARROW_RIGHT),
                     )
                     .absolute()
@@ -449,7 +454,7 @@ impl ImageViewer {
                             .child(
                                 Self::toolbar_button(
                                     "viewer-zoom-out",
-                                    "Zoom out (−)",
+                                    t!("pickers_dialogs.image_viewer.zoom_out"),
                                     glyph(crate::icons::WINDOW_MINIMIZE),
                                 )
                                 .on_click(cx.listener(
@@ -459,17 +464,23 @@ impl ImageViewer {
                                 )),
                             )
                             .child(
-                                Self::toolbar_button("viewer-100", "Actual size (1)", zoom_label)
-                                    .w(px(60.0))
-                                    .bg(gpui::transparent_black())
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                Self::toolbar_button(
+                                    "viewer-100",
+                                    t!("pickers_dialogs.image_viewer.actual_size"),
+                                    zoom_label,
+                                )
+                                .w(px(60.0))
+                                .bg(gpui::transparent_black())
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
                                         this.zoom_100(window, cx);
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
                                 Self::toolbar_button(
                                     "viewer-zoom-in",
-                                    "Zoom in (+)",
+                                    t!("pickers_dialogs.image_viewer.zoom_in"),
                                     glyph(crate::icons::PLUS),
                                 )
                                 .on_click(cx.listener(
@@ -612,7 +623,7 @@ impl Render for ImageViewer {
                         div()
                             .id("viewer-retry")
                             .role(gpui::Role::Button)
-                            .aria_label("Retry image preview")
+                            .aria_label(t!("pickers_dialogs.image_viewer.retry_preview"))
                             .focusable()
                             .px(px(12.0))
                             .py(px(6.0))
@@ -626,7 +637,7 @@ impl Render for ImageViewer {
                                 cx.stop_propagation();
                                 this.retry(cx);
                             }))
-                            .child("Retry"),
+                            .child(t!("pickers_dialogs.common.retry")),
                     ),
             ),
             LoadState::Ready(pixels) => surface.child(

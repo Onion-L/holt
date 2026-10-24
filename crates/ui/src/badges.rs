@@ -261,6 +261,10 @@ mod tests {
 
     #[test]
     fn a_sent_comment_block_becomes_one_pill() {
+        // Catalog-driven label (`comments::chip_label`): hold the locale lock
+        // against the i18n switch tests and assert the t! output, not a
+        // literal — a literal raced the zh-CN switch in the full suite.
+        let _locale = crate::i18n::tests::locale_lock();
         let staged = vec![
             DiffComment::new("a.rs", CommentSide::New, 3, "fix"),
             DiffComment::new("b.rs", CommentSide::Old, 9, "why"),
@@ -268,7 +272,10 @@ mod tests {
         let (text, badges) = split(&with_comments("do", &staged));
         assert_eq!(text, "do");
         assert_eq!(badges.len(), 1);
-        assert_eq!(badges[0].label.as_ref(), "2 comments");
+        assert_eq!(
+            badges[0].label.as_ref(),
+            crate::i18n::t!("changes_git.comments.chip.other", count = 2).as_ref()
+        );
     }
 
     #[test]
@@ -309,9 +316,17 @@ mod tests {
 
     #[test]
     fn a_comment_only_send_keeps_its_stand_in_body() {
+        // The label is catalog-driven (`comments::chip_label`), so hold the
+        // locale lock against the i18n switch tests and assert the t!
+        // output rather than a literal — expected and actual share whatever
+        // locale is active.
+        let _locale = crate::i18n::tests::locale_lock();
         let staged = vec![DiffComment::new("a.rs", CommentSide::New, 3, "fix")];
         let (text, badges) = split(&with_comments("", &staged));
         assert_eq!(text, crate::comments::COMMENT_ONLY_TEXT);
-        assert_eq!(badges[0].label.as_ref(), "1 comment");
+        assert_eq!(
+            badges[0].label.as_ref(),
+            crate::i18n::t!("changes_git.comments.chip.one").as_ref()
+        );
     }
 }

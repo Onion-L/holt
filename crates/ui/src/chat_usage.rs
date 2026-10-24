@@ -19,6 +19,7 @@ use gpui::{
 };
 
 use crate::{
+    i18n::t,
     motion,
     state::{AppState, EngineHandle},
     theme::Theme,
@@ -171,10 +172,10 @@ pub(crate) fn card_model(usage: &ChatUsage) -> CardModel {
 /// source — prints as the key itself, never dropped.
 fn kind_label(kind: &str) -> String {
     match kind {
-        "turn" => "Turns".to_string(),
-        "subagent" => "Subagents".to_string(),
-        "compaction" => "Compaction".to_string(),
-        "auto-review" => "Auto review".to_string(),
+        "turn" => t!("conversation_transcript.usage.kind.turn").into_owned(),
+        "subagent" => t!("conversation_transcript.usage.kind.subagent").into_owned(),
+        "compaction" => t!("conversation_transcript.usage.kind.compaction").into_owned(),
+        "auto-review" => t!("conversation_transcript.usage.kind.auto_review").into_owned(),
         other => other.to_string(),
     }
 }
@@ -193,8 +194,9 @@ pub(crate) fn occupancy_value(occupancy: &Occupancy) -> String {
             percent(occupancy.tokens as f64 / window as f64),
         ),
         None => format!(
-            "{approx}{} · window unknown",
-            compact_tokens(occupancy.tokens)
+            "{approx}{} {}",
+            compact_tokens(occupancy.tokens),
+            t!("conversation_transcript.usage.window_unknown")
         ),
     }
 }
@@ -202,13 +204,18 @@ pub(crate) fn occupancy_value(occupancy: &Occupancy) -> String {
 /// The usage section's value: the gross total and the records behind it.
 fn usage_value(model: &CardModel) -> String {
     format!(
-        "{} · {} {}",
+        "{} · {}",
         compact_tokens(model.gross),
-        model.records,
         if model.records == 1 {
-            "record"
+            t!(
+                "conversation_transcript.usage.records.one",
+                count = model.records
+            )
         } else {
-            "records"
+            t!(
+                "conversation_transcript.usage.records.other",
+                count = model.records
+            )
         }
     )
 }
@@ -223,11 +230,11 @@ pub(crate) fn percent(fraction: f64) -> String {
 
 /// The one line of prose the card keeps: where the occupancy number came
 /// from, and what is missing when the window is unknown.
-fn source_note(model: &CardModel) -> Option<&'static str> {
+fn source_note(model: &CardModel) -> Option<std::borrow::Cow<'static, str>> {
     match (model.occupancy.estimated, model.occupancy.window) {
-        (true, None) => Some("Estimated from history; the window is unknown."),
-        (true, Some(_)) => Some("Estimated from history until the next reply reports usage."),
-        (false, None) => Some("Context window size is unknown."),
+        (true, None) => Some(t!("conversation_transcript.usage.note.estimated_unknown")),
+        (true, Some(_)) => Some(t!("conversation_transcript.usage.note.estimated")),
+        (false, None) => Some(t!("conversation_transcript.usage.note.window_unknown")),
         (false, Some(_)) => None,
     }
 }
@@ -325,7 +332,7 @@ impl Render for UsageCard {
             .gap(px(7.0))
             .text_size(crate::typography::ui_rems(12.0))
             .child(section_header(
-                "Context",
+                t!("conversation_transcript.usage.section.context").as_ref(),
                 occupancy_value(&model.occupancy),
                 &theme,
             ))
@@ -338,7 +345,11 @@ impl Render for UsageCard {
         if !model.kinds.is_empty() {
             card = card
                 .child(div().h(px(2.0)))
-                .child(section_header("Usage", usage_value(model), &theme))
+                .child(section_header(
+                    t!("conversation_transcript.usage.section.usage").as_ref(),
+                    usage_value(model),
+                    &theme,
+                ))
                 .child(usage_bar(model, &theme))
                 .children(
                     model
@@ -352,7 +363,7 @@ impl Render for UsageCard {
             card = card
                 .child(div().h(px(2.0)))
                 .child(section_header(
-                    "Cache hit",
+                    t!("conversation_transcript.usage.section.cache_hit").as_ref(),
                     percent(hit_rate as f64),
                     &theme,
                 ))
@@ -360,7 +371,7 @@ impl Render for UsageCard {
                 .child(footnote(cache_note(&model.cache), &theme));
         }
         if let Some(note) = source_note(model) {
-            card = card.child(footnote(note.to_string(), &theme));
+            card = card.child(footnote(note.into_owned(), &theme));
         }
         crate::frost::frosted(crate::popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
     }
@@ -492,15 +503,22 @@ fn kind_color(rank: usize, theme: &Theme) -> Hsla {
 /// stays out: most providers never report cache writes, and a permanent
 /// "0 written" is noise rather than data.
 fn cache_note(cache: &CacheStats) -> String {
-    let mut note = format!(
-        "{} input · {} read",
-        compact_tokens(cache.input),
-        compact_tokens(cache.read)
-    );
     if cache.written > 0 {
-        note.push_str(&format!(" · {} written", compact_tokens(cache.written)));
+        t!(
+            "conversation_transcript.usage.cache_note_written",
+            input = compact_tokens(cache.input),
+            read = compact_tokens(cache.read),
+            written = compact_tokens(cache.written)
+        )
+        .into_owned()
+    } else {
+        t!(
+            "conversation_transcript.usage.cache_note",
+            input = compact_tokens(cache.input),
+            read = compact_tokens(cache.read)
+        )
+        .into_owned()
     }
-    note
 }
 
 /// The card's small print: the cache counts and the occupancy's source.
@@ -592,6 +610,7 @@ mod tests {
 
     #[test]
     fn the_card_splits_the_shown_usage_by_kind_largest_first() {
+        let _locale = crate::i18n::tests::locale_lock();
         let model = card_model(&decode(json!({
             "gross": 1000,
             "byKind": {
@@ -604,7 +623,10 @@ mod tests {
         // The four token fields per kind, summed and shared over the shown
         // usage — the row's own count and the bar's segment width.
         assert_eq!(row(&model, "turn").tokens, 800);
-        assert_eq!(row(&model, "turn").label, "Turns");
+        assert_eq!(
+            row(&model, "turn").label,
+            t!("conversation_transcript.usage.kind.turn").as_ref()
+        );
         assert!((row(&model, "turn").share - 1.0).abs() < 1e-6);
         // Prompt-side tokens: uncached input, reads, writes — the cache
         // section's three numbers and its rate.
@@ -648,6 +670,7 @@ mod tests {
 
     #[test]
     fn the_hit_rate_divides_reads_by_every_prompt_token() {
+        let _locale = crate::i18n::tests::locale_lock();
         // A write is prompt the provider processed and stored, so it widens
         // the denominator: 300 reads of 400 input + 300 read + 300 written.
         let cache = CacheStats {
@@ -657,7 +680,15 @@ mod tests {
         };
         assert_eq!(cache.prompt(), 1000);
         assert_eq!(percent(cache.hit_rate().unwrap() as f64), "30%");
-        assert_eq!(cache_note(&cache), "400 input · 300 read · 300 written");
+        assert_eq!(
+            cache_note(&cache),
+            t!(
+                "conversation_transcript.usage.cache_note_written",
+                input = "400",
+                read = "300",
+                written = "300"
+            )
+        );
 
         // A provider that never reports writes keeps them out of the print.
         let reads_only = CacheStats {
@@ -666,7 +697,14 @@ mod tests {
             written: 0,
         };
         assert_eq!(percent(reads_only.hit_rate().unwrap() as f64), "80%");
-        assert_eq!(cache_note(&reads_only), "200 input · 800 read");
+        assert_eq!(
+            cache_note(&reads_only),
+            t!(
+                "conversation_transcript.usage.cache_note",
+                input = "200",
+                read = "800"
+            )
+        );
 
         // No prompt tokens at all: no rate to print, and no section.
         assert_eq!(CacheStats::default().hit_rate(), None);
@@ -701,6 +739,7 @@ mod tests {
 
     #[test]
     fn occupancy_names_its_source_and_a_withheld_window() {
+        let _locale = crate::i18n::tests::locale_lock();
         let measured = Occupancy {
             tokens: 7_651,
             window: Some(272_000),
@@ -722,21 +761,32 @@ mod tests {
             window: None,
             ..measured
         };
-        assert_eq!(occupancy_value(&unknown), "7.7k · window unknown");
+        assert_eq!(
+            occupancy_value(&unknown),
+            format!(
+                "7.7k {}",
+                t!("conversation_transcript.usage.window_unknown")
+            )
+        );
         assert_eq!(unknown.fraction(), 0.0);
     }
 
     #[test]
     fn a_blank_frame_yields_no_shares_and_no_nan() {
+        let _locale = crate::i18n::tests::locale_lock();
         let model = card_model(&ChatUsage::default());
         assert_eq!(model.gross, 0);
         assert!(model.kinds.is_empty());
         assert_eq!(model.cache, CacheStats::default());
-        assert_eq!(occupancy_value(&model.occupancy), "0 · window unknown");
+        assert_eq!(
+            occupancy_value(&model.occupancy),
+            format!("0 {}", t!("conversation_transcript.usage.window_unknown"))
+        );
     }
 
     #[test]
     fn the_source_note_covers_every_state_of_the_two_flags() {
+        let _locale = crate::i18n::tests::locale_lock();
         let of = |estimated, window| {
             source_note(&card_model(&ChatUsage {
                 occupancy: holt_proto::ChatOccupancy {
@@ -748,9 +798,18 @@ mod tests {
             }))
         };
         assert_eq!(of(false, Some(1_000)), None);
-        assert!(of(false, None).unwrap().contains("unknown"));
-        assert!(of(true, Some(1_000)).unwrap().contains("Estimated"));
-        assert!(of(true, None).unwrap().contains("Estimated"));
+        assert_eq!(
+            of(false, None),
+            Some(t!("conversation_transcript.usage.note.window_unknown"))
+        );
+        assert_eq!(
+            of(true, Some(1_000)),
+            Some(t!("conversation_transcript.usage.note.estimated"))
+        );
+        assert_eq!(
+            of(true, None),
+            Some(t!("conversation_transcript.usage.note.estimated_unknown"))
+        );
     }
 
     /// The ring and the card both paint, at the geometry the bars claim:
@@ -887,6 +946,7 @@ mod tests {
 
     #[gpui::test]
     fn selected_usage_updates_switches_and_hides_on_version_skew(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -914,7 +974,7 @@ mod tests {
         // The unknown window drops the percentage and the ring's arc with it.
         assert_eq!(
             displayed_occupancy(&state, cx).as_deref(),
-            Some("40k · window unknown")
+            Some(format!("40k {}", t!("conversation_transcript.usage.window_unknown")).as_str())
         );
 
         state.update(cx, |state, cx| state.select_chat(Some("b".into()), cx));
@@ -939,6 +999,7 @@ mod tests {
 
     #[gpui::test]
     fn scripted_engine_totals_reach_the_selected_ring(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         use super::engine_fixture::{self, Fixture, ScriptedProvider, ScriptedReply};
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1021,7 +1082,13 @@ mod tests {
                 shown.starts_with("710 / ") && shown.ends_with('%'),
                 "{shown}"
             );
-            assert_eq!(usage_value(&model), "780 · 1 record");
+            assert_eq!(
+                usage_value(&model),
+                format!(
+                    "780 · {}",
+                    t!("conversation_transcript.usage.records.one", count = 1)
+                )
+            );
         });
     }
 }

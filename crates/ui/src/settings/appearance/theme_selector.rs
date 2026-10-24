@@ -2,37 +2,72 @@
 
 use super::*;
 
-pub(super) fn accent_helper(accent: AccentSelection) -> String {
-    match accent {
-        AccentSelection::ThemeDefault => {
-            "Theme default · Uses the palette's intended color.".into()
-        }
-        AccentSelection::Preset(preset) => format!(
-            "{} · Controls, glyphs, selections, code, and activity.",
-            preset.label()
-        ),
+/// The localized display name of an accent preset. [`AccentPreset`] itself
+/// (and its `label()`) is the serialized identity — element ids keep using it;
+/// this is the UI-side projection for copy.
+pub(super) fn accent_preset_label(preset: AccentPreset) -> Cow<'static, str> {
+    match preset {
+        AccentPreset::Holt => t!("settings_general_appearance.appearance.accents.holt"),
+        AccentPreset::Orange => t!("settings_general_appearance.appearance.accents.orange"),
+        AccentPreset::Amber => t!("settings_general_appearance.appearance.accents.amber"),
+        AccentPreset::Green => t!("settings_general_appearance.appearance.accents.green"),
+        AccentPreset::Cyan => t!("settings_general_appearance.appearance.accents.cyan"),
+        AccentPreset::Blue => t!("settings_general_appearance.appearance.accents.blue"),
+        AccentPreset::Pink => t!("settings_general_appearance.appearance.accents.pink"),
     }
 }
 
-pub(super) fn surface_label(surface: SurfacePreference) -> &'static str {
+pub(super) fn accent_helper(accent: AccentSelection) -> String {
+    match accent {
+        AccentSelection::ThemeDefault => {
+            t!("settings_general_appearance.appearance.accent_default_helper").into()
+        }
+        AccentSelection::Preset(preset) => t!(
+            "settings_general_appearance.appearance.accent_preset_helper",
+            preset = accent_preset_label(preset)
+        )
+        .into(),
+    }
+}
+
+/// The localized display label of a surface preference.
+pub(super) fn surface_label(surface: SurfacePreference) -> Cow<'static, str> {
     match surface {
-        SurfacePreference::ThemeDefault => "Theme default",
-        SurfacePreference::Frosted => "Frosted",
-        SurfacePreference::Opaque => "Opaque",
+        SurfacePreference::ThemeDefault => {
+            t!("settings_general_appearance.appearance.surfaces.theme_default")
+        }
+        SurfacePreference::Frosted => t!("settings_general_appearance.appearance.surfaces.frosted"),
+        SurfacePreference::Opaque => t!("settings_general_appearance.appearance.surfaces.opaque"),
+    }
+}
+
+/// The stable element-id slug of a surface preference — ids must not move
+/// with the locale, so they are spelled here rather than derived from
+/// [`surface_label`].
+pub(super) fn surface_id(surface: SurfacePreference) -> &'static str {
+    match surface {
+        SurfacePreference::ThemeDefault => "theme-default",
+        SurfacePreference::Frosted => "frosted",
+        SurfacePreference::Opaque => "opaque",
     }
 }
 
 pub(super) fn surface_helper(surface: SurfacePreference, resolved: SurfaceTreatment) -> String {
     match surface {
-        SurfacePreference::ThemeDefault => format!(
-            "Uses this theme's {} default.",
-            match resolved {
-                SurfaceTreatment::Frosted => "frosted",
-                SurfaceTreatment::Opaque => "opaque",
+        SurfacePreference::ThemeDefault => match resolved {
+            SurfaceTreatment::Frosted => {
+                t!("settings_general_appearance.appearance.surface_default_frosted_helper").into()
             }
-        ),
-        SurfacePreference::Frosted => "Theme-colored glass where supported.".into(),
-        SurfacePreference::Opaque => "Solid surfaces for every theme.".into(),
+            SurfaceTreatment::Opaque => {
+                t!("settings_general_appearance.appearance.surface_default_opaque_helper").into()
+            }
+        },
+        SurfacePreference::Frosted => {
+            t!("settings_general_appearance.appearance.surface_frosted_helper").into()
+        }
+        SurfacePreference::Opaque => {
+            t!("settings_general_appearance.appearance.surface_opaque_helper").into()
+        }
     }
 }
 
@@ -44,7 +79,7 @@ pub(super) fn surface_choice(
     div()
         .id(SharedString::from(format!(
             "appearance-surface-{}",
-            surface_label(surface).to_lowercase().replace(' ', "-")
+            surface_id(surface)
         )))
         .h(px(30.0))
         .px(px(10.0))
@@ -269,9 +304,9 @@ impl AppearancePage {
         if self.theme_menu(appearance_kind).get().is_some() {
             let closing = self.theme_menu(appearance_kind).closing_since();
             let heading = if appearance_kind.is_light() {
-                "Light themes"
+                t!("settings_general_appearance.appearance.light_themes")
             } else {
-                "Dark themes"
+                t!("settings_general_appearance.appearance.dark_themes")
             };
             let menu = popover::popover_card(theme)
                 .w(px(260.0))
@@ -282,7 +317,7 @@ impl AppearancePage {
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .child(popover::menu_heading(theme, heading))
+                .child(popover::menu_heading(theme, &heading))
                 .children(
                     registry
                         .variants_for(model_appearance(appearance_kind))
@@ -348,23 +383,41 @@ mod tests {
 
     #[test]
     fn accent_helper_explains_default_and_override_scope() {
-        assert!(accent_helper(AccentSelection::ThemeDefault).contains("intended"));
-        let copy = accent_helper(AccentSelection::Preset(AccentPreset::Pink));
-        assert!(copy.starts_with("Pink ·"));
-        assert!(copy.contains("glyphs"));
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(
+            accent_helper(AccentSelection::ThemeDefault),
+            t!("settings_general_appearance.appearance.accent_default_helper")
+        );
+        // The preset helper names the preset through the same UI-side
+        // projection the helper itself uses — expected and actual share one
+        // source, so the assertion holds in any locale.
+        assert_eq!(
+            accent_helper(AccentSelection::Preset(AccentPreset::Pink)),
+            t!(
+                "settings_general_appearance.appearance.accent_preset_helper",
+                preset = t!("settings_general_appearance.appearance.accents.pink")
+            )
+        );
     }
 
     #[test]
     fn surface_helper_explains_theme_default_and_global_overrides() {
-        let default = surface_helper(SurfacePreference::ThemeDefault, SurfaceTreatment::Opaque);
-        assert!(default.contains("opaque default"));
-        assert!(
-            surface_helper(SurfacePreference::Frosted, SurfaceTreatment::Opaque)
-                .contains("where supported")
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(
+            surface_helper(SurfacePreference::ThemeDefault, SurfaceTreatment::Opaque),
+            t!("settings_general_appearance.appearance.surface_default_opaque_helper")
         );
-        assert!(
-            surface_helper(SurfacePreference::Opaque, SurfaceTreatment::Frosted)
-                .contains("every theme")
+        assert_eq!(
+            surface_helper(SurfacePreference::ThemeDefault, SurfaceTreatment::Frosted),
+            t!("settings_general_appearance.appearance.surface_default_frosted_helper")
+        );
+        assert_eq!(
+            surface_helper(SurfacePreference::Frosted, SurfaceTreatment::Opaque),
+            t!("settings_general_appearance.appearance.surface_frosted_helper")
+        );
+        assert_eq!(
+            surface_helper(SurfacePreference::Opaque, SurfaceTreatment::Frosted),
+            t!("settings_general_appearance.appearance.surface_opaque_helper")
         );
     }
 }

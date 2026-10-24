@@ -8,6 +8,7 @@ use gpui::{AnyElement, App, Context, SharedString, Window, div, prelude::*, px};
 use holt_proto::{ChatConfig, Model, Provider, ProviderId, ReasoningLevel};
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::popover::{self, Loadable};
 use crate::provider_logos::BrandMark;
 use crate::theme::Theme;
@@ -414,16 +415,18 @@ impl Pickers {
                     div()
                         .text_size(crate::typography::ui_rems(13.0))
                         .text_color(theme.text)
-                        .child(SharedString::from("Configure provider")),
+                        .child(SharedString::from(t!(
+                            "pickers_dialogs.provider_model.configure_provider"
+                        ))),
                 )
                 .child(
                     div()
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted)
                         .text_center()
-                        .child(SharedString::from(
-                            "Add an API key in Settings → Providers.",
-                        )),
+                        .child(SharedString::from(t!(
+                            "pickers_dialogs.provider_model.configure_provider_hint"
+                        ))),
                 )
                 .into_any_element();
         }
@@ -564,7 +567,10 @@ impl Pickers {
         let list_children: Vec<AnyElement> = if !rows.is_empty() {
             Vec::new()
         } else if searching {
-            vec![empty_list_note(&theme, "No models found")]
+            vec![empty_list_note(
+                &theme,
+                &t!("pickers_dialogs.provider_model.no_models_found"),
+            )]
         } else {
             match effective_models {
                 Some(Loadable::Error(message)) => {
@@ -833,7 +839,10 @@ impl Pickers {
                     // (model list, project list); without it adjacent
                     // hover/selected washes fuse into one blob (user report).
                     .gap(px(2.0))
-                    .child(popover::menu_heading(&theme, "Reasoning"))
+                    .child(popover::menu_heading(
+                        &theme,
+                        &t!("pickers_dialogs.provider_model.reasoning_heading"),
+                    ))
                     .children(levels.into_iter().enumerate().map(|(ix, level)| {
                         let is_active = current == Some(level);
                         let is_default = default_level == Some(level);
@@ -932,7 +941,9 @@ fn default_badge(theme: &Theme) -> gpui::Div {
         .text_size(crate::typography::ui_rems(10.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(theme.text_muted.opacity(0.6))
-        .child(SharedString::from("Default"))
+        .child(SharedString::from(t!(
+            "pickers_dialogs.provider_model.default_badge"
+        )))
 }
 
 /// Brand mark + optional tint for a provider.

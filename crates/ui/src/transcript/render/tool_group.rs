@@ -122,8 +122,16 @@ impl Transcript {
                     best.map(|(_, r)| r)
                 };
                 let candidates = [
-                    (tool.diff_ref.as_ref(), "diff", None),
-                    (tool.output_ref.as_ref(), "output", tool.output_bytes),
+                    (
+                        tool.diff_ref.as_ref(),
+                        t!("conversation_transcript.tool.what.diff"),
+                        None,
+                    ),
+                    (
+                        tool.output_ref.as_ref(),
+                        t!("conversation_transcript.tool.what.output"),
+                        tool.output_bytes,
+                    ),
                 ];
                 for (blob_ref, what, bytes) in candidates {
                     let Some(blob_ref) = blob_ref else { continue };
@@ -132,15 +140,24 @@ impl Transcript {
                             if shown == Some(blob_ref) {
                                 continue;
                             }
-                            format!("Show full {what}")
+                            t!("conversation_transcript.tool.show_full", what = what).into_owned()
                         }
-                        Some(BlobFetch::Loading(_)) => format!("Loading full {what}…"),
+                        Some(BlobFetch::Loading(_)) => {
+                            t!("conversation_transcript.tool.loading_full", what = what)
+                                .into_owned()
+                        }
                         Some(BlobFetch::Failed) => {
-                            format!("Couldn't load full {what} — tap to retry")
+                            t!("conversation_transcript.tool.load_failed", what = what).into_owned()
                         }
                         None => match bytes {
-                            Some(b) => format!("Show full {what} ({})", format_kb(b)),
-                            None => format!("Show full {what}"),
+                            Some(b) => t!(
+                                "conversation_transcript.tool.show_full_size",
+                                what = what,
+                                size = format_kb(b)
+                            )
+                            .into_owned(),
+                            None => t!("conversation_transcript.tool.show_full", what = what)
+                                .into_owned(),
                         },
                     };
                     return Some(ChipAffordance {
@@ -753,7 +770,13 @@ fn more_lines_row(truncated_by: usize, theme: &Theme) -> gpui::Div {
         .items_center()
         .text_size(px(10.5))
         .text_color(theme.text_faint)
-        .child(SharedString::from(format!("… {truncated_by} more lines")))
+        .child(SharedString::from(
+            t!(
+                "conversation_transcript.tool.more_lines",
+                count = truncated_by
+            )
+            .into_owned(),
+        ))
 }
 
 /// Shape one flattened thought line into gpui text runs — the detail-body
@@ -851,7 +874,7 @@ fn subagent_tab_title(call: &ToolCall) -> SharedString {
     let (name, input) = match call {
         ToolCall::Unknown { name, input } => (name.as_str(), input.as_ref()),
         ToolCall::Mcp { tool, input, .. } => (tool.as_str(), input.as_ref()),
-        _ => return "Subagent".into(),
+        _ => return t!("conversation_transcript.tool.subagent").into(),
     };
     let candidates = [
         Some(name),
@@ -863,7 +886,7 @@ fn subagent_tab_title(call: &ToolCall) -> SharedString {
             return title.into();
         }
     }
-    "Subagent".into()
+    t!("conversation_transcript.tool.subagent").into()
 }
 
 /// A plain (non-expandable) chip: a flat quiet row, plus the group guide rail
@@ -976,6 +999,7 @@ mod tests {
 
     #[test]
     fn subagent_tab_titles() {
+        let _locale = crate::i18n::tests::locale_lock();
         // The tab is the BARE task — the "Agent:" genus is stripped.
         let named = ToolCall::Unknown {
             name: "Agent: scan repo".into(),
@@ -1004,7 +1028,10 @@ mod tests {
             name: "agent".into(),
             input: None,
         };
-        assert_eq!(subagent_tab_title(&blank).as_ref(), "Subagent");
+        assert_eq!(
+            subagent_tab_title(&blank).as_ref(),
+            t!("conversation_transcript.tool.subagent").as_ref()
+        );
         // Absurd lengths cap with an ellipsis; multiline prompts keep only
         // their first line.
         let long = ToolCall::Unknown {
@@ -1020,7 +1047,7 @@ mod tests {
                 command: "ls".into()
             })
             .as_ref(),
-            "Subagent"
+            t!("conversation_transcript.tool.subagent").as_ref()
         );
     }
 

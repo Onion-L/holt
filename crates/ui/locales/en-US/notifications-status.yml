@@ -1,0 +1,42 @@
+_version: 2
+notifications_status:
+  engine_not_connected:
+    en-US: Engine not connected
+  notification:
+    chat_completed:
+      en-US: Chat completed
+    chat_failed:
+      en-US: Chat failed
+    title_completed:
+      en-US: "%{title} completed"
+    title_failed:
+      en-US: "%{title} failed"
+    scheduled_run:
+      en-US: A scheduled run
+    waiting:
+      en-US: "%{title} is waiting for you"
+  deep_link:
+    other_workspace:
+      en-US: This Chat link belongs to another Workspace
+    not_found:
+      en-US: The linked conversation was not found
+  todo:
+    task_list:
+      en-US: Task list
+    done:
+      en-US: Done
+    todo:
+      en-US: Todo
+    collapse:
+      en-US: Collapse
+    close_until_next:
+      en-US: Close until the next list
+  file_lookup:
+    placeholder:
+      en-US: Search files by path…
+    select_space:
+      en-US: Select a space to search its files.
+    search_hint:
+      en-US: Type to search every file and folder in %{name} — hidden entries included.
+    no_matches:
+      en-US: No matching paths

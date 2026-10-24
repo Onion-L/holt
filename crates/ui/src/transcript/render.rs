@@ -7,6 +7,7 @@
 //! (background syntax store). Entity state, sync, and events stay in the
 //! facade; this module only reads them.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -42,6 +43,7 @@ use super::viewport::{
     sending_bridge,
 };
 use super::{BlobFetch, FOLD_TWEEN_WINDOW, FoldState, Transcript, TranscriptEvent};
+use crate::i18n::t;
 use crate::markdown::parser::{Block, BlockTree, InlineRun};
 use crate::markdown::render::{self, RenderOptions};
 use crate::markdown::veil::RowVeil;
@@ -466,7 +468,8 @@ impl Transcript {
                                             .child(
                                                 crate::popover::btn_ghost(
                                                     &theme,
-                                                    "Cancel",
+                                                    t!("conversation_transcript.common.cancel")
+                                                        .as_ref(),
                                                     format!("edit-cancel-hover-{}", row.id),
                                                 )
                                                 .id(SharedString::from(format!(
@@ -478,15 +481,19 @@ impl Transcript {
                                                 })),
                                             )
                                             .child(
-                                                crate::popover::btn_primary(&theme, "Send")
-                                                    .id(SharedString::from(format!(
-                                                        "edit-send-{}",
-                                                        row.id
-                                                    )))
-                                                    .when(edit_pending, |el| el.opacity(0.5))
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.submit_message_edit(cx)
-                                                    })),
+                                                crate::popover::btn_primary(
+                                                    &theme,
+                                                    t!("conversation_transcript.common.send")
+                                                        .as_ref(),
+                                                )
+                                                .id(SharedString::from(format!(
+                                                    "edit-send-{}",
+                                                    row.id
+                                                )))
+                                                .when(edit_pending, |el| el.opacity(0.5))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.submit_message_edit(cx)
+                                                })),
                                             ),
                                     )
                                 }),
@@ -881,7 +888,7 @@ impl Transcript {
             .any(|view| view.routine.id == marker.routine_id);
         let mut label = marker.routine_name.clone();
         if marker.missed_fires > 0 {
-            label.push_str(" \u{b7} 补跑");
+            label.push_str(&t!("conversation_transcript.run_caption.catchup"));
         }
         let routine_id = marker.routine_id;
         let caption = div()
@@ -1362,10 +1369,13 @@ fn render_user_goal(
     // The composer's chip layout: one side pad + a four-NBSP icon gutter +
     // the bare name + the trailing pad. NBSPs only — every chip character
     // must exist in Geist (exotic whitespace collapsed a chip once already).
-    let label = "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}goal\u{00A0}";
+    let label = format!(
+        "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}{}\u{00A0}",
+        t!("conversation_transcript.goal.chip")
+    );
     let chip = LeadingChip::Goal(0..label.len());
     let (full, mentions) = if text.is_empty() {
-        (label.to_string(), Vec::new())
+        (label, Vec::new())
     } else {
         // Mention spans are in display-byte terms; the composed prefix shifts
         // them by the label plus the joining space.
@@ -1439,7 +1449,7 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
                         .flex_none()
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(red_300.opacity(0.8))
-                        .child(SharedString::from("Error")),
+                        .child(t!("conversation_transcript.common.error")),
                 )
                 .child(
                     div()
@@ -1505,16 +1515,20 @@ fn retry_chip(
                         .flex_none()
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(busy.opacity(0.9))
-                        .child(SharedString::from(format!(
-                            "Retrying · attempt {attempt}/{max_retries}"
-                        ))),
+                        .child(SharedString::from(
+                            t!(
+                                "conversation_transcript.retry.label",
+                                attempt = attempt,
+                                max = max_retries
+                            )
+                            .into_owned(),
+                        )),
                 )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(theme.text.opacity(0.6))
-                        .child(SharedString::from(format!("in {delay_secs}s"))),
-                )
+                .child(div().flex_none().text_color(theme.text.opacity(0.6)).child(
+                    SharedString::from(
+                        t!("conversation_transcript.retry.in", secs = delay_secs).into_owned(),
+                    ),
+                ))
                 .child(
                     div()
                         .min_w_0()
@@ -1711,7 +1725,7 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
     let value: SharedString = if resolved {
         header
     } else {
-        "Awaiting your answer…".into()
+        t!("conversation_transcript.question.awaiting").into()
     };
     div()
         .py(px(4.0))
@@ -1750,7 +1764,7 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                         .flex_none()
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(theme.text_muted)
-                        .child(SharedString::from("Question")),
+                        .child(t!("conversation_transcript.question.label")),
                 )
                 .child(
                     div()
@@ -1862,10 +1876,14 @@ fn chip_header_row(
     cwd: Option<&str>,
     cx: &mut gpui::App,
 ) -> gpui::Div {
+    let (chip_label, chip_detail) = tool_chip_content_in(&tool.call, cwd);
     let (label, detail) = if tool.is_thought {
-        ("Thought process", String::new())
+        (
+            t!("conversation_transcript.tool.thought_process"),
+            String::new(),
+        )
     } else {
-        tool_chip_content_in(&tool.call, cwd)
+        (Cow::Borrowed(chip_label), chip_detail)
     };
     // A bound spawn chip wears its assigned name, not the genus label.
     let label: SharedString = identity
@@ -2007,12 +2025,15 @@ fn chip_header_row(
                         .items_center()
                         .text_size(px(11.0))
                         .text_color(theme.text_faint)
-                        .child(SharedString::from(format!(
-                            "{} tokens",
-                            crate::token_display::compact_tokens(
-                                tool.subagent_usage.unwrap_or_default()
+                        .child(SharedString::from(
+                            t!(
+                                "conversation_transcript.tool.tokens",
+                                count = crate::token_display::compact_tokens(
+                                    tool.subagent_usage.unwrap_or_default()
+                                )
                             )
-                        ))),
+                            .into_owned(),
+                        )),
                 )
             },
         )

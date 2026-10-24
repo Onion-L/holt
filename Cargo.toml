@@ -111,6 +111,12 @@ aho-corasick = "1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 nucleo-matcher = "0.3"
+# Interface strings (ADR-ui-strings-live-in-a-compile-time-catalog): the one
+# i18n crate proven inside GPUI (gpui-component ships the same version), with
+# `sys-locale` — already in the build tree through cosmic-text — resolving the
+# follow-the-OS default. UI-only dependencies: the catalog lives in holt-ui.
+rust-i18n = "4.2"
+sys-locale = "0.3"
 
 [profile.release]
 # Thin LTO buys most of fat LTO's size/speed win at a fraction of the link

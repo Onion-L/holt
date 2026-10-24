@@ -9,11 +9,14 @@
 //! the loading, so staleness is judged by its generation guards before
 //! anything reaches this surface.
 
+use std::borrow::Cow;
+
 use gpui::{
     AnyElement, Bounds, Context, EventEmitter, MouseButton, Pixels, Render, ScrollWheelEvent,
     SharedString, Size, Window, canvas, div, img, point, prelude::*, px, size,
 };
 
+use crate::i18n::t;
 use crate::image_viewer::{
     DRAG_SLOP, DragPan, ZOOM_STEP, clamped_pan, fit_scale, wheel_zoom_factor, zoom_around,
 };
@@ -197,14 +200,14 @@ impl FileImageSurface {
     /// A small square toolbar chip; the label variant carries the zoom %.
     fn chip(
         id: &'static str,
-        tooltip: &'static str,
+        tooltip: Cow<'static, str>,
         child: impl IntoElement,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
             .debug_selector(|| id.to_string())
             .role(gpui::Role::Button)
-            .aria_label(tooltip)
+            .aria_label(tooltip.clone())
             .flex_none()
             .size(px(26.0))
             .flex()
@@ -215,7 +218,7 @@ impl FileImageSurface {
             .cursor_pointer()
             .hover(|el| el.bg(crate::theme::ink(0.10)))
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
+                cx.new(|_| crate::popover::TextTooltip(tooltip.clone().into()))
                     .into()
             })
             .child(child)
@@ -252,7 +255,7 @@ impl FileImageSurface {
                     .child(
                         Self::chip(
                             "file-image-zoom-out",
-                            "Zoom out",
+                            t!("files_sidebar.image.zoom_out"),
                             glyph(crate::icons::WINDOW_MINIMIZE),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -263,7 +266,7 @@ impl FileImageSurface {
                     .child(
                         Self::chip(
                             "file-image-100",
-                            "Actual size",
+                            t!("files_sidebar.image.actual_size"),
                             div().text_color(theme.text_muted).child(zoom_label),
                         )
                         .w(px(44.0))
@@ -273,17 +276,23 @@ impl FileImageSurface {
                         })),
                     )
                     .child(
-                        Self::chip("file-image-zoom-in", "Zoom in", glyph(crate::icons::PLUS))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.zoom_step(ZOOM_STEP, cx);
-                            })),
+                        Self::chip(
+                            "file-image-zoom-in",
+                            t!("files_sidebar.image.zoom_in"),
+                            glyph(crate::icons::PLUS),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.zoom_step(ZOOM_STEP, cx);
+                        })),
                     )
                     .child(
                         Self::chip(
                             "file-image-fit",
-                            "Fit to pane",
-                            div().text_color(theme.text_muted).child("Fit"),
+                            t!("files_sidebar.image.fit_to_pane"),
+                            div()
+                                .text_color(theme.text_muted)
+                                .child(t!("files_sidebar.image.fit")),
                         )
                         .w(px(36.0))
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -439,7 +448,7 @@ impl Render for FileImageSurface {
                                     .id("file-image-retry")
                                     .debug_selector(|| "file-image-retry".into())
                                     .role(gpui::Role::Button)
-                                    .aria_label("Retry image preview")
+                                    .aria_label(t!("files_sidebar.image.retry_aria"))
                                     .px(px(12.0))
                                     .py(px(6.0))
                                     .rounded(px(8.0))
@@ -452,14 +461,14 @@ impl Render for FileImageSurface {
                                         cx.stop_propagation();
                                         cx.emit(FileImageSurfaceEvent::Retry);
                                     }))
-                                    .child("Retry"),
+                                    .child(t!("files_sidebar.image.retry")),
                             )
                             .child(
                                 div()
                                     .id("file-image-open-external")
                                     .debug_selector(|| "file-image-open-external".into())
                                     .role(gpui::Role::Button)
-                                    .aria_label("Open externally")
+                                    .aria_label(t!("files_sidebar.common.open_externally"))
                                     .h(px(28.0))
                                     .px(px(10.0))
                                     .rounded(px(6.0))
@@ -483,7 +492,7 @@ impl Render for FileImageSurface {
                                         div()
                                             .text_size(px(12.0))
                                             .text_color(theme.text)
-                                            .child("Open externally"),
+                                            .child(t!("files_sidebar.common.open_externally")),
                                     ),
                             ),
                     ),

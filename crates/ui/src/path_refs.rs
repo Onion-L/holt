@@ -6,6 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::i18n::t;
+
 /// One attachment-area chip: a file or folder the user pointed at, bound to
 /// its absolute target at selection time (spec: binding happens on selection,
 /// never re-resolved against a later Space at send time).
@@ -45,8 +47,14 @@ impl PathRef {
 /// reference absolute and catches a selection that no longer resolves; the
 /// caller reports the failure and keeps the selection's other paths.
 pub fn bind(path: &Path) -> Result<PathRef, String> {
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|err| format!("Couldn't attach {}: {err}", path.display()))?;
+    let canonical = std::fs::canonicalize(path).map_err(|err| {
+        t!(
+            "files_sidebar.errors.attach_failed",
+            path = path.display(),
+            error = err
+        )
+        .into_owned()
+    })?;
     let is_dir = canonical.is_dir();
     Ok(PathRef {
         id: uuid::Uuid::new_v4().to_string(),
@@ -262,8 +270,13 @@ pub fn remove_lifted_reference(refs: &mut Vec<SentReference>, path: &str) -> boo
 }
 
 /// Both editors' refusal when a save would empty the message (body cleared,
-/// every attachment chip removed).
-pub const EMPTY_EDIT_MESSAGE: &str = "Nothing to send — add text or keep an attachment";
+/// every attachment chip removed). A function, not a const, so the text is
+/// translated at read time while the two editors — in the composer-input
+/// and conversation-transcript groups' files — keep sharing one string
+/// (`state::engine_not_connected` is the precedent for this seam).
+pub fn empty_edit_message() -> std::borrow::Cow<'static, str> {
+    t!("files_sidebar.empty_edit_message")
+}
 
 /// One-line attachment summary for the queue row: the first `max_labels`
 /// basenames comma-joined, the rest collapsed to `+N` ("name.png, dir/" —

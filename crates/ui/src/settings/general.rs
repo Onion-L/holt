@@ -20,6 +20,7 @@ mod web_search;
 
 use crate::{
     composer::ComposerInput,
+    i18n::t,
     popover::{self, Loadable, Popup},
     settings::{self, SavePolicy, widgets},
     state::AppState,
@@ -66,7 +67,7 @@ fn model_rows(models: &[Model], selected: Option<&str>, default: ModelRow) -> Ve
         rows.push(ModelRow {
             id: Some(id.to_string()),
             title: id.to_string(),
-            detail: "Not in the current provider catalog".into(),
+            detail: t!("settings_general_appearance.general.model_rows.not_in_catalog").into(),
             selected: true,
             unresolved: true,
         });
@@ -78,8 +79,8 @@ fn model_rows(models: &[Model], selected: Option<&str>, default: ModelRow) -> Ve
 fn title_default_row() -> ModelRow {
     ModelRow {
         id: None,
-        title: "Disabled".into(),
-        detail: "Keep the first-line title — no background naming request".into(),
+        title: t!("settings_general_appearance.general.model_rows.disabled").into(),
+        detail: t!("settings_general_appearance.general.model_rows.disabled_description").into(),
         selected: false,
         unresolved: false,
     }
@@ -90,8 +91,8 @@ fn title_default_row() -> ModelRow {
 fn verifier_default_row() -> ModelRow {
     ModelRow {
         id: None,
-        title: "Chat's model".into(),
-        detail: "Each chat's goal loop verifies on its own model".into(),
+        title: t!("settings_general_appearance.general.model_rows.chat_model").into(),
+        detail: t!("settings_general_appearance.general.model_rows.chat_model_description").into(),
         selected: false,
         unresolved: false,
     }
@@ -150,6 +151,8 @@ pub struct GeneralPage {
     task: Option<Task<()>>,
     /// The Web search group (web-tools ticket 07).
     web_search: Entity<web_search::WebSearchGroup>,
+    /// The interface-language picker (`i18n`): device-local, no engine.
+    language_menu: Popup<()>,
 }
 
 impl GeneralPage {
@@ -162,8 +165,12 @@ impl GeneralPage {
             selected_model: None,
             model_menu: Popup::default(),
             custom_instruction_enabled: false,
-            instruction: cx
-                .new(|cx| ComposerInput::new("Instruction sent with the first prompt", cx)),
+            instruction: cx.new(|cx| {
+                ComposerInput::new(
+                    t!("settings_general_appearance.general.instruction_placeholder"),
+                    cx,
+                )
+            }),
             save_error: None,
             goal_settings: Loadable::Idle,
             verifier_model: None,
@@ -171,6 +178,7 @@ impl GeneralPage {
             verifier_save_error: None,
             task: None,
             web_search,
+            language_menu: Popup::default(),
         };
         page.load(cx);
         page
@@ -194,9 +202,9 @@ impl GeneralPage {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.settings = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
-            self.models = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
-            self.goal_settings = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.settings = Loadable::Error(crate::state::engine_not_connected().into());
+            self.models = Loadable::Error(crate::state::engine_not_connected().into());
+            self.goal_settings = Loadable::Error(crate::state::engine_not_connected().into());
             return;
         };
         self.settings = Loadable::Loading;
@@ -225,7 +233,7 @@ impl GeneralPage {
                     // name it rather than echoing the raw error.
                     Err(holt_rpc::RpcError::UnknownMethod(_)) => {
                         page.settings = Loadable::Error(
-                            "Title settings aren't available — the engine doesn't support them yet"
+                            t!("settings_general_appearance.general.errors.titles_unavailable")
                                 .into(),
                         );
                     }
@@ -241,8 +249,7 @@ impl GeneralPage {
                     },
                     Err(holt_rpc::RpcError::UnknownMethod(_)) => {
                         page.goal_settings = Loadable::Error(
-                            "Goal verifier settings aren't available — the engine doesn't \
-                             support them yet"
+                            t!("settings_general_appearance.general.errors.verifier_unavailable")
                                 .into(),
                         );
                     }
@@ -283,7 +290,7 @@ impl GeneralPage {
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.save_error = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.save_error = Some(crate::state::engine_not_connected().into());
             cx.notify();
             return;
         };
@@ -352,9 +359,9 @@ impl GeneralPage {
             .mt(px(GROUP_GAP))
             .child(group_header(
                 theme,
-                "Notifications",
+                &t!("settings_general_appearance.general.notifications.title"),
                 None,
-                "Device-local. Banners appear only while no Holt window is active.",
+                &t!("settings_general_appearance.general.notifications.description"),
             ))
             .child(
                 group_rows()
@@ -362,8 +369,8 @@ impl GeneralPage {
                         group_row()
                             .child(row_text(
                                 theme,
-                                "Completion notifications",
-                                "Show a system banner when a background Turn succeeds or fails.",
+                                &t!("settings_general_appearance.general.notifications.completion"),
+                                &t!("settings_general_appearance.general.notifications.completion_description"),
                             ))
                             .child(
                                 div()
@@ -385,12 +392,161 @@ impl GeneralPage {
                         group_row()
                             .child(row_text(
                                 theme,
-                                "Play sound",
-                                "Play the system notification sound with each banner.",
+                                &t!("settings_general_appearance.general.notifications.sound"),
+                                &t!("settings_general_appearance.general.notifications.sound_description"),
                             ))
                             .child(sound_switch),
                     ),
             )
+    }
+
+    /// The Language group (`i18n`): device-local like Notifications, with no
+    /// engine behind it, so it renders whatever the title group's load did.
+    /// A pick applies through `i18n::set_language` — persisted, every window
+    /// repainted, native menus rebuilt — so this page re-renders in the new
+    /// language on the same frame.
+    fn render_language(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .child(group_header(
+                theme,
+                &t!("settings_general_appearance.language.group_title"),
+                None,
+                &t!("settings_general_appearance.language.group_description"),
+            ))
+            .child(
+                group_rows().child(
+                    group_row()
+                        .child(row_text(
+                            theme,
+                            &t!("settings_general_appearance.language.row_title"),
+                            &t!("settings_general_appearance.language.row_description"),
+                        ))
+                        .child(self.render_language_picker(theme, cx)),
+                ),
+            )
+    }
+
+    fn close_language_menu(&mut self, cx: &mut Context<Self>) {
+        if self.language_menu.begin_close() {
+            popover::reap_popup(cx, |page| &mut page.language_menu);
+        }
+    }
+
+    fn toggle_language_menu(&mut self, cx: &mut Context<Self>) {
+        if self.language_menu.take_press_was_open() || self.language_menu.is_open() {
+            self.close_language_menu(cx);
+        } else {
+            self.language_menu.open(());
+        }
+        cx.notify();
+    }
+
+    /// The interface-language picker: "Follow system" first, then each
+    /// shipped language under its autonym (`i18n::LANGUAGES` — constants,
+    /// never catalog strings, so the picker stays findable in either
+    /// language). Same trigger-plus-anchored-menu shape as the model
+    /// pickers.
+    fn render_language_picker(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let preference = cx
+            .try_global::<crate::i18n::I18nState>()
+            .and_then(|state| state.preference.clone());
+        // (label, choice, selected) — `None` is "follow the OS".
+        let mut choices: Vec<(SharedString, Option<&'static str>, bool)> = vec![(
+            t!("settings_general_appearance.language.follow_system").into(),
+            None,
+            preference.is_none(),
+        )];
+        choices.extend(crate::i18n::LANGUAGES.iter().map(|language| {
+            (
+                SharedString::from(language.name),
+                Some(language.code),
+                preference.as_deref() == Some(language.code),
+            )
+        }));
+        let selected_label = choices
+            .iter()
+            .find(|(_, _, selected)| *selected)
+            .map(|(label, _, _)| label.clone())
+            .unwrap_or_else(|| choices[0].0.clone());
+        let rows = choices
+            .iter()
+            .enumerate()
+            .map(|(index, (label, choice, selected))| {
+                let option_id: SharedString = format!("interface-language-option-{index}").into();
+                let debug_id = option_id.clone();
+                let choice = *choice;
+                popover::menu_row(theme, *selected, option_id.clone())
+                    .id(option_id)
+                    .debug_selector(move || debug_id.to_string())
+                    .on_click(cx.listener(move |page, _, _, cx| {
+                        cx.stop_propagation();
+                        page.close_language_menu(cx);
+                        crate::i18n::set_language(choice, cx);
+                        cx.notify();
+                    }))
+                    .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                    .when(*selected, |row| {
+                        row.child(
+                            crate::icons::icon(crate::icons::CHECK)
+                                .size(px(14.0))
+                                .text_color(theme.accent),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let menu = popover::popover_card(theme)
+            .id("interface-language-scroll")
+            .w(px(CONTROL_WIDTH))
+            .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_language_menu(cx)))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(rows)
+            .into_any_element();
+        let open = self.language_menu.is_open();
+        div()
+            .id("interface-language-dropdown")
+            .debug_selector(|| "interface-language-dropdown".into())
+            .relative()
+            .flex_none()
+            .w(px(CONTROL_WIDTH))
+            .h(px(CONTROL_HEIGHT))
+            .px(px(10.0))
+            .rounded(px(Theme::CONTROL_RADIUS))
+            .bg(if open {
+                theme.ink(0.09)
+            } else {
+                theme.ink(0.05)
+            })
+            .when(!open, |el| {
+                el.hover(|style| style.bg(crate::theme::ink(0.07)))
+            })
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|page, _, _, _| page.language_menu.note_trigger_press()),
+            )
+            .on_click(cx.listener(|page, _, _, cx| page.toggle_language_menu(cx)))
+            .child(div().flex_1().min_w_0().truncate().child(selected_label))
+            .child(
+                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .when_some(self.language_menu.get().cloned(), |trigger, _| {
+                trigger.child(popover::anchored_menu_below(
+                    "interface-language-menu",
+                    menu,
+                    self.language_menu.closing_since(),
+                ))
+            })
+            .into_any_element()
     }
 
     fn menu_for(&mut self, target: ModelTarget) -> &mut Popup<()> {
@@ -445,7 +601,7 @@ impl GeneralPage {
     /// chosen model (or the default), the reply refreshing the warning.
     fn save_verifier_model(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.verifier_save_error = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.verifier_save_error = Some(crate::state::engine_not_connected().into());
             cx.notify();
             return;
         };
@@ -535,7 +691,10 @@ impl GeneralPage {
                         ),
                 )
                 .when(row.unresolved, |row| {
-                    row.child(widgets::badge(theme, "unavailable"))
+                    row.child(widgets::badge(
+                        theme,
+                        t!("settings_general_appearance.general.model_rows.unavailable"),
+                    ))
                 })
                 .when(selected, |row| {
                     row.child(
@@ -619,12 +778,9 @@ impl GeneralPage {
     ) -> AnyElement {
         let mut group = div().mt(px(GROUP_GAP)).child(group_header(
             theme,
-            "Goal verifier",
+            &t!("settings_general_appearance.general.groups.verifier_title"),
             None,
-            "The model that judges each goal loop's turns. A different \u{2014} ideally \
-             cross-provider \u{2014} model catches what the working model misses. Verified at \
-             the lowest reasoning level; falls back to each chat's model when unset or \
-             unconfigured.",
+            &t!("settings_general_appearance.general.groups.verifier_description"),
         ));
         let body = match (&self.goal_settings, models) {
             (Loadable::Idle, _) | (Loadable::Loading, _) => {
@@ -642,7 +798,7 @@ impl GeneralPage {
                     // skeleton that never resolves.
                     return widgets::error_strip(
                         theme,
-                        "No configured providers — add a provider key to pick a verifier model",
+                        t!("settings_general_appearance.general.groups.no_providers"),
                     )
                     .into_any_element();
                 };
@@ -660,9 +816,10 @@ impl GeneralPage {
                         group_row()
                             .child(row_text(
                                 theme,
-                                "Verifier model",
-                                "Runs once after each settled goal-loop turn, at minimal \
-                                 reasoning.",
+                                &t!(
+                                    "settings_general_appearance.general.groups.verifier_row_title"
+                                ),
+                                &t!("settings_general_appearance.general.groups.verifier_row_description"),
                             ))
                             .child(picker),
                     )
@@ -832,9 +989,8 @@ impl Render for GeneralPage {
                         group_row()
                             .child(row_text(
                                 &theme,
-                                "Title model",
-                                "Choose a configured provider model. Disabled keeps the \
-                                 fallback title.",
+                                &t!("settings_general_appearance.general.titles.title_model"),
+                                &t!("settings_general_appearance.general.titles.title_model_description"),
                             ))
                             .child(model_trigger),
                     )
@@ -842,9 +998,8 @@ impl Render for GeneralPage {
                         group_row()
                             .child(row_text(
                                 &theme,
-                                "Custom title style",
-                                "Style notes for automatic titles — language, tone, naming \
-                                 conventions. The core naming rules are built in.",
+                                &t!("settings_general_appearance.general.titles.custom_style"),
+                                &t!("settings_general_appearance.general.titles.custom_style_description"),
                             ))
                             .child(
                                 div()
@@ -878,7 +1033,12 @@ impl Render for GeneralPage {
                                     .flex_row()
                                     .items_center()
                                     .justify_between()
-                                    .child(widgets::field_label(&theme, "Title style notes"))
+                                    .child(widgets::field_label(
+                                        &theme,
+                                        t!(
+                                            "settings_general_appearance.general.titles.notes_label"
+                                        ),
+                                    ))
                                     .child(
                                         widgets::ghost_action(&theme)
                                             .id("restore-title-instruction")
@@ -896,7 +1056,10 @@ impl Render for GeneralPage {
                                                 });
                                                 cx.notify();
                                             }))
-                                            .child("Restore default"),
+                                            .child(t!(
+                                                "settings_general_appearance.general.titles.\
+                                                 restore_default"
+                                            )),
                                     ),
                             )
                             .child(
@@ -924,11 +1087,14 @@ impl Render for GeneralPage {
                             .items_center()
                             .justify_end()
                             .gap(px(12.0))
-                            .child(widgets::row_description(&theme, "Unsaved changes"))
+                            .child(widgets::row_description(
+                                &theme,
+                                t!("settings_general_appearance.general.titles.unsaved"),
+                            ))
                             .child(
                                 save_button(&theme, "save-title-settings")
                                     .on_click(cx.listener(|page, _, _, cx| page.save(cx)))
-                                    .child("Save"),
+                                    .child(t!("settings_general_appearance.general.titles.save")),
                             ),
                     );
                 }
@@ -948,22 +1114,27 @@ impl Render for GeneralPage {
             .overflow_y_scroll()
             .child(
                 widgets::page_column()
-                    .child(widgets::page_header(&theme, "General", None))
+                    .child(widgets::page_header(
+                        &theme,
+                        &t!("settings_general_appearance.general.title"),
+                        None,
+                    ))
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Notifications, automatic chat titles, and keys for built-in tools.",
+                        t!("settings_general_appearance.general.subtitle"),
                     ))
+                    .child(self.render_language(&theme, cx))
                     .child(Self::render_notifications(&theme, cx))
                     .child(
                         div()
                             .mt(px(GROUP_GAP))
                             .child(group_header(
                                 &theme,
-                                "Automatic chat titles",
+                                &t!("settings_general_appearance.general.groups.titles_title"),
                                 None,
-                                "A new chat keeps its first-line title immediately, then one \
-                                 background request to this model can replace it. Your manual \
-                                 renames always win.",
+                                &t!(
+                                    "settings_general_appearance.general.groups.titles_description"
+                                ),
                             ))
                             .child(body),
                     )

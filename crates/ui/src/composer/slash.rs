@@ -7,7 +7,11 @@
 //! pattern. Also owns the `/` popup's mixed-source candidate model (skills +
 //! provider commands).
 
+use std::borrow::Cow;
+
 use holt_proto::{SkillListing, SkillRoot, SlashCommand};
+
+use crate::i18n::t;
 
 /// The prompt `/init` submits as an ordinary message (the codex/opencode
 /// shape): the composer swaps the directive for this template at send time,
@@ -184,13 +188,15 @@ impl SlashCandidate {
         }
     }
 
-    /// The right-aligned source-root tag; commands carry none.
-    pub(crate) fn root_tag(&self) -> Option<&'static str> {
+    /// The right-aligned source-root tag; commands carry none. The two
+    /// location roots translate; `holt` is the built-in skills' brand name
+    /// and stays as-is.
+    pub(crate) fn root_tag(&self) -> Option<Cow<'static, str>> {
         match self {
             SlashCandidate::Skill { root, .. } => Some(match root {
-                SkillRoot::Project => "project",
-                SkillRoot::Personal => "personal",
-                SkillRoot::Holt => "holt",
+                SkillRoot::Project => t!("composer_input.slash_popup.root_project"),
+                SkillRoot::Personal => t!("composer_input.slash_popup.root_personal"),
+                SkillRoot::Holt => Cow::Borrowed("holt"),
             }),
             SlashCandidate::Command { .. } => None,
         }
@@ -467,6 +473,7 @@ mod tests {
 
     #[test]
     fn popup_candidates_merge_commands_before_skills() {
+        let _locale = crate::i18n::tests::locale_lock();
         let listing = SkillListing {
             skills: vec![listing_entry("grill", "Grill a plan.")],
             ..SkillListing::default()
@@ -498,7 +505,10 @@ mod tests {
         // bare name and its root tag.
         assert_eq!(candidates[1].title(), "[$grill](/roots/grill/SKILL.md)");
         assert_eq!(candidates[1].row_label(), "grill");
-        assert_eq!(candidates[1].root_tag(), Some("personal"));
+        assert_eq!(
+            candidates[1].root_tag(),
+            Some(t!("composer_input.slash_popup.root_personal"))
+        );
         assert_eq!(candidates[0].row_label(), "compact");
         assert_eq!(candidates[0].root_tag(), None);
         // Filtering matches name+description for both sources.

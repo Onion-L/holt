@@ -10,7 +10,10 @@
 //! path); the previously focused element is remembered and restored before a
 //! row dispatches, so Edit's Cut/Copy/Paste land on the composer again.
 
+use std::borrow::Cow;
+
 use super::*;
+use crate::i18n::t;
 use crate::settings::{ShortcutId, display_combo};
 
 /// The top-level menus, in strip order.
@@ -25,12 +28,24 @@ pub(super) enum MenuId {
 const MENUS: [MenuId; 4] = [MenuId::File, MenuId::Edit, MenuId::View, MenuId::Help];
 
 impl MenuId {
-    fn label(self) -> &'static str {
+    /// The stable, non-localized name for element ids, fade keys, and debug
+    /// selectors — identity, never rendered as copy.
+    fn key(self) -> &'static str {
         match self {
             MenuId::File => "File",
             MenuId::Edit => "Edit",
             MenuId::View => "View",
             MenuId::Help => "Help",
+        }
+    }
+
+    /// The localized trigger label.
+    fn label(self) -> Cow<'static, str> {
+        match self {
+            MenuId::File => t!("shell_chrome.menu_bar.menu_file"),
+            MenuId::Edit => t!("shell_chrome.app_menus.menu_edit"),
+            MenuId::View => t!("shell_chrome.app_menus.menu_view"),
+            MenuId::Help => t!("shell_chrome.menu_bar.menu_help"),
         }
     }
 }
@@ -39,7 +54,7 @@ impl MenuId {
 /// shortcut reads the live keymap, so a user-cleared binding shows no hint.
 pub(super) enum MenuRow {
     Item {
-        label: &'static str,
+        label: Cow<'static, str>,
         shortcut: Option<String>,
         action: Box<dyn Action>,
     },
@@ -47,7 +62,7 @@ pub(super) enum MenuRow {
 }
 
 impl MenuRow {
-    fn item(label: &'static str, shortcut: Option<String>, action: impl Action) -> Self {
+    fn item(label: Cow<'static, str>, shortcut: Option<String>, action: impl Action) -> Self {
         MenuRow::Item {
             label,
             shortcut,
@@ -88,50 +103,106 @@ fn menu_rows(menu: MenuId, keymap: &crate::settings::KeymapConfig) -> Vec<MenuRo
     let fixed = |text: &str| Some(text.to_string());
     match menu {
         MenuId::File => vec![
-            MenuRow::item("New Session", custom(ShortcutId::NewSession), NewSession),
-            MenuRow::item("Settings…", fixed("Ctrl+,"), OpenSettings),
+            MenuRow::item(
+                t!("shell_chrome.menu_bar.new_session"),
+                custom(ShortcutId::NewSession),
+                NewSession,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.menu_bar.settings"),
+                fixed("Ctrl+,"),
+                OpenSettings,
+            ),
             MenuRow::Separator,
             // The shell's own action: the Exit row must pass the lifecycle
             // gate (unsaved drafts, running terminals) the way the caption
             // button does, so it never dispatches `app_menus::Quit` — on
             // Windows `cx.quit()` exits without asking.
-            MenuRow::item("Exit", None, QuitApp),
+            MenuRow::item(t!("shell_chrome.menu_bar.exit"), None, QuitApp),
         ],
         MenuId::Edit => vec![
-            MenuRow::item("Undo", fixed("Ctrl+Z"), crate::composer::Undo),
-            MenuRow::item("Redo", fixed("Ctrl+Shift+Z"), crate::composer::Redo),
-            MenuRow::Separator,
-            MenuRow::item("Cut", fixed("Ctrl+X"), crate::composer::Cut),
-            MenuRow::item("Copy", fixed("Ctrl+C"), crate::composer::Copy),
-            MenuRow::item("Paste", fixed("Ctrl+V"), crate::composer::Paste),
-            MenuRow::Separator,
-            MenuRow::item("Select All", fixed("Ctrl+A"), crate::composer::SelectAll),
-        ],
-        MenuId::View => vec![
-            MenuRow::item("Appearance: System", None, app_menus::AppearanceSystem),
-            MenuRow::item("Appearance: Light", None, app_menus::AppearanceLight),
-            MenuRow::item("Appearance: Dark", None, app_menus::AppearanceDark),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.undo"),
+                fixed("Ctrl+Z"),
+                crate::composer::Undo,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.redo"),
+                fixed("Ctrl+Shift+Z"),
+                crate::composer::Redo,
+            ),
             MenuRow::Separator,
             MenuRow::item(
-                "Toggle Sidebar",
+                t!("shell_chrome.app_menus.cut"),
+                fixed("Ctrl+X"),
+                crate::composer::Cut,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.copy"),
+                fixed("Ctrl+C"),
+                crate::composer::Copy,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.paste"),
+                fixed("Ctrl+V"),
+                crate::composer::Paste,
+            ),
+            MenuRow::Separator,
+            MenuRow::item(
+                t!("shell_chrome.app_menus.select_all"),
+                fixed("Ctrl+A"),
+                crate::composer::SelectAll,
+            ),
+        ],
+        MenuId::View => vec![
+            MenuRow::item(
+                t!("shell_chrome.app_menus.appearance_system"),
+                None,
+                app_menus::AppearanceSystem,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.appearance_light"),
+                None,
+                app_menus::AppearanceLight,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.appearance_dark"),
+                None,
+                app_menus::AppearanceDark,
+            ),
+            MenuRow::Separator,
+            MenuRow::item(
+                t!("shell_chrome.menu_bar.toggle_sidebar"),
                 custom(ShortcutId::ToggleSidebar),
                 ToggleSidebar,
             ),
             MenuRow::item(
-                "Toggle Terminal",
+                t!("shell_chrome.menu_bar.toggle_terminal"),
                 custom(ShortcutId::ToggleTerminal),
                 crate::terminal::panel::ToggleTerminal,
             ),
             MenuRow::item(
-                "Toggle Changes",
+                t!("shell_chrome.menu_bar.toggle_changes"),
                 custom(ShortcutId::ToggleChanges),
                 ToggleChanges,
             ),
             MenuRow::Separator,
-            MenuRow::item("Zoom In", fixed("Ctrl+="), app_menus::ZoomIn),
-            MenuRow::item("Zoom Out", fixed("Ctrl+-"), app_menus::ZoomOut),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.zoom_in"),
+                fixed("Ctrl+="),
+                app_menus::ZoomIn,
+            ),
+            MenuRow::item(
+                t!("shell_chrome.app_menus.zoom_out"),
+                fixed("Ctrl+-"),
+                app_menus::ZoomOut,
+            ),
         ],
-        MenuId::Help => vec![MenuRow::item("About Holt", None, app_menus::About)],
+        MenuId::Help => vec![MenuRow::item(
+            t!("shell_chrome.app_menus.about"),
+            None,
+            app_menus::About,
+        )],
     }
 }
 
@@ -172,10 +243,10 @@ impl Shell {
             .menu_bar
             .as_open()
             .is_some_and(|state| state.menu == menu);
-        let fade_key = format!("menu-bar-{}", menu.label());
+        let fade_key = format!("menu-bar-{}", menu.key());
         let hover_fade = motion::hover_listener(fade_key.clone());
         let mut trigger = div()
-            .id(format!("menu-bar-{}", menu.label()))
+            .id(format!("menu-bar-{}", menu.key()))
             .h_full()
             .flex_none()
             .flex()
@@ -229,7 +300,7 @@ impl Shell {
             let closing = self.menu_bar.closing_since();
             let card = self.render_menu_card(theme, cx);
             trigger = trigger.relative().child(popover::anchored_menu_below_gap(
-                format!("menu-bar-card-{}", menu.label()),
+                format!("menu-bar-card-{}", menu.key()),
                 card,
                 closing,
                 4.0,
@@ -258,10 +329,10 @@ impl Shell {
                     theme,
                     false,
                     active == Some(ix),
-                    format!("menu-bar-row-{}-{ix}", menu.label()),
+                    format!("menu-bar-row-{}-{ix}", menu.key()),
                 )
                 .id(("menu-bar-row", ix))
-                .debug_selector(move || format!("menu-bar-row-{}-{ix}", menu.label()))
+                .debug_selector(move || format!("menu-bar-row-{}-{ix}", menu.key()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.activate_menu_bar_row(ix, window, cx);
                 }))
@@ -468,6 +539,7 @@ mod tests {
 
     #[test]
     fn cleared_customizable_shortcuts_fall_back_to_the_default_hint() {
+        let _locale = crate::i18n::tests::locale_lock();
         // `apply_keymap` treats an empty combo as "use the default" for these
         // ids, so the menu hint must show the default the binding lives on.
         let keymap = crate::settings::KeymapConfig {
@@ -478,7 +550,7 @@ mod tests {
         let sidebar = rows.iter().find_map(|row| match row {
             MenuRow::Item {
                 label, shortcut, ..
-            } if *label == "Toggle Sidebar" => Some(shortcut),
+            } if *label == t!("shell_chrome.menu_bar.toggle_sidebar") => Some(shortcut),
             _ => None,
         });
         let expected = display_combo(ShortcutId::ToggleSidebar.default_combo());

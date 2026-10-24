@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, Context, ObjectFit, SharedString, StyledImage as _, div, img, prelude::*, px};
 
+use crate::i18n::t;
 use crate::image_viewer::ViewerTarget;
 use crate::images as image_store;
 use crate::path_refs::{self, PathRef};
@@ -112,7 +113,7 @@ impl Composer {
             return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some("Engine not connected — couldn't save the pasted image.".into());
+            self.failure = Some(t!("composer_input.failure.paste_engine_not_connected").into());
             self.failure_key = None;
             cx.notify();
             return;
@@ -450,7 +451,10 @@ impl Composer {
     ) -> image_store::Snapshot {
         if image_store::begin_load(path) {
             let Some(engine) = self.state.read(cx).engine().cloned() else {
-                image_store::store_error(path, "Engine not connected.");
+                image_store::store_error(
+                    path,
+                    t!("composer_input.failure.thumb_engine_not_connected"),
+                );
                 return image_store::snapshot(path);
             };
             let path = path.to_string();
@@ -472,7 +476,11 @@ impl Composer {
     /// a path reference (images included — bytes stay on disk).
     pub(super) fn open_file_picker(&mut self, cx: &mut Context<Self>) {
         let draft_key = self.current_key.clone();
-        let rx = crate::file_dialog::prompt_for_files_and_dirs("Attach", true, cx);
+        let rx = crate::file_dialog::prompt_for_files_and_dirs(
+            &t!("composer_input.attach.prompt"),
+            true,
+            cx,
+        );
         self.picker_task = Some(cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
                 this.update(cx, |composer, cx| {

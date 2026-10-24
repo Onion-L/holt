@@ -8,6 +8,7 @@
 //! `logo_dialog` — a custom provider's logo: upload a file or paste SVG.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -22,6 +23,7 @@ use serde::Deserialize;
 
 use crate::{
     composer::ComposerInput,
+    i18n::t,
     motion::{self, AnimationExt as _},
     popover::{self, Loadable, Popup},
     settings::widgets,
@@ -181,9 +183,9 @@ impl Render for ProvidersPage {
                 let collapsing = self.collapsing.as_deref() == Some(id.as_str());
                 let panel_mounted = expanded || collapsing;
                 let status = if provider.configured {
-                    "Configured"
+                    t!("settings_providers_usage.providers.status_configured")
                 } else {
-                    "Not configured"
+                    t!("settings_providers_usage.providers.status_not_configured")
                 };
                 let controls: Option<AnyElement> = panel_mounted.then(|| {
                     let variant_id = self.active_variant_id(&id).unwrap_or_else(|| id.clone());
@@ -251,7 +253,7 @@ impl Render for ProvidersPage {
                                     .on_click(cx.listener(move |page, _, _, cx| {
                                         page.save(save_id.clone(), cx)
                                     }))
-                                    .child("Save"),
+                                    .child(t!("settings_providers_usage.providers.save")),
                             )
                             .child(
                                 action_button(&theme)
@@ -263,12 +265,15 @@ impl Render for ProvidersPage {
                                     .on_click(cx.listener(move |page, _, _, cx| {
                                         page.probe(test_id.clone(), cx)
                                     }))
-                                    .child("Test"),
+                                    .child(t!("settings_providers_usage.providers.test")),
                             );
                     let key_header = div()
                         .flex()
                         .items_center()
-                        .child(widgets::field_label(&theme, "API key"))
+                        .child(widgets::field_label(
+                            &theme,
+                            t!("settings_providers_usage.providers.api_key_label"),
+                        ))
                         .child(div().flex_1())
                         .child(
                             widgets::ghost_action(&theme)
@@ -281,13 +286,16 @@ impl Render for ProvidersPage {
                                 .on_click(cx.listener(move |page, _, _, cx| {
                                     page.remove(remove_id.clone(), cx)
                                 }))
-                                .child("Remove key"),
+                                .child(t!("settings_providers_usage.providers.remove_key")),
                         );
                     let models_header = div()
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .child(widgets::field_label(&theme, "Models"))
+                        .child(widgets::field_label(
+                            &theme,
+                            t!("settings_providers_usage.providers.models_label"),
+                        ))
                         .children(model_count.map(|count| {
                             div()
                                 .text_size(crate::typography::ui_rems(11.0))
@@ -318,7 +326,9 @@ impl Render for ProvidersPage {
                                                 .size(px(12.0))
                                                 .text_color(theme.text_muted),
                                         )
-                                        .child("Fetch models"),
+                                        .child(t!(
+                                            "settings_providers_usage.providers.fetch_models"
+                                        )),
                                 )
                                 .child(
                                     widgets::ghost_action(&theme)
@@ -334,7 +344,7 @@ impl Render for ProvidersPage {
                                                 .size(px(12.0))
                                                 .text_color(theme.text_muted),
                                         )
-                                        .child("Add model"),
+                                        .child(t!("settings_providers_usage.providers.add_model")),
                                 ),
                         );
                     let content = div()
@@ -547,11 +557,14 @@ impl Render for ProvidersPage {
             .overflow_y_scroll()
             .child(
                 widgets::page_column()
-                    .child(widgets::page_header(&theme, "Providers", None))
+                    .child(widgets::page_header(
+                        &theme,
+                        &t!("settings_providers_usage.providers.page_title"),
+                        None,
+                    ))
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Configure API keys for the providers Holt can use. Organizations with \
-                         several endpoints are configured per endpoint.",
+                        t!("settings_providers_usage.providers.page_subtitle"),
                     ))
                     .child(body),
             );

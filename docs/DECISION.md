@@ -35,7 +35,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) |
-| UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) |
+| UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -593,3 +593,41 @@ character, never a separator. Superseding this re-opens the UI's string
 matching and the persisted record spellings together — see
 [the Windows survey](research/windows-compatibility.md) §2 and `tools.rs`
 (`normalize_absolute`, `addressed_canonical`).
+
+## ui-strings-live-in-a-compile-time-catalog
+
+`feat/i18n` (survey: [docs/research/gpui-i18n.md](research/gpui-i18n.md)).
+Interface strings leave the code for a holt-owned catalog —
+`crates/ui/locales/<locale>/<group>.yml`, one file per migration group per
+language, rust-i18n `_version: 2` YAML — embedded into the binary at compile
+time by `rust_i18n::i18n!` at the crate root and read at render sites as
+`t!("group.key")`. `en-US` is both the source language and the fallback, so
+an unmigrated surface keeps rendering English and a missing key renders as
+the key, never a blank or a crash. A key's first segment is the file it
+lives in, so twelve groups migrate in parallel on disjoint key spaces with no
+shared file. The language is a device-local `UiSettings` key
+(`interfaceLanguage: Option<String>`): `None` follows the OS, resolved once
+per launch through `sys-locale` and never written back — the `appearance`
+policy — and an explicit choice is sticky. A switch is `settings::update` →
+`set_locale` → `refresh_windows` → `set_menus`: the locale is a process
+global outside gpui's change tracking, no `notify` reaches an imperative
+`t!` read, and the native menu bar is a snapshot. In scope: every string the
+UI composes for a person, OS notification bodies included. Out: text facing
+the model (prompts, parser markers such as `COMMENT_BLOCK_HEADER`), logs,
+engine and RPC content, user and workspace content, and identity strings
+(actions, element ids, serialized theme ids, the built-in theme names).
+Rejected: the Fluent stack (zero GPUI adopters; four-plus crates and a
+translation platform for CLDR plurals a ~1,250-key catalog does not need);
+gettext (C toolchain, source-string keying); a homegrown catalog (rebuilds
+the macro embedding and BCP-47 fallback rust-i18n already ships, which
+gpui-component runs in production); waiting for Zed upstream (#7409 unowned
+since 2024-02); an engine-owned locale RPC (a device preference belongs in
+`ui-settings.json` beside appearance and fonts — new engine surface for
+nothing); one `ui.yml` (one file is one merge conflict for every parallel
+migration); rust-i18n's v1 per-locale files (the locale comes from the file
+*stem*, so `en-US/shell-chrome.yml` would register a locale named
+`shell-chrome`); bare `en`/`zh` tags (sub-tag fallback would silently mask a
+mistagged entry); and Zed's RFC stance that embedding is a non-starter —
+right for a public translation pipeline, inverted for a fixed language set
+shipped with the binary, where no runtime asset IO and no partial
+translation on disk are the point.

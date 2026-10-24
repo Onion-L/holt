@@ -15,6 +15,7 @@
 //! page's clear-all precedent. Delete is irreversible and confirmed once
 //! with a breakdown; archive/unarchive are reversible and unconfirmed.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
@@ -27,6 +28,7 @@ use holt_proto::{Chat, ChatIndicator};
 use holt_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::icons::{self, icon};
 use crate::popover::{self, Popup};
 use crate::settings::widgets::{self, CheckboxState};
@@ -57,11 +59,20 @@ enum StatusFilter {
 impl StatusFilter {
     const ALL: [StatusFilter; 3] = [Self::All, Self::Active, Self::Archived];
 
-    fn label(self) -> &'static str {
+    /// The stable identity that element ids are built from (never localized).
+    fn key(self) -> &'static str {
         match self {
-            Self::All => "All",
-            Self::Active => "Active",
-            Self::Archived => "Archived",
+            Self::All => "all",
+            Self::Active => "active",
+            Self::Archived => "archived",
+        }
+    }
+
+    fn label(self) -> Cow<'static, str> {
+        match self {
+            Self::All => t!("sidebar_spaces.chat_manager.filter_all"),
+            Self::Active => t!("sidebar_spaces.chat_manager.filter_active"),
+            Self::Archived => t!("sidebar_spaces.chat_manager.filter_archived"),
         }
     }
 }
@@ -87,13 +98,13 @@ impl Bucket {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            Self::Today => "Today",
-            Self::Yesterday => "Yesterday",
-            Self::Week => "Previous 7 days",
-            Self::Month => "Previous 30 days",
-            Self::Older => "Older",
+            Self::Today => t!("sidebar_spaces.chat_manager.bucket_today"),
+            Self::Yesterday => t!("sidebar_spaces.chat_manager.bucket_yesterday"),
+            Self::Week => t!("sidebar_spaces.chat_manager.bucket_week"),
+            Self::Month => t!("sidebar_spaces.chat_manager.bucket_month"),
+            Self::Older => t!("sidebar_spaces.chat_manager.bucket_older"),
         }
     }
 }
@@ -208,14 +219,6 @@ fn delete_breakdown(chats: &[&Chat], live: impl Fn(&Chat) -> bool) -> DeleteBrea
     breakdown
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
-    }
-}
-
 /// Which batch an action runs. Archive skips already-archived rows and
 /// Unarchive skips active ones, so a mixed selection stays meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,19 +246,21 @@ impl BatchKind {
         }
     }
 
-    fn verb(self) -> &'static str {
+    /// The action's name as the batch-failed notice leads with it.
+    fn action_label(self) -> Cow<'static, str> {
         match self {
-            Self::Archive => "Archive",
-            Self::Unarchive => "Unarchive",
-            Self::Delete => "Delete",
+            Self::Archive => t!("sidebar_spaces.chat_manager.action_archive"),
+            Self::Unarchive => t!("sidebar_spaces.chat_manager.action_unarchive"),
+            Self::Delete => t!("sidebar_spaces.chat_manager.action_delete"),
         }
     }
 
-    fn gerund(self) -> &'static str {
+    /// The floating bar's in-flight word ("Archiving…").
+    fn gerund(self) -> Cow<'static, str> {
         match self {
-            Self::Archive => "Archiving…",
-            Self::Unarchive => "Unarchiving…",
-            Self::Delete => "Deleting…",
+            Self::Archive => t!("sidebar_spaces.chat_manager.archiving"),
+            Self::Unarchive => t!("sidebar_spaces.chat_manager.unarchiving"),
+            Self::Delete => t!("sidebar_spaces.chat_manager.deleting"),
         }
     }
 }
@@ -280,13 +285,13 @@ impl Render for Hint {
     }
 }
 
-fn with_hint(el: gpui::Stateful<gpui::Div>, hint: &'static str) -> gpui::Stateful<gpui::Div> {
-    el.tooltip(move |_, cx| cx.new(|_| Hint(hint.into())).into())
+fn with_hint(el: gpui::Stateful<gpui::Div>, hint: Cow<'static, str>) -> gpui::Stateful<gpui::Div> {
+    el.tooltip(move |_, cx| cx.new(|_| Hint(hint.clone().into())).into())
         .tooltip_show_delay(std::time::Duration::from_millis(350))
 }
 
 /// Small neutral tag after a row title (Worktree / Archived).
-fn tag(theme: &Theme, label: &'static str) -> gpui::Div {
+fn tag(theme: &Theme, label: Cow<'static, str>) -> gpui::Div {
     div()
         .flex_none()
         .h(px(16.0))
@@ -297,7 +302,7 @@ fn tag(theme: &Theme, label: &'static str) -> gpui::Div {
         .bg(ink(0.06))
         .text_size(crate::typography::ui_rems(10.0))
         .text_color(theme.text_muted)
-        .child(SharedString::from(label))
+        .child(label)
 }
 
 /// A 24px square icon button. The name doubles as id and hover group — gpui
@@ -337,7 +342,7 @@ fn icon_button(
 struct BarAction {
     id: &'static str,
     icon: &'static str,
-    label: &'static str,
+    label: Cow<'static, str>,
     danger: bool,
 }
 
@@ -374,7 +379,8 @@ pub struct ChatManagerPage {
 impl ChatManagerPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
-        let search = cx.new(|cx| ComposerInput::new("Search sessions", cx));
+        let search = cx
+            .new(|cx| ComposerInput::new(t!("sidebar_spaces.chat_manager.search_placeholder"), cx));
         let search_events = cx.subscribe(&search, |_, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 cx.notify();
@@ -580,7 +586,16 @@ impl ChatManagerPage {
                     self.anchor = None;
                 }
             }
-            Some(err) => self.error = Some(format!("{} failed: {err}", kind.verb()).into()),
+            Some(err) => {
+                self.error = Some(
+                    t!(
+                        "sidebar_spaces.chat_manager.batch_failed",
+                        action = kind.action_label(),
+                        error = err
+                    )
+                    .into(),
+                )
+            }
         }
         cx.notify();
     }
@@ -674,7 +689,7 @@ impl ChatManagerPage {
     ) -> gpui::Stateful<gpui::Div> {
         let active = self.status == status;
         div()
-            .id(SharedString::from(format!("cm-tab-{}", status.label())))
+            .id(SharedString::from(format!("cm-tab-{}", status.key())))
             .flex_none()
             .h(px(28.0))
             .px(px(10.0))
@@ -721,15 +736,16 @@ impl ChatManagerPage {
                 .as_deref()
                 .and_then(|id| state.space_row(id))
                 .map(|space| space.display_name().to_string())
-                .unwrap_or_else(|| "All projects".into());
-            let options = std::iter::once((None, SharedString::from("All projects")))
-                .chain(state.spaces_sorted().into_iter().map(|space| {
-                    (
-                        Some(space.id.clone()),
-                        space.display_name().to_string().into(),
-                    )
-                }))
-                .collect();
+                .unwrap_or_else(|| t!("sidebar_spaces.spaces.filter.all_projects").into());
+            let options =
+                std::iter::once((None, t!("sidebar_spaces.spaces.filter.all_projects").into()))
+                    .chain(state.spaces_sorted().into_iter().map(|space| {
+                        (
+                            Some(space.id.clone()),
+                            space.display_name().to_string().into(),
+                        )
+                    }))
+                    .collect();
             (label.into(), options)
         };
         let open = self.space_menu.is_open();
@@ -822,7 +838,7 @@ impl ChatManagerPage {
             .as_deref()
             .and_then(|id| routines.iter().find(|(rid, _)| rid == id))
             .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| "All Routines".into())
+            .unwrap_or_else(|| t!("sidebar_spaces.chat_manager.all_routines").into())
             .into();
         let open = self.routine_menu.is_open();
         let trigger = div()
@@ -878,8 +894,9 @@ impl ChatManagerPage {
             .flex()
             .flex_col()
             .gap(px(2.0));
-        let options = std::iter::once((None, "All Routines".to_string()))
-            .chain(routines.into_iter().map(|(id, name)| (Some(id), name)));
+        let options =
+            std::iter::once((None, t!("sidebar_spaces.chat_manager.all_routines").into()))
+                .chain(routines.into_iter().map(|(id, name)| (Some(id), name)));
         for (ix, (id, name)) in options.enumerate() {
             let active = id == self.routine;
             list = list.child(
@@ -918,11 +935,11 @@ impl ChatManagerPage {
             n if n == rows.len() => CheckboxState::Checked,
             _ => CheckboxState::Mixed,
         };
-        let label = |text: &'static str| {
+        let label = |text: Cow<'static, str>| {
             div()
                 .text_size(crate::typography::ui_rems(11.0))
                 .text_color(theme.text_muted.opacity(0.6))
-                .child(SharedString::from(text))
+                .child(text)
         };
         div()
             .h(px(32.0))
@@ -956,15 +973,25 @@ impl ChatManagerPage {
                         },
                     )),
             )
-            .child(div().flex_1().min_w_0().child(label("Title")))
-            .child(div().flex_none().w(px(PROJECT_COL)).child(label("Project")))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(label(t!("sidebar_spaces.chat_manager.col_title"))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(PROJECT_COL))
+                    .child(label(t!("sidebar_spaces.chat_manager.col_project"))),
+            )
             .child(
                 div()
                     .flex_none()
                     .w(px(TRAILING_COL))
                     .flex()
                     .justify_end()
-                    .child(label("Updated")),
+                    .child(label(t!("sidebar_spaces.chat_manager.col_updated"))),
             )
     }
 
@@ -1006,7 +1033,7 @@ impl ChatManagerPage {
         let title: SharedString = chat
             .title
             .clone()
-            .unwrap_or_else(|| "Untitled session".into())
+            .unwrap_or_else(|| t!("sidebar_spaces.chat_manager.untitled").into())
             .into();
         let time_ago: SharedString = crate::state::format_time_ago(recency(chat), now).into();
         let archived = chat.archived;
@@ -1050,9 +1077,11 @@ impl ChatManagerPage {
                     .child(title),
             )
             .when(chat.worktree.is_some(), |el| {
-                el.child(tag(theme, "Worktree"))
+                el.child(tag(theme, t!("sidebar_spaces.chat_manager.tag_worktree")))
             })
-            .when(archived, |el| el.child(tag(theme, "Archived")));
+            .when(archived, |el| {
+                el.child(tag(theme, t!("sidebar_spaces.chat_manager.tag_archived")))
+            });
 
         let project_cell = div()
             .flex_none()
@@ -1087,17 +1116,21 @@ impl ChatManagerPage {
                     cx.stop_propagation();
                     cx.emit(ChatManagerEvent::OpenChat(open_id.clone()));
                 })),
-                "Open",
+                t!("sidebar_spaces.chat_manager.action_open"),
             ));
         }
         let (kind, glyph, hint) = if archived {
             (
                 BatchKind::Unarchive,
                 icons::ARCHIVE_UP_MINIMALISTIC,
-                "Unarchive",
+                t!("sidebar_spaces.chat_manager.action_unarchive"),
             )
         } else {
-            (BatchKind::Archive, icons::ARCHIVE_MINIMALISTIC, "Archive")
+            (
+                BatchKind::Archive,
+                icons::ARCHIVE_MINIMALISTIC,
+                t!("sidebar_spaces.chat_manager.action_archive"),
+            )
         };
         let archive_id = id.clone();
         actions = actions.child(with_hint(
@@ -1121,7 +1154,7 @@ impl ChatManagerPage {
                 cx.stop_propagation();
                 this.ask_delete(vec![delete_id.clone()], window, cx);
             })),
-            "Delete",
+            t!("sidebar_spaces.chat_manager.action_delete"),
         ));
 
         let trailing = div()
@@ -1227,8 +1260,17 @@ impl ChatManagerPage {
         let any_archived = selected.iter().any(|chat| chat.archived);
         let count: SharedString = match self.working {
             Some(kind) => kind.gerund().into(),
-            None if hidden > 0 => format!("{} selected · {hidden} hidden", selected.len()).into(),
-            None => format!("{} selected", selected.len()).into(),
+            None if hidden > 0 => t!(
+                "sidebar_spaces.chat_manager.selected_hidden",
+                count = selected.len(),
+                hidden = hidden
+            )
+            .into(),
+            None => t!(
+                "sidebar_spaces.chat_manager.selected",
+                count = selected.len()
+            )
+            .into(),
         };
         let divider = || {
             div()
@@ -1268,7 +1310,7 @@ impl ChatManagerPage {
                     BarAction {
                         id: "cm-bar-archive",
                         icon: icons::ARCHIVE_MINIMALISTIC,
-                        label: "Archive",
+                        label: t!("sidebar_spaces.chat_manager.action_archive"),
                         danger: false,
                     },
                     |this, _, cx| {
@@ -1284,7 +1326,7 @@ impl ChatManagerPage {
                     BarAction {
                         id: "cm-bar-unarchive",
                         icon: icons::ARCHIVE_UP_MINIMALISTIC,
-                        label: "Unarchive",
+                        label: t!("sidebar_spaces.chat_manager.action_unarchive"),
                         danger: false,
                     },
                     |this, _, cx| {
@@ -1299,7 +1341,7 @@ impl ChatManagerPage {
                 BarAction {
                     id: "cm-bar-delete",
                     icon: icons::TRASH_BIN_MINIMALISTIC,
-                    label: "Delete",
+                    label: t!("sidebar_spaces.chat_manager.action_delete"),
                     danger: true,
                 },
                 |this, window, cx| {
@@ -1312,7 +1354,7 @@ impl ChatManagerPage {
             .child(with_hint(
                 icon_button(theme, "cm-bar-clear".into(), icons::CLOSE, false)
                     .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
-                "Clear selection",
+                t!("sidebar_spaces.chat_manager.clear_selection"),
             ));
         div()
             .absolute()
@@ -1349,23 +1391,38 @@ impl ChatManagerPage {
                 )
             })
         };
-        let title = if breakdown.total == 1 {
+        let title: Cow<'static, str> = if breakdown.total == 1 {
             match targets.first().and_then(|chat| chat.title.as_deref()) {
-                Some(title) => format!("Delete \u{201c}{title}\u{201d}?"),
-                None => "Delete this session?".to_string(),
+                Some(title) => t!(
+                    "sidebar_spaces.chat_manager.delete_one_title",
+                    title = title
+                ),
+                None => t!("sidebar_spaces.chat_manager.delete_untitled_title"),
             }
         } else {
-            format!("Delete {}?", plural(breakdown.total, "session", "sessions"))
+            t!(
+                "sidebar_spaces.chat_manager.delete_count",
+                count = breakdown.total
+            )
         };
-        let mut notes: Vec<String> = Vec::new();
+        let mut notes: Vec<Cow<'static, str>> = Vec::new();
         if breakdown.spaces > 1 {
-            notes.push(format!("Across {} projects", breakdown.spaces));
+            notes.push(t!(
+                "sidebar_spaces.chat_manager.across_projects",
+                count = breakdown.spaces
+            ));
         }
         if breakdown.worktrees > 0 {
-            notes.push(format!("{} in a session worktree", breakdown.worktrees));
+            notes.push(t!(
+                "sidebar_spaces.chat_manager.note_worktree",
+                count = breakdown.worktrees
+            ));
         }
         if breakdown.live > 0 {
-            notes.push(format!("{} still running", breakdown.live));
+            notes.push(t!(
+                "sidebar_spaces.chat_manager.note_live",
+                count = breakdown.live
+            ));
         }
         let card = popover::dialog_card(theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -1375,7 +1432,7 @@ impl ChatManagerPage {
             .child(div().truncate().child(popover::dialog_title(theme, &title)))
             .child(div().mt(px(8.0)).child(popover::dialog_body(
                 theme,
-                "The transcript, terminals, and running programs go with it. This can\u{2019}t be undone.",
+                t!("sidebar_spaces.chat_manager.delete_body"),
             )))
             .when(!notes.is_empty(), |el| {
                 el.child(
@@ -1405,21 +1462,28 @@ impl ChatManagerPage {
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(theme, "Cancel", "cm-delete-cancel")
-                            .id("cm-delete-cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirm = None;
-                                cx.notify();
-                            })),
+                        popover::btn_ghost(
+                            theme,
+                            &t!("sidebar_spaces.chat_manager.cancel"),
+                            "cm-delete-cancel",
+                        )
+                        .id("cm-delete-cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm = None;
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        popover::btn_danger(theme, "Delete")
-                            .id("cm-delete-confirm")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(ids) = this.confirm.clone() {
-                                    this.run(BatchKind::Delete, ids, cx);
-                                }
-                            })),
+                        popover::btn_danger(
+                            theme,
+                            &t!("sidebar_spaces.chat_manager.action_delete"),
+                        )
+                        .id("cm-delete-confirm")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(ids) = this.confirm.clone() {
+                                this.run(BatchKind::Delete, ids, cx);
+                            }
+                        })),
                     ),
             )
             .into_any_element();
@@ -1427,10 +1491,16 @@ impl ChatManagerPage {
     }
 
     fn render_empty(theme: &Theme, no_chats: bool) -> AnyElement {
-        let (headline, hint) = if no_chats {
-            ("No sessions yet", "Sessions you start show up here.")
+        let (headline, hint): (Cow<'static, str>, Cow<'static, str>) = if no_chats {
+            (
+                t!("sidebar_spaces.chat_manager.empty_none_headline"),
+                t!("sidebar_spaces.chat_manager.empty_none_hint"),
+            )
         } else {
-            ("Nothing matches", "Try a different search or filter.")
+            (
+                t!("sidebar_spaces.chat_manager.empty_match_headline"),
+                t!("sidebar_spaces.chat_manager.empty_match_hint"),
+            )
         };
         div()
             .mt(px(96.0))
@@ -1548,7 +1618,11 @@ impl Render for ChatManagerPage {
                     .items_center()
                     .justify_between()
                     .gap(px(16.0))
-                    .child(widgets::page_header(&theme, "Chat manager", None))
+                    .child(widgets::page_header(
+                        &theme,
+                        &t!("sidebar_spaces.chat_manager.title"),
+                        None,
+                    ))
                     .child(self.render_search(&theme)),
             )
             .child(

@@ -7,6 +7,7 @@
 //! `import` — the VS Code theme import flow and modal.
 //! `library` — custom-theme library rows and the review dialog.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,7 @@ use holt_theme::{
 
 use crate::appearance::{self, AppearanceMode};
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::icons;
 use crate::popover::{self, Popup};
 use crate::settings::widgets;
@@ -68,7 +70,12 @@ pub struct AppearancePage {
 
 impl AppearancePage {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let backdrop_input = cx.new(|cx| ComposerInput::new("Path to an image — ~/… works", cx));
+        let backdrop_input = cx.new(|cx| {
+            ComposerInput::new(
+                t!("settings_general_appearance.appearance.backdrop.placeholder"),
+                cx,
+            )
+        });
         if let Some(path) = crate::settings::chat_backdrop(cx).0 {
             backdrop_input.update(cx, |input, cx| input.set_text(path, cx));
         }
@@ -127,9 +134,8 @@ impl AppearancePage {
                 settings.chat_backdrop_path = Some(raw);
             })
         } else {
-            self.backdrop_error = Some(SharedString::from(
-                "That file does not exist — fix the path (or clear the field) to apply.",
-            ));
+            self.backdrop_error =
+                Some(t!("settings_general_appearance.appearance.backdrop.error_not_exists").into());
             false
         };
         if changed {
@@ -198,6 +204,17 @@ fn model_appearance(appearance: Appearance) -> holt_theme::Appearance {
     match appearance {
         Appearance::Dark => holt_theme::Appearance::Dark,
         Appearance::Light => holt_theme::Appearance::Light,
+    }
+}
+
+/// The localized caption under a mode preview card. [`AppearanceMode::label`]
+/// stays the identity spelling (element ids, persisted values); this is the
+/// UI-side projection of it.
+fn mode_caption(mode: AppearanceMode) -> Cow<'static, str> {
+    match mode {
+        AppearanceMode::System => t!("settings_general_appearance.appearance.modes.system"),
+        AppearanceMode::Light => t!("settings_general_appearance.appearance.modes.light"),
+        AppearanceMode::Dark => t!("settings_general_appearance.appearance.modes.dark"),
     }
 }
 
@@ -286,7 +303,7 @@ impl Render for AppearancePage {
                             } else {
                                 theme.text_muted
                             })
-                            .child(mode.label()),
+                            .child(mode_caption(mode)),
                     )
                     .on_click(cx.listener(move |_, _, _, cx| {
                         appearance::set_mode(mode, cx);
@@ -298,9 +315,9 @@ impl Render for AppearancePage {
         let mut theme_rows = Vec::new();
         for appearance_kind in [Appearance::Light, Appearance::Dark] {
             let label = if appearance_kind.is_light() {
-                "Light theme"
+                t!("settings_general_appearance.appearance.light_theme")
             } else {
-                "Dark theme"
+                t!("settings_general_appearance.appearance.dark_theme")
             };
             let selector = self.render_theme_selector(appearance_kind, &current_themes, &theme, cx);
             theme_rows.push(
@@ -315,7 +332,7 @@ impl Render for AppearancePage {
                             .child(widgets::row_title(&theme, label))
                             .child(widgets::row_description(
                                 &theme,
-                                "Used whenever this appearance is active.",
+                                t!("settings_general_appearance.appearance.theme_row_description"),
                             )),
                     )
                     .child(div().flex_none().child(selector))
@@ -358,7 +375,10 @@ impl Render for AppearancePage {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(widgets::row_title(&theme, "Accent color"))
+                        .child(widgets::row_title(
+                            &theme,
+                            t!("settings_general_appearance.appearance.accent_row_title"),
+                        ))
                         .child(widgets::row_description(
                             &theme,
                             accent_helper(current_accent),
@@ -383,7 +403,10 @@ impl Render for AppearancePage {
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(widgets::row_title(&theme, "Glass"))
+                        .child(widgets::row_title(
+                            &theme,
+                            t!("settings_general_appearance.appearance.glass_row_title"),
+                        ))
                         .child(widgets::row_description(
                             &theme,
                             surface_helper(current_surface, theme.surface_treatment),
@@ -483,9 +506,10 @@ impl Render for AppearancePage {
                     match picked {
                         Some(path) => page.apply_backdrop_path(path.display().to_string(), cx),
                         None => {
-                            page.backdrop_error = Some(SharedString::from(
-                                "That drop is not an image Holt can decode — png, jpeg, webp, or gif works.",
-                            ));
+                            page.backdrop_error = Some(
+                                t!("settings_general_appearance.appearance.backdrop.error_not_image")
+                                    .into(),
+                            );
                             cx.notify();
                         }
                     }
@@ -528,7 +552,12 @@ impl Render for AppearancePage {
                         .children(bars),
                 )
             })
-            .when(loading, |card| card.child(preview_message(&theme).child("Loading…")))
+            .when(loading, |card| {
+                card.child(
+                    preview_message(&theme)
+                        .child(t!("settings_general_appearance.appearance.backdrop.loading")),
+                )
+            })
             .when(decode_failed, |card| {
                 card.border_color(theme.warning.opacity(0.4)).child(
                     preview_message(&theme)
@@ -538,14 +567,18 @@ impl Render for AppearancePage {
                                 .size(px(16.0))
                                 .text_color(theme.warning_muted),
                         )
-                        .child("Not a decodable image"),
+                        .child(t!(
+                            "settings_general_appearance.appearance.backdrop.not_decodable"
+                        )),
                 )
             })
             .when(configured.is_none(), |card| {
                 card.border_dashed().child(
                     preview_message(&theme)
-                        .child(div().text_color(theme.text_muted).child("Drop an image here"))
-                        .child("or click to browse"),
+                        .child(div().text_color(theme.text_muted).child(t!(
+                            "settings_general_appearance.appearance.backdrop.drop_here"
+                        )))
+                        .child(t!("settings_general_appearance.appearance.backdrop.or_browse")),
                 )
             });
         let presence_control = div()
@@ -560,12 +593,21 @@ impl Render for AppearancePage {
             .border_color(theme.border)
             .bg(theme.surface_raised.opacity(0.34))
             .children(
-                [("Subtle", 0.25_f32), ("Balanced", 0.5), ("Bold", 0.75)]
+                [("subtle", 0.25_f32), ("balanced", 0.5), ("bold", 0.75)]
                     .into_iter()
-                    .map(|(label, value)| {
+                    .map(|(slug, value)| {
+                        let label = match slug {
+                            "subtle" => {
+                                t!("settings_general_appearance.appearance.backdrop.subtle")
+                            }
+                            "balanced" => {
+                                t!("settings_general_appearance.appearance.backdrop.balanced")
+                            }
+                            _ => t!("settings_general_appearance.appearance.backdrop.bold"),
+                        };
                         let selected = (backdrop_presence - value).abs() < 0.01;
                         div()
-                            .id(SharedString::from(format!("backdrop-presence-{label}")))
+                            .id(SharedString::from(format!("backdrop-presence-{slug}")))
                             .px(px(10.0))
                             .py(px(3.0))
                             .rounded(px(7.0))
@@ -603,9 +645,7 @@ impl Render for AppearancePage {
             );
         let backdrop_issue = self.backdrop_error.clone().or_else(|| {
             decode_failed.then(|| {
-                SharedString::from(
-                    "The file exists, but Holt could not decode it as an image — png, jpeg, webp, or gif works.",
-                )
+                t!("settings_general_appearance.appearance.backdrop.error_failed_decode").into()
             })
         });
         // The quiet row under the preview: the file's identity (click to
@@ -692,7 +732,9 @@ impl Render for AppearancePage {
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_faint)
                         .hover(|style| style.bg(theme.element_hover).text_color(theme.text_muted))
-                        .child("Enter a path…")
+                        .child(t!(
+                            "settings_general_appearance.appearance.backdrop.enter_path"
+                        ))
                         .on_click(
                             cx.listener(|page, _, window, cx| page.start_backdrop_edit(window, cx)),
                         ),
@@ -733,11 +775,15 @@ impl Render for AppearancePage {
             .overflow_y_scroll()
             .child(
                 widgets::page_column()
-                    .child(widgets::page_header(&theme, "Appearance", None))
+                    .child(widgets::page_header(
+                        &theme,
+                        &t!("settings_general_appearance.appearance.title"),
+                        None,
+                    ))
                     .child(
                         widgets::page_subtitle(
                             &theme,
-                            "Choose how Holt looks. These settings stay on this device.",
+                            t!("settings_general_appearance.appearance.subtitle"),
                         )
                         .max_w(px(640.0))
                         .line_height(px(20.0)),
@@ -748,7 +794,10 @@ impl Render for AppearancePage {
                             .flex()
                             .flex_col()
                             .gap(px(12.0))
-                            .child(widgets::field_label(&theme, "Appearance"))
+                            .child(widgets::field_label(
+                                &theme,
+                                t!("settings_general_appearance.appearance.field_appearance"),
+                            ))
                             .child(mode_switch),
                     )
                     .child(
@@ -764,7 +813,10 @@ impl Render for AppearancePage {
                             .flex()
                             .flex_col()
                             .gap(px(12.0))
-                            .child(widgets::field_label(&theme, "Chat backdrop"))
+                            .child(widgets::field_label(
+                                &theme,
+                                t!("settings_general_appearance.appearance.backdrop.field_label"),
+                            ))
                             .child(backdrop_card),
                     )
                     .child(
@@ -788,17 +840,21 @@ impl Render for AppearancePage {
                                             .flex()
                                             .flex_col()
                                             .gap(px(4.0))
-                                            .child(widgets::field_label(&theme, "Interface font"))
-                                            .child(
-                                                div()
-                                                    .max_w(px(640.0))
-                                                    .text_size(typography::ui_rems(12.0))
-                                                    .line_height(px(18.0))
-                                                    .text_color(theme.text_muted)
-                                                    .child(SharedString::from(
-                                                        "Used across the interface and conversations. Code, diffs, and terminal keep their current fonts and sizes.",
-                                                    )),
-                                            ),
+                                    .child(widgets::field_label(
+                                        &theme,
+                                        t!("settings_general_appearance.appearance.fonts.interface_font"),
+                                    ))
+                                    .child(
+                                        div()
+                                            .max_w(px(640.0))
+                                            .text_size(typography::ui_rems(12.0))
+                                            .line_height(px(18.0))
+                                            .text_color(theme.text_muted)
+                                            .child(t!(
+                                                "settings_general_appearance.appearance.fonts.\
+                                                 description"
+                                            )),
+                                    ),
                                     )
                                     .child(
                                         div()
@@ -811,15 +867,15 @@ impl Render for AppearancePage {
                                             .child(size_trigger),
                                     ),
                             )
-                            .when(requested_font != effective_font, |section| {
-                                section.child(
-                                    widgets::error_strip(
-                                        &theme,
-                                        "This font could not be loaded. Holt is using Geist.",
-                                    )
-                                    .font_family(fixed.clone()),
-                                )
-                            }),
+            .when(requested_font != effective_font, |section| {
+                section.child(
+                    widgets::error_strip(
+                        &theme,
+                        t!("settings_general_appearance.appearance.fonts.load_error"),
+                    )
+                    .font_family(fixed.clone()),
+                )
+            }),
                     )
                     .when_some(library_warning, |page, warning| {
                         page.child(

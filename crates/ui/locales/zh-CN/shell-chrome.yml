@@ -1,0 +1,207 @@
+_version: 2
+shell_chrome:
+  app_menus:
+    about:
+      zh-CN: 关于 Holt
+    settings:
+      zh-CN: 设置…
+    services:
+      zh-CN: 服务
+    hide_app:
+      zh-CN: 隐藏 Holt
+    hide_others:
+      zh-CN: 隐藏其他
+    show_all:
+      zh-CN: 显示全部
+    quit:
+      zh-CN: 退出 Holt
+    menu_edit:
+      zh-CN: 编辑
+    menu_view:
+      zh-CN: 显示
+    menu_window:
+      zh-CN: 窗口
+    undo:
+      zh-CN: 撤销
+    redo:
+      zh-CN: 重做
+    cut:
+      zh-CN: 剪切
+    copy:
+      zh-CN: 拷贝
+    paste:
+      zh-CN: 粘贴
+    select_all:
+      zh-CN: 全选
+    appearance_system:
+      zh-CN: "外观：跟随系统"
+    appearance_light:
+      zh-CN: "外观：浅色"
+    appearance_dark:
+      zh-CN: "外观：深色"
+    zoom_in:
+      zh-CN: 放大
+    zoom_out:
+      zh-CN: 缩小
+    minimize:
+      zh-CN: 最小化
+    zoom:
+      zh-CN: 缩放
+    close_window:
+      zh-CN: 关闭窗口
+  common:
+    cancel:
+      zh-CN: 取消
+  menu_bar:
+    menu_file:
+      zh-CN: 文件
+    menu_help:
+      zh-CN: 帮助
+    new_session:
+      zh-CN: 新建会话
+    settings:
+      zh-CN: 设置…
+    exit:
+      zh-CN: 退出
+    toggle_sidebar:
+      zh-CN: 切换侧边栏
+    toggle_terminal:
+      zh-CN: 切换终端
+    toggle_changes:
+      zh-CN: 切换更改面板
+  titlebar:
+    nav_scheduled:
+      zh-CN: 定时任务
+    nav_chat_manager:
+      zh-CN: 会话管理
+    update_pill:
+      zh-CN: 更新
+    tooltip_toggle_terminal:
+      zh-CN: 切换终端
+    tooltip_expand_panel:
+      zh-CN: 展开面板
+    tooltip_toggle_right_panel:
+      zh-CN: 切换右侧面板
+    tooltip_open_workspace_in:
+      zh-CN: 在 %{app} 中打开工作区
+    no_workspace_selected:
+      zh-CN: 未选择工作区
+    could_not_open_app:
+      zh-CN: "无法打开 %{app}：%{error}"
+  session:
+    default_title:
+      zh-CN: 新会话
+  settings_section:
+    general:
+      zh-CN: 通用
+    providers:
+      zh-CN: 提供商
+    appearance:
+      zh-CN: 外观
+    shortcuts:
+      zh-CN: 快捷键
+    skills:
+      zh-CN: 技能
+    mcp:
+      zh-CN: MCP 服务器
+    usage:
+      zh-CN: 用量
+    archived:
+      zh-CN: 已归档会话
+  about:
+    version:
+      zh-CN: 版本 %{version}
+    ok:
+      zh-CN: 确定
+  update:
+    tooltip_available:
+      zh-CN: 更新到 Holt %{version}
+    tooltip_downloading:
+      zh-CN: 正在下载 Holt %{version}…
+    tooltip_installing:
+      zh-CN: 正在安装 Holt %{version}…
+    tooltip_restart:
+      zh-CN: 重启以完成更新
+    title_available:
+      zh-CN: 有可用更新
+    title_downloading:
+      zh-CN: 正在下载更新
+    title_installing:
+      zh-CN: 正在安装更新
+    title_ready:
+      zh-CN: 准备重启
+    body_available:
+      zh-CN: Holt %{version} 已可下载。下载期间可继续工作；只有在你确认后 Holt 才会重启。
+    last_attempt_failed:
+      zh-CN: "上次尝试失败：%{error}"
+    progress_of:
+      zh-CN: "%{done} / %{total}"
+    verifying_installing:
+      zh-CN: 正在校验并安装…
+    body_ready:
+      zh-CN: Holt %{version} 已安装完毕。重启 Holt 以完成更新。
+    later:
+      zh-CN: 稍后
+    try_again:
+      zh-CN: 重试
+    download:
+      zh-CN: 下载
+    cancel:
+      zh-CN: 取消
+    hide:
+      zh-CN: 隐藏
+    restart_now:
+      zh-CN: 立即重启
+    failed_notice:
+      zh-CN: "更新失败：%{error}"
+  chat_link:
+    copied:
+      zh-CN: Holt 会话链接已复制
+    not_ready:
+      zh-CN: 会话链接尚未就绪
+  rename_dialog:
+    title:
+      zh-CN: 重命名会话
+    placeholder:
+      zh-CN: 会话标题
+    confirm:
+      zh-CN: 重命名
+  delete_dialog:
+    title:
+      zh-CN: 删除会话？
+    body:
+      zh-CN: "“%{title}”将被永久删除，其终端和正在运行的程序也会随之结束。此操作无法撤销。"
+    confirm:
+      zh-CN: 删除
+  archive_dialog:
+    title:
+      zh-CN: 归档会话？
+    body:
+      zh-CN: "“%{title}”将移至“设置 → 已归档会话”，随时可在那里恢复。"
+    confirm:
+      zh-CN: 归档
+  canvas:
+    prompt_in_project:
+      zh-CN: 想在 %{name} 中构建什么？
+    prompt:
+      zh-CN: 想构建什么？
+    add_project:
+      zh-CN: 添加项目
+    dismiss:
+      zh-CN: 忽略
+  dropzone:
+    drop_images:
+      zh-CN: 拖放图片以添加附件
+    drop_to_attach:
+      zh-CN: 拖放以添加附件
+  jump_pill:
+    scroll_to_bottom:
+      zh-CN: 滚动到底部
+  status_strip:
+    run_failed:
+      zh-CN: 运行失败
+    sending:
+      zh-CN: 发送中…
+  gate:
+    retry:
+      zh-CN: 重试

@@ -1,0 +1,187 @@
+_version: 2
+composer_input:
+  placeholder:
+    idle:
+      zh-CN: 想做点什么…
+    goal:
+      zh-CN: 引导目标 — 或用 /goal pause 暂停
+    wizard_pick:
+      zh-CN: 输入你自己的回答，或在上方选一项
+    wizard_picked:
+      zh-CN: 输入你自己的回答，或留空以采用所选选项
+    edit_queued:
+      zh-CN: 编辑排队中的消息
+  banner:
+    delivery_unconfirmed:
+      zh-CN: 消息送达未获确认。
+    retry_aria:
+      zh-CN: 重试发送
+    retry:
+      zh-CN: 重试
+    offline:
+      zh-CN: 已离线 — 恢复在线后消息将自动发送。
+    recovering:
+      zh-CN: 连接恢复后消息将自动发送。
+    images_unsupported:
+      zh-CN: 此模型无法查看图片，但仍可发送路径。
+    images_unknown:
+      zh-CN: 尚不确定此模型是否支持图片。
+  failure:
+    skill_disabled:
+      zh-CN: 技能“%{name}”已禁用 — 请在「设置 → 技能」中重新启用
+    usage_compact:
+      zh-CN: "用法：/compact（不带参数）"
+    usage_init:
+      zh-CN: "用法：/init（不带参数）"
+    init_needs_project:
+      zh-CN: /init 需要一个项目 — 请先选择项目
+    usage_goal:
+      zh-CN: "用法：/goal <目标> | off | pause | resume"
+    goal_needs_chat:
+      zh-CN: 这里还没有会话 — 用 /goal <目标> 开始一个
+    goal_failed:
+      zh-CN: "/goal 失败：%{error}"
+    plan_needs_chat:
+      zh-CN: 请先开始一段会话 — 或使用 /plan <任务>
+    plan_failed:
+      zh-CN: "/plan 失败：%{error}"
+    provider_failed:
+      zh-CN: "/provider 失败：%{error}"
+    configure_provider:
+      zh-CN: 发送前请先配置提供商
+    choose_model:
+      zh-CN: 发送前请先选择模型
+    send_failed:
+      zh-CN: "发送失败：%{error}"
+    stop_failed:
+      zh-CN: "停止失败：%{error}"
+    answer_failed:
+      zh-CN: "回答提交失败：%{error}"
+    paste_engine_not_connected:
+      zh-CN: 引擎未连接 — 无法保存粘贴的图片。
+    thumb_engine_not_connected:
+      zh-CN: 引擎未连接。
+  notice:
+    plan_status_on:
+      zh-CN: "计划模式：已开启 — 请用 submit_plan 工具提出计划"
+    plan_status_off:
+      zh-CN: "计划模式：已关闭"
+    plan_on:
+      zh-CN: 计划模式已开启
+    plan_off:
+      zh-CN: 计划模式已关闭 — 计划文档已保留
+    provider_on:
+      zh-CN: 提供商模式已开启
+    provider_off:
+      zh-CN: 提供商模式已关闭
+  send_button:
+    interrupt_aria:
+      zh-CN: 中断正在运行的回合
+    interrupt_tooltip:
+      zh-CN: 再按一次 Esc 停止
+    stop_aria:
+      zh-CN: 停止并暂停消息队列
+    stop_tooltip:
+      zh-CN: 停止并暂停队列
+  queue:
+    queued_count:
+      zh-CN: 已排队（%{count}）
+    paused_count:
+      zh-CN: 队列已暂停（%{count}）
+    collapse_aria:
+      zh-CN: 收起消息队列
+    expand_aria:
+      zh-CN: 展开消息队列
+    resume_aria:
+      zh-CN: 恢复消息队列
+    run_now_aria:
+      zh-CN: 立即运行此消息
+    edit_aria:
+      zh-CN: 编辑此消息
+    delete_aria:
+      zh-CN: 删除此消息
+    delete_goal_aria:
+      zh-CN: 删除 — 将暂停目标
+    save_aria:
+      zh-CN: 保存编辑
+    cancel_aria:
+      zh-CN: 取消编辑
+    run_failed:
+      zh-CN: "无法运行排队中的消息：%{error}"
+    save_failed:
+      zh-CN: "无法保存编辑：%{error}"
+    delete_failed:
+      zh-CN: "无法删除消息：%{error}"
+    resume_failed:
+      zh-CN: "无法恢复队列：%{error}"
+  mention_popup:
+    no_files:
+      zh-CN: 没有可用的文件
+    no_matches:
+      zh-CN: 没有匹配的文件
+  slash_popup:
+    none_available:
+      zh-CN: 没有可用的斜杠命令或技能
+    no_matches:
+      zh-CN: 没有匹配的命令或技能
+    section_skills:
+      zh-CN: 技能
+    section_commands:
+      zh-CN: 命令
+    engine_unreachable:
+      zh-CN: 无法连接到引擎
+    commands_unsupported:
+      zh-CN: 无法列出命令 — 当前引擎尚不支持
+    commands_failed:
+      zh-CN: 无法加载此智能体的命令
+    skills_unsupported:
+      zh-CN: 技能不可用 — 当前引擎尚不支持
+    skills_failed:
+      zh-CN: 无法加载技能
+    root_project:
+      zh-CN: 项目
+    root_personal:
+      zh-CN: 个人
+  wizard:
+    multi_select_hint:
+      zh-CN: 可选择一项或多项。
+    back:
+      zh-CN: 上一步
+    next:
+      zh-CN: 下一步
+    submit:
+      zh-CN: 提交
+  approval:
+    gate_exec:
+      zh-CN: 运行此命令？
+    gate_write:
+      zh-CN: 写入此文件？
+    gate_edit:
+      zh-CN: 编辑此文件？
+    gate_patch:
+      zh-CN: 应用此补丁？
+    gate_generic:
+      zh-CN: 允许此操作？
+    model_apply:
+      zh-CN: 应用这些目录变更？
+    allow_once:
+      zh-CN: 允许一次
+    always_allow_session:
+      zh-CN: 始终允许 · 本次会话
+    deny:
+      zh-CN: 拒绝
+    deny_note_placeholder:
+      zh-CN: 拒绝并附上说明…
+    plan_title:
+      zh-CN: 批准此计划？
+    approve:
+      zh-CN: 批准
+    plan_note_placeholder:
+      zh-CN: 输入反馈…
+    question_note_placeholder:
+      zh-CN: 用文字作答…
+    esc_to_dismiss:
+      zh-CN: " 关闭"
+  attach:
+    prompt:
+      zh-CN: 添加附件

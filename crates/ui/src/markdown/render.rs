@@ -21,6 +21,7 @@ use gpui::{
 };
 use holt_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
+use crate::i18n::t;
 use crate::theme::Theme;
 
 use super::mermaid;
@@ -1247,7 +1248,9 @@ fn render_code_block(
                 .size(px(12.0))
                 .text_color(theme.text_muted),
             )
-            .when(copied, |el| el.child(SharedString::from("Copied")))
+            .when(copied, |el| {
+                el.child(t!("conversation_transcript.markdown.copied"))
+            })
     });
     // The scroll viewport's width is capped by the row and a flex column's
     // children stretch to it, so without an explicit content width the x
@@ -1404,7 +1407,7 @@ fn render_mermaid_image(
                     .on_hover(crate::motion::hover_listener(fit_key))
                     .text_size(px(10.5))
                     .text_color(theme.text_muted)
-                    .child("Fit")
+                    .child(t!("conversation_transcript.markdown.fit"))
                     .on_click({
                         let reset = reset.clone();
                         move |_, window, cx| reset(ix, window, cx)
@@ -1443,7 +1446,7 @@ fn render_mermaid_image(
                             .text_size(px(10.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from(if fit {
-                                "Fit".to_string()
+                                t!("conversation_transcript.markdown.fit").into_owned()
                             } else {
                                 format!("{:.0}%", zoom * 100.0)
                             })),
