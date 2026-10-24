@@ -36,7 +36,7 @@ settings_providers_usage:
     page_title:
       zh-CN: MCP 服务器
     page_subtitle:
-      zh-CN: "外部工具提供方；其工具将在同一权限门槛下加入每个会话。"
+      zh-CN: "外部工具提供商；其工具将在同一权限门槛下加入每个会话。"
     version_skew:
       zh-CN: MCP 服务器不可用 — 引擎尚不支持该功能
     empty:

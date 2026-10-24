@@ -5,7 +5,7 @@ changes_git:
       zh-CN: 取消
   scope:
     working_tree:
-      zh-CN: 工作区
+      zh-CN: 工作树
     branch:
       zh-CN: 分支变更
     latest_turn:
@@ -60,7 +60,7 @@ changes_git:
       zh-CN: 正在准备差异…
   notice:
     no_turn_recorded:
-      zh-CN: 尚未记录任何一轮——请先发送一条消息
+      zh-CN: 尚未记录任何轮次——请先发送一条消息
     version_skew:
       zh-CN: 当前 Holt 构建尚不支持分支与单轮差异
   watch:
@@ -104,7 +104,7 @@ changes_git:
   pr:
     state:
       open:
-        zh-CN: 开启
+        zh-CN: 开放
       merged:
         zh-CN: 已合并
       closed:
@@ -173,7 +173,7 @@ changes_git:
         zh-CN: "%{path}：%{reason}。"
     refusal:
       conflict:
-        zh-CN: 在本轮之后已被更改
+        zh-CN: 自本轮以来已被更改
       later_turn:
         zh-CN: 已被后续轮次更改
       truncated:
@@ -183,4 +183,4 @@ changes_git:
       lossy:
         zh-CN: 不是有效的 UTF-8
       unsafe_path:
-        zh-CN: 路径在工作区之外
+        zh-CN: 路径在工作树之外

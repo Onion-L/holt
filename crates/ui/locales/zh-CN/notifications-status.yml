@@ -12,7 +12,7 @@ notifications_status:
     title_failed:
       zh-CN: "%{title} 失败"
     scheduled_run:
-      zh-CN: 定时任务
+      zh-CN: 一次例行运行
     waiting:
       zh-CN: "%{title} 正在等待你"
   deep_link:

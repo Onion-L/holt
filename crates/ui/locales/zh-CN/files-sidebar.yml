@@ -42,7 +42,7 @@ files_sidebar:
       conflicted:
         zh-CN: "有冲突 — 未解决的合并冲突"
       deleted:
-        zh-CN: 已从工作区删除
+        zh-CN: 已从工作树删除
   viewer:
     engine_unavailable:
       zh-CN: 引擎不可用。

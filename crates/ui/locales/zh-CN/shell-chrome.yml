@@ -71,7 +71,7 @@ shell_chrome:
       zh-CN: 切换更改面板
   titlebar:
     nav_scheduled:
-      zh-CN: 定时任务
+      zh-CN: 例行任务
     nav_chat_manager:
       zh-CN: 会话管理
     update_pill:
