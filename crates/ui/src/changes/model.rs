@@ -4,12 +4,14 @@
 //! scope labels, and the excerpt/full syntax-highlight mappers. No entity
 //! state and no rendering — the facade owns those.
 
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use holt_proto::{Chat, CheckoutDiff};
 
 use crate::comments::{CommentSide, DiffComment};
+use crate::i18n::t;
 use holt_syntax::LanguageId as Lang;
 
 use super::GUTTER_WIDTH;
@@ -392,7 +394,7 @@ pub fn parse_patch(patch: &str) -> Vec<FileDiff> {
             file.binary = true;
         } else if let Some(mode) = raw.strip_prefix("new mode ") {
             file.notices
-                .push(format!("Mode changed to {}", mode.trim()));
+                .push(t!("changes_git.file.mode_changed", mode = mode.trim()).into_owned());
         } else if let Some(new) = raw.strip_prefix("+++ ") {
             let new = new.trim();
             if new == "/dev/null" {
@@ -414,16 +416,16 @@ pub fn parse_patch(patch: &str) -> Vec<FileDiff> {
 pub fn file_notices(file: &FileDiff) -> Vec<String> {
     let mut notices = Vec::new();
     match file.status {
-        FileStatus::Added => notices.push("New file".to_string()),
-        FileStatus::Deleted => notices.push("Deleted file".to_string()),
+        FileStatus::Added => notices.push(t!("changes_git.file.new_file").into_owned()),
+        FileStatus::Deleted => notices.push(t!("changes_git.file.deleted_file").into_owned()),
         FileStatus::Renamed => {
             let from = file.old_path.as_deref().unwrap_or("?");
-            notices.push(format!("Renamed from {from}"));
+            notices.push(t!("changes_git.file.renamed_from", from = from).into_owned());
         }
         FileStatus::Modified => {}
     }
     if file.binary {
-        notices.push("Binary file — contents not shown".to_string());
+        notices.push(t!("changes_git.file.binary").into_owned());
     }
     notices.extend(file.notices.iter().cloned());
     notices
@@ -450,9 +452,14 @@ pub fn truncate_file_lines(file: &mut FileDiff, max_lines: usize) {
         budget -= hunk.lines.len();
         true
     });
-    file.notices.push(format!(
-        "Diff truncated — showing first {max_lines} of {total} lines"
-    ));
+    file.notices.push(
+        t!(
+            "changes_git.file.diff_truncated",
+            shown = max_lines,
+            total = total
+        )
+        .into_owned(),
+    );
     // The gutter fits what actually renders.
     file.max_line = file
         .hunks
@@ -658,12 +665,13 @@ pub fn diff_phase(resolved: Option<&CheckoutDiff>) -> DiffPhase {
     }
 }
 
-/// Header label: "N Uncommitted change(s)".
+/// Header label: "N Uncommitted change(s)". Manual plural selection (no
+/// CLDR): the call site picks `.one`/`.other`.
 pub fn uncommitted_label(count: usize) -> String {
     if count == 1 {
-        "1 Uncommitted change".to_string()
+        t!("changes_git.header.uncommitted.one").into_owned()
     } else {
-        format!("{count} Uncommitted changes")
+        t!("changes_git.header.uncommitted.other", count = count).into_owned()
     }
 }
 
@@ -694,13 +702,13 @@ impl DiffScope {
         Self::History,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> Cow<'static, str> {
         match self {
-            Self::WorkingTree => "Working tree",
-            Self::Branch => "Branch changes",
-            Self::LatestTurn => "Latest turn",
-            Self::History => "History",
-            Self::Commit => "Commit",
+            Self::WorkingTree => t!("changes_git.scope.working_tree"),
+            Self::Branch => t!("changes_git.scope.branch"),
+            Self::LatestTurn => t!("changes_git.scope.latest_turn"),
+            Self::History => t!("changes_git.scope.history"),
+            Self::Commit => t!("changes_git.scope.commit"),
         }
     }
 
@@ -716,18 +724,40 @@ impl DiffScope {
     }
 }
 
-/// Header-strip label per scope.
+/// Header-strip label per scope. Manual plural selection (no CLDR): the
+/// call site picks `.one`/`.other`.
 pub fn scope_label(scope: DiffScope, count: usize, base: Option<&str>) -> String {
-    let files = if count == 1 { "file" } else { "files" };
     match scope {
         DiffScope::WorkingTree => uncommitted_label(count),
         DiffScope::Branch => match base {
-            Some(base) => format!("{count} Changed {files} vs {base}"),
-            None => format!("{count} Changed {files}"),
+            Some(base) if count == 1 => t!(
+                "changes_git.header.changed_vs_base.one",
+                count = count,
+                base = base
+            )
+            .into_owned(),
+            Some(base) => t!(
+                "changes_git.header.changed_vs_base.other",
+                count = count,
+                base = base
+            )
+            .into_owned(),
+            None if count == 1 => t!("changes_git.header.changed.one", count = count).into_owned(),
+            None => t!("changes_git.header.changed.other", count = count).into_owned(),
         },
-        DiffScope::LatestTurn => format!("{count} Changed {files} this turn"),
-        DiffScope::History => "History".to_string(),
-        DiffScope::Commit => format!("{count} Changed {files} in this commit"),
+        DiffScope::LatestTurn if count == 1 => {
+            t!("changes_git.header.changed_this_turn.one", count = count).into_owned()
+        }
+        DiffScope::LatestTurn => {
+            t!("changes_git.header.changed_this_turn.other", count = count).into_owned()
+        }
+        DiffScope::History => t!("changes_git.scope.history").into_owned(),
+        DiffScope::Commit if count == 1 => {
+            t!("changes_git.header.changed_in_commit.one", count = count).into_owned()
+        }
+        DiffScope::Commit => {
+            t!("changes_git.header.changed_in_commit.other", count = count).into_owned()
+        }
     }
 }
 
@@ -755,14 +785,14 @@ pub fn default_base_ref(branches: &[String], current: Option<&str>) -> Option<St
 /// Empty-state copy per scope.
 pub fn clean_message(scope: DiffScope, base: Option<&str>) -> String {
     match scope {
-        DiffScope::WorkingTree => "No uncommitted changes".to_string(),
+        DiffScope::WorkingTree => t!("changes_git.empty.no_uncommitted").into_owned(),
         DiffScope::Branch => match base {
-            Some(base) => format!("No changes vs {base}"),
-            None => "No branch changes".to_string(),
+            Some(base) => t!("changes_git.empty.none_vs_base", base = base).into_owned(),
+            None => t!("changes_git.empty.no_branch").into_owned(),
         },
-        DiffScope::LatestTurn => "No changes this turn".to_string(),
-        DiffScope::History => "No commits found".to_string(),
-        DiffScope::Commit => "Empty commit".to_string(),
+        DiffScope::LatestTurn => t!("changes_git.empty.none_this_turn").into_owned(),
+        DiffScope::History => t!("changes_git.empty.no_commits").into_owned(),
+        DiffScope::Commit => t!("changes_git.empty.empty_commit").into_owned(),
     }
 }
 
@@ -1045,6 +1075,7 @@ rename to new_name.rs
 
     #[test]
     fn detects_new_deleted_binary_and_renamed() {
+        let _locale = crate::i18n::tests::locale_lock();
         let files = parse_patch(PATCH);
         let added = &files[1];
         assert_eq!(added.status, FileStatus::Added);
@@ -1053,18 +1084,30 @@ rename to new_name.rs
         let last = added.hunks[0].lines.last().unwrap();
         assert_eq!(last.kind, LineKind::Meta);
         assert!(last.text.contains("No newline"));
-        assert!(file_notices(added).iter().any(|n| n == "New file"));
+        assert!(
+            file_notices(added)
+                .iter()
+                .any(|n| *n == t!("changes_git.file.new_file"))
+        );
 
         let deleted = &files[2];
         assert_eq!(deleted.status, FileStatus::Deleted);
         assert_eq!(deleted.deletions, 1);
-        assert!(file_notices(deleted).iter().any(|n| n == "Deleted file"));
+        assert!(
+            file_notices(deleted)
+                .iter()
+                .any(|n| *n == t!("changes_git.file.deleted_file"))
+        );
 
         let binary = &files[3];
         assert!(binary.binary);
         assert_eq!(binary.status, FileStatus::Added);
         assert!(binary.hunks.is_empty());
-        assert!(file_notices(binary).iter().any(|n| n.contains("Binary")));
+        assert!(
+            file_notices(binary)
+                .iter()
+                .any(|n| *n == t!("changes_git.file.binary"))
+        );
 
         let renamed = &files[4];
         assert_eq!(renamed.status, FileStatus::Renamed);
@@ -1073,7 +1116,7 @@ rename to new_name.rs
         assert!(
             file_notices(renamed)
                 .iter()
-                .any(|n| n.contains("old_name.rs"))
+                .any(|n| *n == t!("changes_git.file.renamed_from", from = "old_name.rs"))
         );
     }
 
@@ -1271,6 +1314,7 @@ rename to new_name.rs
 
     #[test]
     fn truncate_caps_lines_and_appends_notice() {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut file = parse_patch(PATCH).remove(0); // 2 hunks, 8 lines
         let untouched = file.clone();
         truncate_file_lines(&mut file, 10);
@@ -1283,7 +1327,7 @@ rename to new_name.rs
         assert!(
             file_notices(&file)
                 .iter()
-                .any(|n| n.contains("first 6 of 8 lines"))
+                .any(|n| *n == t!("changes_git.file.diff_truncated", shown = 6, total = 8))
         );
         // body_height stays consistent with what actually renders.
         assert_eq!(
@@ -1386,37 +1430,55 @@ rename to new_name.rs
 
     #[test]
     fn header_label_pluralizes() {
-        assert_eq!(uncommitted_label(0), "0 Uncommitted changes");
-        assert_eq!(uncommitted_label(1), "1 Uncommitted change");
-        assert_eq!(uncommitted_label(4), "4 Uncommitted changes");
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(
+            uncommitted_label(0),
+            t!("changes_git.header.uncommitted.other", count = 0)
+        );
+        assert_eq!(
+            uncommitted_label(1),
+            t!("changes_git.header.uncommitted.one")
+        );
+        assert_eq!(
+            uncommitted_label(4),
+            t!("changes_git.header.uncommitted.other", count = 4)
+        );
     }
 
     #[test]
     fn scope_labels_and_clean_messages() {
+        let _locale = crate::i18n::tests::locale_lock();
         assert_eq!(
             scope_label(DiffScope::WorkingTree, 2, None),
-            "2 Uncommitted changes"
+            t!("changes_git.header.uncommitted.other", count = 2)
         );
         assert_eq!(
             scope_label(DiffScope::Branch, 1, Some("main")),
-            "1 Changed file vs main"
+            t!(
+                "changes_git.header.changed_vs_base.one",
+                count = 1,
+                base = "main"
+            )
         );
-        assert_eq!(scope_label(DiffScope::Branch, 3, None), "3 Changed files");
+        assert_eq!(
+            scope_label(DiffScope::Branch, 3, None),
+            t!("changes_git.header.changed.other", count = 3)
+        );
         assert_eq!(
             scope_label(DiffScope::LatestTurn, 2, None),
-            "2 Changed files this turn"
+            t!("changes_git.header.changed_this_turn.other", count = 2)
         );
         assert_eq!(
             clean_message(DiffScope::WorkingTree, None),
-            "No uncommitted changes"
+            t!("changes_git.empty.no_uncommitted")
         );
         assert_eq!(
             clean_message(DiffScope::Branch, Some("develop")),
-            "No changes vs develop"
+            t!("changes_git.empty.none_vs_base", base = "develop")
         );
         assert_eq!(
             clean_message(DiffScope::LatestTurn, None),
-            "No changes this turn"
+            t!("changes_git.empty.none_this_turn")
         );
     }
 

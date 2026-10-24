@@ -20,6 +20,7 @@ use super::{
 };
 use crate::{
     composer::{ComposerInput, ComposerInputEvent},
+    i18n::t,
     popover::{self, Loadable, Popup},
     settings::widgets,
     state::AppState,
@@ -52,7 +53,12 @@ pub struct WebSearchGroup {
 
 impl WebSearchGroup {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let key = cx.new(|cx| ComposerInput::new_secret("API key", cx));
+        let key = cx.new(|cx| {
+            ComposerInput::new_secret(
+                t!("settings_general_appearance.web_search.api_key_placeholder"),
+                cx,
+            )
+        });
         let key_events = cx.subscribe(&key, |group: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 group.sync_key_mask(cx);
@@ -76,7 +82,7 @@ impl WebSearchGroup {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.web_search = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.web_search = Loadable::Error(crate::state::engine_not_connected().into());
             return;
         };
         self.web_search = Loadable::Loading;
@@ -95,9 +101,7 @@ impl WebSearchGroup {
                     // name it rather than echoing the raw error.
                     Err(holt_rpc::RpcError::UnknownMethod(_)) => {
                         group.web_search = Loadable::Error(
-                            "Web search settings aren't available — the engine doesn't support \
-                             them yet"
-                                .into(),
+                            t!("settings_general_appearance.web_search.errors.unavailable").into(),
                         );
                     }
                     Err(error) => group.web_search = Loadable::Error(error.to_string()),
@@ -236,7 +240,7 @@ impl WebSearchGroup {
     /// Send a web-search RPC that replies the settings state.
     fn call(&mut self, method: &'static str, params: serde_json::Value, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.set_error(crate::state::ENGINE_NOT_CONNECTED.into(), cx);
+            self.set_error(crate::state::engine_not_connected().into(), cx);
             return;
         };
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -289,50 +293,54 @@ impl WebSearchGroup {
 
     fn reveal_key(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.set_error(crate::state::ENGINE_NOT_CONNECTED.into(), cx);
+            self.set_error(crate::state::engine_not_connected().into(), cx);
             return;
         };
         let Some(id) = self.key_kind() else {
             return;
         };
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::REVEAL_WEB_SEARCH_KEY,
-                    serde_json::json!({ "id": id.clone() }),
-                )
-                .await;
-            this.update(cx, |group, cx| {
-                // The field moved to another service meanwhile: the key is
-                // not its to show.
-                if group.key_kind().as_deref() != Some(id.as_str()) {
-                    return;
-                }
-                match result {
-                    Ok(value) => match value
-                        .get("key")
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|key| !key.is_empty())
-                    {
-                        Some(key) => {
-                            // Recorded before the field carries it, so the
-                            // edit it emits derives `Revealed`, not a draft.
-                            group.revealed_key = Some(key.to_string());
-                            group.key.update(cx, |input, cx| {
-                                input.set_masked(false, cx);
-                                input.set_text(key, cx);
-                            });
-                            group.error = None;
-                        }
-                        None => group.error = Some("No API key is stored".into()),
-                    },
-                    Err(error) => group.error = Some(error.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
+        self.task =
+            Some(cx.spawn(async move |this, cx| {
+                let result = engine
+                    .client()
+                    .call(
+                        methods::REVEAL_WEB_SEARCH_KEY,
+                        serde_json::json!({ "id": id.clone() }),
+                    )
+                    .await;
+                this.update(cx, |group, cx| {
+                    // The field moved to another service meanwhile: the key is
+                    // not its to show.
+                    if group.key_kind().as_deref() != Some(id.as_str()) {
+                        return;
+                    }
+                    match result {
+                        Ok(value) => match value
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|key| !key.is_empty())
+                        {
+                            Some(key) => {
+                                // Recorded before the field carries it, so the
+                                // edit it emits derives `Revealed`, not a draft.
+                                group.revealed_key = Some(key.to_string());
+                                group.key.update(cx, |input, cx| {
+                                    input.set_masked(false, cx);
+                                    input.set_text(key, cx);
+                                });
+                                group.error = None;
+                            }
+                            None => group.error = Some(
+                                t!("settings_general_appearance.web_search.errors.no_key_stored")
+                                    .into(),
+                            ),
+                        },
+                        Err(error) => group.error = Some(error.to_string()),
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }));
     }
 
     /// Save the field's key (which also activates the service). An
@@ -348,7 +356,10 @@ impl WebSearchGroup {
         }
         let key = self.key.read(cx).text().trim().to_string();
         if key.is_empty() {
-            self.set_error("Enter an API key".into(), cx);
+            self.set_error(
+                t!("settings_general_appearance.web_search.errors.enter_key").into(),
+                cx,
+            );
             return;
         }
         self.call(
@@ -391,23 +402,23 @@ impl WebSearchGroup {
         shown: Option<&str>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let off = (
+        let off: (Option<String>, String, String) = (
             None,
-            "Off".to_string(),
-            "The agent can't search the web".to_string(),
+            t!("settings_general_appearance.web_search.off_state").into(),
+            t!("settings_general_appearance.web_search.off_description").into(),
         );
         let options = state.backends.iter().map(|backend| {
             let detail = if !backend.needs_key {
-                "No API key needed"
+                t!("settings_general_appearance.web_search.no_key_needed")
             } else if self.entry(&backend.id).is_some() {
-                "API key saved"
+                t!("settings_general_appearance.web_search.key_saved")
             } else {
-                "Uses your API key"
+                t!("settings_general_appearance.web_search.uses_key")
             };
             (
                 Some(backend.id.clone()),
                 backend.name.clone(),
-                detail.to_string(),
+                detail.into(),
             )
         });
         let rows = std::iter::once(off)
@@ -571,7 +582,10 @@ impl WebSearchGroup {
             .flex()
             .flex_col()
             .gap(px(3.0))
-            .child(widgets::row_title(theme, "Your own services"))
+            .child(widgets::row_title(
+                theme,
+                t!("settings_general_appearance.web_search.your_own"),
+            ))
             .child(
                 div()
                     .flex()
@@ -580,16 +594,22 @@ impl WebSearchGroup {
                     .gap(px(4.0))
                     .child(widgets::row_description(
                         theme,
-                        format!("Add them to {file}, then pick them above."),
+                        t!(
+                            "settings_general_appearance.web_search.add_them",
+                            file = file
+                        ),
                     ))
                     .child(
-                        widgets::row_description(theme, "Format")
-                            .id("web-search-custom-format")
-                            .debug_selector(|| "web-search-custom-format".into())
-                            .text_color(accent)
-                            .cursor_pointer()
-                            .hover(|style| style.underline())
-                            .on_click(|_, _, cx| cx.open_url(CUSTOM_FORMAT_URL)),
+                        widgets::row_description(
+                            theme,
+                            t!("settings_general_appearance.web_search.format"),
+                        )
+                        .id("web-search-custom-format")
+                        .debug_selector(|| "web-search-custom-format".into())
+                        .text_color(accent)
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .on_click(|_, _, cx| cx.open_url(CUSTOM_FORMAT_URL)),
                     ),
             )
             .into_any_element()
@@ -606,14 +626,14 @@ impl WebSearchGroup {
             .as_deref()
             .and_then(|id| self.backend(id))
             .map(|backend| backend.name.clone())
-            .unwrap_or_else(|| "Off".into());
+            .unwrap_or_else(|| t!("settings_general_appearance.web_search.off_state").into());
         let menu = self.render_menu(theme, state, shown.as_deref(), cx);
         let mut rows = group_rows().child(
             group_row()
                 .child(row_text(
                     theme,
-                    "Search service",
-                    "The service the agent searches with.",
+                    &t!("settings_general_appearance.web_search.service_row_title"),
+                    &t!("settings_general_appearance.web_search.service_row_description"),
                 ))
                 .child(self.render_trigger(theme, label, menu, cx)),
         );
@@ -627,21 +647,21 @@ impl WebSearchGroup {
                         .debug_selector(|| "cancel-web-search".into())
                         .hover(move |style| widgets::ghost_hover(&cancel_theme, style))
                         .on_click(cx.listener(|group, _, _, cx| group.cancel_pending(cx)))
-                        .child("Cancel")
+                        .child(t!("settings_general_appearance.web_search.cancel"))
                         .into_any_element(),
                 );
             } else {
                 actions.push(
                     remove_button(theme, "remove-web-search")
                         .on_click(cx.listener(|group, _, _, cx| group.remove(cx)))
-                        .child("Remove")
+                        .child(t!("settings_general_appearance.web_search.remove"))
                         .into_any_element(),
                 );
             }
             actions.push(
                 save_button(theme, "save-web-search")
                     .on_click(cx.listener(|group, _, _, cx| group.save_key(cx)))
-                    .child("Save")
+                    .child(t!("settings_general_appearance.web_search.save"))
                     .into_any_element(),
             );
             rows = rows.child(
@@ -649,8 +669,8 @@ impl WebSearchGroup {
                     .items_start()
                     .child(row_text(
                         theme,
-                        "API key",
-                        "Stored on this device, separate from your provider keys.",
+                        &t!("settings_general_appearance.web_search.api_key_row_title"),
+                        &t!("settings_general_appearance.web_search.api_key_row_description"),
                     ))
                     .child(control_with_actions(
                         self.render_key_field(theme, cx),
@@ -706,10 +726,9 @@ impl Render for WebSearchGroup {
             .mt(px(GROUP_GAP))
             .child(group_header(
                 &theme,
-                "Web search",
+                &t!("settings_general_appearance.web_search.title"),
                 None,
-                "Lets the agent search the web. Exa works without a key; the others use your \
-                 own API key.",
+                &t!("settings_general_appearance.web_search.description"),
             ))
             .child(body)
     }
@@ -1093,6 +1112,7 @@ mod tests {
     /// switches; Cancel backs out, Save activates it.
     #[gpui::test]
     fn a_keyed_service_asks_for_its_key_first(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut harness = harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)]);
         harness.pick(Some("bocha"));
         assert_eq!(harness.active().as_deref(), Some("zhipu"));
@@ -1106,7 +1126,10 @@ mod tests {
 
         harness.pick(Some("brave"));
         harness.click("save-web-search");
-        assert_eq!(harness.error().as_deref(), Some("Enter an API key"));
+        assert_eq!(
+            harness.error().as_deref(),
+            Some(t!("settings_general_appearance.web_search.errors.enter_key").as_ref())
+        );
         assert!(harness.saved().is_empty());
 
         harness.type_key("brave-key-000000");
@@ -1219,11 +1242,13 @@ mod tests {
     /// named message, not a raw error and not a silent empty group.
     #[gpui::test]
     fn an_engine_without_the_web_search_rpcs_names_the_skew(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut harness = harness_with(cx, search_state(None, vec![]), &[], false);
         assert!(harness.renders("web-search-unavailable"));
         let state = harness.read(|group, _| group.web_search.clone());
+        let expected = t!("settings_general_appearance.web_search.errors.unavailable");
         assert!(
-            matches!(state, Loadable::Error(ref message) if message.contains("aren't available")),
+            matches!(state, Loadable::Error(ref message) if message == expected.as_ref()),
             "unexpected state: {state:?}"
         );
         assert!(!harness.renders("web-search-service"));

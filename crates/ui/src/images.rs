@@ -19,6 +19,7 @@ use base64::Engine as _;
 use gpui::{App, RenderImage};
 use smallvec::smallvec;
 
+use crate::i18n::t;
 use crate::state::EngineHandle;
 
 /// Extensions this feature previews (and the read tool supplies to models):
@@ -209,10 +210,10 @@ pub fn snapshot(path: &str) -> Snapshot {
         None => Snapshot::Error {
             cause: match std::fs::metadata(path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    "Image file not found.".into()
+                    t!("pickers_dialogs.images.not_found").into()
                 }
-                Err(error) => format!("Image file could not be read: {error}").into(),
-                Ok(_) => "Image metadata could not be read.".into(),
+                Err(error) => t!("pickers_dialogs.images.unreadable", error = error).into(),
+                Ok(_) => t!("pickers_dialogs.images.metadata_unreadable").into(),
             },
             retry_in: Duration::MAX,
         },
@@ -283,7 +284,7 @@ pub fn begin_load(path: &str) -> bool {
 pub fn store_loaded(path: &str, thumb: Thumb) {
     let bytes = thumb.pixels.as_bytes(0).map_or(0, |b| b.len());
     let Some(fp) = fingerprint(path) else {
-        store_error(path, "Image file not found.");
+        store_error(path, t!("pickers_dialogs.images.not_found"));
         return;
     };
     let mut cache = cache().lock().unwrap();
@@ -373,7 +374,7 @@ pub async fn stage_pasted(
     image: &gpui::Image,
 ) -> Result<gpui::SharedString, gpui::SharedString> {
     if image.bytes.len() > 25 * 1024 * 1024 {
-        return Err("Image exceeds the 25 MiB limit.".into());
+        return Err(t!("pickers_dialogs.images.exceeds_mib").into());
     }
     let data = base64::engine::general_purpose::STANDARD.encode(&image.bytes);
     let reply = engine
@@ -387,8 +388,13 @@ pub async fn stage_pasted(
         )
         .await
         .map_err(|error| gpui::SharedString::from(error.to_string()))?;
-    let staged: holt_rpc::images::ManagedImage = serde_json::from_value(reply)
-        .map_err(|error| gpui::SharedString::from(format!("Invalid staging reply: {error}")))?;
+    let staged: holt_rpc::images::ManagedImage =
+        serde_json::from_value(reply).map_err(|error| {
+            gpui::SharedString::from(t!(
+                "pickers_dialogs.images.invalid_staging_reply",
+                error = error
+            ))
+        })?;
     Ok(staged.path.into())
 }
 
@@ -440,8 +446,10 @@ pub async fn load_workspace_pixels(
         .call(holt_rpc::methods::READ_WORKSPACE_IMAGE, params)
         .await
         .map_err(|error| gpui::SharedString::from(error.to_string()))?;
-    let payload: holt_rpc::images::WorkspaceImageData = serde_json::from_value(reply)
-        .map_err(|error| gpui::SharedString::from(format!("Invalid image reply: {error}")))?;
+    let payload: holt_rpc::images::WorkspaceImageData =
+        serde_json::from_value(reply).map_err(|error| {
+            gpui::SharedString::from(t!("pickers_dialogs.images.invalid_reply", error = error))
+        })?;
     let path = payload.path.clone();
     let pixels = decode_reply_pixels(&payload.data, None, executor).await?;
     Ok((pixels, path))
@@ -498,12 +506,13 @@ async fn read_original(
         )
         .await
         .map_err(|error| gpui::SharedString::from(error.to_string()))?;
-    serde_json::from_value(reply)
-        .map_err(|error| gpui::SharedString::from(format!("Invalid image reply: {error}")))
+    serde_json::from_value(reply).map_err(|error| {
+        gpui::SharedString::from(t!("pickers_dialogs.images.invalid_reply", error = error))
+    })
 }
 fn original_bytes(data: &str) -> Result<Vec<u8>, gpui::SharedString> {
     if data.len() > (25usize * 1024 * 1024).div_ceil(3) * 4 {
-        return Err("Image exceeds the 25 MiB limit.".into());
+        return Err(t!("pickers_dialogs.images.exceeds_mib").into());
     }
     base64::engine::general_purpose::STANDARD
         .decode(data.as_bytes())
@@ -534,7 +543,9 @@ fn save_original_reply(data: &str, destination: &Path) -> Result<(), gpui::Share
         file.persist(destination).map_err(|error| error.error)?;
         Ok(())
     };
-    write().map_err(|error| format!("Could not save image: {error}").into())
+    write().map_err(|error| {
+        gpui::SharedString::from(t!("pickers_dialogs.images.save_failed", error = error))
+    })
 }
 
 /// Decode image bytes with explicit budgets and convert to gpui-ready BGRA,
@@ -547,7 +558,10 @@ pub(crate) fn decode_to_render(
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| {
-            gpui::SharedString::from(format!("image format could not be determined: {error}"))
+            gpui::SharedString::from(t!(
+                "pickers_dialogs.images.format_undetermined",
+                error = error
+            ))
         })?;
     use image::ImageDecoder as _;
     // Hard allocation ceiling: a hostile header cannot decompress to
@@ -555,23 +569,28 @@ pub(crate) fn decode_to_render(
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(DECODE_MAX_ALLOC_BYTES);
     reader.limits(limits);
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|error| gpui::SharedString::from(format!("image could not be opened: {error}")))?;
+    let mut decoder = reader.into_decoder().map_err(|error| {
+        gpui::SharedString::from(t!("pickers_dialogs.images.could_not_open", error = error))
+    })?;
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) > VIEWER_MAX_PIXELS {
-        return Err("Image exceeds the 64 megapixel decode limit.".into());
+        return Err(gpui::SharedString::from(t!(
+            "pickers_dialogs.images.exceeds_megapixel"
+        )));
     }
     let orientation = decoder.orientation().map_err(|error| {
-        gpui::SharedString::from(format!("image orientation unreadable: {error}"))
+        gpui::SharedString::from(t!(
+            "pickers_dialogs.images.orientation_unreadable",
+            error = error
+        ))
     })?;
     let mut decoded = image::DynamicImage::from_decoder(decoder).map_err(|error| {
-        gpui::SharedString::from(format!("image could not be decoded (corrupt?): {error}"))
+        gpui::SharedString::from(t!("pickers_dialogs.images.could_not_decode", error = error))
     })?;
     decoded.apply_orientation(orientation);
     let (width, height) = (decoded.width(), decoded.height());
     if width == 0 || height == 0 {
-        return Err("image has no pixels.".into());
+        return Err(t!("pickers_dialogs.images.no_pixels").into());
     }
     // Only thumbnails resize; the viewer preserves the source pixels.
     let scale = match max_edge {
@@ -689,6 +708,7 @@ mod tests {
 
     #[test]
     fn corrupt_bytes_fail_with_an_honest_cause() {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut corrupt = png(PNG_1X1);
         corrupt.truncate(corrupt.len() / 2);
         let err = decode_to_render(&corrupt, None).unwrap_err();
@@ -718,6 +738,7 @@ mod tests {
 
     #[test]
     fn the_cache_answers_only_fresh_entries() {
+        let _locale = crate::i18n::tests::locale_lock();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.png");
         std::fs::write(&path, png(PNG_1X1)).unwrap();

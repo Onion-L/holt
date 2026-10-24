@@ -1,6 +1,7 @@
 //! Session context menu and clipboard commands for the session under the pointer.
 
 use super::*;
+use crate::i18n::t;
 use gpui::{Bounds, FocusHandle, Size};
 use holt_doc::{MessagePart, MessageRole, SessionMessageEntry, TranscriptFrame};
 
@@ -243,11 +244,24 @@ impl Shell {
                 .unwrap_or(false)
         };
         for (index, (label, glyph)) in [
-            (if pinned { "Unpin" } else { "Pin" }, icons::PIN),
-            ("Rename...", icons::PEN),
-            ("Archive", icons::ARCHIVE_MINIMALISTIC),
-            ("Copy", icons::COPY),
-            ("Delete...", icons::TRASH_BIN_MINIMALISTIC),
+            (
+                if pinned {
+                    t!("sidebar_spaces.chat_menu.unpin")
+                } else {
+                    t!("sidebar_spaces.chat_menu.pin")
+                },
+                icons::PIN,
+            ),
+            (t!("sidebar_spaces.chat_menu.rename"), icons::PEN),
+            (
+                t!("sidebar_spaces.chat_menu.archive"),
+                icons::ARCHIVE_MINIMALISTIC,
+            ),
+            (t!("sidebar_spaces.chat_menu.copy"), icons::COPY),
+            (
+                t!("sidebar_spaces.chat_menu.delete"),
+                icons::TRASH_BIN_MINIMALISTIC,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -299,9 +313,9 @@ impl Shell {
                 .flex()
                 .flex_col();
             for (index, label) in [
-                "Copy working directory",
-                "Copy deep link",
-                "Copy as Markdown",
+                t!("sidebar_spaces.chat_menu.copy_directory"),
+                t!("sidebar_spaces.chat_menu.copy_link"),
+                t!("sidebar_spaces.chat_menu.copy_markdown"),
             ]
             .into_iter()
             .enumerate()
@@ -353,12 +367,12 @@ impl Shell {
             cx.write_to_clipboard(ClipboardItem::new_string(cwd));
             (
                 super::HoltNoticeKind::Success,
-                "Working directory copied".into(),
+                t!("sidebar_spaces.chat_menu.copied_directory").into(),
             )
         } else {
             (
                 super::HoltNoticeKind::Warning,
-                "This session has no working directory".into(),
+                t!("sidebar_spaces.chat_menu.no_directory").into(),
             )
         };
         self.push_holt_notice(kind, message, cx);
@@ -378,7 +392,7 @@ impl Shell {
         let Some(engine) = state.engine().cloned() else {
             self.push_holt_notice(
                 super::HoltNoticeKind::Error,
-                "Cannot copy session: engine is unavailable".into(),
+                t!("sidebar_spaces.chat_menu.copy_unavailable").into(),
                 cx,
             );
             cx.notify();
@@ -401,7 +415,9 @@ impl Shell {
             .await
             {
                 futures::future::Either::Left((result, _)) => result,
-                futures::future::Either::Right(_) => Err("Reading session timed out".into()),
+                futures::future::Either::Right(_) => {
+                    Err(t!("sidebar_spaces.chat_menu.read_timeout").into())
+                }
             };
             this.update(cx, |this, cx| {
                 let (kind, message) = match result {
@@ -409,12 +425,12 @@ impl Shell {
                         cx.write_to_clipboard(ClipboardItem::new_string(markdown));
                         (
                             super::HoltNoticeKind::Success,
-                            "Session copied as Markdown".into(),
+                            t!("sidebar_spaces.chat_menu.copied_markdown").into(),
                         )
                     }
                     Err(error) => (
                         super::HoltNoticeKind::Error,
-                        format!("Could not copy session: {error}").into(),
+                        t!("sidebar_spaces.chat_menu.copy_failed", error = error).into(),
                     ),
                 };
                 this.push_holt_notice(kind, message, cx);
@@ -441,10 +457,15 @@ async fn read_conversation_markdown(
         )
         .await
         .map_err(|error| error.to_string())?;
-    let value = stream.recv().await.ok_or("Session stream closed")?;
+    let value = stream
+        .recv()
+        .await
+        .ok_or_else(|| t!("sidebar_spaces.chat_menu.stream_closed"))?;
     match serde_json::from_value::<TranscriptFrame>(value).map_err(|error| error.to_string())? {
         TranscriptFrame::Reset { reset } => Ok(conversation_markdown(title, &reset)),
-        TranscriptFrame::Delta { .. } => Err("Session snapshot is unavailable".into()),
+        TranscriptFrame::Delta { .. } => {
+            Err(t!("sidebar_spaces.chat_menu.snapshot_unavailable").into())
+        }
     }
 }
 

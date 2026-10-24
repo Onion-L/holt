@@ -1,0 +1,187 @@
+_version: 2
+composer_input:
+  placeholder:
+    idle:
+      en-US: Do anything…
+    goal:
+      en-US: Steer the goal — or /goal pause to stop it
+    wizard_pick:
+      en-US: Type your own answer, or pick an option above
+    wizard_picked:
+      en-US: Type your own answer, or leave this blank to use the selected option
+    edit_queued:
+      en-US: Edit the queued message
+  banner:
+    delivery_unconfirmed:
+      en-US: Message delivery was not confirmed.
+    retry_aria:
+      en-US: Retry message
+    retry:
+      en-US: Retry
+    offline:
+      en-US: Offline — messages will send when you're back online.
+    recovering:
+      en-US: Messages will send once the connection recovers.
+    images_unsupported:
+      en-US: This model cannot view images. Paths can still be sent.
+    images_unknown:
+      en-US: Image support is unknown for this model.
+  failure:
+    skill_disabled:
+      en-US: Skill “%{name}” is disabled — re-enable it in Settings → Skills
+    usage_compact:
+      en-US: "Usage: /compact (no arguments)"
+    usage_init:
+      en-US: "Usage: /init (no arguments)"
+    init_needs_project:
+      en-US: /init needs a project — pick a project first
+    usage_goal:
+      en-US: "Usage: /goal <objective> | off | pause | resume"
+    goal_needs_chat:
+      en-US: No chat here yet — /goal <objective> starts one
+    goal_failed:
+      en-US: "/goal failed: %{error}"
+    plan_needs_chat:
+      en-US: Start a conversation first — or use /plan <task>
+    plan_failed:
+      en-US: "/plan failed: %{error}"
+    provider_failed:
+      en-US: "/provider failed: %{error}"
+    configure_provider:
+      en-US: Configure a provider before sending
+    choose_model:
+      en-US: Choose a model before sending
+    send_failed:
+      en-US: "Send failed: %{error}"
+    stop_failed:
+      en-US: "Stop failed: %{error}"
+    answer_failed:
+      en-US: "Answer failed: %{error}"
+    paste_engine_not_connected:
+      en-US: Engine not connected — couldn't save the pasted image.
+    thumb_engine_not_connected:
+      en-US: Engine not connected.
+  notice:
+    plan_status_on:
+      en-US: "Plan Mode: on — propose a plan with the submit_plan tool"
+    plan_status_off:
+      en-US: "Plan Mode: off"
+    plan_on:
+      en-US: Plan Mode on
+    plan_off:
+      en-US: Plan Mode off — plan documents are kept
+    provider_on:
+      en-US: Provider Mode on
+    provider_off:
+      en-US: Provider Mode off
+  send_button:
+    interrupt_aria:
+      en-US: Interrupt the running turn
+    interrupt_tooltip:
+      en-US: Press Esc again to stop
+    stop_aria:
+      en-US: Stop and pause message queue
+    stop_tooltip:
+      en-US: Stop and pause queue
+  queue:
+    queued_count:
+      en-US: Queued (%{count})
+    paused_count:
+      en-US: Queue paused (%{count})
+    collapse_aria:
+      en-US: Collapse message queue
+    expand_aria:
+      en-US: Expand message queue
+    resume_aria:
+      en-US: Resume the message queue
+    run_now_aria:
+      en-US: Run queued message now
+    edit_aria:
+      en-US: Edit queued message
+    delete_aria:
+      en-US: Delete queued message
+    delete_goal_aria:
+      en-US: Delete — pauses the goal
+    save_aria:
+      en-US: Save the queued message edit
+    cancel_aria:
+      en-US: Cancel editing the queued message
+    run_failed:
+      en-US: "Could not run queued message: %{error}"
+    save_failed:
+      en-US: "Could not save the edit: %{error}"
+    delete_failed:
+      en-US: "Could not delete the message: %{error}"
+    resume_failed:
+      en-US: "Could not resume the queue: %{error}"
+  mention_popup:
+    no_files:
+      en-US: No files available
+    no_matches:
+      en-US: No matching files
+  slash_popup:
+    none_available:
+      en-US: No slash commands or skills available
+    no_matches:
+      en-US: No matching commands or skills
+    section_skills:
+      en-US: Skills
+    section_commands:
+      en-US: Commands
+    engine_unreachable:
+      en-US: The engine is unreachable
+    commands_unsupported:
+      en-US: Command listing isn't available — the engine doesn't support it yet
+    commands_failed:
+      en-US: Couldn't load this agent's commands
+    skills_unsupported:
+      en-US: Skills aren't available — the engine doesn't support them yet
+    skills_failed:
+      en-US: Couldn't load skills
+    root_project:
+      en-US: project
+    root_personal:
+      en-US: personal
+  wizard:
+    multi_select_hint:
+      en-US: Select one or more options.
+    back:
+      en-US: Back
+    next:
+      en-US: Next
+    submit:
+      en-US: Submit
+  approval:
+    gate_exec:
+      en-US: Run this command?
+    gate_write:
+      en-US: Write this file?
+    gate_edit:
+      en-US: Edit this file?
+    gate_patch:
+      en-US: Apply this patch?
+    gate_generic:
+      en-US: Allow this action?
+    model_apply:
+      en-US: Apply these catalog changes?
+    allow_once:
+      en-US: Allow once
+    always_allow_session:
+      en-US: Always allow · this session
+    deny:
+      en-US: Deny
+    deny_note_placeholder:
+      en-US: Deny with a note…
+    plan_title:
+      en-US: Approve this plan?
+    approve:
+      en-US: Approve
+    plan_note_placeholder:
+      en-US: Enter feedback…
+    question_note_placeholder:
+      en-US: Answer in words…
+    esc_to_dismiss:
+      en-US: " to dismiss"
+  attach:
+    prompt:
+      en-US: Attach

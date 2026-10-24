@@ -18,6 +18,7 @@ use holt_proto::{
     WorkspaceEntryKind, WorkspaceGitStatus, WorkspaceGitStatusKind, WorkspaceListing,
 };
 
+use crate::i18n::t;
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::state::AppState;
@@ -95,15 +96,21 @@ pub(crate) fn marker_parts(kind: WorkspaceGitStatusKind) -> Option<(&'static str
     match kind {
         Kind::Untracked => Some((
             "U",
-            SharedString::from("Untracked — new file, not yet in git"),
+            SharedString::from(t!("files_sidebar.tree.git.untracked")),
         )),
-        Kind::Added => Some(("A", SharedString::from("Added — staged new file"))),
-        Kind::Modified => Some(("M", SharedString::from("Modified — uncommitted changes"))),
+        Kind::Added => Some(("A", SharedString::from(t!("files_sidebar.tree.git.added")))),
+        Kind::Modified => Some((
+            "M",
+            SharedString::from(t!("files_sidebar.tree.git.modified")),
+        )),
         Kind::Conflicted => Some((
             "C",
-            SharedString::from("Conflicted — unresolved merge conflict"),
+            SharedString::from(t!("files_sidebar.tree.git.conflicted")),
         )),
-        Kind::Deleted => Some(("D", SharedString::from("Deleted from the working tree"))),
+        Kind::Deleted => Some((
+            "D",
+            SharedString::from(t!("files_sidebar.tree.git.deleted")),
+        )),
         Kind::Ignored => None,
     }
 }
@@ -978,7 +985,9 @@ impl FileTreePanel {
                 let state = match reply {
                     Ok(value) => match serde_json::from_value::<WorkspaceListing>(value) {
                         Ok(listing) => DirState::Loaded(listing),
-                        Err(error) => DirState::Failed(format!("unexpected reply: {error}").into()),
+                        Err(error) => DirState::Failed(
+                            t!("files_sidebar.tree.unexpected_reply", error = error).into(),
+                        ),
                     },
                     Err(message) => DirState::Failed(message.into()),
                 };
@@ -1227,7 +1236,7 @@ impl FileTreePanel {
                         div()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
-                            .child("Loading…"),
+                            .child(t!("files_sidebar.common.loading")),
                     )
                     .into_any_element(),
                 Some(Some(message)) => div()
@@ -1270,7 +1279,7 @@ impl FileTreePanel {
                             div()
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text_muted)
-                                .child("Select a space to browse its files"),
+                                .child(t!("files_sidebar.tree.select_space")),
                         ),
                 )
                 .into_any_element()
@@ -1481,7 +1490,17 @@ impl FileTreePanel {
                     } else {
                         theme.text.opacity(0.85)
                     })
-                    .child(row.name.clone()),
+                    .child(match row.marker {
+                        // UI notice rows carry no real entry name — their
+                        // label is catalog text, read live at render.
+                        Some(RowMarker::Empty) => {
+                            SharedString::from(t!("files_sidebar.tree.row_empty"))
+                        }
+                        Some(RowMarker::Truncated) => {
+                            SharedString::from(t!("files_sidebar.tree.row_truncated"))
+                        }
+                        None => row.name.clone(),
+                    }),
             )
             // The status marker (ticket 10): one fixed-width letter at the
             // row's trailing edge — names never reflow when it appears.
@@ -1551,10 +1570,10 @@ impl FileTreePanel {
                     .with_active_space(|space| {
                         match space.dirs.get(&expansion_path(&row.path, &row.kind)) {
                             Some(DirState::Failed(message)) => message.clone(),
-                            _ => SharedString::from("failed to load"),
+                            _ => SharedString::from(t!("files_sidebar.tree.failed_to_load")),
                         }
                     })
-                    .unwrap_or_else(|| SharedString::from("failed to load"));
+                    .unwrap_or_else(|| SharedString::from(t!("files_sidebar.tree.failed_to_load")));
                 row_el = row_el.child(
                     div()
                         .id(("file-tree-retry", ix))
@@ -1569,7 +1588,10 @@ impl FileTreePanel {
                         .hover(|state| state.bg(crate::theme::wash(0.10)))
                         .tooltip(move |_, cx| {
                             cx.new(|_| {
-                                crate::popover::TextTooltip(format!("Retry: {message}").into())
+                                crate::popover::TextTooltip(
+                                    t!("files_sidebar.tree.retry_with_reason", message = message)
+                                        .into(),
+                                )
                             })
                             .into()
                         })

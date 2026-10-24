@@ -1026,7 +1026,10 @@ pub fn rows_for_entry(
                             &questions
                                 .first()
                                 .map(|q| q.header.clone())
-                                .unwrap_or_else(|| "Question".to_string()),
+                                .unwrap_or_else(|| {
+                                    crate::i18n::t!("conversation_transcript.question.label")
+                                        .into_owned()
+                                }),
                         )
                         .into();
                         rows.push(Row {
@@ -1669,6 +1672,8 @@ mod tests {
 
     #[test]
     fn reasoning_joins_the_tool_group_accordion() {
+        use crate::i18n::t;
+        let _locale = crate::i18n::tests::locale_lock();
         // Thought → tool → thought → tool folds into ONE group row (user
         // request: the thought process lives inside the combined accordion),
         // and the collapsed summary names the thinking.
@@ -1697,7 +1702,17 @@ mod tests {
             Some(ToolDetail::Thought { lines, .. }) if !lines.is_empty()
         ));
         let summary = tool_group_summary(tools);
-        assert!(summary.starts_with("Thought 2 times"), "{summary}");
+        assert!(
+            summary.starts_with(
+                t!(
+                    "conversation_transcript.tool.thought_times_with_base",
+                    count = 2,
+                    base = "Ran 2 commands"
+                )
+                .as_ref()
+            ),
+            "{summary}"
+        );
         assert!(summary.contains("2 commands"), "{summary}");
 
         // A lone thought is still an accordion (with the group tween), named
@@ -1712,7 +1727,10 @@ mod tests {
         let RowKind::ToolGroup { tools, .. } = &rows[0].kind else {
             panic!("expected a tool group");
         };
-        assert_eq!(tool_group_summary(tools), "Thought process");
+        assert_eq!(
+            tool_group_summary(tools),
+            t!("conversation_transcript.tool.thought_process").as_ref()
+        );
 
         // Empty reasoning renders nothing.
         let entry = assistant(

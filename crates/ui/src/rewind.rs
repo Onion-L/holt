@@ -3,12 +3,15 @@
 //! confirms it in a dialog over the conversation, then applies it. A plan
 //! with conflicts cannot be confirmed — the dialog only says why.
 
+use std::borrow::Cow;
+
 use gpui::{
     AnyElement, AppContext as _, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled, div, px,
 };
 use holt_proto::{RewindAction, RewindConflictReason, RewindReply};
 
+use crate::i18n::t;
 use crate::theme::Theme;
 
 /// The step a pending confirm dialog would rewind to, with its plan.
@@ -35,8 +38,15 @@ pub(crate) async fn rewind_call(
         .client()
         .call(holt_rpc::methods::REWIND_TO_STEP, params)
         .await
-        .map_err(|error| format!("Rewind failed: {error}"))?;
-    serde_json::from_value(value).map_err(|_| "Rewind failed: malformed reply".to_string())
+        .map_err(|error| {
+            t!(
+                "conversation_transcript.rewind.failed",
+                error = error.to_string()
+            )
+            .into_owned()
+        })?;
+    serde_json::from_value(value)
+        .map_err(|_| t!("conversation_transcript.rewind.malformed").into_owned())
 }
 
 /// Files listed in the dialog before the rest is counted.
@@ -50,51 +60,78 @@ fn listed(lines: Vec<String>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     if more > 0 {
-        text.push_str(&format!("\n…and {more} more"));
+        text.push_str(&format!(
+            "\n{}",
+            t!("conversation_transcript.rewind.and_more", count = more)
+        ));
     }
     text
 }
 
 /// The dialog's title and body, and whether it can be confirmed.
-pub(crate) fn rewind_question(plan: &RewindReply) -> (&'static str, String, bool) {
+pub(crate) fn rewind_question(plan: &RewindReply) -> (Cow<'static, str>, String, bool) {
     if !plan.conflicts.is_empty() {
         let lines = plan
             .conflicts
             .iter()
             .map(|conflict| {
                 let why = match conflict.reason {
-                    RewindConflictReason::Changed => "changed since that step",
-                    RewindConflictReason::NotStored => "content was not saved",
-                    RewindConflictReason::Unsafe => "outside the working tree",
+                    RewindConflictReason::Changed => {
+                        t!("conversation_transcript.rewind.conflict_changed")
+                    }
+                    RewindConflictReason::NotStored => {
+                        t!("conversation_transcript.rewind.conflict_not_stored")
+                    }
+                    RewindConflictReason::Unsafe => {
+                        t!("conversation_transcript.rewind.conflict_unsafe")
+                    }
                 };
-                format!("{} — {why}", conflict.path)
+                t!(
+                    "conversation_transcript.rewind.conflict_line",
+                    path = conflict.path.as_str(),
+                    reason = why.as_ref()
+                )
+                .into_owned()
             })
             .collect();
         return (
-            "Can't rewind",
+            t!("conversation_transcript.rewind.title_cant"),
             format!(
-                "Nothing was changed. These files block it:\n{}",
+                "{}\n{}",
+                t!("conversation_transcript.rewind.conflicts_intro"),
                 listed(lines)
             ),
             false,
         );
     }
-    let conversation = "The conversation after this step will be removed.";
     if plan.files.is_empty() {
-        return ("Rewind to this step?", conversation.to_string(), true);
+        return (
+            t!("conversation_transcript.rewind.title_confirm"),
+            t!("conversation_transcript.rewind.conversation_removed").into_owned(),
+            true,
+        );
     }
     let lines = plan
         .files
         .iter()
         .map(|file| match file.action {
-            RewindAction::Restore => format!("{} — restored", file.path),
-            RewindAction::Delete => format!("{} — deleted", file.path),
+            RewindAction::Restore => t!(
+                "conversation_transcript.rewind.file_restored",
+                path = file.path.as_str()
+            )
+            .into_owned(),
+            RewindAction::Delete => t!(
+                "conversation_transcript.rewind.file_deleted",
+                path = file.path.as_str()
+            )
+            .into_owned(),
         })
         .collect();
     (
-        "Rewind to this step?",
+        t!("conversation_transcript.rewind.title_confirm"),
         format!(
-            "{conversation} These files go back to how they were:\n{}",
+            "{}\n{}",
+            t!("conversation_transcript.rewind.files_intro"),
             listed(lines)
         ),
         true,
@@ -104,9 +141,9 @@ pub(crate) fn rewind_question(plan: &RewindReply) -> (&'static str, String, bool
 /// One-line outcome for the notice after an applied rewind.
 pub(crate) fn rewind_summary(reply: &RewindReply) -> String {
     match reply.files.len() {
-        0 => "Rewound the conversation.".into(),
-        1 => "Rewound the conversation and 1 file.".into(),
-        n => format!("Rewound the conversation and {n} files."),
+        0 => t!("conversation_transcript.rewind.summary.none").into_owned(),
+        1 => t!("conversation_transcript.rewind.summary.one", count = 1).into_owned(),
+        n => t!("conversation_transcript.rewind.summary.other", count = n).into_owned(),
     }
 }
 
@@ -114,12 +151,13 @@ pub(crate) fn rewind_summary(reply: &RewindReply) -> String {
 pub(crate) fn rewind_dialog(
     theme: &Theme,
     viewport: gpui::Size<gpui::Pixels>,
-    title: &str,
+    title: impl Into<SharedString>,
     question: String,
     cancel_out: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     cancel: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     confirm: Option<impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>,
 ) -> AnyElement {
+    let title = title.into();
     let mut buttons = div()
         .mt(px(16.0))
         .flex()
@@ -130,30 +168,41 @@ pub(crate) fn rewind_dialog(
         Some(confirm) => {
             buttons = buttons
                 .child(
-                    crate::popover::btn_ghost(theme, "Cancel", "rewind-cancel")
-                        .id("rewind-cancel")
-                        .debug_selector(|| "rewind-cancel".to_string())
-                        .on_click(cancel),
+                    crate::popover::btn_ghost(
+                        theme,
+                        t!("conversation_transcript.common.cancel").as_ref(),
+                        "rewind-cancel",
+                    )
+                    .id("rewind-cancel")
+                    .debug_selector(|| "rewind-cancel".to_string())
+                    .on_click(cancel),
                 )
                 .child(
-                    crate::popover::btn_primary(theme, "Rewind")
-                        .id("rewind-confirm")
-                        .debug_selector(|| "rewind-confirm".to_string())
-                        .on_click(confirm),
+                    crate::popover::btn_primary(
+                        theme,
+                        t!("conversation_transcript.rewind.button").as_ref(),
+                    )
+                    .id("rewind-confirm")
+                    .debug_selector(|| "rewind-confirm".to_string())
+                    .on_click(confirm),
                 );
         }
         None => {
             buttons = buttons.child(
-                crate::popover::btn_ghost(theme, "Close", "rewind-cancel")
-                    .id("rewind-cancel")
-                    .debug_selector(|| "rewind-cancel".to_string())
-                    .on_click(cancel),
+                crate::popover::btn_ghost(
+                    theme,
+                    t!("conversation_transcript.common.close").as_ref(),
+                    "rewind-cancel",
+                )
+                .id("rewind-cancel")
+                .debug_selector(|| "rewind-cancel".to_string())
+                .on_click(cancel),
             );
         }
     }
     let card = crate::popover::dialog_card(theme)
         .on_mouse_down_out(cancel_out)
-        .child(crate::popover::dialog_title(theme, title))
+        .child(crate::popover::dialog_title(theme, title.as_str()))
         .child(
             div()
                 .mt(px(6.0))
@@ -171,7 +220,7 @@ pub(crate) fn rewind_button(
     theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let hint: SharedString = "Rewind to this step".into();
+    let hint: SharedString = t!("conversation_transcript.rewind.tooltip").into();
     div()
         .id(id)
         .flex_none()
@@ -210,6 +259,7 @@ mod tests {
 
     #[test]
     fn a_clean_plan_lists_its_files_and_can_be_confirmed() {
+        let _locale = crate::i18n::tests::locale_lock();
         let (title, body, can) = rewind_question(&plan(
             vec![
                 RewindFile {
@@ -223,13 +273,28 @@ mod tests {
             ],
             Vec::new(),
         ));
-        assert_eq!(title, "Rewind to this step?");
+        assert_eq!(title, t!("conversation_transcript.rewind.title_confirm"));
         assert!(can);
-        assert!(body.contains("a.txt — restored") && body.contains("b.txt — deleted"));
+        assert!(
+            body.contains(
+                t!(
+                    "conversation_transcript.rewind.file_restored",
+                    path = "a.txt"
+                )
+                .as_ref()
+            ) && body.contains(
+                t!(
+                    "conversation_transcript.rewind.file_deleted",
+                    path = "b.txt"
+                )
+                .as_ref()
+            )
+        );
     }
 
     #[test]
     fn a_conflict_only_explains_and_cannot_be_confirmed() {
+        let _locale = crate::i18n::tests::locale_lock();
         let (title, body, can) = rewind_question(&plan(
             Vec::new(),
             vec![RewindConflict {
@@ -237,13 +302,23 @@ mod tests {
                 reason: RewindConflictReason::Changed,
             }],
         ));
-        assert_eq!(title, "Can't rewind");
+        assert_eq!(title, t!("conversation_transcript.rewind.title_cant"));
         assert!(!can);
-        assert!(body.contains("a.txt — changed since that step"));
+        assert!(
+            body.contains(
+                t!(
+                    "conversation_transcript.rewind.conflict_line",
+                    path = "a.txt",
+                    reason = t!("conversation_transcript.rewind.conflict_changed").as_ref()
+                )
+                .as_ref()
+            )
+        );
     }
 
     #[test]
     fn a_long_plan_counts_what_it_does_not_list() {
+        let _locale = crate::i18n::tests::locale_lock();
         let files = (0..10)
             .map(|n| RewindFile {
                 path: format!("f{n}"),
@@ -251,7 +326,10 @@ mod tests {
             })
             .collect();
         let (_, body, _) = rewind_question(&plan(files, Vec::new()));
-        assert!(body.ends_with("…and 2 more"), "{body}");
+        assert!(
+            body.ends_with(t!("conversation_transcript.rewind.and_more", count = 2).as_ref()),
+            "{body}"
+        );
         assert!(!body.contains("f8"));
     }
 }

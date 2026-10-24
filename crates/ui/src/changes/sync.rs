@@ -15,6 +15,7 @@ use holt_rpc::methods;
 
 use crate::comments::DiffComment;
 use crate::history::{GitHistory, GitHistoryCount, GitHistoryEvent, GitHistoryFetchButton};
+use crate::i18n::t;
 use crate::state::EngineHandle;
 
 use super::model::{
@@ -82,7 +83,7 @@ impl Changes {
                         // Stream ended (engine restart / reconnect): banner + retry.
                         if this
                             .update(cx, |changes, cx| {
-                                changes.error = Some("Diff stream interrupted — retrying".into());
+                                changes.error = Some(t!("changes_git.watch.interrupted").into());
                                 cx.notify();
                             })
                             .is_err()
@@ -91,10 +92,12 @@ impl Changes {
                         }
                     }
                     Err(err) => {
+                        let message = err.to_string();
                         if this
                             .update(cx, |changes, cx| {
-                                changes.error =
-                                    Some(format!("Diff watch unavailable: {err}").into());
+                                changes.error = Some(
+                                    t!("changes_git.watch.unavailable", error = message).into(),
+                                );
                                 cx.notify();
                             })
                             .is_err()

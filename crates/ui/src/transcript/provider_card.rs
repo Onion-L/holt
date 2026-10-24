@@ -14,6 +14,7 @@ use holt_rpc::methods;
 
 use super::{Transcript, TranscriptEvent};
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::settings::widgets;
 use crate::theme::Theme;
 
@@ -42,7 +43,7 @@ fn proposal_error_text(error: &holt_rpc::RpcError) -> String {
         other => other.to_string().contains("changed since this proposal"),
     };
     if stale {
-        "Catalog changed — ask to re-propose.".to_string()
+        t!("conversation_transcript.provider.stale").into_owned()
     } else {
         error.to_string()
     }
@@ -272,7 +273,12 @@ impl Transcript {
                                             )
                                         }))
                                 })
-                                .child(if writing { "Writing…" } else { "Write" }),
+                                .child(if writing {
+                                    t!("conversation_transcript.provider.writing")
+                                        .into_any_element()
+                                } else {
+                                    t!("conversation_transcript.provider.write").into_any_element()
+                                }),
                         )
                         .child(
                             widgets::ghost_action(theme)
@@ -298,12 +304,15 @@ impl Transcript {
                                             )
                                         }))
                                 })
-                                .child("Discard"),
+                                .child(t!("conversation_transcript.provider.discard")),
                         ),
                 )
             }
             ProposalCardState::Written => match targets.first() {
-                None => card.child(state_line("✓ Written", theme)),
+                None => card.child(state_line(
+                    t!("conversation_transcript.provider.written"),
+                    theme,
+                )),
                 Some(first) => {
                     let names = targets
                         .iter()
@@ -317,7 +326,10 @@ impl Transcript {
                             .items_center()
                             .justify_between()
                             .gap(px(8.0))
-                            .child(state_line(format!("✓ Written to {names}"), theme))
+                            .child(state_line(
+                                t!("conversation_transcript.provider.written_to", names = names),
+                                theme,
+                            ))
                             .child(
                                 widgets::ghost_action(theme)
                                     .id(SharedString::from(format!(
@@ -334,15 +346,19 @@ impl Transcript {
                                             provider_id: provider_id.clone(),
                                         })
                                     }))
-                                    .child("Open in Settings"),
+                                    .child(t!("conversation_transcript.provider.open_in_settings")),
                             ),
                     )
                 }
             },
-            ProposalCardState::Discarded => card.child(state_line("Discarded", theme)),
-            ProposalCardState::Superseded => {
-                card.child(state_line("Superseded by a newer proposal", theme))
-            }
+            ProposalCardState::Discarded => card.child(state_line(
+                t!("conversation_transcript.provider.discarded"),
+                theme,
+            )),
+            ProposalCardState::Superseded => card.child(state_line(
+                t!("conversation_transcript.provider.proposal_superseded"),
+                theme,
+            )),
         };
         div()
             .py(px(4.0))
@@ -375,7 +391,7 @@ impl Transcript {
             div()
                 .text_size(crate::typography::ui_rems(12.5))
                 .text_color(theme.text)
-                .child("Which provider?"),
+                .child(t!("conversation_transcript.provider.which_provider")),
         );
         let card = match state {
             ChoiceCardState::Pending => card.child(
@@ -437,7 +453,7 @@ impl Transcript {
                                         .border_color(theme.hairline(0.12))
                                         .text_size(crate::typography::ui_rems(10.5))
                                         .text_color(theme.text_muted)
-                                        .child("Configured"),
+                                        .child(t!("conversation_transcript.provider.configured")),
                                 )
                             })
                             .when(!busy, |row| {
@@ -458,14 +474,24 @@ impl Transcript {
                     .iter()
                     .find(|option| option.id == chosen)
                     .map_or(chosen, |option| option.name.as_str());
-                card.child(state_line(format!("✓ Using {name} · {chosen}"), theme))
+                card.child(state_line(
+                    t!(
+                        "conversation_transcript.provider.using",
+                        name = name,
+                        id = chosen
+                    ),
+                    theme,
+                ))
             }
             ChoiceCardState::Superseded => {
                 // Dead history: one muted line, no frame.
                 return div()
                     .py(px(4.0))
                     .w_full()
-                    .child(state_line("Which provider? — no longer active", theme))
+                    .child(state_line(
+                        t!("conversation_transcript.provider.which_provider_inactive"),
+                        theme,
+                    ))
                     .into_any_element();
             }
         };
@@ -498,7 +524,12 @@ impl Transcript {
                 .get(row_id)
                 .is_none_or(|ui| ui.key_input.is_none())
         {
-            let input = cx.new(|cx| ComposerInput::new_secret("API key", cx));
+            let input = cx.new(|cx| {
+                ComposerInput::new_secret(
+                    t!("conversation_transcript.provider.api_key_placeholder"),
+                    cx,
+                )
+            });
             let submit_row = row_id.clone();
             let events = cx.subscribe(&input, move |this, _, event, cx| match event {
                 ComposerInputEvent::Edited => cx.notify(),
@@ -525,7 +556,10 @@ impl Transcript {
                     div()
                         .text_size(crate::typography::ui_rems(12.5))
                         .text_color(theme.text)
-                        .child(SharedString::from(format!("API key for {provider_name}"))),
+                        .child(t!(
+                            "conversation_transcript.provider.api_key_for",
+                            name = provider_name.as_ref()
+                        )),
                 )
                 .child(
                     div()
@@ -544,9 +578,7 @@ impl Transcript {
                     div()
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_muted.opacity(0.8))
-                        .child(
-                            "Saved locally and sent only to this destination — never to the chat.",
-                        ),
+                        .child(t!("conversation_transcript.provider.key_privacy")),
                 )
                 .children(input.map(|input| {
                     div()
@@ -577,7 +609,7 @@ impl Transcript {
                                         this.settle_key(save_row.clone(), true, cx)
                                     }))
                                 })
-                                .child("Save key"),
+                                .child(t!("conversation_transcript.provider.save_key")),
                         )
                         .child(
                             widgets::ghost_action(theme)
@@ -592,19 +624,28 @@ impl Transcript {
                                         this.settle_key(dismiss_row.clone(), false, cx)
                                     }))
                                 })
-                                .child("Dismiss"),
+                                .child(t!("conversation_transcript.provider.dismiss")),
                         ),
                 )
             }
-            KeyCardState::Saved => card.child(state_line("✓ Key saved", theme)),
-            KeyCardState::Dismissed => card.child(state_line("Dismissed", theme)),
+            KeyCardState::Saved => card.child(state_line(
+                t!("conversation_transcript.provider.key_saved"),
+                theme,
+            )),
+            KeyCardState::Dismissed => card.child(state_line(
+                t!("conversation_transcript.provider.key_dismissed"),
+                theme,
+            )),
             KeyCardState::Superseded => {
                 // Dead history: one muted line, no frame.
                 return div()
                     .py(px(4.0))
                     .w_full()
                     .child(state_line(
-                        format!("API key for {provider_name} — superseded by a newer request"),
+                        t!(
+                            "conversation_transcript.provider.key_superseded",
+                            name = provider_name.as_ref()
+                        ),
                         theme,
                     ))
                     .into_any_element();
@@ -930,13 +971,14 @@ mod tests {
 
     #[test]
     fn the_staleness_refusal_reads_as_an_instruction() {
+        let _locale = crate::i18n::tests::locale_lock();
         let stale = holt_rpc::RpcError::Coded {
             code: holt_rpc::RpcErrorCode::ProposalStale,
             message: "provider settings changed since this proposal was created".into(),
         };
         assert_eq!(
             proposal_error_text(&stale),
-            "Catalog changed — ask to re-propose."
+            t!("conversation_transcript.provider.stale").as_ref()
         );
         // The engine's second staleness wording codes the same.
         let no_op = holt_rpc::RpcError::Coded {
@@ -945,7 +987,7 @@ mod tests {
         };
         assert_eq!(
             proposal_error_text(&no_op),
-            "Catalog changed — ask to re-propose."
+            t!("conversation_transcript.provider.stale").as_ref()
         );
         assert_eq!(
             proposal_error_text(&holt_rpc::RpcError::Failed("boom".into())),

@@ -3,11 +3,14 @@
 //! space's folder for the draft), branch creation, checkout-kind selection
 //! (draft-only), and the branch + checkout popover rendering.
 
+use std::borrow::Cow;
+
 use gpui::{AnyElement, App, Context, Focusable as _, SharedString, div, prelude::*, px};
 
 use holt_proto::RepoRef;
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::popover::{self, Loadable};
 use crate::theme::Theme;
 
@@ -289,10 +292,10 @@ impl Pickers {
     }
 
     /// Label of the checkout-kind trigger.
-    pub(super) fn checkout_label(&self) -> &'static str {
+    pub(super) fn checkout_label(&self) -> Cow<'static, str> {
         match self.config.checkout {
-            CheckoutKind::NewWorktree => "New worktree",
-            CheckoutKind::Local => "Current checkout",
+            CheckoutKind::NewWorktree => t!("pickers_dialogs.checkout.new_worktree"),
+            CheckoutKind::Local => t!("pickers_dialogs.checkout.current"),
         }
     }
 
@@ -300,8 +303,10 @@ impl Pickers {
     /// created off it (t3code `getBranchTriggerLabel`); the bare name otherwise.
     pub(super) fn ref_label(&self) -> SharedString {
         match (self.config.checkout, self.effective_ref_name()) {
-            (_, None) => SharedString::from("Select ref"),
-            (CheckoutKind::NewWorktree, Some(name)) => SharedString::from(format!("From {name}")),
+            (_, None) => SharedString::from(t!("pickers_dialogs.branch.select_ref")),
+            (CheckoutKind::NewWorktree, Some(name)) => {
+                SharedString::from(t!("pickers_dialogs.branch.from_ref", name = name))
+            }
             (CheckoutKind::Local, Some(name)) => SharedString::from(name),
         }
     }
@@ -316,7 +321,9 @@ impl Pickers {
                 .p(px(Theme::SPACE_SM))
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from("No project selected"))
+                .child(SharedString::from(t!(
+                    "pickers_dialogs.branch.no_project_selected"
+                )))
                 .into_any_element();
         }
         let rows = self.filtered_ref_rows(cx);
@@ -339,7 +346,9 @@ impl Pickers {
                     .p(px(Theme::SPACE_SM))
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_faint)
-                    .child(SharedString::from("No refs found."))
+                    .child(SharedString::from(t!(
+                        "pickers_dialogs.branch.no_refs_found"
+                    )))
                     .into_any_element(),
                 Loadable::Ready(_) => {
                     let active = self.active;
@@ -356,10 +365,10 @@ impl Pickers {
                                 let is_selected = selected.as_deref() == Some(row.name.as_str());
                                 // Right-aligned muted tag (t3code `text-[10px]
                                 // text-muted-foreground/45`): current beats worktree.
-                                let tag: Option<&'static str> = if row.current {
-                                    Some("current")
+                                let tag: Option<Cow<'static, str>> = if row.current {
+                                    Some(t!("pickers_dialogs.branch.tag_current"))
                                 } else if row.worktree_path.is_some() {
-                                    Some("worktree")
+                                    Some(t!("pickers_dialogs.branch.tag_worktree"))
                                 } else {
                                     None
                                 };
@@ -382,7 +391,9 @@ impl Pickers {
                                             .flex_none()
                                             .text_size(crate::typography::ui_rems(10.0))
                                             .text_color(theme.text_muted.opacity(0.6))
-                                            .child(SharedString::from("switching…")),
+                                            .child(SharedString::from(t!(
+                                                "pickers_dialogs.branch.switching"
+                                            ))),
                                     )
                                 })
                                 .when_some(tag, |el, tag| {
@@ -413,8 +424,10 @@ impl Pickers {
                         .py(px(4.0))
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_faint)
-                        .child(SharedString::from(format!(
-                            "Showing {shown} of {total} refs"
+                        .child(SharedString::from(t!(
+                            "pickers_dialogs.branch.showing_refs",
+                            shown = shown,
+                            total = total
                         ))),
                 ),
             );
@@ -442,7 +455,7 @@ impl Pickers {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .child(SharedString::from("Create branch…")),
+                        .child(SharedString::from(t!("pickers_dialogs.branch.create_row"))),
                 )
                 .child(
                     div()
@@ -486,7 +499,7 @@ impl Pickers {
                             .hover(|state| state.bg(theme.element_hover))
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.create_branch_submit(cx)))
-                    .child(SharedString::from("Create")),
+                    .child(SharedString::from(t!("pickers_dialogs.branch.create"))),
             )
             .into_any_element()
     }
@@ -496,17 +509,9 @@ impl Pickers {
     /// worktree".
     pub(super) fn render_checkout_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let options: [(CheckoutKind, &'static str, &'static str); 2] = [
-            (
-                CheckoutKind::Local,
-                "Current checkout",
-                crate::icons::FOLDER,
-            ),
-            (
-                CheckoutKind::NewWorktree,
-                "New worktree",
-                crate::icons::FOLDER_WITH_FILES,
-            ),
+        let options: [(CheckoutKind, &'static str); 2] = [
+            (CheckoutKind::Local, crate::icons::FOLDER),
+            (CheckoutKind::NewWorktree, crate::icons::FOLDER_WITH_FILES),
         ];
         let active = self.active;
         let current = self.config.checkout;
@@ -518,7 +523,13 @@ impl Pickers {
                 options
                     .into_iter()
                     .enumerate()
-                    .map(|(ix, (kind, label, icon_path))| {
+                    .map(|(ix, (kind, icon_path))| {
+                        let label = match kind {
+                            CheckoutKind::Local => t!("pickers_dialogs.checkout.current"),
+                            CheckoutKind::NewWorktree => {
+                                t!("pickers_dialogs.checkout.new_worktree")
+                            }
+                        };
                         let is_selected = current == kind;
                         popover::menu_row_nav(
                             &theme,

@@ -3,6 +3,7 @@
 //! per-row Reset and Restore defaults. Changes emit [`ShortcutsEvent::Changed`];
 //! the shell persists them and re-applies the app keymap.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use gpui::{
@@ -10,6 +11,7 @@ use gpui::{
     prelude::*, px,
 };
 
+use crate::i18n::t;
 use crate::settings::{
     KeymapConfig, ShortcutId, combo_from_keystroke, display_combo, display_combo_with_typed_key,
     typed_key_char,
@@ -104,10 +106,10 @@ impl ShortcutsPage {
                 // (holt settings.shortcuts.tsx: "… is already assigned to …").
                 if let Some(owner) = conflict_owner(&self.keymap, recording, &combo) {
                     self.conflict_notice = Some(
-                        format!(
-                            "{} is already assigned to {}.",
-                            display_combo_with_typed_key(&combo, typed.as_deref()),
-                            owner.label()
+                        t!(
+                            "settings_general_appearance.shortcuts.conflict",
+                            combo = display_combo_with_typed_key(&combo, typed.as_deref()),
+                            label = owner.label()
                         )
                         .into(),
                     );
@@ -191,7 +193,7 @@ impl ShortcutsPage {
                             this.recording = None;
                             this.commit(cx);
                         }))
-                        .child(SharedString::from("Reset")),
+                        .child(t!("settings_general_appearance.shortcuts.reset")),
                 )
             })
             .child(
@@ -226,7 +228,7 @@ impl ShortcutsPage {
                             div()
                                 .font_family(theme.font_mono.clone())
                                 .text_size(crate::typography::ui_rems(12.0))
-                                .child(SharedString::from("Press keys…")),
+                                .child(t!("settings_general_appearance.shortcuts.press_keys")),
                         )
                     })
                     .when(!is_recording, |el| {
@@ -287,43 +289,67 @@ pub fn conflict_owner(keymap: &KeymapConfig, id: ShortcutId, combo: &str) -> Opt
         .find(|&other| other != id && keymap.get(other) == combo)
 }
 
-/// The page's sections, in display order. [`group`] is a total match, so every
+/// The page's sections, in display order, by catalog key slug (the visible
+/// heading is [`group_heading`]). [`group`] is a total match, so every
 /// [`ShortcutId::ALL`] entry lands in exactly one — a shortcut added later
 /// extends the match and appears on the page by construction
 /// (`every_shortcut_lands_in_a_rendered_group` holds the other half: its group
-/// name must be listed here).
-const GROUP_ORDER: [&str; 3] = ["Panels", "Sessions", "Jump to session"];
+/// slug must be listed here).
+const GROUP_ORDER: [&str; 3] = ["panels", "sessions", "jump"];
 
 /// The section a shortcut's row renders under.
 fn group(id: ShortcutId) -> &'static str {
     match id {
         ShortcutId::ToggleSidebar | ShortcutId::ToggleChanges | ShortcutId::ToggleTerminal => {
-            "Panels"
+            "panels"
         }
         ShortcutId::NewSession
         | ShortcutId::NextSession
         | ShortcutId::PrevSession
-        | ShortcutId::ArchiveSession => "Sessions",
-        ShortcutId::JumpSession(_) => "Jump to session",
+        | ShortcutId::ArchiveSession => "sessions",
+        ShortcutId::JumpSession(_) => "jump",
+    }
+}
+
+/// The localized heading a group slug renders under.
+fn group_heading(slug: &str) -> Cow<'static, str> {
+    match slug {
+        "panels" => t!("settings_general_appearance.shortcuts.groups.panels"),
+        "sessions" => t!("settings_general_appearance.shortcuts.groups.sessions"),
+        _ => t!("settings_general_appearance.shortcuts.groups.jump"),
     }
 }
 
 /// One-line purpose copy per shortcut (holt lib/shortcuts.ts
-/// `SHORTCUT_DEFINITIONS` descriptions, verbatim).
-fn description(id: ShortcutId) -> &'static str {
+/// `SHORTCUT_DEFINITIONS` descriptions), read from the catalog at call time.
+fn description(id: ShortcutId) -> Cow<'static, str> {
     match id {
-        ShortcutId::ToggleSidebar => "Show or hide sessions and settings navigation.",
-        ShortcutId::ToggleChanges => "Show or hide changes for the current session.",
-        ShortcutId::ToggleTerminal => "Show or hide the terminal for the current session.",
-        ShortcutId::NewSession => "Open a blank session canvas to start a new session.",
-        ShortcutId::NextSession => "Select the next session in the sidebar, wrapping at the end.",
-        ShortcutId::PrevSession => {
-            "Select the previous session in the sidebar, wrapping at the start."
+        ShortcutId::ToggleSidebar => {
+            t!("settings_general_appearance.shortcuts.descriptions.toggle_sidebar")
         }
-        ShortcutId::ArchiveSession => "Move the current session to the archived shelf.",
+        ShortcutId::ToggleChanges => {
+            t!("settings_general_appearance.shortcuts.descriptions.toggle_changes")
+        }
+        ShortcutId::ToggleTerminal => {
+            t!("settings_general_appearance.shortcuts.descriptions.toggle_terminal")
+        }
+        ShortcutId::NewSession => {
+            t!("settings_general_appearance.shortcuts.descriptions.new_session")
+        }
+        ShortcutId::NextSession => {
+            t!("settings_general_appearance.shortcuts.descriptions.next_session")
+        }
+        ShortcutId::PrevSession => {
+            t!("settings_general_appearance.shortcuts.descriptions.prev_session")
+        }
+        ShortcutId::ArchiveSession => {
+            t!("settings_general_appearance.shortcuts.descriptions.archive_session")
+        }
         // One line per slot would repeat itself nine times; the ordinal is
         // already in the row's label.
-        ShortcutId::JumpSession(_) => "Open the session at this place in the sidebar list.",
+        ShortcutId::JumpSession(_) => {
+            t!("settings_general_appearance.shortcuts.descriptions.jump_session")
+        }
     }
 }
 
@@ -349,7 +375,7 @@ impl Render for ShortcutsPage {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .child(widgets::field_label(&theme, name))
+                    .child(widgets::field_label(&theme, group_heading(name)))
                     .child(rows)
                     .into_any_element(),
             );
@@ -358,11 +384,11 @@ impl Render for ShortcutsPage {
         // Helper line stays in the muted tone even for a rejected conflict —
         // the message names the specific clash (holt settings.shortcuts.tsx).
         let helper: SharedString = if recording.is_some() {
-            "Press Escape to cancel.".into()
+            t!("settings_general_appearance.shortcuts.press_escape").into()
         } else if let Some(notice) = self.conflict_notice.clone() {
             notice
         } else {
-            "Shortcuts must be unique.".into()
+            t!("settings_general_appearance.shortcuts.unique").into()
         };
 
         div()
@@ -386,13 +412,15 @@ impl Render for ShortcutsPage {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .child(widgets::page_header(&theme, "Keyboard shortcuts", None))
+                                    .child(widgets::page_header(
+                                        &theme,
+                                        &t!("settings_general_appearance.shortcuts.title"),
+                                        None,
+                                    ))
                                     .child(
                                         widgets::page_subtitle(
                                             &theme,
-                                            "Click a binding, then press the key combination you \
-                                             want to use. Changes apply immediately and stay on \
-                                             this device.",
+                                            t!("settings_general_appearance.shortcuts.subtitle"),
                                         )
                                         .max_w(px(512.0))
                                         .line_height(px(20.0)),
@@ -425,7 +453,9 @@ impl Render for ShortcutsPage {
                                             .size(px(14.0))
                                             .text_color(theme.text_muted),
                                     )
-                                    .child(SharedString::from("Restore defaults"))
+                                    .child(t!(
+                                        "settings_general_appearance.shortcuts.restore_defaults"
+                                    ))
                             }),
                     )
                     .child(

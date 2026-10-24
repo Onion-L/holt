@@ -20,6 +20,7 @@ use gpui::{AnyElement, App, SharedString, div, prelude::*, px};
 
 use holt_doc::{MessagePart, MessageRole, SessionMessageEntry, TodoCardItem, TodoItemStatus};
 
+use crate::i18n::t;
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
@@ -444,8 +445,8 @@ impl Shell {
             // competing affordances on it). The tooltip carries the
             // truncated task title.
             let tooltip: SharedString = current_title(&capsule.items)
-                .unwrap_or("Task list")
-                .to_owned()
+                .map(str::to_owned)
+                .unwrap_or_else(|| t!("notifications_status.todo.task_list").into_owned())
                 .into();
             card = card
                 .debug_selector(|| "todo-capsule-pill".to_string())
@@ -507,7 +508,7 @@ impl Shell {
                 div()
                     .text_size(crate::typography::ui_rems(12.5))
                     .text_color(theme.text_muted)
-                    .child("Done"),
+                    .child(t!("notifications_status.todo.done")),
             );
         }
         div()
@@ -568,7 +569,7 @@ impl Shell {
                     .line_height(px(20.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("Todo"),
+                    .child(t!("notifications_status.todo.todo")),
             )
             .child(todo_ring(form.displayed, theme))
             .child(
@@ -592,8 +593,12 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|el| el.bg(crate::theme::ink(0.06)))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Collapse".into()))
-                            .into()
+                        cx.new(|_| {
+                            crate::popover::TextTooltip(
+                                t!("notifications_status.todo.collapse").into(),
+                            )
+                        })
+                        .into()
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.set_todo_capsule_collapsed(true, cx);
@@ -617,8 +622,12 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|el| el.bg(crate::theme::ink(0.06)))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Close until the next list".into()))
-                            .into()
+                        cx.new(|_| {
+                            crate::popover::TextTooltip(
+                                t!("notifications_status.todo.close_until_next").into(),
+                            )
+                        })
+                        .into()
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.todo_capsule_dismissed = Some(card_id.clone());

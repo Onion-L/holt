@@ -6,6 +6,8 @@
 //! write is Restore (`RestoreTurnChanges`): confirmed inline, then file I/O
 //! in the engine; no accept/stage/commit.
 
+use std::borrow::Cow;
+
 use gpui::{AnyElement, Context, Render, SharedString, div, prelude::*, px};
 use holt_proto::{TurnFileChange, TurnFileChangeStatus};
 
@@ -13,6 +15,7 @@ use crate::changes::{
     ACCENT_BAR_WIDTH, DIFF_TEXT_SIZE, FileDiff, FileStatus, LineKind, MARKER_WIDTH, gutter_width,
     render_file_body_with_syntax,
 };
+use crate::i18n::t;
 use crate::state::{AppState, TurnRestoreMark};
 use crate::theme::Theme;
 
@@ -137,7 +140,12 @@ impl TurnReview {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return cx.spawn(async move |this, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    this.fail(path, generation, "the engine is not connected", cx)
+                    this.fail(
+                        path,
+                        generation,
+                        &t!("changes_git.review.error.no_engine"),
+                        cx,
+                    )
                 });
             });
         };
@@ -151,7 +159,7 @@ impl TurnReview {
         else {
             return cx.spawn(async move |this, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    this.fail(path, generation, "the chat has no working directory", cx)
+                    this.fail(path, generation, &t!("changes_git.review.error.no_cwd"), cx)
                 });
             });
         };
@@ -179,13 +187,23 @@ impl TurnReview {
             );
             let Ok(value) = reply.await else {
                 let _ = this.update(cx, |this, cx| {
-                    this.fail(path, generation, "the diff could not be read", cx)
+                    this.fail(
+                        path,
+                        generation,
+                        &t!("changes_git.review.error.unreadable"),
+                        cx,
+                    )
                 });
                 return;
             };
             let Ok(text) = serde_json::from_value::<holt_proto::CheckoutFileDiffText>(value) else {
                 let _ = this.update(cx, |this, cx| {
-                    this.fail(path, generation, "malformed diff reply", cx)
+                    this.fail(
+                        path,
+                        generation,
+                        &t!("changes_git.review.error.malformed"),
+                        cx,
+                    )
                 });
                 return;
             };
@@ -244,7 +262,7 @@ impl TurnReview {
 
     fn run_restore(&mut self, path: Option<String>, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.restore = RestoreUi::Done("The engine is not connected.".into());
+            self.restore = RestoreUi::Done(t!("changes_git.restore.engine_not_connected").into());
             cx.notify();
             return;
         };
@@ -288,7 +306,9 @@ impl TurnReview {
     /// The surface header's muted companion: what the review is looking at.
     pub fn header_path(&self) -> SharedString {
         let path = match &self.load {
-            ReviewLoad::Idle => return SharedString::from("no file selected"),
+            ReviewLoad::Idle => {
+                return SharedString::from(t!("changes_git.review.no_file_selected"));
+            }
             ReviewLoad::Loading { path, .. }
             | ReviewLoad::Loaded { path, .. }
             | ReviewLoad::Binary { path, .. }
@@ -316,11 +336,14 @@ pub(crate) async fn restore_call(
         .call(holt_rpc::methods::RESTORE_TURN_CHANGES, params)
         .await;
     match reply {
-        Err(error) => (format!("Restore failed: {error}"), TurnRestoreMark::Failed),
+        Err(error) => (
+            t!("changes_git.restore.failed", error = error.to_string()).into_owned(),
+            TurnRestoreMark::Failed,
+        ),
         Ok(value) => match serde_json::from_value::<holt_proto::TurnRestoreReply>(value) {
             Ok(reply) => (restore_summary(&reply), restore_mark(&reply)),
             Err(_) => (
-                "Restore failed: malformed reply".to_string(),
+                t!("changes_git.restore.failed_malformed").into_owned(),
                 TurnRestoreMark::Failed,
             ),
         },
@@ -344,11 +367,12 @@ fn restore_mark(reply: &holt_proto::TurnRestoreReply) -> TurnRestoreMark {
 }
 
 /// The confirm dialog's title and body for restoring `path` (or, with
-/// `None`, every file of `files`).
+/// `None`, every file of `files`). The title is a catalog read (`Cow`) so
+/// the shell-hosted dialog shares the localized string.
 pub(crate) fn restore_question(
     files: &[TurnFileChange],
     path: Option<&str>,
-) -> (&'static str, String) {
+) -> (Cow<'static, str>, String) {
     match path {
         // A rename restores to the OLD path and removes the current one —
         // say so before the write.
@@ -359,30 +383,35 @@ pub(crate) fn restore_question(
                 .and_then(|file| file.old_path.clone());
             match old {
                 Some(old) => (
-                    "Restore file?",
-                    format!(
-                        "Move {path} back to {old} with its pre-Turn content? The file at {path} will be removed."
-                    ),
+                    t!("changes_git.restore.title.file"),
+                    t!(
+                        "changes_git.restore.question.rename_back",
+                        path = path,
+                        old = old
+                    )
+                    .into_owned(),
                 ),
                 None => (
-                    "Restore file?",
-                    format!("{path} will be restored to its content before this Turn."),
+                    t!("changes_git.restore.title.file"),
+                    t!("changes_git.restore.question.file", path = path).into_owned(),
                 ),
             }
         }
-        None => (
-            "Restore all files?",
-            format!(
-                "{} file{} will be restored to their content before this Turn.{}",
-                files.len(),
-                if files.len() == 1 { "" } else { "s" },
-                if files.iter().any(|file| file.old_path.is_some()) {
-                    " Moved files return to their pre-Turn paths."
-                } else {
-                    ""
-                }
-            ),
-        ),
+        None => {
+            // Manual plural selection (no CLDR): the call site picks
+            // `.one`/`.other`.
+            let count = files.len();
+            let mut question = if count == 1 {
+                t!("changes_git.restore.question.all.one", count = count).into_owned()
+            } else {
+                t!("changes_git.restore.question.all.other", count = count).into_owned()
+            };
+            if files.iter().any(|file| file.old_path.is_some()) {
+                question.push(' ');
+                question.push_str(&t!("changes_git.restore.question.moved_suffix"));
+            }
+            (t!("changes_git.restore.title.all"), question)
+        }
     }
 }
 
@@ -392,7 +421,7 @@ pub(crate) fn restore_question(
 pub(crate) fn restore_dialog(
     theme: &Theme,
     viewport: gpui::Size<gpui::Pixels>,
-    title: &str,
+    title: Cow<'static, str>,
     question: String,
     cancel_out: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     cancel: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
@@ -400,7 +429,7 @@ pub(crate) fn restore_dialog(
 ) -> AnyElement {
     let card = crate::popover::dialog_card(theme)
         .on_mouse_down_out(cancel_out)
-        .child(crate::popover::dialog_title(theme, title))
+        .child(crate::popover::dialog_title(theme, title.as_ref()))
         .child(
             div()
                 .mt(px(6.0))
@@ -414,13 +443,17 @@ pub(crate) fn restore_dialog(
                 .justify_end()
                 .gap(px(8.0))
                 .child(
-                    crate::popover::btn_ghost(theme, "Cancel", "turn-review-restore-cancel")
-                        .id("turn-review-restore-cancel")
-                        .debug_selector(|| "turn-review-restore-cancel".to_string())
-                        .on_click(cancel),
+                    crate::popover::btn_ghost(
+                        theme,
+                        t!("changes_git.common.cancel").as_ref(),
+                        "turn-review-restore-cancel",
+                    )
+                    .id("turn-review-restore-cancel")
+                    .debug_selector(|| "turn-review-restore-cancel".to_string())
+                    .on_click(cancel),
                 )
                 .child(
-                    crate::popover::btn_primary(theme, "Restore")
+                    crate::popover::btn_primary(theme, t!("changes_git.restore.confirm").as_ref())
                         .id("turn-review-restore-confirm")
                         .debug_selector(|| "turn-review-restore-confirm".to_string())
                         .on_click(confirm),
@@ -433,12 +466,12 @@ pub(crate) fn restore_dialog(
 fn refusal_text(reason: &holt_proto::TurnRestoreRefusal) -> String {
     use holt_proto::TurnRestoreRefusal::*;
     match reason {
-        Conflict => "changed since the Turn".into(),
-        LaterTurn => "changed by a later Turn".into(),
-        Truncated => "stored content is truncated".into(),
-        Binary => "binary file".into(),
-        LossyText => "not valid UTF-8".into(),
-        UnsafePath => "path outside the working tree".into(),
+        Conflict => t!("changes_git.restore.refusal.conflict").into_owned(),
+        LaterTurn => t!("changes_git.restore.refusal.later_turn").into_owned(),
+        Truncated => t!("changes_git.restore.refusal.truncated").into_owned(),
+        Binary => t!("changes_git.restore.refusal.binary").into_owned(),
+        LossyText => t!("changes_git.restore.refusal.lossy").into_owned(),
+        UnsafePath => t!("changes_git.restore.refusal.unsafe_path").into_owned(),
         Io { message } => message.clone(),
     }
 }
@@ -455,16 +488,28 @@ fn restore_summary(reply: &holt_proto::TurnRestoreReply) -> String {
         .iter()
         .filter(|file| file.outcome == AlreadyRestored)
         .count();
-    let mut text = format!(
-        "Restored {restored} file{}.",
-        if restored == 1 { "" } else { "s" }
-    );
+    // Manual plural selection (no CLDR): the call site picks `.one`/`.other`.
+    let mut text = if restored == 1 {
+        t!("changes_git.restore.summary.restored.one", count = restored).into_owned()
+    } else {
+        t!(
+            "changes_git.restore.summary.restored.other",
+            count = restored
+        )
+        .into_owned()
+    };
     if already > 0 {
-        text.push_str(&format!(" {already} already restored."));
+        text.push(' ');
+        text.push_str(&t!("changes_git.restore.summary.already", count = already));
     }
     for file in &reply.files {
         if let Refused { reason } = &file.outcome {
-            text.push_str(&format!(" {}: {}.", file.path, refusal_text(reason)));
+            text.push(' ');
+            text.push_str(&t!(
+                "changes_git.restore.summary.refused_line",
+                path = file.path,
+                reason = refusal_text(reason)
+            ));
         }
     }
     text
@@ -542,9 +587,7 @@ impl Render for TurnReview {
             .get(&self.message_id)
             .is_some_and(|set| set.phase == holt_proto::TurnChangeSetPhase::Final);
         let body = match &self.load {
-            ReviewLoad::Idle => {
-                centered_note("Nothing to review — the Turn changed no files.", &theme)
-            }
+            ReviewLoad::Idle => centered_note(&t!("changes_git.review.empty"), &theme),
             ReviewLoad::Loading { path, .. } => div()
                 .flex()
                 .flex_col()
@@ -562,13 +605,10 @@ impl Render for TurnReview {
                     div()
                         .text_size(px(12.0))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from(format!("Reviewing {path}…"))),
+                        .child(t!("changes_git.review.loading", path = path)),
                 )
                 .into_any_element(),
-            ReviewLoad::Binary { .. } => centered_note(
-                "Binary file — its content has no text diff. Status and size changes live on the card.",
-                &theme,
-            ),
+            ReviewLoad::Binary { .. } => centered_note(&t!("changes_git.review.binary"), &theme),
             ReviewLoad::Failed { error, .. } => div()
                 .flex()
                 .flex_col()
@@ -598,7 +638,7 @@ impl Render for TurnReview {
                         .text_color(theme.text_muted)
                         .cursor_pointer()
                         .hover(|el| el.bg(crate::theme::wash(0.06)))
-                        .child("Retry")
+                        .child(t!("changes_git.review.retry"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
                             this.retry(cx);
@@ -666,7 +706,7 @@ impl Render for TurnReview {
                                     .flex_none()
                                     .text_size(px(10.0))
                                     .text_color(theme.text_faint)
-                                    .child("content truncated"),
+                                    .child(t!("changes_git.review.content_truncated")),
                             )
                         })
                         .when(can_restore && !*truncated, |el| {
@@ -682,7 +722,7 @@ impl Render for TurnReview {
                                     .text_color(theme.text_muted)
                                     .cursor_pointer()
                                     .hover(|el| el.bg(crate::theme::wash(0.06)))
-                                    .child("Restore")
+                                    .child(t!("changes_git.restore.confirm"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.request_restore(Some(restore_path.clone()), cx);
                                     })),
@@ -711,7 +751,7 @@ impl Render for TurnReview {
         };
         let bar = match &self.restore {
             RestoreUi::Idle => None,
-            RestoreUi::Running => Some(div().child("Restoring…")),
+            RestoreUi::Running => Some(div().child(t!("changes_git.restore.running"))),
             RestoreUi::Done(message) => Some(div().child(message.clone())),
             RestoreUi::Confirm { .. } => None,
         };

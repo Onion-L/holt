@@ -1,0 +1,218 @@
+_version: 2
+routines_scheduled:
+  page:
+    title:
+      zh-CN: 定时任务
+    new_routine:
+      zh-CN: 新建定时任务
+    count:
+      zero:
+        zh-CN: 暂无定时任务
+      one:
+        zh-CN: 1个定时任务
+      other:
+        zh-CN: "%{n}个定时任务"
+    empty_title:
+      zh-CN: 还没有定时任务
+    empty_hint:
+      zh-CN: 按计划运行提示词，每次都在全新的会话中进行。
+  card:
+    paused:
+      zh-CN: 已暂停
+    done:
+      zh-CN: 已完成
+    open_run:
+      zh-CN: 打开本次运行
+    more:
+      zh-CN: 更多
+    menu:
+      run_now:
+        zh-CN: 立即运行
+      pause:
+        zh-CN: 暂停
+      resume:
+        zh-CN: 恢复
+      edit:
+        zh-CN: 编辑定时任务
+      delete:
+        zh-CN: 删除
+  outcome:
+    running:
+      zh-CN: 运行中
+    waiting:
+      zh-CN: 等待中
+    succeeded:
+      zh-CN: 已成功
+    failed:
+      zh-CN: 已失败
+    interrupted:
+      zh-CN: 已中断
+    skipped:
+      zh-CN: 已跳过
+  countdown:
+    due_now:
+      zh-CN: 即将运行
+    under_minute:
+      zh-CN: 1分钟内
+    minutes:
+      zh-CN: "%{m}分钟后"
+    hours_minutes:
+      zh-CN: "%{h}小时%{m}分后"
+    days_hours:
+      zh-CN: "%{d}天%{h}小时后"
+  schedule:
+    once_on:
+      zh-CN: "%{date} %{time} 运行一次"
+    daily_at:
+      zh-CN: 每天 %{time}
+    weekdays_at:
+      zh-CN: 工作日 %{time}
+    weekly_at:
+      zh-CN: 每%{weekday} %{time}
+  preset:
+    hourly:
+      zh-CN: 每小时
+    daily:
+      zh-CN: 每天
+    weekdays:
+      zh-CN: 工作日
+    weekly:
+      zh-CN: 每周
+    custom:
+      zh-CN: 自定义
+    cron:
+      zh-CN: Cron
+  weekday:
+    long:
+      mon:
+        zh-CN: 星期一
+      tue:
+        zh-CN: 星期二
+      wed:
+        zh-CN: 星期三
+      thu:
+        zh-CN: 星期四
+      fri:
+        zh-CN: 星期五
+      sat:
+        zh-CN: 星期六
+      sun:
+        zh-CN: 星期日
+    abbr:
+      mon:
+        zh-CN: 周一
+      tue:
+        zh-CN: 周二
+      wed:
+        zh-CN: 周三
+      thu:
+        zh-CN: 周四
+      fri:
+        zh-CN: 周五
+      sat:
+        zh-CN: 周六
+      sun:
+        zh-CN: 周日
+    narrow:
+      mon:
+        zh-CN: 一
+      tue:
+        zh-CN: 二
+      wed:
+        zh-CN: 三
+      thu:
+        zh-CN: 四
+      fri:
+        zh-CN: 五
+      sat:
+        zh-CN: 六
+      sun:
+        zh-CN: 日
+  date:
+    today:
+      zh-CN: 今天
+    tomorrow:
+      zh-CN: 明天
+  checkout:
+    main:
+      zh-CN: 主工作树
+    worktree:
+      zh-CN: 新建工作树
+  form:
+    title_new:
+      zh-CN: 新建定时任务
+    title_edit:
+      zh-CN: 编辑定时任务
+    subtitle:
+      zh-CN: 何时触发、运行什么、如何运行。
+    save_hint:
+      zh-CN: ⌘↩ 保存
+    name:
+      zh-CN: 名称
+    schedule:
+      zh-CN: 时间安排
+    prompt:
+      zh-CN: 提示词
+    name_placeholder:
+      zh-CN: 早间巡检
+    prompt_placeholder:
+      zh-CN: 每次运行时，Agent 应该做什么？
+    search_models:
+      zh-CN: 搜索模型
+    pick_project:
+      zh-CN: 选择项目
+    pick_model:
+      zh-CN: 选择模型
+    at:
+      zh-CN: ""
+    preview_next:
+      zh-CN: "%{zone} · 下次 %{fires}"
+    no_matching_models:
+      zh-CN: 没有匹配的模型
+    cancel:
+      zh-CN: 取消
+    save:
+      zh-CN: 保存
+    saving:
+      zh-CN: 保存中…
+    create:
+      zh-CN: 创建
+  preview:
+    dates_at_time:
+      zh-CN: "%{dates} %{time}"
+  problem:
+    set_cron:
+      zh-CN: 请填写 cron 表达式。
+    bad_time:
+      zh-CN: 请使用 24 小时制时间，例如 09:00。
+    name_required:
+      zh-CN: 请为定时任务命名。
+    prompt_required:
+      zh-CN: 请填写每次运行时使用的提示词。
+    pick_project:
+      zh-CN: 请选择项目。
+    pick_model:
+      zh-CN: 请选择模型。
+  error:
+    run_now_failed:
+      zh-CN: "立即运行失败：%{error}"
+    pause_failed:
+      zh-CN: "暂停失败：%{error}"
+    resume_failed:
+      zh-CN: "恢复失败：%{error}"
+    delete_failed:
+      zh-CN: "删除失败：%{error}"
+  delete:
+    title:
+      zh-CN: 删除“%{name}”？
+    body:
+      zero:
+        zh-CN: 它将不再触发。
+      one:
+        zh-CN: 它将不再触发。其运行会话将作为普通会话保留在“最近”中。
+      other:
+        zh-CN: 它将不再触发。其 %{n} 个运行会话将作为普通会话保留在“最近”中。
+    cancel:
+      zh-CN: 取消
+    confirm:
+      zh-CN: 删除

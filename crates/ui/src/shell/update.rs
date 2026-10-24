@@ -7,6 +7,7 @@ use gpui::relative;
 use holt_proto::UpdatePhase;
 
 use super::*;
+use crate::i18n::t;
 use crate::motion::{EASE_IN_OUT, MotionSpec};
 use crate::theme::ink;
 
@@ -38,7 +39,7 @@ impl Shell {
                     .text_color(theme.on_accent)
                     .into_any_element(),
                 true,
-                format!("Update to Holt {version}").into(),
+                t!("shell_chrome.update.tooltip_available", version = version).into(),
             ),
             UpdatePhase::Downloading => {
                 let face = match download_fraction(update.downloaded, update.total) {
@@ -68,13 +69,17 @@ impl Shell {
                     )
                     .into_any_element(),
                 };
-                (face, false, format!("Downloading Holt {version}…").into())
+                (
+                    face,
+                    false,
+                    t!("shell_chrome.update.tooltip_downloading", version = version).into(),
+                )
             }
             UpdatePhase::Installing => (
                 loaders::mini_mono_spinner("update-spinner", 2.0, theme.accent, cx.entity_id(), cx)
                     .into_any_element(),
                 false,
-                format!("Installing Holt {version}…").into(),
+                t!("shell_chrome.update.tooltip_installing", version = version).into(),
             ),
             UpdatePhase::Ready => (
                 icon(icons::ARROW_UP)
@@ -82,7 +87,7 @@ impl Shell {
                     .text_color(theme.on_accent)
                     .into_any_element(),
                 true,
-                "Restart to update".into(),
+                t!("shell_chrome.update.tooltip_restart").into(),
             ),
         };
         Some(
@@ -134,10 +139,10 @@ impl Shell {
             return None;
         };
         let title = match update.phase {
-            UpdatePhase::Idle => "Update available",
-            UpdatePhase::Downloading => "Downloading update",
-            UpdatePhase::Installing => "Installing update",
-            UpdatePhase::Ready => "Ready to restart",
+            UpdatePhase::Idle => t!("shell_chrome.update.title_available"),
+            UpdatePhase::Downloading => t!("shell_chrome.update.title_downloading"),
+            UpdatePhase::Installing => t!("shell_chrome.update.title_installing"),
+            UpdatePhase::Ready => t!("shell_chrome.update.title_ready"),
         };
         let header = div()
             .flex()
@@ -156,7 +161,7 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .child(popover::dialog_title(theme, title))
+                    .child(popover::dialog_title(theme, &title))
                     .child(
                         div()
                             .flex()
@@ -190,9 +195,7 @@ impl Shell {
                 .gap(px(10.0))
                 .child(popover::dialog_body(
                     theme,
-                    format!(
-                        "Holt {version} is ready to download. You can keep working while it downloads; Holt restarts only when you say so."
-                    ),
+                    t!("shell_chrome.update.body_available", version = version),
                 ))
                 .when_some(update.error.clone(), |el, error| {
                     el.child(
@@ -216,21 +219,22 @@ impl Shell {
                                     .text_color(theme.danger),
                             )
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(SharedString::from(format!("Last attempt failed: {error}"))),
+                                div().flex_1().min_w_0().child(SharedString::from(
+                                    t!("shell_chrome.update.last_attempt_failed", error = error)
+                                        .into_owned(),
+                                )),
                             ),
                     )
                 }),
             UpdatePhase::Downloading => {
                 let frac = download_fraction(update.downloaded, update.total);
                 let left = match update.total {
-                    Some(total) => format!(
-                        "{} of {}",
-                        format_bytes(update.downloaded),
-                        format_bytes(total)
-                    ),
+                    Some(total) => t!(
+                        "shell_chrome.update.progress_of",
+                        done = format_bytes(update.downloaded),
+                        total = format_bytes(total)
+                    )
+                    .into_owned(),
                     None => format_bytes(update.downloaded),
                 };
                 let right = frac
@@ -241,13 +245,13 @@ impl Shell {
             UpdatePhase::Installing => self.progress_block(
                 theme,
                 None,
-                "Verifying and installing…".into(),
+                t!("shell_chrome.update.verifying_installing").into_owned(),
                 String::new(),
                 cx,
             ),
             UpdatePhase::Ready => div().child(popover::dialog_body(
                 theme,
-                format!("Holt {version} is installed. Restart Holt to finish updating."),
+                t!("shell_chrome.update.body_ready", version = version),
             )),
         };
 
@@ -259,17 +263,17 @@ impl Shell {
             .map(|el| match update.phase {
                 UpdatePhase::Idle => el
                     .child(
-                        popover::btn_ghost(theme, "Later", "update-later")
+                        popover::btn_ghost(theme, &t!("shell_chrome.update.later"), "update-later")
                             .id("update-later")
                             .on_click(cx.listener(Self::hide_update_dialog)),
                     )
                     .child(
                         popover::btn_primary(
                             theme,
-                            if update.error.is_some() {
-                                "Try again"
+                            &if update.error.is_some() {
+                                t!("shell_chrome.update.try_again")
                             } else {
-                                "Download"
+                                t!("shell_chrome.update.download")
                             },
                         )
                         .id("update-download")
@@ -277,28 +281,32 @@ impl Shell {
                     ),
                 UpdatePhase::Downloading => el
                     .child(
-                        popover::btn_ghost(theme, "Cancel", "update-cancel")
-                            .id("update-cancel")
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_update(cx))),
+                        popover::btn_ghost(
+                            theme,
+                            &t!("shell_chrome.update.cancel"),
+                            "update-cancel",
+                        )
+                        .id("update-cancel")
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_update(cx))),
                     )
                     .child(
-                        popover::btn_ghost(theme, "Hide", "update-hide")
+                        popover::btn_ghost(theme, &t!("shell_chrome.update.hide"), "update-hide")
                             .id("update-hide")
                             .on_click(cx.listener(Self::hide_update_dialog)),
                     ),
                 UpdatePhase::Installing => el.child(
-                    popover::btn_ghost(theme, "Hide", "update-hide")
+                    popover::btn_ghost(theme, &t!("shell_chrome.update.hide"), "update-hide")
                         .id("update-hide")
                         .on_click(cx.listener(Self::hide_update_dialog)),
                 ),
                 UpdatePhase::Ready => el
                     .child(
-                        popover::btn_ghost(theme, "Later", "update-later")
+                        popover::btn_ghost(theme, &t!("shell_chrome.update.later"), "update-later")
                             .id("update-later")
                             .on_click(cx.listener(Self::hide_update_dialog)),
                     )
                     .child(
-                        popover::btn_primary(theme, "Restart now")
+                        popover::btn_primary(theme, &t!("shell_chrome.update.restart_now"))
                             .id("update-restart")
                             .on_click(cx.listener(|_, _, _, cx| cx.restart())),
                     ),
@@ -398,7 +406,7 @@ impl Shell {
                     if !shell.update_dialog {
                         shell.push_holt_notice(
                             HoltNoticeKind::Error,
-                            format!("Update failed: {err}").into(),
+                            t!("shell_chrome.update.failed_notice", error = err).into(),
                             cx,
                         );
                     }

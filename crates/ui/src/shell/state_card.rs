@@ -22,6 +22,8 @@
 use super::Shell;
 use super::todo_capsule::{self, TodoCapsule};
 
+use std::borrow::Cow;
+
 use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 
 use holt_doc::TodoItemStatus;
@@ -29,6 +31,7 @@ use holt_proto::{Chat, ChatGoalState, GoalStatus};
 use holt_rpc::methods;
 
 use crate::goal::LoopPhase;
+use crate::i18n::t;
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
@@ -42,12 +45,12 @@ const BODY_INDENT: f32 = 20.0;
 /// UI reads the chat row and picks deterministically.
 struct ModeCard {
     icon: &'static str,
-    name: &'static str,
+    name: Cow<'static, str>,
     /// The mode's status word, after the name.
-    status: &'static str,
-    blurb: SharedString,
+    status: Cow<'static, str>,
+    blurb: Cow<'static, str>,
     /// The off button's tooltip: names the slash form it mirrors.
-    tooltip: &'static str,
+    tooltip: Cow<'static, str>,
     method: &'static str,
 }
 
@@ -55,24 +58,23 @@ fn mode_card_for(chat: &Chat) -> Option<ModeCard> {
     if let Some(plan) = chat.plan_mode.as_ref() {
         return Some(ModeCard {
             icon: crate::icons::CHECKLIST,
-            name: "Plan Mode",
-            status: "planning",
-            blurb: format!(
-                "Read-only planning. Approving a plan exits and restores the {} permission mode.",
-                crate::pickers::mode_label(plan.entry_permission_mode)
-            )
-            .into(),
-            tooltip: "Leave Plan Mode (/plan off)",
+            name: t!("sidebar_spaces.state_card.plan_name"),
+            status: t!("sidebar_spaces.state_card.plan_status"),
+            blurb: t!(
+                "sidebar_spaces.state_card.plan_blurb",
+                mode = crate::pickers::mode_label(plan.entry_permission_mode)
+            ),
+            tooltip: t!("sidebar_spaces.state_card.plan_leave_tooltip"),
             method: methods::EXIT_PLAN_MODE,
         });
     }
     if chat.provider_mode {
         return Some(ModeCard {
             icon: crate::icons::CLOUD,
-            name: "Provider Mode",
-            status: "setup",
-            blurb: "Catalog setup — the conversation adds and updates providers.".into(),
-            tooltip: "Leave Provider Mode (/provider off)",
+            name: t!("sidebar_spaces.state_card.provider_name"),
+            status: t!("sidebar_spaces.state_card.provider_status"),
+            blurb: t!("sidebar_spaces.state_card.provider_blurb"),
+            tooltip: t!("sidebar_spaces.state_card.provider_leave_tooltip"),
             method: methods::EXIT_PROVIDER_MODE,
         });
     }
@@ -339,14 +341,14 @@ impl Shell {
                             .line_height(px(20.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child(SharedString::from(mode.name)),
+                            .child(mode.name),
                     )
                     .child(
                         div()
                             .flex_none()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_faint)
-                            .child(SharedString::from(mode.status)),
+                            .child(mode.status),
                     )
                     .child(
                         div()
@@ -392,14 +394,18 @@ impl Shell {
     /// failure needs the notice strip.
     fn exit_mode_from_card(&mut self, method: &'static str, cx: &mut Context<Self>) {
         let mode = if method == methods::EXIT_PLAN_MODE {
-            "Plan"
+            t!("sidebar_spaces.state_card.plan_name")
         } else {
-            "Provider"
+            t!("sidebar_spaces.state_card.provider_name")
         };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 super::HoltNoticeKind::Error,
-                format!("Engine not connected — couldn't reach {mode} Mode.").into(),
+                t!(
+                    "sidebar_spaces.state_card.mode_engine_unreachable",
+                    mode = mode
+                )
+                .into(),
                 cx,
             );
             return;
@@ -417,7 +423,12 @@ impl Shell {
                 let _ = this.update(cx, |this, cx| {
                     this.push_holt_notice(
                         super::HoltNoticeKind::Error,
-                        format!("Leaving {mode} Mode failed: {error}").into(),
+                        t!(
+                            "sidebar_spaces.state_card.mode_leave_failed",
+                            mode = mode,
+                            error = error
+                        )
+                        .into(),
                         cx,
                     );
                 });
@@ -513,7 +524,7 @@ impl Shell {
         let button = |id: SharedString,
                       selector: &'static str,
                       icon: &'static str,
-                      tooltip: &'static str| {
+                      tooltip: Cow<'static, str>| {
             div()
                 .id(id)
                 .debug_selector(move || selector.to_string())
@@ -526,7 +537,7 @@ impl Shell {
                 .cursor_pointer()
                 .hover(|el| el.bg(crate::theme::ink(0.06)))
                 .tooltip(move |_, cx| {
-                    cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
+                    cx.new(|_| crate::popover::TextTooltip(tooltip.clone().into()))
                         .into()
                 })
                 // The svg paints its own color — it never inherits the
@@ -589,9 +600,9 @@ impl Shell {
                                 crate::icons::PAUSE
                             },
                             if stopped {
-                                "Resume the goal (/goal resume)"
+                                t!("sidebar_spaces.state_card.resume_tooltip")
                             } else {
-                                "Pause the goal (/goal pause)"
+                                t!("sidebar_spaces.state_card.pause_tooltip")
                             },
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -604,7 +615,7 @@ impl Shell {
                             clear_id,
                             "goal-card-clear",
                             crate::icons::CLOSE_CIRCLE,
-                            "Clear the goal (/goal off)",
+                            t!("sidebar_spaces.state_card.clear_tooltip"),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.clear_goal(cx);
@@ -618,7 +629,7 @@ impl Shell {
                             collapse_id,
                             "goal-card-collapse",
                             crate::icons::ALT_ARROW_UP,
-                            "Collapse the card",
+                            t!("sidebar_spaces.state_card.collapse_tooltip"),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.set_state_card_collapsed(true, cx);
@@ -668,36 +679,37 @@ impl Shell {
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .gap(px(3.0))
-                                .children(goal.steps.iter().map(|step| {
-                                    div()
-                                        .w(px(16.0))
-                                        .h(px(3.0))
-                                        .rounded_full()
-                                        .bg(if step.done {
-                                            crate::theme::AccentColor::Green
-                                                .primary(theme.appearance)
-                                        } else {
-                                            theme.hairline(0.12)
-                                        })
-                                })),
-                        )
+                        .child(div().flex().flex_row().gap(px(3.0)).children(
+                            goal.steps.iter().map(|step| {
+                                div()
+                                    .w(px(16.0))
+                                    .h(px(3.0))
+                                    .rounded_full()
+                                    .bg(if step.done {
+                                        crate::theme::AccentColor::Green.primary(theme.appearance)
+                                    } else {
+                                        theme.hairline(0.12)
+                                    })
+                            }),
+                        ))
                         .child(
                             div()
                                 .font_family(theme.font_mono.clone())
                                 .text_size(crate::typography::ui_rems(11.5))
                                 .text_color(theme.text_faint)
-                                .child(SharedString::from(format!("{verified}/{total} verified"))),
+                                .child(t!(
+                                    "sidebar_spaces.state_card.verified_count",
+                                    verified = verified,
+                                    total = total
+                                )),
                         )
                         .tooltip(move |_, cx| {
                             cx.new(|_| {
                                 crate::popover::TextTooltip(
-                                    format!(
-                                        "The verifier's latest pass: {verified} of {total} steps backed by concrete evidence"
+                                    t!(
+                                        "sidebar_spaces.state_card.verified_tooltip",
+                                        verified = verified,
+                                        total = total
                                     )
                                     .into(),
                                 )
@@ -782,7 +794,7 @@ impl Shell {
                                         .text_size(crate::typography::ui_rems(12.0))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(theme.text_muted)
-                                        .child("Todo"),
+                                        .child(t!("sidebar_spaces.state_card.todo")),
                                 )
                                 .child(todo_capsule::todo_ring(todo.displayed, theme))
                                 .child(
@@ -811,7 +823,8 @@ impl Shell {
                                         .tooltip(move |_, cx| {
                                             cx.new(|_| {
                                                 crate::popover::TextTooltip(
-                                                    "Close until the next list".into(),
+                                                    t!("sidebar_spaces.state_card.todo_dismiss")
+                                                        .into(),
                                                 )
                                             })
                                             .into()
@@ -871,7 +884,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 crate::shell::HoltNoticeKind::Error,
-                "Engine not connected — couldn't reach the goal.".into(),
+                t!("sidebar_spaces.state_card.goal_engine_unreachable").into(),
                 cx,
             );
             return;
@@ -879,7 +892,6 @@ impl Shell {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
-        let verb = if paused { "Pausing" } else { "Resuming" };
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -891,11 +903,12 @@ impl Shell {
             if let Err(error) = result {
                 tracing::warn!(error = %error, "SetGoalPaused from the state card failed");
                 let _ = this.update(cx, |this, cx| {
-                    this.push_holt_notice(
-                        crate::shell::HoltNoticeKind::Error,
-                        format!("{verb} the goal failed: {error}").into(),
-                        cx,
-                    );
+                    let message = if paused {
+                        t!("sidebar_spaces.state_card.pause_failed", error = error)
+                    } else {
+                        t!("sidebar_spaces.state_card.resume_failed", error = error)
+                    };
+                    this.push_holt_notice(crate::shell::HoltNoticeKind::Error, message.into(), cx);
                 });
             }
         })
@@ -907,7 +920,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 crate::shell::HoltNoticeKind::Error,
-                "Engine not connected — couldn't reach the goal.".into(),
+                t!("sidebar_spaces.state_card.goal_engine_unreachable").into(),
                 cx,
             );
             return;
@@ -928,7 +941,7 @@ impl Shell {
                     let _ = this.update(cx, |this, cx| {
                         this.push_holt_notice(
                             crate::shell::HoltNoticeKind::Plain,
-                            "Goal cleared".into(),
+                            t!("sidebar_spaces.state_card.goal_cleared").into(),
                             cx,
                         );
                     });
@@ -938,7 +951,7 @@ impl Shell {
                     let _ = this.update(cx, |this, cx| {
                         this.push_holt_notice(
                             crate::shell::HoltNoticeKind::Error,
-                            format!("Clearing the goal failed: {error}").into(),
+                            t!("sidebar_spaces.state_card.clear_failed", error = error).into(),
                             cx,
                         );
                     });
@@ -959,9 +972,8 @@ fn goal_title(goal: &ChatGoalState) -> SharedString {
             .text
             .lines()
             .find(|line| !line.trim().is_empty())
-            .unwrap_or("Goal")
-            .trim()
-            .to_string()
+            .map(|line| line.trim().to_string())
+            .unwrap_or_else(|| t!("sidebar_spaces.state_card.goal_fallback").into())
             .into(),
     }
 }
@@ -970,20 +982,25 @@ fn goal_title(goal: &ChatGoalState) -> SharedString {
 /// on while a Turn runs, the verifier's pass between Turns, and the parked
 /// states. Round 0 is the arming Turn — "working", never jargon.
 fn goal_status_label(goal: &ChatGoalState, phase: LoopPhase) -> SharedString {
-    let round = |verb: &str| -> SharedString {
+    let round = |verb: Cow<'static, str>| -> SharedString {
         if goal.iteration == 0 {
-            verb.to_string().into()
+            verb.into()
         } else {
-            format!("round {} · {verb}", goal.iteration).into()
+            t!(
+                "sidebar_spaces.state_card.status_round",
+                n = goal.iteration,
+                verb = verb
+            )
+            .into()
         }
     };
     match phase {
-        LoopPhase::Working => round("working"),
-        LoopPhase::Checking => "checking".into(),
-        LoopPhase::Queued => "after your queue".into(),
-        LoopPhase::AwaitingAnswer => "waiting for you".into(),
-        LoopPhase::Paused => "paused".into(),
-        LoopPhase::Blocked => "blocked".into(),
+        LoopPhase::Working => round(t!("sidebar_spaces.state_card.status_working")),
+        LoopPhase::Checking => t!("sidebar_spaces.state_card.status_checking").into(),
+        LoopPhase::Queued => t!("sidebar_spaces.state_card.status_queued").into(),
+        LoopPhase::AwaitingAnswer => t!("sidebar_spaces.state_card.status_awaiting").into(),
+        LoopPhase::Paused => t!("sidebar_spaces.state_card.status_paused").into(),
+        LoopPhase::Blocked => t!("sidebar_spaces.state_card.status_blocked").into(),
     }
 }
 
@@ -1032,10 +1049,13 @@ fn goal_status_tint(phase: LoopPhase, theme: &Theme) -> gpui::Hsla {
 /// provider error or garbled reply (those stay in the log).
 fn goal_reason_line(goal: &ChatGoalState) -> Option<String> {
     if goal.eval_failures > 0 {
-        return Some(format!(
-            "The verifier couldn't reach a verdict ({}/3) — the loop keeps going.",
-            goal.eval_failures
-        ));
+        return Some(
+            t!(
+                "sidebar_spaces.state_card.verifier_failed",
+                count = goal.eval_failures
+            )
+            .into(),
+        );
     }
     goal.last_reason.clone()
 }
@@ -1073,29 +1093,51 @@ mod tests {
 
     #[test]
     fn the_status_label_names_what_the_loop_is_doing() {
+        let _locale = crate::i18n::tests::locale_lock();
         let first = goal(GoalStatus::Active, 0);
         let later = goal(GoalStatus::Active, 7);
-        assert_eq!(goal_status_label(&first, LoopPhase::Working), "working");
+        let as_shared = |text: Cow<'static, str>| -> SharedString { text.into() };
+        assert_eq!(
+            goal_status_label(&first, LoopPhase::Working),
+            as_shared(t!("sidebar_spaces.state_card.status_working"))
+        );
         assert_eq!(
             goal_status_label(&later, LoopPhase::Working),
-            "round 7 · working"
+            as_shared(t!(
+                "sidebar_spaces.state_card.status_round",
+                n = 7,
+                verb = t!("sidebar_spaces.state_card.status_working")
+            ))
         );
-        assert_eq!(goal_status_label(&later, LoopPhase::Checking), "checking");
+        assert_eq!(
+            goal_status_label(&later, LoopPhase::Checking),
+            as_shared(t!("sidebar_spaces.state_card.status_checking"))
+        );
         assert_eq!(
             goal_status_label(&later, LoopPhase::AwaitingAnswer),
-            "waiting for you"
+            as_shared(t!("sidebar_spaces.state_card.status_awaiting"))
         );
-        assert_eq!(goal_status_label(&later, LoopPhase::Paused), "paused");
-        assert_eq!(goal_status_label(&later, LoopPhase::Blocked), "blocked");
+        assert_eq!(
+            goal_status_label(&later, LoopPhase::Paused),
+            as_shared(t!("sidebar_spaces.state_card.status_paused"))
+        );
+        assert_eq!(
+            goal_status_label(&later, LoopPhase::Blocked),
+            as_shared(t!("sidebar_spaces.state_card.status_blocked"))
+        );
     }
 
     #[test]
     fn verifier_failures_read_as_a_retry_count_not_the_raw_error() {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut failing = goal(GoalStatus::Active, 2);
         failing.last_reason = Some("garbled verdict: I think…".into());
         failing.eval_failures = 1;
         let line = goal_reason_line(&failing).unwrap();
-        assert!(line.contains("1/3") && !line.contains("garbled"));
+        assert!(
+            line.contains("1/3") && !line.contains("garbled"),
+            "the retry count line is {line}"
+        );
         failing.eval_failures = 0;
         assert_eq!(
             goal_reason_line(&failing).as_deref(),
@@ -1606,6 +1648,7 @@ mod tests {
     fn the_card_names_the_active_mode_or_none() {
         use holt_proto::{ChatPlanState, PermissionMode};
 
+        let _locale = crate::i18n::tests::locale_lock();
         let mut chat = plain_chat("mode-chat");
         assert!(mode_card_for(&chat).is_none());
 
@@ -1613,22 +1656,34 @@ mod tests {
             entry_permission_mode: PermissionMode::AutoReview,
         });
         let card = mode_card_for(&chat).expect("a planning chat draws the plan form");
-        assert_eq!(card.name, "Plan Mode");
+        assert_eq!(
+            card.name,
+            t!("sidebar_spaces.state_card.plan_name"),
+            "the name comes from the catalog"
+        );
         assert_eq!(card.method, methods::EXIT_PLAN_MODE);
         assert!(
-            card.blurb.contains("Auto review"),
+            card.blurb
+                .contains(crate::pickers::mode_label(PermissionMode::AutoReview).as_ref()),
             "the blurb names the restored permission mode"
         );
 
         // Plan wins when both flags are somehow set (the engine keeps the
         // modes exclusive; the UI picks deterministically).
         chat.provider_mode = true;
-        assert_eq!(mode_card_for(&chat).unwrap().name, "Plan Mode");
+        assert_eq!(
+            mode_card_for(&chat).unwrap().name,
+            t!("sidebar_spaces.state_card.plan_name")
+        );
 
         let mut providing = plain_chat("mode-chat");
         providing.provider_mode = true;
         let card = mode_card_for(&providing).expect("a provider chat draws the provider form");
-        assert_eq!(card.name, "Provider Mode");
+        assert_eq!(
+            card.name,
+            t!("sidebar_spaces.state_card.provider_name"),
+            "the name comes from the catalog"
+        );
         assert_eq!(card.method, methods::EXIT_PROVIDER_MODE);
     }
 

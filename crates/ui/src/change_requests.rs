@@ -4,11 +4,13 @@
 //! pull-request metadata is host-local, short-lived capability state and is
 //! deliberately never written back into a synced document.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use gpui::{AnyElement, Context, Render, SharedString, Window, div, prelude::*, px};
 use holt_proto::{ChangeRequestSummary, Chat, CheckoutChangeRequestStatus, Space};
 
+use crate::i18n::t;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +33,7 @@ impl ChangeRequestBadgeTone {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ChangeRequestBadgeModel {
     pub number: SharedString,
-    pub state_label: &'static str,
+    pub state_label: Cow<'static, str>,
     pub title: SharedString,
     pub tone: ChangeRequestBadgeTone,
 }
@@ -41,9 +43,18 @@ impl ChangeRequestBadgeModel {
         use holt_proto::ChangeRequestState;
 
         let (state_label, tone) = match summary.state {
-            ChangeRequestState::Open => ("Open", ChangeRequestBadgeTone::Open),
-            ChangeRequestState::Merged => ("Merged", ChangeRequestBadgeTone::Merged),
-            ChangeRequestState::Closed => ("Closed", ChangeRequestBadgeTone::Closed),
+            ChangeRequestState::Open => (
+                t!("changes_git.pr.state.open"),
+                ChangeRequestBadgeTone::Open,
+            ),
+            ChangeRequestState::Merged => (
+                t!("changes_git.pr.state.merged"),
+                ChangeRequestBadgeTone::Merged,
+            ),
+            ChangeRequestState::Closed => (
+                t!("changes_git.pr.state.closed"),
+                ChangeRequestBadgeTone::Closed,
+            ),
         };
         Self {
             number: format!("#{}", summary.number).into(),
@@ -90,10 +101,11 @@ impl Render for ChangeRequestTooltip {
                     .text_size(px(11.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(self.model.tone.color(theme))
-                    .child(SharedString::from(format!(
-                        "PR {} · {}",
-                        self.model.number, self.model.state_label
-                    ))),
+                    .child(t!(
+                        "changes_git.pr.tooltip",
+                        number = self.model.number,
+                        state = self.model.state_label
+                    )),
             )
             .child(
                 div()
@@ -542,20 +554,21 @@ mod tests {
 
     #[test]
     fn badge_models_cover_open_merged_and_closed() {
+        let _locale = crate::i18n::tests::locale_lock();
         let cases = [
             (
                 ChangeRequestState::Open,
-                "Open",
+                t!("changes_git.pr.state.open"),
                 ChangeRequestBadgeTone::Open,
             ),
             (
                 ChangeRequestState::Merged,
-                "Merged",
+                t!("changes_git.pr.state.merged"),
                 ChangeRequestBadgeTone::Merged,
             ),
             (
                 ChangeRequestState::Closed,
-                "Closed",
+                t!("changes_git.pr.state.closed"),
                 ChangeRequestBadgeTone::Closed,
             ),
         ];

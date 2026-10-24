@@ -25,6 +25,7 @@
 //! content below. The heatmap is the same readout idea over a DOM
 //! grid of cells: every day is its own hover target.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +40,7 @@ use holt_rpc::methods;
 
 use crate::{
     chat_usage::percent,
+    i18n::t,
     icons, loaders,
     popover::{self, Loadable},
     state::AppState,
@@ -48,24 +50,9 @@ use crate::{
 
 use super::widgets;
 
-/// The page copy (settings pages carry no i18n — verbatim spec strings).
-pub(crate) const PAGE_TITLE: &str = "Usage";
-pub(crate) const PAGE_DESCRIPTION: &str = "Model token usage";
-pub(crate) const ERROR_TITLE: &str = "Couldn't load model usage";
-pub(crate) const EMPTY_TITLE: &str = "No model usage yet";
-pub(crate) const EMPTY_DETAIL: &str = "Token usage is collected from the chats you run in \
-     holt. Run a few chats and usage will appear here.";
-pub(crate) const REFRESH_TOOLTIP: &str = "Refresh usage stats";
-
 /// The offered ranges, and the range the page opens on.
 pub(crate) const RANGES: [u32; 3] = [7, 30, 90];
 pub(crate) const DEFAULT_RANGE: u32 = 30;
-
-/// The version-skew shape (`UnknownMethod`): name the skew the way the
-/// skills page does instead of echoing the raw error — and never a
-/// "restart the app" instruction.
-pub(crate) const VERSION_SKEW: &str =
-    "Usage stats aren't available — the engine doesn't support them yet";
 
 /// The chart block's fixed height; the day columns and the canvas share it.
 /// Tall enough that a stacked day reads as a column, not a splinter — the
@@ -86,9 +73,14 @@ fn short_date(date: &str) -> String {
         .unwrap_or_else(|_| date.to_string())
 }
 
-/// The header's count line, verbatim spec shape: "N chats · last N days".
+/// The header's count line, spec shape: "N chats · last N days".
 fn header_count_text(chat_count: u64, days: u32) -> String {
-    format!("{chat_count} chats · last {days} days")
+    t!(
+        "settings_providers_usage.usage.header_count",
+        chats = chat_count,
+        days = days
+    )
+    .into_owned()
 }
 
 /// The hero Total's caption: the exact count, comma-separated, so the
@@ -163,13 +155,13 @@ fn title_row(theme: &Theme) -> gpui::Div {
                 .text_size(crate::typography::ui_rems(20.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.text)
-                .child(PAGE_TITLE),
+                .child(t!("settings_providers_usage.usage.page_title")),
         )
         .child(
             div()
                 .text_size(crate::typography::ui_rems(13.0))
                 .text_color(theme.text_muted)
-                .child(PAGE_DESCRIPTION),
+                .child(t!("settings_providers_usage.usage.page_description")),
         )
 }
 
@@ -381,10 +373,12 @@ fn toggle_hidden(hidden: &mut BTreeSet<String>, summary: &Summary, id: &str) {
 
 /// One tile's printed state: the compact value on the tile, a finer
 /// compact echo on hover. Raw digits never print — the tooltip must not
-/// grow with the counts it spells.
+/// grow with the counts it spells. `id` is the tile's stable element-id
+/// slug (the label translates; the id must not).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MetricTile {
-    label: &'static str,
+    id: &'static str,
+    label: Cow<'static, str>,
     value: String,
     detail: String,
 }
@@ -397,35 +391,61 @@ struct MetricTile {
 /// compact fraction on hover; Active days names its range.
 fn metric_tiles(reply: &UsageStatsReply) -> Vec<MetricTile> {
     let totals = &reply.totals;
-    let token_tile = |label: &'static str, tokens: u64| MetricTile {
+    let token_tile = |id: &'static str, label: Cow<'static, str>, tokens: u64| MetricTile {
+        id,
         label,
         value: compact_tokens(tokens),
-        detail: format!("{} tokens", compact_tokens_precise(tokens)),
+        detail: t!(
+            "settings_providers_usage.usage.tokens_count",
+            count = compact_tokens_precise(tokens)
+        )
+        .into_owned(),
     };
     let mut tiles = vec![
-        token_tile("Input", totals.input),
-        token_tile("Output", totals.output),
-        token_tile("Cache read", totals.cache_read),
+        token_tile(
+            "input",
+            t!("settings_providers_usage.usage.metric_input"),
+            totals.input,
+        ),
+        token_tile(
+            "output",
+            t!("settings_providers_usage.usage.metric_output"),
+            totals.output,
+        ),
+        token_tile(
+            "cache-read",
+            t!("settings_providers_usage.usage.metric_cache_read"),
+            totals.cache_read,
+        ),
     ];
     if totals.cache_write > 0 {
-        tiles.push(token_tile("Cache write", totals.cache_write));
+        tiles.push(token_tile(
+            "cache-write",
+            t!("settings_providers_usage.usage.metric_cache_write"),
+            totals.cache_write,
+        ));
     }
     tiles.push(MetricTile {
-        label: "Cache hit",
+        id: "cache-hit",
+        label: t!("settings_providers_usage.usage.metric_cache_hit"),
         value: totals.cache_hit.map_or_else(|| "—".to_string(), percent),
-        detail: format!(
-            "{} of {} prompt tokens served from cache",
-            compact_tokens_precise(totals.cache_read),
-            compact_tokens_precise(totals.input + totals.cache_read)
-        ),
+        detail: t!(
+            "settings_providers_usage.usage.metric_cache_hit_detail",
+            read = compact_tokens_precise(totals.cache_read),
+            prompt = compact_tokens_precise(totals.input + totals.cache_read)
+        )
+        .into_owned(),
     });
     tiles.push(MetricTile {
-        label: "Active days",
+        id: "active-days",
+        label: t!("settings_providers_usage.usage.metric_active_days"),
         value: totals.active_days.to_string(),
-        detail: format!(
-            "{} of {} days in range had usage",
-            totals.active_days, reply.days
-        ),
+        detail: t!(
+            "settings_providers_usage.usage.metric_active_days_detail",
+            active = totals.active_days,
+            days = reply.days
+        )
+        .into_owned(),
     });
     tiles
 }
@@ -528,11 +548,12 @@ fn heatmap_cell_color(level: usize, theme: &Theme) -> Hsla {
 /// voice — a raw digit soup ("114891") is exactly what hover should
 /// spare the reader.
 fn heatmap_tooltip(cell: &HeatCell) -> String {
-    format!(
-        "{} tokens on {}",
-        compact_tokens(cell.tokens),
-        cell.date.format("%b %-d, %Y")
+    t!(
+        "settings_providers_usage.usage.heat_tooltip",
+        count = compact_tokens(cell.tokens),
+        date = cell.date.format("%b %-d, %Y")
     )
+    .into_owned()
 }
 
 /// Month labels over the grid, GitHub's rule: a column is labeled when
@@ -589,9 +610,6 @@ struct BreakdownEntry {
 /// collapses into one "Others" row, so a long model list never stretches
 /// the card.
 const BREAKDOWN_VISIBLE: usize = 4;
-/// The folded tail's fixed name — one synthetic entry standing in for
-/// every row past [`BREAKDOWN_VISIBLE`].
-const BREAKDOWN_OTHERS: &str = "Others";
 
 /// How the card is drawn from the entries the active tab folded: the
 /// donut's slices and the tail the Others slice groups.
@@ -685,10 +703,9 @@ fn fold_breakdown(
                 }
                 Some(BreakdownEntry {
                     color: series_color(index, theme),
-                    name: group
-                        .path
-                        .clone()
-                        .unwrap_or_else(|| "Deleted chats".to_string()),
+                    name: group.path.clone().unwrap_or_else(|| {
+                        t!("settings_providers_usage.usage.deleted_chats").into_owned()
+                    }),
                     tokens: group.total,
                 })
             })
@@ -725,7 +742,7 @@ fn breakdown_fold(entries: &[BreakdownEntry], theme: &Theme) -> BreakdownFold {
         .collect();
     slices.push(BreakdownEntry {
         color,
-        name: BREAKDOWN_OTHERS.to_string(),
+        name: t!("settings_providers_usage.usage.others").into_owned(),
         tokens: tail.iter().map(|entry| entry.tokens).sum(),
     });
     BreakdownFold { slices, tail }
@@ -812,7 +829,7 @@ impl UsagePage {
         }
         self.reloading = true;
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.stats = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.stats = Loadable::Error(crate::state::engine_not_connected().into());
             self.reloading = false;
             return;
         };
@@ -832,9 +849,11 @@ impl UsagePage {
                     Ok(value) => serde_json::from_value(value)
                         .map(Loadable::Ready)
                         .unwrap_or_else(|error| Loadable::Error(error.to_string())),
-                    Err(holt_rpc::RpcError::UnknownMethod(_)) => {
-                        Loadable::Error(VERSION_SKEW.into())
-                    }
+                    // UnknownMethod is version skew: name it, never a
+                    // "restart the app" instruction.
+                    Err(holt_rpc::RpcError::UnknownMethod(_)) => Loadable::Error(
+                        t!("settings_providers_usage.usage.version_skew").into_owned(),
+                    ),
                     Err(error) => Loadable::Error(error.to_string()),
                 };
                 cx.notify();
@@ -886,7 +905,7 @@ impl UsagePage {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::of(cx).clone();
-        let tooltip = SharedString::from(REFRESH_TOOLTIP);
+        let tooltip = SharedString::from(t!("settings_providers_usage.usage.refresh_tooltip"));
         div()
             .id("usage-header")
             .debug_selector(|| "usage-header".into())
@@ -981,7 +1000,10 @@ impl UsagePage {
             .flex_col()
             .items_start()
             .gap(px(10.0))
-            .child(widgets::error_strip(&theme, ERROR_TITLE))
+            .child(widgets::error_strip(
+                &theme,
+                t!("settings_providers_usage.usage.error_title"),
+            ))
             .child(
                 div()
                     .text_size(crate::typography::ui_rems(12.0))
@@ -996,7 +1018,7 @@ impl UsagePage {
                     .border_color(theme.border)
                     .hover(|style| widgets::ghost_hover(&theme, style))
                     .on_click(cx.listener(|page, _, _, cx| page.refresh(cx)))
-                    .child("Retry"),
+                    .child(t!("settings_providers_usage.usage.retry")),
             )
     }
 
@@ -1015,13 +1037,13 @@ impl UsagePage {
                 div()
                     .text_size(crate::typography::ui_rems(12.5))
                     .text_color(theme.text)
-                    .child(EMPTY_TITLE),
+                    .child(t!("settings_providers_usage.usage.empty_title")),
             )
             .child(
                 div()
                     .text_size(crate::typography::ui_rems(12.5))
                     .text_color(theme.text_muted)
-                    .child(EMPTY_DETAIL),
+                    .child(t!("settings_providers_usage.usage.empty_detail")),
             )
     }
 
@@ -1044,7 +1066,10 @@ impl UsagePage {
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(widgets::section_label(&theme, "Daily usage"))
+            .child(widgets::section_label(
+                &theme,
+                t!("settings_providers_usage.usage.daily_usage"),
+            ))
             .child(self.render_chart(&summary, &hidden, rungs, &theme, cx))
     }
 
@@ -1097,9 +1122,15 @@ impl UsagePage {
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let (tag, label) = if collapsed {
-            ("more", format!("+{folded} more"))
+            (
+                "more",
+                t!("settings_providers_usage.usage.more", count = folded).into_owned(),
+            )
         } else {
-            ("less", "Show less".to_string())
+            (
+                "less",
+                t!("settings_providers_usage.usage.show_less").into_owned(),
+            )
         };
         div()
             .id(SharedString::from(format!("usage-legend-{tag}")))
@@ -1224,7 +1255,7 @@ impl UsagePage {
                         .justify_center()
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_faint)
-                        .child("No usage in this range"),
+                        .child(t!("settings_providers_usage.usage.no_usage_range")),
                 );
         }
         div()
@@ -1439,7 +1470,11 @@ impl UsagePage {
             );
         }
         if rows.is_empty() {
-            card = card.child(div().text_color(theme.text_faint).child("No usage"));
+            card = card.child(
+                div()
+                    .text_color(theme.text_faint)
+                    .child(t!("settings_providers_usage.usage.no_usage")),
+            );
         } else {
             card = card.child(div().h(px(1.0)).bg(theme.ink(0.08))).child(
                 div()
@@ -1449,7 +1484,7 @@ impl UsagePage {
                     .justify_between()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("Total")
+                    .child(t!("settings_providers_usage.usage.total"))
                     .child(SharedString::from(compact_tokens(
                         summary.day_total(hidden, day),
                     ))),
@@ -1490,7 +1525,7 @@ impl UsagePage {
                         div()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
-                            .child("Total tokens"),
+                            .child(t!("settings_providers_usage.usage.total_tokens")),
                     )
                     .child(
                         div()
@@ -1504,10 +1539,13 @@ impl UsagePage {
                         div()
                             .text_size(crate::typography::ui_rems(11.0))
                             .text_color(theme.text_faint)
-                            .child(SharedString::from(format!(
-                                "{} tokens",
-                                exact_tokens(total)
-                            ))),
+                            .child(SharedString::from(
+                                t!(
+                                    "settings_providers_usage.usage.tokens_count",
+                                    count = exact_tokens(total)
+                                )
+                                .into_owned(),
+                            )),
                     ),
             )
             .child(self.render_legend(&summary, &theme, cx))
@@ -1548,7 +1586,9 @@ impl UsagePage {
         divided: bool,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
-        let slug = tile.label.to_lowercase().replace(' ', "-");
+        // The slug is the tile's stable id — the label translates, the
+        // id must not (tests and debug selectors address it).
+        let slug = tile.id;
         let detail = tile.detail.clone();
         div()
             .id(SharedString::from(format!("usage-metric-{slug}")))
@@ -1572,7 +1612,7 @@ impl UsagePage {
                 div()
                     .text_size(crate::typography::ui_rems(11.0))
                     .text_color(theme.text_muted)
-                    .child(tile.label),
+                    .child(tile.label.clone()),
             )
             .child(
                 div()
@@ -1607,7 +1647,10 @@ impl UsagePage {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(widgets::section_label(&theme, "Activity"))
+            .child(widgets::section_label(
+                &theme,
+                t!("settings_providers_usage.usage.activity"),
+            ))
             // Month labels, indented past the weekday gutter so each one
             // sits over its week column (the label may overflow the slot).
             .child(
@@ -1657,26 +1700,25 @@ impl UsagePage {
                             .flex()
                             .flex_col()
                             .gap(px(HEAT_GAP))
-                            .children(
-                                ["", "Mon", "", "Wed", "", "Fri", ""]
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(row, label)| {
-                                        div()
-                                            .flex_none()
-                                            .h(px(HEAT_CELL))
-                                            .flex()
-                                            .items_center()
-                                            .text_size(crate::typography::ui_rems(10.0))
-                                            .text_color(theme.text_faint)
-                                            .when(!label.is_empty(), |slot| {
-                                                slot.debug_selector(move || {
-                                                    format!("usage-heat-wd-{row}")
-                                                })
-                                                .child(label)
-                                            })
-                                    }),
-                            ),
+                            .children((0..7).map(|row| {
+                                let label = match row {
+                                    1 => Some(t!("settings_providers_usage.usage.weekday_mon")),
+                                    3 => Some(t!("settings_providers_usage.usage.weekday_wed")),
+                                    5 => Some(t!("settings_providers_usage.usage.weekday_fri")),
+                                    _ => None,
+                                };
+                                div()
+                                    .flex_none()
+                                    .h(px(HEAT_CELL))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(theme.text_faint)
+                                    .when_some(label, |slot, label| {
+                                        slot.debug_selector(move || format!("usage-heat-wd-{row}"))
+                                            .child(label)
+                                    })
+                            })),
                     )
                     .child(
                         div()
@@ -1711,7 +1753,7 @@ impl UsagePage {
                     .gap(px(4.0))
                     .text_size(crate::typography::ui_rems(10.0))
                     .text_color(theme.text_faint)
-                    .child("Less")
+                    .child(t!("settings_providers_usage.usage.less"))
                     .children((0..=4).map(|level| {
                         div()
                             .flex_none()
@@ -1719,7 +1761,7 @@ impl UsagePage {
                             .rounded(px(2.0))
                             .bg(heatmap_cell_color(level, &theme))
                     }))
-                    .child("More"),
+                    .child(t!("settings_providers_usage.usage.more_scale")),
             )
     }
 
@@ -1769,7 +1811,7 @@ impl UsagePage {
                 .mt(px(10.0))
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_faint)
-                .child("No usage in this range")
+                .child(t!("settings_providers_usage.usage.no_usage_range"))
                 .into_any_element()
         } else {
             div()
@@ -1804,9 +1846,12 @@ impl UsagePage {
                     .flex_row()
                     .items_center()
                     .child(
-                        widgets::section_label(&theme, "Breakdown")
-                            .flex_1()
-                            .min_w_0(),
+                        widgets::section_label(
+                            &theme,
+                            t!("settings_providers_usage.usage.breakdown"),
+                        )
+                        .flex_1()
+                        .min_w_0(),
                     )
                     .child(segmented_control(
                         vec![
@@ -1865,9 +1910,9 @@ impl UsagePage {
                             .truncate()
                             .text_size(crate::typography::ui_rems(11.0))
                             .text_color(theme.text_muted)
-                            .child(SharedString::from(
-                                label.unwrap_or_else(|| "tokens".to_string()),
-                            )),
+                            .child(SharedString::from(label.unwrap_or_else(|| {
+                                t!("settings_providers_usage.usage.donut_tokens").into_owned()
+                            }))),
                     ),
             )
     }
@@ -2046,10 +2091,13 @@ impl UsagePage {
                     .pl(px(19.0 + indent))
                     .text_size(crate::typography::ui_rems(11.5))
                     .text_color(theme.text_faint)
-                    .child(SharedString::from(format!(
-                        "{} tokens",
-                        compact_tokens(entry.tokens)
-                    ))),
+                    .child(SharedString::from(
+                        t!(
+                            "settings_providers_usage.usage.tokens_count",
+                            count = compact_tokens(entry.tokens)
+                        )
+                        .into_owned(),
+                    )),
             );
         if !is_others {
             return row;
@@ -2068,8 +2116,8 @@ impl UsagePage {
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
         let (tag, label) = match tab {
-            BreakdownTab::Models => ("model", "By model"),
-            BreakdownTab::Projects => ("project", "By project"),
+            BreakdownTab::Models => ("model", t!("settings_providers_usage.usage.by_model")),
+            BreakdownTab::Projects => ("project", t!("settings_providers_usage.usage.by_project")),
         };
         let active = self.breakdown_tab == tab;
         let mut chip = segment(
@@ -2493,29 +2541,142 @@ mod tests {
         harness
     }
 
-    /// The count line and the rest of the page copy are verbatim spec
-    /// strings — pinned here against accidental drift.
+    /// The group catalog's runtime spot check: sentinel values resolve
+    /// through rust-i18n itself in both locales, placeholders substituted.
+    /// (The global `catalog_resolves_through_rust_i18n` walk stops at
+    /// another group's in-flight key, so this group's runtime resolution
+    /// is verified here.) The follow-up walk then covers EVERY leaf of
+    /// this group's two files against `t!`, so a key the real YAML
+    /// parser dropped cannot hide.
+    #[test]
+    fn group_catalog_resolves_through_rust_i18n_in_both_locales() {
+        let _guard = crate::i18n::tests::locale_lock();
+        assert_eq!(
+            t!(
+                "settings_providers_usage.usage.page_title",
+                locale = "zh-CN"
+            )
+            .as_ref(),
+            "用量"
+        );
+        assert_eq!(
+            t!(
+                "settings_providers_usage.usage.tokens_count",
+                locale = "zh-CN",
+                count = "1.5k"
+            )
+            .as_ref(),
+            "1.5k 个 token"
+        );
+        assert_eq!(
+            t!(
+                "settings_providers_usage.providers.probe.ok_latency",
+                locale = "en-US",
+                count = 3,
+                ms = 120
+            )
+            .as_ref(),
+            "Endpoint reachable · 3 models · 120 ms"
+        );
+        assert_eq!(
+            t!(
+                "settings_providers_usage.mcp.tools_count",
+                locale = "zh-CN",
+                count = 4
+            )
+            .as_ref(),
+            "✓ 4 个工具"
+        );
+
+        // Walk every leaf of this group's two files (the same 2-space
+        // subset the crate parser accepts) and require rust-i18n to hand
+        // back exactly that value in the file's own locale.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        for (locale_dir, tag) in [("en-US", "en-US"), ("zh-CN", "zh-CN")] {
+            let text =
+                std::fs::read_to_string(root.join(locale_dir).join("settings-providers-usage.yml"))
+                    .unwrap();
+            assert_eq!(text.lines().next(), Some("_version: 2"));
+            let mut stack: Vec<String> = Vec::new();
+            for line in text.lines().skip(1) {
+                let trimmed = line.trim_end();
+                if trimmed.trim().is_empty() || trimmed.trim_start().starts_with('#') {
+                    continue;
+                }
+                let indent = trimmed.len() - trimmed.trim_start().len();
+                while stack.len() > indent / 2 {
+                    stack.pop();
+                }
+                let key = trimmed.trim_start();
+                let Some((key, value)) = key.split_once(": ") else {
+                    stack.push(key.trim_end_matches(':').to_string());
+                    continue;
+                };
+                if value.is_empty() {
+                    continue;
+                }
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(value);
+                let dotted = stack.join(".");
+                assert_eq!(key, tag, "{dotted} must be tagged {tag}");
+                assert_eq!(
+                    t!(dotted.as_str(), locale = tag).as_ref(),
+                    value,
+                    "rust-i18n and the yml disagree on {dotted} ({tag})"
+                );
+            }
+        }
+        crate::i18n::tests::reset_locale();
+    }
+
+    /// The English page copy is pinned here against accidental drift —
+    /// the catalog lookup and the literal must agree. Hold the locale
+    /// lock and pin the locale so a concurrent switching test can't flip
+    /// what `t!` resolves to.
     #[test]
     fn the_copy_matches_the_spec_verbatim() {
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         assert_eq!(header_count_text(3, 30), "3 chats · last 30 days");
         assert_eq!(header_count_text(12, 7), "12 chats · last 7 days");
         assert_eq!(header_count_text(1, 90), "1 chats · last 90 days");
-        assert_eq!(PAGE_TITLE, "Usage");
-        assert_eq!(PAGE_DESCRIPTION, "Model token usage");
-        assert_eq!(ERROR_TITLE, "Couldn't load model usage");
-        assert_eq!(EMPTY_TITLE, "No model usage yet");
         assert_eq!(
-            EMPTY_DETAIL,
+            t!("settings_providers_usage.usage.page_title").as_ref(),
+            "Usage"
+        );
+        assert_eq!(
+            t!("settings_providers_usage.usage.page_description").as_ref(),
+            "Model token usage"
+        );
+        assert_eq!(
+            t!("settings_providers_usage.usage.error_title").as_ref(),
+            "Couldn't load model usage"
+        );
+        assert_eq!(
+            t!("settings_providers_usage.usage.empty_title").as_ref(),
+            "No model usage yet"
+        );
+        assert_eq!(
+            t!("settings_providers_usage.usage.empty_detail").as_ref(),
             "Token usage is collected from the chats you run in holt. Run \
              a few chats and usage will appear here."
         );
-        assert_eq!(REFRESH_TOOLTIP, "Refresh usage stats");
+        assert_eq!(
+            t!("settings_providers_usage.usage.refresh_tooltip").as_ref(),
+            "Refresh usage stats"
+        );
         // Version skew names the skew, never a "restart the app" instruction.
         assert_eq!(
-            VERSION_SKEW,
+            t!("settings_providers_usage.usage.version_skew").as_ref(),
             "Usage stats aren't available — the engine doesn't support them yet"
         );
-        assert!(!VERSION_SKEW.to_lowercase().contains("restart"));
+        assert!(
+            !t!("settings_providers_usage.usage.version_skew")
+                .to_lowercase()
+                .contains("restart")
+        );
     }
 
     #[gpui::test]
@@ -2539,11 +2700,17 @@ mod tests {
 
     #[gpui::test]
     fn an_engine_without_the_method_lands_in_version_skew_copy(cx: &mut gpui::TestAppContext) {
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let mut harness = harness(cx, vec![], Scripted::UnknownMethod);
 
         assert_eq!(
             harness.error().as_deref(),
-            Some(VERSION_SKEW),
+            Some(
+                t!("settings_providers_usage.usage.version_skew")
+                    .into_owned()
+                    .as_str()
+            ),
             "UnknownMethod reads as version skew, not the raw error"
         );
         assert!(
@@ -2800,29 +2967,33 @@ mod tests {
 
     #[test]
     fn metric_tiles_print_compact_and_hover_finer() {
+        // The assertions pin the English copy: hold the locale lock and
+        // pin the locale so a concurrent switching test can't flip it.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let tiles = metric_tiles(&decode_reply(summary_reply_json()));
-        let by_label = |name: &str| {
+        let by_id = |name: &str| {
             tiles
                 .iter()
-                .find(|tile| tile.label == name)
+                .find(|tile| tile.id == name)
                 .unwrap_or_else(|| panic!("no {name} tile"))
         };
         assert_eq!(tiles.len(), 6);
-        assert_eq!(by_label("Input").value, "500");
-        assert_eq!(by_label("Input").detail, "500 tokens");
-        assert_eq!(by_label("Cache read").value, "40");
-        assert_eq!(by_label("Cache write").value, "10");
+        assert_eq!(by_id("input").value, "500");
+        assert_eq!(by_id("input").detail, "500 tokens");
+        assert_eq!(by_id("cache-read").value, "40");
+        assert_eq!(by_id("cache-write").value, "10");
         // The hit tile prints the engine's own rate as a percentage — the
         // one with cache writes out of the denominator — and echoes the
         // fraction on hover, compact like everything else.
-        assert_eq!(by_label("Cache hit").value, "7.4%");
+        assert_eq!(by_id("cache-hit").value, "7.4%");
         assert_eq!(
-            by_label("Cache hit").detail,
+            by_id("cache-hit").detail,
             "40 of 540 prompt tokens served from cache"
         );
-        assert_eq!(by_label("Active days").value, "3");
+        assert_eq!(by_id("active-days").value, "3");
         assert_eq!(
-            by_label("Active days").detail,
+            by_id("active-days").detail,
             "3 of 30 days in range had usage"
         );
 
@@ -2833,17 +3004,17 @@ mod tests {
         huge.totals.input = 47_707_741;
         huge.totals.cache_read = 1_519_624_030;
         let tiles = metric_tiles(&huge);
-        let by_label = |name: &str| {
+        let by_id = |name: &str| {
             tiles
                 .iter()
-                .find(|tile| tile.label == name)
+                .find(|tile| tile.id == name)
                 .unwrap_or_else(|| panic!("no {name} tile"))
         };
-        assert_eq!(by_label("Input").value, "47.7M");
-        assert_eq!(by_label("Input").detail, "47.71M tokens");
-        assert_eq!(by_label("Cache read").value, "1.5B");
+        assert_eq!(by_id("input").value, "47.7M");
+        assert_eq!(by_id("input").detail, "47.71M tokens");
+        assert_eq!(by_id("cache-read").value, "1.5B");
         assert_eq!(
-            by_label("Cache hit").detail,
+            by_id("cache-hit").detail,
             "1.52B of 1.57B prompt tokens served from cache"
         );
 
@@ -2855,7 +3026,7 @@ mod tests {
         assert_eq!(
             metric_tiles(&cold)
                 .iter()
-                .find(|t| t.label == "Cache hit")
+                .find(|t| t.id == "cache-hit")
                 .unwrap()
                 .value,
             "—"
@@ -2869,7 +3040,7 @@ mod tests {
         assert!(
             !metric_tiles(&no_write)
                 .iter()
-                .any(|t| t.label == "Cache write")
+                .any(|t| t.id == "cache-write")
         );
     }
 
@@ -3224,6 +3395,9 @@ mod tests {
 
     #[test]
     fn the_heatmap_hover_prints_compact_and_short() {
+        // Pinning the English hover copy under the lock.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let grid = fold_heatmap(&decode_reply(two_week_reply()));
         let wednesday = cell(&grid, 2, 3);
         assert_eq!(heatmap_tooltip(wednesday), "130 tokens on Sep 16, 2026");
@@ -3407,6 +3581,10 @@ mod tests {
 
     #[test]
     fn the_breakdown_folds_its_tail_into_one_others_slice() {
+        // The assertions pin the English fold name: hold the lock and pin
+        // the locale.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let reply = decode_reply(folded_breakdown_reply_json());
         let summary = fold_summary(&reply);
         let theme = Theme::default();
@@ -3417,6 +3595,7 @@ mod tests {
         // tail — the ring keeps its true shares because nothing leaves the
         // list, and the tail's own gray is the slice's.
         let fold = breakdown_fold(&entries, &theme);
+        let others = t!("settings_providers_usage.usage.others").into_owned();
         let names: Vec<&str> = fold
             .slices
             .iter()
@@ -3429,7 +3608,7 @@ mod tests {
                 "openai/gpt-2",
                 "openai/gpt-3",
                 "openai/gpt-4",
-                BREAKDOWN_OTHERS
+                others.as_str()
             ]
         );
         assert_eq!(fold.slices[4].tokens, 600, "the tail's own sum");
@@ -3479,6 +3658,9 @@ mod tests {
 
     #[test]
     fn the_breakdown_folds_engine_order_and_drops_zero_rows() {
+        // The catch-all's English name is pinned under the lock.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let reply = decode_reply(breakdown_reply_json());
         let summary = fold_summary(&reply);
         let theme = Theme::default();
@@ -3503,7 +3685,10 @@ mod tests {
         // By project: the catch-all folds under its fixed name.
         let projects = fold_breakdown(&reply, &summary, BreakdownTab::Projects, &theme);
         assert_eq!(projects.len(), 4);
-        assert_eq!(projects[2].name, "Deleted chats");
+        assert_eq!(
+            projects[2].name,
+            t!("settings_providers_usage.usage.deleted_chats")
+        );
         assert_eq!(projects[2].tokens, 60);
     }
 

@@ -5,9 +5,13 @@
 //! and checkout behavior stays cheap to test; the [`super`] facade re-exports
 //! every public name at `crate::pickers`.
 
+use std::borrow::Cow;
+
 use holt_proto::{
     ChatConfig, FolderListing, Model, PermissionMode, Provider, ProviderId, ReasoningLevel,
 };
+
+use crate::i18n::t;
 
 // ---------------------------------------------------------------------------
 // Draft config (what the pickers accumulate)
@@ -137,17 +141,17 @@ pub fn clamp_reasoning(
 // Pure: labels + traits summary
 // ---------------------------------------------------------------------------
 
-pub fn reasoning_label(level: ReasoningLevel) -> &'static str {
+pub fn reasoning_label(level: ReasoningLevel) -> Cow<'static, str> {
     match level {
-        ReasoningLevel::Minimal => "Minimal",
-        ReasoningLevel::Low => "Low",
-        ReasoningLevel::Medium => "Medium",
-        ReasoningLevel::High => "High",
-        ReasoningLevel::XHigh => "X-High",
-        ReasoningLevel::Max => "Max",
-        ReasoningLevel::Ultra => "Ultra",
-        ReasoningLevel::Ultracode => "Ultracode",
-        ReasoningLevel::Ultrathink => "Ultrathink",
+        ReasoningLevel::Minimal => t!("pickers_dialogs.reasoning.minimal"),
+        ReasoningLevel::Low => t!("pickers_dialogs.reasoning.low"),
+        ReasoningLevel::Medium => t!("pickers_dialogs.reasoning.medium"),
+        ReasoningLevel::High => t!("pickers_dialogs.reasoning.high"),
+        ReasoningLevel::XHigh => t!("pickers_dialogs.reasoning.xhigh"),
+        ReasoningLevel::Max => t!("pickers_dialogs.reasoning.max"),
+        ReasoningLevel::Ultra => t!("pickers_dialogs.reasoning.ultra"),
+        ReasoningLevel::Ultracode => t!("pickers_dialogs.reasoning.ultracode"),
+        ReasoningLevel::Ultrathink => t!("pickers_dialogs.reasoning.ultrathink"),
     }
 }
 
@@ -278,30 +282,30 @@ pub(crate) fn switch_dialog_content(error_message: &str) -> SwitchDialogContent 
             .map(str::to_string)
             .collect();
         return SwitchDialogContent {
-            title: "Couldn't switch branches".into(),
-            message: "The switch was refused to protect uncommitted changes. \
-Commit or stash these files, then switch again:"
-                .into(),
+            title: t!("pickers_dialogs.switch_dialog.title").into_owned(),
+            message: t!("pickers_dialogs.switch_dialog.refused_message").into_owned(),
             files,
         };
     }
     SwitchDialogContent {
-        title: "Couldn't switch branches".into(),
+        title: t!("pickers_dialogs.switch_dialog.title").into_owned(),
         message: error_message.to_string(),
         files: Vec::new(),
     }
 }
 
 /// The worktree-hosted pick dialog: the ref is checked out in another
-/// worktree, so it can never be switched to — that worktree joins holt as
-/// its own Space (ADR-branch-is-live-working-tree-state). Guidance, not a dead end.
+/// worktree, so it can never be switched to — that worktree joins holt as its
+/// own Space (ADR-branch-is-live-working-tree-state). Guidance, not a dead end.
 pub(crate) fn worktree_hosted_dialog(branch: &str, path: &str) -> SwitchDialogContent {
     SwitchDialogContent {
-        title: "Can't switch to that branch".into(),
-        message: format!(
-            "{branch} is checked out in another worktree ({path}). To work on it there, \
-add that folder as its own project.",
-        ),
+        title: t!("pickers_dialogs.switch_dialog.worktree_hosted_title").into_owned(),
+        message: t!(
+            "pickers_dialogs.switch_dialog.worktree_hosted_message",
+            branch = branch,
+            path = path
+        )
+        .into_owned(),
         files: Vec::new(),
     }
 }
@@ -377,11 +381,14 @@ pub(crate) fn session_runs_in_worktree(space_path: &str, chat_cwd: Option<&str>)
 /// the "New worktree" option is a draft-only affordance): a legacy
 /// worktree chat (cwd away from the space folder) reads "Worktree"; every
 /// other chat runs in its space's folder.
-pub(crate) fn session_checkout_label(space_path: &str, chat_cwd: Option<&str>) -> &'static str {
+pub(crate) fn session_checkout_label(
+    space_path: &str,
+    chat_cwd: Option<&str>,
+) -> Cow<'static, str> {
     if session_runs_in_worktree(space_path, chat_cwd) {
-        "Worktree"
+        t!("pickers_dialogs.session.worktree")
     } else {
-        "Local checkout"
+        t!("pickers_dialogs.session.local_checkout")
     }
 }
 
@@ -389,7 +396,9 @@ pub(crate) fn session_checkout_label(space_path: &str, chat_cwd: Option<&str>) -
 /// branch when the refs cache knows it, else the chat's stamped branch
 /// (its latest Turn's, per ADR-branch-is-live-working-tree-state), else the placeholder.
 pub(crate) fn session_branch_label(live: Option<&str>, stamped: Option<&str>) -> String {
-    live.or(stamped).unwrap_or("No ref").to_string()
+    live.or(stamped)
+        .map(str::to_string)
+        .unwrap_or_else(|| t!("pickers_dialogs.session.no_ref").into_owned())
 }
 
 /// Byte length of `name`'s prefix matching `query`, compared char-for-char
@@ -519,7 +528,7 @@ pub(crate) fn normalize_model_rows(models: Vec<Model>) -> Vec<Model> {
                 if !model.options.iter().any(|o| o.id == "contextWindow") {
                     model.options.push(holt_proto::ModelOption {
                         id: "contextWindow".into(),
-                        label: "Context Window".into(),
+                        label: t!("pickers_dialogs.models.context_window").into_owned(),
                         choices: vec![
                             holt_proto::ModelOptionChoice {
                                 id: "200k".into(),
@@ -840,6 +849,7 @@ mod tests {
 
     #[test]
     fn a_refusal_parses_into_message_and_sorted_file_list() {
+        let _locale = crate::i18n::tests::locale_lock();
         let content = switch_dialog_content(
             "switch refused: uncommitted changes would be overwritten by checkout:\nREADME.md\ndelta.txt",
         );
@@ -862,6 +872,7 @@ mod tests {
 
     #[test]
     fn any_other_failure_surfaces_verbatim_with_no_file_list() {
+        let _locale = crate::i18n::tests::locale_lock();
         // git's own worktree refusal — the other refusal family.
         let content = switch_dialog_content(
             "cannot set HEAD to reference 'refs/heads/feature' as it is the current HEAD of a linked repository.",
@@ -878,6 +889,7 @@ mod tests {
 
     #[test]
     fn a_marker_without_files_still_dialogs_without_a_list() {
+        let _locale = crate::i18n::tests::locale_lock();
         // The engine never emits this, but a mid-format change must not
         // render an empty list frame.
         let content = switch_dialog_content(
@@ -982,6 +994,7 @@ mod tests {
 
     #[test]
     fn session_footer_labels_split_local_worktree_and_live_branch() {
+        let _locale = crate::i18n::tests::locale_lock();
         // A chat in its space's folder.
         assert_eq!(
             session_checkout_label("/space/repo", Some("/space/repo")),
@@ -1010,6 +1023,7 @@ mod tests {
 
     #[test]
     fn worktree_hosted_dialog_points_at_importing_the_space() {
+        let _locale = crate::i18n::tests::locale_lock();
         let content = worktree_hosted_dialog("feature", "/wt/feature");
         assert_eq!(content.title, "Can't switch to that branch");
         assert!(content.message.contains("feature"), "{}", content.message);
@@ -1324,6 +1338,10 @@ mod tests {
 
     #[test]
     fn traits_summary_names_effective_choices() {
+        // The reasoning labels are catalog-driven (`pickers_dialogs.
+        // reasoning.*`): hold the locale lock so the i18n switch tests cannot
+        // flip the language under these English expectations.
+        let _locale = crate::i18n::tests::locale_lock();
         let option = holt_proto::ModelOption {
             id: "speed".into(),
             label: "Speed".into(),
@@ -1449,6 +1467,7 @@ mod tests {
 
     #[test]
     fn reasoning_label_spells_out_every_level() {
+        let _locale = crate::i18n::tests::locale_lock();
         assert_eq!(reasoning_label(ReasoningLevel::High), "High");
         assert_eq!(reasoning_label(ReasoningLevel::XHigh), "X-High");
         assert_eq!(reasoning_label(ReasoningLevel::Ultrathink), "Ultrathink");

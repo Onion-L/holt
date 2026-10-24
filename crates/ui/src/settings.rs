@@ -7,6 +7,7 @@
 //! defaults, and loaded values are clamped so a hand-edited file can't wedge the
 //! layout.
 
+use std::borrow::Cow;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -320,6 +321,11 @@ pub struct UiSettings {
     pub keymap: KeymapConfig,
     /// Light/dark preference. Defaults to following the OS.
     pub appearance: crate::appearance::AppearanceMode,
+    /// Interface language (`i18n`). `None` follows the OS language,
+    /// resolved once per launch and never written back — the same policy as
+    /// [`Self::appearance`]; `Some(code)` is a sticky explicit choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_language: Option<String>,
     /// Interface and conversational-prose family. Device-local by design.
     pub ui_font_family: crate::typography::UiFontFamily,
     /// Base size for interface and conversational prose. Code-related surfaces
@@ -395,6 +401,7 @@ impl Default for UiSettings {
             external_app: "Zed".into(),
             keymap: KeymapConfig::default(),
             appearance: crate::appearance::AppearanceMode::default(),
+            interface_language: None,
             ui_font_family: crate::typography::UiFontFamily::default(),
             ui_font_size: crate::typography::UiFontSize::default(),
             theme_selection: holt_theme::ThemeSelection::default(),
@@ -420,20 +427,9 @@ impl Default for UiSettings {
 /// `THREAD_JUMP_KEYBINDING_COMMANDS`, nine slots).
 pub const JUMP_SLOTS: usize = 9;
 
-/// Default combo per jump slot, and the label the shortcuts table shows.
+/// Default combo per jump slot.
 const JUMP_DEFAULTS: [&str; JUMP_SLOTS] = [
     "mod-1", "mod-2", "mod-3", "mod-4", "mod-5", "mod-6", "mod-7", "mod-8", "mod-9",
-];
-const JUMP_LABELS: [&str; JUMP_SLOTS] = [
-    "Jump to session 1",
-    "Jump to session 2",
-    "Jump to session 3",
-    "Jump to session 4",
-    "Jump to session 5",
-    "Jump to session 6",
-    "Jump to session 7",
-    "Jump to session 8",
-    "Jump to session 9",
 ];
 
 /// The rebindable app shortcuts. `JumpSession(slot)` is zero-based; a slot at
@@ -471,17 +467,41 @@ impl ShortcutId {
         ShortcutId::JumpSession(8),
     ];
 
-    /// Row label (holt lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
-    pub fn label(self) -> &'static str {
+    /// Row label (holt lib/shortcuts.ts `SHORTCUT_DEFINITIONS`): the
+    /// localized display copy, read from the catalog at call time
+    /// (`i18n`) — the persisted identity here is the combo, never this
+    /// label. A slot at or past [`JUMP_SLOTS`] has no label at all.
+    pub fn label(self) -> Cow<'static, str> {
+        use crate::i18n::t;
         match self {
-            ShortcutId::ToggleSidebar => "Toggle left sidebar",
-            ShortcutId::ToggleChanges => "Toggle right sidebar",
-            ShortcutId::ToggleTerminal => "Toggle terminal",
-            ShortcutId::NewSession => "New session",
-            ShortcutId::NextSession => "Next session",
-            ShortcutId::PrevSession => "Previous session",
-            ShortcutId::ArchiveSession => "Archive session",
-            ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
+            ShortcutId::ToggleSidebar => {
+                t!("settings_general_appearance.shortcuts.labels.toggle_sidebar")
+            }
+            ShortcutId::ToggleChanges => {
+                t!("settings_general_appearance.shortcuts.labels.toggle_changes")
+            }
+            ShortcutId::ToggleTerminal => {
+                t!("settings_general_appearance.shortcuts.labels.toggle_terminal")
+            }
+            ShortcutId::NewSession => {
+                t!("settings_general_appearance.shortcuts.labels.new_session")
+            }
+            ShortcutId::NextSession => {
+                t!("settings_general_appearance.shortcuts.labels.next_session")
+            }
+            ShortcutId::PrevSession => {
+                t!("settings_general_appearance.shortcuts.labels.prev_session")
+            }
+            ShortcutId::ArchiveSession => {
+                t!("settings_general_appearance.shortcuts.labels.archive_session")
+            }
+            ShortcutId::JumpSession(slot) if slot < JUMP_SLOTS => {
+                t!(
+                    "settings_general_appearance.shortcuts.labels.jump_session",
+                    slot = slot + 1
+                )
+            }
+            ShortcutId::JumpSession(_) => Cow::Borrowed(""),
         }
     }
 
@@ -1102,6 +1122,7 @@ mod tests {
                 ..KeymapConfig::default()
             },
             appearance: crate::appearance::AppearanceMode::Light,
+            interface_language: Some("zh-CN".into()),
             ui_font_family: crate::typography::UiFontFamily::Installed("Arial".into()),
             ui_font_size: crate::typography::UiFontSize::ALL[5],
             theme_selection: holt_theme::ThemeSelection {
@@ -1366,6 +1387,37 @@ mod tests {
         assert_eq!(d.right_pane_width, 520.0);
         assert_eq!(d.terminal_height, 280.0);
         assert!(!d.sidebar_collapsed && !d.right_pane_open && !d.terminal_open);
+    }
+
+    /// The interface-language preference is `None` = follow the OS (the
+    /// appearance policy): absent in old files, absent when never chosen,
+    /// `interfaceLanguage` in camelCase when pinned.
+    #[test]
+    fn interface_language_round_trips_as_an_optional_camel_case_key() {
+        let dir = tempfile::tempdir().unwrap();
+        // A pre-language settings file loads as follow-the-OS.
+        std::fs::write(UiSettings::path(dir.path()), r#"{"sidebarWidth": 300}"#).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.interface_language, None);
+        assert_eq!(loaded.sidebar_width, 300.0);
+
+        // An explicit choice persists under the camelCase key.
+        let pinned = UiSettings {
+            interface_language: Some("zh-CN".into()),
+            ..UiSettings::default()
+        };
+        pinned.save(dir.path()).unwrap();
+        let saved = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
+        assert!(saved.contains("\"interfaceLanguage\": \"zh-CN\""));
+        assert_eq!(
+            UiSettings::load(dir.path()).interface_language.as_deref(),
+            Some("zh-CN")
+        );
+
+        // Never chosen → the key is not written at all.
+        UiSettings::default().save(dir.path()).unwrap();
+        let saved = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
+        assert!(!saved.contains("interfaceLanguage"));
     }
 
     #[test]

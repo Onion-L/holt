@@ -8,6 +8,7 @@ use super::send_mode::{
     send_button_mode,
 };
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use gpui::{App, Context, div, prelude::*, px};
@@ -17,6 +18,7 @@ use holt_proto::RunRequest;
 use holt_rpc::methods;
 
 use crate::attachments;
+use crate::i18n::t;
 use crate::state::Indicator;
 use crate::theme::Theme;
 
@@ -27,11 +29,11 @@ const INTERRUPT_ARM_RESET_MS: u64 = 2500;
 /// The `/plan status` notice line from a `PlanModeState` reply. The
 /// proposed plan's own card carries the per-proposal state in the
 /// transcript; the notice is just the chat-level mode.
-fn plan_status_notice(state: &serde_json::Value) -> String {
+fn plan_status_notice(state: &serde_json::Value) -> Cow<'static, str> {
     if state["active"] == serde_json::json!(true) {
-        "Plan Mode: on — propose a plan with the submit_plan tool".into()
+        t!("composer_input.notice.plan_status_on")
     } else {
-        "Plan Mode: off".into()
+        t!("composer_input.notice.plan_status_off")
     }
 }
 
@@ -136,22 +138,20 @@ impl Composer {
             .into_iter()
             .find(|name| crate::settings::current(cx).disabled_skills.contains(name));
         if let Some(name) = disabled_hit {
-            self.failure = Some(
-                format!("Skill \"{name}\" is disabled — re-enable it in Settings → Skills").into(),
-            );
+            self.failure = Some(t!("composer_input.failure.skill_disabled", name = name).into());
             self.failure_key = None;
             cx.notify();
             return;
         }
         match super::slash::parse(&text) {
             super::slash::Parsed::MalformedCompact => {
-                self.failure = Some("Usage: /compact (no arguments)".into());
+                self.failure = Some(t!("composer_input.failure.usage_compact").into());
                 self.failure_key = None;
                 cx.notify();
                 return;
             }
             super::slash::Parsed::MalformedInit => {
-                self.failure = Some("Usage: /init (no arguments)".into());
+                self.failure = Some(t!("composer_input.failure.usage_init").into());
                 self.failure_key = None;
                 cx.notify();
                 return;
@@ -159,7 +159,7 @@ impl Composer {
             // `/init` bootstraps a repository's AGENTS.md; the Home space
             // has no repository to bootstrap (ADR-home-space-for-project-less-chats).
             super::slash::Parsed::Init if self.state.read(cx).target_in_home_space() => {
-                self.failure = Some("/init needs a project — pick a project first".into());
+                self.failure = Some(t!("composer_input.failure.init_needs_project").into());
                 self.failure_key = None;
                 cx.notify();
                 return;
@@ -203,7 +203,7 @@ impl Composer {
                 super::slash::ProviderAction::Task(_) => {}
             },
             super::slash::Parsed::MalformedGoal => {
-                self.failure = Some("Usage: /goal <objective> | off | pause | resume".into());
+                self.failure = Some(t!("composer_input.failure.usage_goal").into());
                 self.failure_key = self.state.read(cx).selected_chat.clone();
                 cx.notify();
                 return;
@@ -246,13 +246,13 @@ impl Composer {
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.failure = Some(crate::state::engine_not_connected().into());
             self.failure_key = None;
             cx.notify();
             return;
         };
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
-            self.failure = Some("No chat here yet — /goal <objective> starts one".into());
+            self.failure = Some(t!("composer_input.failure.goal_needs_chat").into());
             self.failure_key = None;
             cx.notify();
             return;
@@ -279,7 +279,8 @@ impl Composer {
             if let Err(error) = engine.client().call(method, params).await {
                 tracing::warn!(error = %error, "/goal command failed");
                 let _ = this.update(cx, |this, cx| {
-                    this.failure = Some(format!("/goal failed: {error}").into());
+                    this.failure =
+                        Some(t!("composer_input.failure.goal_failed", error = error).into());
                     this.failure_key = Some(chat_id.clone());
                     cx.notify();
                 });
@@ -294,7 +295,7 @@ impl Composer {
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, mut text: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.failure = Some(crate::state::engine_not_connected().into());
             self.failure_key = None; // global — meaningful on every chat
             cx.notify();
             return;
@@ -683,7 +684,7 @@ impl Composer {
                     )
                     .await
                 {
-                    return Err(format!("/plan failed: {err}"));
+                    return Err(t!("composer_input.failure.plan_failed", error = err).into());
                 }
                 if provider_enter
                     && let Err(err) = attachments::call_with_timeout(
@@ -695,7 +696,7 @@ impl Composer {
                     )
                     .await
                 {
-                    return Err(format!("/provider failed: {err}"));
+                    return Err(t!("composer_input.failure.provider_failed", error = err).into());
                 }
                 // `/goal <objective>` (ADR-goal-mode-verified-loop-at-turn-settle): armed after createChat,
                 // before the run is queued, so the first Turn settles into
@@ -712,7 +713,7 @@ impl Composer {
                     )
                     .await
                 {
-                    return Err(format!("/goal failed: {err}"));
+                    return Err(t!("composer_input.failure.goal_failed", error = err).into());
                 }
 
                 let command = match &slash {
@@ -726,12 +727,14 @@ impl Composer {
                         request: RunRequest {
                             prompt: String::new(),
                             provider: resolved.provider.clone().ok_or_else(|| {
-                                "Configure a provider before sending".to_string()
+                                t!("composer_input.failure.configure_provider").into_owned()
                             })?,
                             model: resolved
                                 .model
                                 .clone()
-                                .ok_or_else(|| "Choose a model before sending".to_string())?,
+                                .ok_or_else(|| {
+                                    t!("composer_input.failure.choose_model").into_owned()
+                                })?,
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
                             cwd,
@@ -748,12 +751,14 @@ impl Composer {
                             // the very end of the prompt.
                             prompt: crate::path_refs::append_references(&content, &references),
                             provider: resolved.provider.clone().ok_or_else(|| {
-                                "Configure a provider before sending".to_string()
+                                t!("composer_input.failure.configure_provider").into_owned()
                             })?,
                             model: resolved
                                 .model
                                 .clone()
-                                .ok_or_else(|| "Choose a model before sending".to_string())?,
+                                .ok_or_else(|| {
+                                    t!("composer_input.failure.choose_model").into_owned()
+                                })?,
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
                             cwd,
@@ -765,8 +770,9 @@ impl Composer {
                         message_id: message_id.clone(),
                     },
                 };
-                let command = serde_json::to_value(&command)
-                    .map_err(|e| format!("Send failed: {e}"))?;
+                let command = serde_json::to_value(&command).map_err(|e| {
+                    t!("composer_input.failure.send_failed", error = e).into_owned()
+                })?;
                 let mut params = serde_json::json!({ "chatId": chat_id, "command": command });
                 // Every queued command carries a client-minted identity, so
                 // the durable-enqueue retry path covers ordinary messages,
@@ -793,7 +799,9 @@ impl Composer {
                     std::time::Duration::from_secs(30),
                 )
                 .await
-                .map_err(|e| format!("Send failed: {e}"))?;
+                .map_err(|e| {
+                    t!("composer_input.failure.send_failed", error = e).into_owned()
+                })?;
                 Ok(())
             }
             .await;
@@ -947,13 +955,13 @@ impl Composer {
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.failure = Some(crate::state::engine_not_connected().into());
             self.failure_key = None;
             cx.notify();
             return;
         };
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
-            self.failure = Some("Start a conversation first — or use /plan <task>".into());
+            self.failure = Some(t!("composer_input.failure.plan_needs_chat").into());
             self.failure_key = None;
             cx.notify();
             return;
@@ -971,8 +979,8 @@ impl Composer {
             {
                 Ok(state) => {
                     let notice = match action {
-                        "enter" => "Plan Mode on".to_string(),
-                        "exit" => "Plan Mode off — plan documents are kept".to_string(),
+                        "enter" => t!("composer_input.notice.plan_on"),
+                        "exit" => t!("composer_input.notice.plan_off"),
                         _ => plan_status_notice(&state),
                     };
                     let _ = this.update(cx, |this, cx| {
@@ -988,7 +996,8 @@ impl Composer {
                 Err(err) => {
                     tracing::warn!(error = %err, "/plan command failed");
                     let _ = this.update(cx, |this, cx| {
-                        this.failure = Some(format!("/plan failed: {err}").into());
+                        this.failure =
+                            Some(t!("composer_input.failure.plan_failed", error = err).into());
                         this.failure_key = Some(chat_id.clone());
                         cx.notify();
                     });
@@ -1014,7 +1023,7 @@ impl Composer {
             return;
         };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.failure = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.failure = Some(crate::state::engine_not_connected().into());
             self.failure_key = None;
             cx.notify();
             return;
@@ -1030,9 +1039,9 @@ impl Composer {
                 .call(method, serde_json::json!({ "chatId": chat_id }))
                 .await;
             let notice = if enter {
-                "Provider Mode on"
+                t!("composer_input.notice.provider_on")
             } else {
-                "Provider Mode off"
+                t!("composer_input.notice.provider_off")
             };
             let _ = this.update(cx, |this, cx| {
                 match result {
@@ -1041,7 +1050,8 @@ impl Composer {
                     Ok(_) => this.failure = Some(notice.into()),
                     Err(err) => {
                         tracing::warn!(error = %err, "/provider command failed");
-                        this.failure = Some(format!("/provider failed: {err}").into());
+                        this.failure =
+                            Some(t!("composer_input.failure.provider_failed", error = err).into());
                     }
                 }
                 this.failure_key = Some(chat_id.clone());
@@ -1069,7 +1079,8 @@ impl Composer {
             let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
-                    composer.failure = Some(format!("Stop failed: {err}").into());
+                    composer.failure =
+                        Some(t!("composer_input.failure.stop_failed", error = err).into());
                     composer.failure_key = Some(failure_chat);
                     cx.notify();
                 })
@@ -1092,11 +1103,15 @@ impl Composer {
             return div()
                 .id("composer-esc-confirm")
                 .role(gpui::Role::Button)
-                .aria_label("Interrupt the running turn")
+                .aria_label(t!("composer_input.send_button.interrupt_aria"))
                 .focusable()
                 .tooltip(|_, cx| {
-                    cx.new(|_| crate::popover::TextTooltip("Press Esc again to stop".into()))
-                        .into()
+                    cx.new(|_| {
+                        crate::popover::TextTooltip(
+                            t!("composer_input.send_button.interrupt_tooltip").into(),
+                        )
+                    })
+                    .into()
                 })
                 .size(px(28.0))
                 .flex_none()
@@ -1131,11 +1146,15 @@ impl Composer {
             SendButtonMode::Stop => div()
                 .id("composer-stop")
                 .role(gpui::Role::Button)
-                .aria_label("Stop and pause message queue")
+                .aria_label(t!("composer_input.send_button.stop_aria"))
                 .focusable()
                 .tooltip(|_, cx| {
-                    cx.new(|_| crate::popover::TextTooltip("Stop and pause queue".into()))
-                        .into()
+                    cx.new(|_| {
+                        crate::popover::TextTooltip(
+                            t!("composer_input.send_button.stop_tooltip").into(),
+                        )
+                    })
+                    .into()
                 })
                 .size(px(28.0))
                 .flex_none()
@@ -1192,6 +1211,7 @@ mod tests {
     use super::{
         super::slash, Composer, INTERRUPT_ARM_RESET_MS, failure_restore_text, plan_status_notice,
     };
+    use crate::i18n::t;
     use crate::theme::Theme;
     use gpui::AppContext as _;
     use std::time::Duration;
@@ -1237,13 +1257,14 @@ mod tests {
 
     #[test]
     fn plan_status_notices_render_the_chat_level_mode() {
+        let _locale = crate::i18n::tests::locale_lock();
         assert_eq!(
             plan_status_notice(&serde_json::json!({ "active": false })),
-            "Plan Mode: off"
+            t!("composer_input.notice.plan_status_off")
         );
         assert_eq!(
             plan_status_notice(&serde_json::json!({ "active": true })),
-            "Plan Mode: on — propose a plan with the submit_plan tool"
+            t!("composer_input.notice.plan_status_on")
         );
     }
 

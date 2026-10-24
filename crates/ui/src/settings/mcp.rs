@@ -16,6 +16,7 @@ use holt_rpc::methods;
 
 use crate::{
     composer::ComposerInput,
+    i18n::t,
     popover::{self, Loadable},
     settings::widgets,
     state::AppState,
@@ -169,7 +170,7 @@ impl McpServerView {
         } else if let Some(url) = &self.url {
             url.clone()
         } else {
-            "no transport".into()
+            t!("settings_providers_usage.mcp.no_transport").into_owned()
         }
     }
 
@@ -184,8 +185,13 @@ impl McpServerView {
 /// the essentials pre-validate here — the engine's strict parse is the
 /// authority and its errors surface per entry.
 fn parse_import(text: &str) -> Result<Vec<(String, McpServerView)>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(text.trim()).map_err(|error| format!("not valid JSON: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(text.trim()).map_err(|error| {
+        t!(
+            "settings_providers_usage.mcp.import_not_json",
+            error = error
+        )
+        .into_owned()
+    })?;
     let entries: Vec<(String, serde_json::Value)> = if let Some(map) = value
         .get("mcpServers")
         .and_then(serde_json::Value::as_object)
@@ -200,17 +206,13 @@ fn parse_import(text: &str) -> Result<Vec<(String, McpServerView)>, String> {
         let name = value
             .get("name")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                "a bare server object needs a \"name\" field — or wrap it in \
-                     {\"mcpServers\": { … }}"
-                    .to_string()
-            })?;
+            .ok_or_else(|| t!("settings_providers_usage.mcp.import_bare_name").into_owned())?;
         vec![(name.to_string(), value)]
     } else {
-        return Err("expected a {\"mcpServers\": { … }} object".into());
+        return Err(t!("settings_providers_usage.mcp.import_expected").into_owned());
     };
     if entries.is_empty() {
-        return Err("no servers found in the JSON".into());
+        return Err(t!("settings_providers_usage.mcp.import_no_servers").into_owned());
     }
     let mut parsed = Vec::with_capacity(entries.len());
     for (name, server) in entries {
@@ -219,16 +221,20 @@ fn parse_import(text: &str) -> Result<Vec<(String, McpServerView)>, String> {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
-            return Err(format!(
-                "server name {name:?} is invalid: names use [A-Za-z0-9_-] only"
-            ));
+            return Err(t!(
+                "settings_providers_usage.mcp.import_bad_name",
+                name = name.as_str()
+            )
+            .into_owned());
         }
         let mut view = McpServerView::parse(&server);
         view.name = name.clone();
         if view.command.is_none() && view.url.is_none() {
-            return Err(format!(
-                "server {name:?} needs either \"command\" (stdio) or \"url\" (http)"
-            ));
+            return Err(t!(
+                "settings_providers_usage.mcp.import_needs_transport",
+                name = name.as_str()
+            )
+            .into_owned());
         }
         parsed.push((name, view));
     }
@@ -361,7 +367,7 @@ impl McpPage {
         then: impl FnOnce(&mut Self, serde_json::Value, &mut Context<Self>) + 'static,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.servers = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.servers = Loadable::Error(crate::state::engine_not_connected().into());
             return;
         };
         self.tasks.push(cx.spawn(async move |this, cx| {
@@ -371,9 +377,7 @@ impl McpPage {
                     Ok(value) => then(page, value, cx),
                     Err(holt_rpc::RpcError::UnknownMethod(_)) => {
                         page.servers = Loadable::Error(
-                            "MCP servers aren't available — the engine doesn't support \
-                             them yet"
-                                .into(),
+                            t!("settings_providers_usage.mcp.version_skew").into_owned(),
                         );
                     }
                     Err(error) => {
@@ -447,7 +451,14 @@ impl McpPage {
                 if let Err(error) = result {
                     this.update(cx, |page, cx| {
                         if let Some(editor) = page.editor.as_mut() {
-                            editor.error = Some(format!("{name}: {error}"));
+                            editor.error = Some(
+                                t!(
+                                    "settings_providers_usage.mcp.import_entry_failed",
+                                    name = name.as_str(),
+                                    error = error
+                                )
+                                .into_owned(),
+                            );
                         }
                         page.load(cx);
                     })
@@ -543,7 +554,8 @@ impl McpPage {
             json: cx.new(|cx| ComposerInput::new("{\n  \"mcpServers\": { … }\n}", cx)),
             transport,
             name: cx.new(|cx| {
-                let mut input = ComposerInput::new("name — tools become mcp__<name>__tool", cx);
+                let mut input =
+                    ComposerInput::new(t!("settings_providers_usage.mcp.placeholder_name"), cx);
                 input.set_text(
                     server.map(|server| server.name.clone()).unwrap_or_default(),
                     cx,
@@ -561,7 +573,8 @@ impl McpPage {
                 input
             }),
             args: cx.new(|cx| {
-                let mut input = ComposerInput::new("one argument per line", cx);
+                let mut input =
+                    ComposerInput::new(t!("settings_providers_usage.mcp.placeholder_args"), cx);
                 input.set_text(
                     server
                         .map(|server| server.args.join("\n"))
@@ -571,7 +584,8 @@ impl McpPage {
                 input
             }),
             env: cx.new(|cx| {
-                let mut input = ComposerInput::new("KEY=VALUE per line", cx);
+                let mut input =
+                    ComposerInput::new(t!("settings_providers_usage.mcp.placeholder_env"), cx);
                 input.set_text(
                     server
                         .map(|server| {
@@ -588,7 +602,8 @@ impl McpPage {
                 input
             }),
             cwd: cx.new(|cx| {
-                let mut input = ComposerInput::new("default: holt's own directory", cx);
+                let mut input =
+                    ComposerInput::new(t!("settings_providers_usage.mcp.placeholder_cwd"), cx);
                 input.set_text(
                     server
                         .and_then(|server| server.cwd.clone())
@@ -608,7 +623,8 @@ impl McpPage {
                 input
             }),
             headers: cx.new(|cx| {
-                let mut input = ComposerInput::new("Name: value per line", cx);
+                let mut input =
+                    ComposerInput::new(t!("settings_providers_usage.mcp.placeholder_headers"), cx);
                 input.set_text(
                     server
                         .map(|server| {
@@ -672,17 +688,20 @@ impl McpPage {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
-            return Err(
-                "Names use [A-Za-z0-9_-] — the name rides every mcp__name__tool.".to_string(),
-            );
+            return Err(t!("settings_providers_usage.mcp.error_name_invalid").into_owned());
         }
         let parse_ms = |input: &Entity<ComposerInput>, default: u64| -> Result<u64, String> {
             let text = input.read(cx).text().trim().to_string();
             if text.is_empty() {
                 return Ok(default);
             }
-            text.parse::<u64>()
-                .map_err(|_| format!("{text:?} is not a timeout in milliseconds"))
+            text.parse::<u64>().map_err(|_| {
+                t!(
+                    "settings_providers_usage.mcp.error_timeout",
+                    text = text.as_str()
+                )
+                .into_owned()
+            })
         };
         let mut server = McpServerView {
             name: name.clone(),
@@ -695,7 +714,9 @@ impl McpPage {
             EditorTransport::Stdio => {
                 let command = editor.command.read(cx).text().trim().to_string();
                 if command.is_empty() {
-                    return Err("A stdio server needs a command.".into());
+                    return Err(
+                        t!("settings_providers_usage.mcp.error_command_required").into_owned()
+                    );
                 }
                 server.command = Some(command);
                 server.args = editor
@@ -714,7 +735,7 @@ impl McpPage {
             EditorTransport::Http => {
                 let url = editor.url.read(cx).text().trim().to_string();
                 if url.is_empty() {
-                    return Err("An http server needs a URL.".into());
+                    return Err(t!("settings_providers_usage.mcp.error_url_required").into_owned());
                 }
                 server.url = Some(url);
                 server.headers = parse_header_lines(editor.headers.read(cx).text());
@@ -762,7 +783,7 @@ impl McpPage {
                                     .size(px(13.0))
                                     .text_color(theme.text_muted),
                             )
-                            .child("Add Server"),
+                            .child(t!("settings_providers_usage.mcp.add_server")),
                     ),
             )
             .into_any_element()
@@ -860,7 +881,7 @@ impl McpPage {
                         .flex_none()
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted.opacity(0.7))
-                        .child("Testing…"),
+                        .child(t!("settings_providers_usage.mcp.testing")),
                 );
             }
             Some(ProbeView::Ok { tool_count, .. }) => {
@@ -871,13 +892,16 @@ impl McpPage {
                 // wash would paint under the pill's own background and
                 // never show.
                 row = row.child(
-                    widgets::badge_active(theme, format!("✓ {count} tools"))
-                        .id(SharedString::from(format!("mcp-test-{name}")))
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(badge_theme.success.opacity(0.25)))
-                        .on_click(cx.listener(move |page, _, _, cx| {
-                            page.probe(cx, action_name.clone());
-                        })),
+                    widgets::badge_active(
+                        theme,
+                        t!("settings_providers_usage.mcp.tools_count", count = count),
+                    )
+                    .id(SharedString::from(format!("mcp-test-{name}")))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(badge_theme.success.opacity(0.25)))
+                    .on_click(cx.listener(move |page, _, _, cx| {
+                        page.probe(cx, action_name.clone());
+                    })),
                 );
             }
             _ => {
@@ -891,20 +915,23 @@ impl McpPage {
                         .on_click(cx.listener(move |page, _, _, cx| {
                             page.probe(cx, action_name.clone());
                         }))
-                        .child("Test"),
+                        .child(t!("settings_providers_usage.mcp.test")),
                 );
             }
         }
-        for label in ["Edit", "Remove"] {
+        // The row's quiet actions: (slug, localized label). The slug — not
+        // the label — keys the element id and the behavior, so a translation
+        // can never detach a button from its handler.
+        for (slug, label) in [
+            ("edit", t!("settings_providers_usage.mcp.edit")),
+            ("remove", t!("settings_providers_usage.mcp.remove")),
+        ] {
             let action_theme = theme.clone();
             let action_name = name.clone();
-            let danger = label == "Remove";
+            let danger = slug == "remove";
             row = row.child(
                 widgets::ghost_action(theme)
-                    .id(SharedString::from(format!(
-                        "mcp-{}-{name}",
-                        label.to_lowercase()
-                    )))
+                    .id(SharedString::from(format!("mcp-{slug}-{name}")))
                     .text_color(if danger {
                         theme.danger_muted
                     } else {
@@ -913,8 +940,8 @@ impl McpPage {
                     .hover(move |style| widgets::ghost_hover(&action_theme, style))
                     .on_click(cx.listener(move |page, _, _, cx| {
                         cx.stop_propagation();
-                        match label {
-                            "Edit" => {
+                        match slug {
+                            "edit" => {
                                 let server = page.servers.ready().and_then(|servers| {
                                     servers
                                         .iter()
@@ -954,7 +981,13 @@ impl McpPage {
                             .min_w_0()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
-                            .child(SharedString::from(format!("Remove {}?", server.name))),
+                            .child(SharedString::from(
+                                t!(
+                                    "settings_providers_usage.mcp.remove_confirm_title",
+                                    name = server.name.as_str()
+                                )
+                                .into_owned(),
+                            )),
                     )
                     .child(
                         widgets::ghost_action(theme)
@@ -964,7 +997,7 @@ impl McpPage {
                             .on_click(cx.listener(move |page, _, _, cx| {
                                 page.remove(cx, confirm_name.clone());
                             }))
-                            .child("Remove"),
+                            .child(t!("settings_providers_usage.mcp.remove")),
                     )
                     .child(
                         widgets::ghost_action(theme)
@@ -974,7 +1007,7 @@ impl McpPage {
                                 page.confirm_remove = None;
                                 cx.notify();
                             }))
-                            .child("Cancel"),
+                            .child(t!("settings_providers_usage.mcp.cancel")),
                     ),
             );
         }
@@ -983,7 +1016,10 @@ impl McpPage {
         if let Some(ProbeView::Failed { reason }) = self.probe.get(&server.name) {
             column = column.child(widgets::error_strip(
                 theme,
-                format!("Test failed: {reason}"),
+                t!(
+                    "settings_providers_usage.mcp.test_failed",
+                    reason = reason.as_str()
+                ),
             ));
         }
         column.into_any_element()
@@ -1026,7 +1062,16 @@ impl McpPage {
         // mcpServers JSON blob. Editing is form-only.
         if adding {
             let mut modes = div().flex().flex_row().gap(px(6.0));
-            for (option, label) in [(EditorMode::Form, "Form"), (EditorMode::Json, "JSON")] {
+            for (option, label) in [
+                (
+                    EditorMode::Form,
+                    t!("settings_providers_usage.mcp.mode_form"),
+                ),
+                (
+                    EditorMode::Json,
+                    t!("settings_providers_usage.mcp.mode_json"),
+                ),
+            ] {
                 let selected = if json_mode {
                     option == EditorMode::Json
                 } else {
@@ -1080,13 +1125,23 @@ impl McpPage {
             );
         } else {
             if adding {
-                form = form.child(Self::dialog_field(theme, "Name", &editor.name));
+                form = form.child(Self::dialog_field(
+                    theme,
+                    &t!("settings_providers_usage.mcp.field_name"),
+                    &editor.name,
+                ));
             }
             // The transport picker: two segmented buttons.
             let mut transport_row = div().flex().flex_row().gap(px(6.0));
             for (option, label) in [
-                (EditorTransport::Stdio, "Local (stdio)"),
-                (EditorTransport::Http, "Remote (http)"),
+                (
+                    EditorTransport::Stdio,
+                    t!("settings_providers_usage.mcp.transport_stdio"),
+                ),
+                (
+                    EditorTransport::Http,
+                    t!("settings_providers_usage.mcp.transport_http"),
+                ),
             ] {
                 let selected = transport == option;
                 let button_theme = theme.clone();
@@ -1126,7 +1181,10 @@ impl McpPage {
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .child(widgets::field_label(theme, "Transport"))
+                    .child(widgets::field_label(
+                        theme,
+                        t!("settings_providers_usage.mcp.field_transport"),
+                    ))
                     .child(transport_row),
             );
             let timeout_row =
@@ -1150,27 +1208,63 @@ impl McpPage {
             match transport {
                 EditorTransport::Stdio => {
                     form = form
-                        .child(Self::dialog_field(theme, "Command", &editor.command))
-                        .child(Self::dialog_field(theme, "Arguments", &editor.args))
-                        .child(Self::dialog_field(theme, "Environment", &editor.env))
-                        .child(Self::dialog_field(theme, "Working directory", &editor.cwd))
+                        .child(Self::dialog_field(
+                            theme,
+                            &t!("settings_providers_usage.mcp.field_command"),
+                            &editor.command,
+                        ))
+                        .child(Self::dialog_field(
+                            theme,
+                            &t!("settings_providers_usage.mcp.field_arguments"),
+                            &editor.args,
+                        ))
+                        .child(Self::dialog_field(
+                            theme,
+                            &t!("settings_providers_usage.mcp.field_environment"),
+                            &editor.env,
+                        ))
+                        .child(Self::dialog_field(
+                            theme,
+                            &t!("settings_providers_usage.mcp.field_cwd"),
+                            &editor.cwd,
+                        ))
                         .child(timeout_row(
-                            ("Startup timeout (ms)", &editor.startup_timeout),
-                            ("Call timeout (ms)", &editor.tool_timeout),
+                            (
+                                &t!("settings_providers_usage.mcp.field_startup_timeout"),
+                                &editor.startup_timeout,
+                            ),
+                            (
+                                &t!("settings_providers_usage.mcp.field_call_timeout"),
+                                &editor.tool_timeout,
+                            ),
                         ));
                 }
                 EditorTransport::Http => {
                     form = form
-                        .child(Self::dialog_field(theme, "URL", &editor.url))
-                        .child(Self::dialog_field(theme, "Headers", &editor.headers))
                         .child(Self::dialog_field(
                             theme,
-                            "Bearer token env var",
+                            &t!("settings_providers_usage.mcp.field_url"),
+                            &editor.url,
+                        ))
+                        .child(Self::dialog_field(
+                            theme,
+                            &t!("settings_providers_usage.mcp.field_headers"),
+                            &editor.headers,
+                        ))
+                        .child(Self::dialog_field(
+                            theme,
+                            &t!("settings_providers_usage.mcp.field_bearer"),
                             &editor.bearer,
                         ))
                         .child(timeout_row(
-                            ("Startup timeout (ms)", &editor.startup_timeout),
-                            ("Call timeout (ms)", &editor.tool_timeout),
+                            (
+                                &t!("settings_providers_usage.mcp.field_startup_timeout"),
+                                &editor.startup_timeout,
+                            ),
+                            (
+                                &t!("settings_providers_usage.mcp.field_call_timeout"),
+                                &editor.tool_timeout,
+                            ),
                         ));
                 }
             }
@@ -1195,7 +1289,7 @@ impl McpPage {
                         div()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
-                            .child("Enabled"),
+                            .child(t!("settings_providers_usage.mcp.field_enabled")),
                     ),
             );
         }
@@ -1221,8 +1315,12 @@ impl McpPage {
             .child(popover::dialog_title(
                 theme,
                 &match &editing {
-                    Some(name) => format!("Edit {name}"),
-                    None => "Add MCP server".to_string(),
+                    Some(name) => t!(
+                        "settings_providers_usage.mcp.edit_title",
+                        name = name.as_str()
+                    )
+                    .into_owned(),
+                    None => t!("settings_providers_usage.mcp.add_title").into_owned(),
                 },
             ))
             .when(adding, |card| {
@@ -1230,10 +1328,7 @@ impl McpPage {
                     div()
                         .text_size(crate::typography::ui_rems(11.5))
                         .text_color(theme.text_muted)
-                        .child(
-                            "Tools become mcp__<name>__tool in every chat, behind \
-                             the same permission gate.",
-                        ),
+                        .child(t!("settings_providers_usage.mcp.add_hint")),
                 )
             })
             .child(form)
@@ -1245,16 +1340,20 @@ impl McpPage {
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(theme, "Cancel", "mcp-editor-cancel")
-                            .id("mcp-editor-cancel")
-                            .hover(move |style| widgets::ghost_hover(&cancel_theme, style))
-                            .on_click(cx.listener(|page, _, _, cx| {
-                                page.editor = None;
-                                cx.notify();
-                            })),
+                        popover::btn_ghost(
+                            theme,
+                            &t!("settings_providers_usage.mcp.cancel"),
+                            "mcp-editor-cancel",
+                        )
+                        .id("mcp-editor-cancel")
+                        .hover(move |style| widgets::ghost_hover(&cancel_theme, style))
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.editor = None;
+                            cx.notify();
+                        })),
                     )
                     .child(if json_mode {
-                        popover::btn_primary(theme, "Import")
+                        popover::btn_primary(theme, &t!("settings_providers_usage.mcp.import"))
                             .id("mcp-editor-import")
                             .on_click(cx.listener(|page, _, _, cx| {
                                 let text = page
@@ -1273,7 +1372,7 @@ impl McpPage {
                                 }
                             }))
                     } else {
-                        popover::btn_primary(theme, "Save")
+                        popover::btn_primary(theme, &t!("settings_providers_usage.mcp.save"))
                             .id("mcp-editor-save")
                             .on_click(cx.listener(|page, _, _, cx| match page.editor_server(cx) {
                                 Ok((name, server)) => page.save(cx, name, server),
@@ -1310,7 +1409,7 @@ impl Render for McpPage {
                         div()
                             .text_size(crate::typography::ui_rems(12.5))
                             .text_color(theme.text_muted)
-                            .child("No servers configured."),
+                            .child(t!("settings_providers_usage.mcp.empty")),
                     );
                 }
                 for server in servers {
@@ -1322,19 +1421,21 @@ impl Render for McpPage {
         let mut page = widgets::page_column()
             .child(widgets::page_header(
                 &theme,
-                "MCP Servers",
+                &t!("settings_providers_usage.mcp.page_title"),
                 self.servers.ready().map(Vec::len),
             ))
             .child(widgets::page_subtitle(
                 &theme,
-                "External tool providers; their tools join every chat behind the \
-                 same permission gate.",
+                t!("settings_providers_usage.mcp.page_subtitle"),
             ))
             .child(self.render_actions(&theme, cx));
         if let Some(error) = self.validation_error.clone() {
             page = page.child(widgets::warning_strip(
                 &theme,
-                format!("mcp.json is invalid and was not applied: {error}"),
+                t!(
+                    "settings_providers_usage.mcp.invalid_file",
+                    error = error.as_str()
+                ),
             ));
         }
         page = page.child(body);
@@ -1493,6 +1594,10 @@ mod tests {
 
     #[test]
     fn import_rejects_with_the_reason_named() {
+        // The assertions pin the English error copy: hold the locale lock
+        // and pin the locale so a concurrent switching test can't flip it.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         // Broken JSON.
         assert!(
             parse_import("{broken")
@@ -1509,7 +1614,7 @@ mod tests {
         assert!(
             parse_import(r#"{ "command": "x" }"#)
                 .unwrap_err()
-                .contains("\"name\"")
+                .contains("name field")
         );
         // An empty wrapper.
         assert!(

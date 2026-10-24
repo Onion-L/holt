@@ -14,6 +14,7 @@ use gpui::{BackgroundExecutor, SharedString};
 use holt_proto::FileSearchMatch;
 use holt_rpc::{RpcError, methods};
 
+use crate::i18n::t;
 use crate::state::EngineHandle;
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ fn name_from_path(path: &str) -> String {
         .map(str::trim)
         .unwrap_or_default();
     if name.is_empty() {
-        "image".to_string()
+        t!("pickers_dialogs.attachments.image_name_fallback").into_owned()
     } else {
         name.to_string()
     }
@@ -144,8 +145,13 @@ pub fn user_message_rail_text(content: &str) -> String {
     }
     match parsed.attachments.len() {
         0 => content.to_string(),
-        1 => "Attached image".to_string(),
-        n => format!("{n} attached images"),
+        // Manual plural selection (no CLDR): the call site picks .one/.other.
+        1 => t!("pickers_dialogs.attachments.attached_images.one").into_owned(),
+        n => t!(
+            "pickers_dialogs.attachments.attached_images.other",
+            count = n
+        )
+        .into_owned(),
     }
 }
 
@@ -182,11 +188,13 @@ pub(crate) async fn call_with_timeout(
 pub(crate) fn search_files_error(err: &RpcError) -> SharedString {
     match err {
         RpcError::UnknownMethod(_) => {
-            "File search isn't available — the engine doesn't support it yet".into()
+            t!("pickers_dialogs.attachments.file_search_unavailable").into()
         }
-        RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
+        RpcError::Transport(_) | RpcError::Closed => {
+            t!("pickers_dialogs.attachments.engine_unreachable").into()
+        }
         RpcError::BadParams(_) | RpcError::Failed(_) | RpcError::Coded { .. } => {
-            "File search failed".into()
+            t!("pickers_dialogs.attachments.file_search_failed").into()
         }
     }
 }
@@ -223,7 +231,7 @@ pub(crate) async fn search_files(
     match result {
         Ok(value) => serde_json::from_value::<Vec<FileSearchMatch>>(value).map_err(|err| {
             tracing::warn!(%err, "file search decode failed");
-            "File search failed".into()
+            t!("pickers_dialogs.attachments.file_search_failed").into()
         }),
         Err(err) => Err(search_files_error(&err)),
     }
@@ -279,6 +287,7 @@ mod tests {
 
     #[test]
     fn rail_text_summarizes_image_only_sends() {
+        let _locale = crate::i18n::tests::locale_lock();
         let one = with_attachments("", &["/a/b.png".to_string()]);
         assert_eq!(user_message_rail_text(&one), "Attached image");
         let two = with_attachments("", &["/a/b.png".to_string(), "/c/d.png".into()]);

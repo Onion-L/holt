@@ -5,6 +5,7 @@
 //! selected. `UiSettings.open_tabs` is legacy — no longer read or written.
 
 use super::*;
+use crate::i18n::t;
 
 /// The chat one step from `selected` in the sidebar `order`, wrapping at both
 /// ends. Pure.
@@ -141,7 +142,9 @@ impl Shell {
                     .unwrap_or_else(|| "~".to_string());
                 (
                     SharedString::from(transcript::single_line(
-                        &chat.title.clone().unwrap_or_else(|| "New session".into()),
+                        &chat.title.clone().unwrap_or_else(|| {
+                            t!("shell_chrome.session.default_title").into_owned()
+                        }),
                     )),
                     Some(SharedString::from(folder)),
                     chat.config.as_ref().map(|c| c.provider.clone()),
@@ -250,8 +253,12 @@ impl Shell {
                     )
                     .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
                     .tooltip(|_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Toggle terminal".into()))
-                            .into()
+                        cx.new(|_| {
+                            crate::popover::TextTooltip(
+                                t!("shell_chrome.titlebar.tooltip_toggle_terminal").into(),
+                            )
+                        })
+                        .into()
                     }),
                 )
             })
@@ -264,8 +271,12 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
                     )
                     .tooltip(|_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip("Expand panel".into()))
-                            .into()
+                        cx.new(|_| {
+                            crate::popover::TextTooltip(
+                                t!("shell_chrome.titlebar.tooltip_expand_panel").into(),
+                            )
+                        })
+                        .into()
                     }),
                 )
             })
@@ -279,8 +290,12 @@ impl Shell {
                 )
                 .when(right_open, |el| el.bg(theme.glass_hover()))
                 .tooltip(|_, cx| {
-                    cx.new(|_| crate::popover::TextTooltip("Toggle right panel".into()))
-                        .into()
+                    cx.new(|_| {
+                        crate::popover::TextTooltip(
+                            t!("shell_chrome.titlebar.tooltip_toggle_right_panel").into(),
+                        )
+                    })
+                    .into()
                 }),
             )
             .into_any_element()

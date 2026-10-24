@@ -1,0 +1,161 @@
+_version: 2
+files_sidebar:
+  common:
+    cancel:
+      en-US: Cancel
+    discard:
+      en-US: Discard
+    discard_all:
+      en-US: Discard all
+    save:
+      en-US: Save
+    save_all:
+      en-US: Save all
+    loading:
+      en-US: "Loading…"
+    open_externally:
+      en-US: Open externally
+  tree:
+    search_files:
+      en-US: Search files
+    hide_tooltip:
+      en-US: Hide file sidebar
+    select_space:
+      en-US: Select a space to browse its files
+    row_empty:
+      en-US: "(empty)"
+    row_truncated:
+      en-US: "(listing truncated)"
+    failed_to_load:
+      en-US: failed to load
+    retry_with_reason:
+      en-US: "Retry: %{message}"
+    unexpected_reply:
+      en-US: "Unexpected reply: %{error}"
+    git:
+      untracked:
+        en-US: "Untracked — new file, not yet in git"
+      added:
+        en-US: "Added — staged new file"
+      modified:
+        en-US: "Modified — uncommitted changes"
+      conflicted:
+        en-US: "Conflicted — unresolved merge conflict"
+      deleted:
+        en-US: "Deleted from the working tree"
+  viewer:
+    engine_unavailable:
+      en-US: "The engine is not available."
+    cannot_open:
+      en-US: "This file cannot be opened."
+    destination_exists:
+      en-US: "The destination already exists."
+    mode_source:
+      en-US: Source
+    mode_preview:
+      en-US: Preview
+    find_placeholder:
+      en-US: Find in file
+    no_matches:
+      en-US: No matches
+    more_changed_lines:
+      en-US: "… %{count} more changed lines"
+    conflict:
+      banner:
+        en-US: "This file changed on disk. Your changes are kept."
+      compare:
+        en-US: Compare
+      hide_changes:
+        en-US: Hide changes
+      save_as:
+        en-US: "Save As…"
+      reload:
+        en-US: "Reload (discard draft)"
+      overwrite:
+        en-US: Overwrite disk
+      destination_placeholder:
+        en-US: Destination path
+  image:
+    zoom_in:
+      en-US: Zoom in
+    zoom_out:
+      en-US: Zoom out
+    actual_size:
+      en-US: Actual size
+    fit:
+      en-US: Fit
+    fit_to_pane:
+      en-US: Fit to pane
+    retry:
+      en-US: Retry
+    retry_aria:
+      en-US: Retry image preview
+  preview:
+    nothing:
+      en-US: "Nothing to preview."
+  menu:
+    paste:
+      en-US: "Paste “%{name}”"
+    cant_paste:
+      en-US: "Can't paste here: %{reason}"
+    paste_already_there:
+      en-US: "It is already in that directory."
+    paste_into_itself:
+      en-US: "An entry can't be pasted into itself or its own descendant."
+    new_file:
+      en-US: New file
+    new_directory:
+      en-US: New directory
+    add_to_chat:
+      en-US: Add to Chat
+    cut:
+      en-US: Cut
+    rename:
+      en-US: "Rename…"
+    move_to_trash:
+      en-US: Move to Trash
+  dialog:
+    new_file:
+      en-US: New file
+    new_directory:
+      en-US: New directory
+    rename:
+      en-US: Rename
+    name_placeholder:
+      en-US: Name
+    name_empty:
+      en-US: "The name must not be empty."
+    name_invalid:
+      en-US: "%{name} is not a valid name."
+    create:
+      en-US: Create
+    working:
+      en-US: "Working…"
+    in_hint:
+      en-US: "In %{path}"
+  close_dialog:
+    title:
+      en-US: "Save changes?"
+    body:
+      en-US: "“%{title}” has unsaved changes. Save them before the tab closes?"
+  space_dialog:
+    title:
+      en-US: "Remove space with unsaved files?"
+    body:
+      en-US: "%{name} has %{count} file(s) with unsaved changes. Save them before the space is removed?"
+    this_space:
+      en-US: This space
+  trash_dialog:
+    title:
+      en-US: "Move to Trash with unsaved files?"
+    body:
+      en-US: "%{count} open file(s) under “%{name}” have unsaved changes. Save them before the Trash move? Discarding loses them with the move."
+  errors:
+    save_all_failed_space:
+      en-US: "Could not save every modified file — the space was kept."
+    save_all_failed_trash:
+      en-US: "Could not save every modified file — nothing was moved to the Trash."
+    attach_failed:
+      en-US: "Couldn't attach %{path}: %{error}"
+  empty_edit_message:
+    en-US: Nothing to send — add text or keep an attachment

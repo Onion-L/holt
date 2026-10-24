@@ -1,0 +1,186 @@
+_version: 2
+changes_git:
+  common:
+    cancel:
+      zh-CN: 取消
+  scope:
+    working_tree:
+      zh-CN: 工作区
+    branch:
+      zh-CN: 分支变更
+    latest_turn:
+      zh-CN: 最近一轮
+    history:
+      zh-CN: 历史记录
+    commit:
+      zh-CN: 提交
+  header:
+    uncommitted:
+      one:
+        zh-CN: 1 个未提交更改
+      other:
+        zh-CN: "%{count} 个未提交更改"
+    changed:
+      one:
+        zh-CN: "%{count} 个已更改文件"
+      other:
+        zh-CN: "%{count} 个已更改文件"
+    changed_vs_base:
+      one:
+        zh-CN: "相对 %{base} 更改了 %{count} 个文件"
+      other:
+        zh-CN: "相对 %{base} 更改了 %{count} 个文件"
+    changed_this_turn:
+      one:
+        zh-CN: "本轮更改了 %{count} 个文件"
+      other:
+        zh-CN: "本轮更改了 %{count} 个文件"
+    changed_in_commit:
+      one:
+        zh-CN: "此提交更改了 %{count} 个文件"
+      other:
+        zh-CN: "此提交更改了 %{count} 个文件"
+    partial_snapshot:
+      zh-CN: 部分快照
+  empty:
+    no_uncommitted:
+      zh-CN: 没有未提交的更改
+    none_vs_base:
+      zh-CN: 相对 %{base} 没有更改
+    no_branch:
+      zh-CN: 没有分支更改
+    none_this_turn:
+      zh-CN: 本轮没有更改
+    no_commits:
+      zh-CN: 没有找到提交
+    empty_commit:
+      zh-CN: 空提交
+  state:
+    preparing:
+      zh-CN: 正在准备差异…
+  notice:
+    no_turn_recorded:
+      zh-CN: 尚未记录任何一轮——请先发送一条消息
+    version_skew:
+      zh-CN: 当前 Holt 构建尚不支持分支与单轮差异
+  watch:
+    interrupted:
+      zh-CN: 差异流已中断——正在重试
+    unavailable:
+      zh-CN: 差异监视不可用：%{error}
+  file:
+    new_file:
+      zh-CN: 新文件
+    deleted_file:
+      zh-CN: 已删除文件
+    renamed_from:
+      zh-CN: 重命名自 %{from}
+    binary:
+      zh-CN: 二进制文件——不显示内容
+    binary_badge:
+      zh-CN: 二进制
+    mode_changed:
+      zh-CN: 模式已更改为 %{mode}
+    diff_truncated:
+      zh-CN: 差异已截断——显示前 %{shown} 行（共 %{total} 行）
+  ref_menu:
+    search_placeholder:
+      zh-CN: 搜索分支…
+    no_branches:
+      zh-CN: 没有分支
+    no_matching:
+      zh-CN: 没有匹配的分支
+  comment:
+    submit:
+      zh-CN: 评论
+    request_placeholder:
+      zh-CN: 请求修改…
+  comments:
+    chip:
+      one:
+        zh-CN: 1 条评论
+      other:
+        zh-CN: "%{count} 条评论"
+  pr:
+    state:
+      open:
+        zh-CN: 开启
+      merged:
+        zh-CN: 已合并
+      closed:
+        zh-CN: 已关闭
+    tooltip:
+      zh-CN: PR %{number} · %{state}
+  review:
+    no_file_selected:
+      zh-CN: 未选择文件
+    empty:
+      zh-CN: 没有可审查的内容——本轮没有更改任何文件。
+    loading:
+      zh-CN: 正在审查 %{path}…
+    binary:
+      zh-CN: 二进制文件——内容没有文本差异，状态与大小变化见卡片。
+    retry:
+      zh-CN: 重试
+    content_truncated:
+      zh-CN: 内容已截断
+    error:
+      no_engine:
+        zh-CN: 引擎未连接
+      no_cwd:
+        zh-CN: 会话没有工作目录
+      unreadable:
+        zh-CN: 无法读取差异
+      malformed:
+        zh-CN: 差异响应格式错误
+  restore:
+    confirm:
+      zh-CN: 恢复
+    running:
+      zh-CN: 正在恢复…
+    engine_not_connected:
+      zh-CN: 引擎未连接。
+    failed:
+      zh-CN: 恢复失败：%{error}
+    failed_malformed:
+      zh-CN: 恢复失败：响应格式错误
+    title:
+      file:
+        zh-CN: 恢复文件？
+      all:
+        zh-CN: 恢复所有文件？
+    question:
+      file:
+        zh-CN: "%{path} 将恢复到本轮之前的内容。"
+      rename_back:
+        zh-CN: 将 %{path} 连同本轮之前的内容移回 %{old}？%{path} 处的文件将被删除。
+      all:
+        one:
+          zh-CN: "%{count} 个文件将恢复到本轮之前的内容。"
+        other:
+          zh-CN: "%{count} 个文件将恢复到本轮之前的内容。"
+      moved_suffix:
+        zh-CN: 移动过的文件会回到本轮之前的位置。
+    summary:
+      restored:
+        one:
+          zh-CN: 已恢复 %{count} 个文件。
+        other:
+          zh-CN: 已恢复 %{count} 个文件。
+      already:
+        zh-CN: 其中 %{count} 个此前已恢复。
+      refused_line:
+        zh-CN: "%{path}：%{reason}。"
+    refusal:
+      conflict:
+        zh-CN: 在本轮之后已被更改
+      later_turn:
+        zh-CN: 已被后续轮次更改
+      truncated:
+        zh-CN: 存储的内容不完整
+      binary:
+        zh-CN: 二进制文件
+      lossy:
+        zh-CN: 不是有效的 UTF-8
+      unsafe_path:
+        zh-CN: 路径在工作区之外

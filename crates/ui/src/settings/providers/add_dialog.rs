@@ -3,14 +3,32 @@
 
 use super::*;
 
-/// The custom-provider creation form's fields: (key, placeholder).
-pub(super) const NEW_PROVIDER_FIELDS: [(&str, &str); 5] = [
-    ("id", "Provider id (e.g. acme)"),
-    ("name", "Display name"),
-    ("baseUrl", "https://acme.example/v1"),
-    ("defaultApi", "openai-completions"),
-    ("apiKey", "API key (optional)"),
-];
+/// The custom-provider creation form's fields: (key, placeholder). The
+/// placeholders are catalog lookups, so this is a function, not a const.
+pub(super) fn new_provider_fields() -> [(&'static str, Cow<'static, str>); 5] {
+    [
+        (
+            "id",
+            t!("settings_providers_usage.providers.add_dialog.placeholder_provider_id"),
+        ),
+        (
+            "name",
+            t!("settings_providers_usage.providers.add_dialog.placeholder_display_name"),
+        ),
+        (
+            "baseUrl",
+            t!("settings_providers_usage.providers.add_dialog.placeholder_base_url"),
+        ),
+        (
+            "defaultApi",
+            t!("settings_providers_usage.providers.add_dialog.placeholder_default_api"),
+        ),
+        (
+            "apiKey",
+            t!("settings_providers_usage.providers.add_dialog.placeholder_api_key"),
+        ),
+    ]
+}
 
 /// The page's top action row: the manual Add Provider button next to the
 /// global reset ghost button, all pushed right by a spacer; the reset opens
@@ -41,7 +59,9 @@ pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> 
                                 .size(px(13.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child("Add Provider"),
+                        .child(t!(
+                            "settings_providers_usage.providers.add_dialog.add_provider"
+                        )),
                 ),
         )
         .child(
@@ -53,7 +73,9 @@ pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> 
                     page.confirm_reset_all = true;
                     cx.notify();
                 }))
-                .child("Reset all providers"),
+                .child(t!(
+                    "settings_providers_usage.providers.add_dialog.reset_all_providers"
+                )),
         )
         .into_any_element()
 }
@@ -73,7 +95,10 @@ pub(super) fn add_provider_dialog(
             div()
                 .flex()
                 .items_center()
-                .child(popover::dialog_title(theme, "Add Provider"))
+                .child(popover::dialog_title(
+                    theme,
+                    &t!("settings_providers_usage.providers.add_dialog.add_provider"),
+                ))
                 .child(div().flex_1())
                 .child(
                     widgets::ghost_action(theme)
@@ -118,7 +143,10 @@ pub(super) fn manual_tab(
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .child(widgets::field_label(theme, "Logo (optional)"))
+        .child(widgets::field_label(
+            theme,
+            t!("settings_providers_usage.providers.add_dialog.logo_optional"),
+        ))
         .child(
             div()
                 .flex()
@@ -130,7 +158,9 @@ pub(super) fn manual_tab(
                         .id("choose-new-provider-logo")
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(|page, _, _, cx| page.pick_new_provider_logo(cx)))
-                        .child("Choose image…"),
+                        .child(t!(
+                            "settings_providers_usage.providers.add_dialog.choose_image"
+                        )),
                 )
                 .child(
                     div()
@@ -140,7 +170,7 @@ pub(super) fn manual_tab(
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_muted)
                         .child(logo_name.clone().unwrap_or_else(|| {
-                            "PNG, JPG, WebP, or SVG (tinted to the theme)".into()
+                            t!("settings_providers_usage.providers.add_dialog.logo_hint").into()
                         })),
                 )
                 .children(logo_name.map(|_| {
@@ -152,10 +182,10 @@ pub(super) fn manual_tab(
                             page.new_provider_logo = None;
                             cx.notify();
                         }))
-                        .child("Clear")
+                        .child(t!("settings_providers_usage.providers.add_dialog.clear"))
                 })),
         );
-    let field = |key: &'static str, label: &str| {
+    let field = |key: &'static str, label: Cow<'static, str>| {
         div()
             .flex_1()
             .min_w_0()
@@ -177,12 +207,27 @@ pub(super) fn manual_tab(
             div()
                 .flex()
                 .gap(px(8.0))
-                .child(field("id", "Provider id"))
-                .child(field("name", "Display name")),
+                .child(field(
+                    "id",
+                    t!("settings_providers_usage.providers.add_dialog.field_provider_id"),
+                ))
+                .child(field(
+                    "name",
+                    t!("settings_providers_usage.providers.add_dialog.field_display_name"),
+                )),
         )
-        .child(field("baseUrl", "Base URL"))
-        .child(field("defaultApi", "Default API dialect"))
-        .child(field("apiKey", "API key (optional)"))
+        .child(field(
+            "baseUrl",
+            t!("settings_providers_usage.providers.add_dialog.field_base_url"),
+        ))
+        .child(field(
+            "defaultApi",
+            t!("settings_providers_usage.providers.add_dialog.field_default_api"),
+        ))
+        .child(field(
+            "apiKey",
+            t!("settings_providers_usage.providers.add_dialog.field_api_key"),
+        ))
         .child(logo_row)
         .children(error.map(|message| {
             div()
@@ -200,14 +245,16 @@ pub(super) fn manual_tab(
                         .id("save-custom-provider")
                         .hover(|style| style.bg(crate::theme::ink(0.04)))
                         .on_click(cx.listener(move |page, _, _, cx| page.save_custom_provider(cx)))
-                        .child("Save provider"),
+                        .child(t!(
+                            "settings_providers_usage.providers.add_dialog.save_provider"
+                        )),
                 )
                 .child(
                     widgets::ghost_action(theme)
                         .id("cancel-custom-provider")
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(move |page, _, _, cx| page.close_add_dialog(cx)))
-                        .child("Cancel"),
+                        .child(t!("settings_providers_usage.providers.cancel")),
                 ),
         )
         .into_any_element()
@@ -219,7 +266,9 @@ pub(super) fn manual_tab(
 /// so the form mirrors the engine's rule: http is for local servers only.
 pub(super) fn base_url_problem(base_url: &str) -> Option<String> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-        return Some("Base URL must start with http:// or https://".into());
+        return Some(
+            t!("settings_providers_usage.providers.add_dialog.error_base_url_scheme").into_owned(),
+        );
     }
     if let Some(rest) = base_url.strip_prefix("http://") {
         let host = rest.split(['/', '?']).next().unwrap_or_default();
@@ -231,7 +280,10 @@ pub(super) fn base_url_problem(base_url: &str) -> Option<String> {
                 .map(|ip| ip.is_loopback())
                 .unwrap_or(false);
         if !loopback {
-            return Some("Plaintext http is allowed only for localhost endpoints".into());
+            return Some(
+                t!("settings_providers_usage.providers.add_dialog.error_plaintext_http")
+                    .into_owned(),
+            );
         }
     }
     None
@@ -239,16 +291,22 @@ pub(super) fn base_url_problem(base_url: &str) -> Option<String> {
 
 pub(super) fn new_provider_problem(id: &str, base_url: &str, default_api: &str) -> Option<String> {
     if id.is_empty() {
-        return Some("Provider id is required".into());
+        return Some(
+            t!("settings_providers_usage.providers.add_dialog.error_id_required").into_owned(),
+        );
     }
     if id.contains('/') {
-        return Some("Provider id cannot contain '/'".into());
+        return Some(
+            t!("settings_providers_usage.providers.add_dialog.error_id_slash").into_owned(),
+        );
     }
     if let Some(problem) = base_url_problem(base_url) {
         return Some(problem);
     }
     if default_api.is_empty() {
-        return Some("Default API dialect is required".into());
+        return Some(
+            t!("settings_providers_usage.providers.add_dialog.error_api_required").into_owned(),
+        );
     }
     None
 }
@@ -256,7 +314,7 @@ pub(super) fn new_provider_problem(id: &str, base_url: &str, default_api: &str) 
 impl ProvidersPage {
     pub(super) fn open_add_dialog(&mut self, cx: &mut Context<Self>) {
         self.add_dialog = true;
-        for (key, placeholder) in NEW_PROVIDER_FIELDS {
+        for (key, placeholder) in new_provider_fields() {
             // The key field is masked like every other key entry — the
             // manual form collects a credential, not chat text.
             let secret = key == "apiKey";
@@ -357,7 +415,13 @@ impl ProvidersPage {
                             page.fail(error.to_string(), cx);
                         }
                         if let Some(Err(error)) = logo_result {
-                            page.fail(format!("Logo not saved: {error}"), cx);
+                            page.fail(
+                                t!(
+                                    "settings_providers_usage.providers.logo_not_saved",
+                                    error = error
+                                ),
+                                cx,
+                            );
                         }
                     }
                     Err(error) => page.new_provider_error = Some(error.to_string()),

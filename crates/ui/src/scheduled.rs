@@ -3,6 +3,7 @@
 //! edit, and delete in the card's kebab menu; clicking a card edits it.
 //! Reads come from the AppState Routines watch; writes are RPCs from here.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -21,6 +22,7 @@ use holt_proto::{
 use holt_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::icons::{self, icon};
 use crate::pickers::{MODE_TIERS, Pickers, default_reasoning, mode_label};
 use crate::popover;
@@ -61,24 +63,19 @@ enum Preset {
     Cron,
 }
 
-const PRESETS: [(Preset, &str); 5] = [
-    (Preset::Hourly, "Hourly"),
-    (Preset::Daily, "Daily"),
-    (Preset::Weekdays, "Weekdays"),
-    (Preset::Weekly, "Weekly"),
-    (Preset::Custom, "Custom"),
+/// The offered presets, in menu order; their labels live in the i18n
+/// catalog ([`preset_label`]).
+const PRESETS: [Preset; 5] = [
+    Preset::Hourly,
+    Preset::Daily,
+    Preset::Weekdays,
+    Preset::Weekly,
+    Preset::Custom,
 ];
 
-/// Cron weekday numbers (0 = Sunday) in display order.
-const WEEKDAYS: [(u8, &str); 7] = [
-    (1, "Mon"),
-    (2, "Tue"),
-    (3, "Wed"),
-    (4, "Thu"),
-    (5, "Fri"),
-    (6, "Sat"),
-    (0, "Sun"),
-];
+/// Cron weekday numbers (0 = Sunday) in display order; the names live in
+/// the i18n catalog (`weekday_long` and friends).
+const WEEKDAYS: [u8; 7] = [1, 2, 3, 4, 5, 6, 0];
 
 /// Which dropdown the prompt box's toolbar has open; one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,17 +207,17 @@ impl RoutineForm {
             Preset::Cron => {
                 let cron = self.cron.read(cx).text().trim();
                 if cron.is_empty() {
-                    return Err("Set a cron schedule.".into());
+                    return Err(t!("routines_scheduled.problem.set_cron").into());
                 }
                 Ok(Schedule::Cron(cron.to_string()))
             }
             Preset::Custom => parse_time(time)
                 .and_then(|(hour, minute)| self.date.and_hms_opt(hour.into(), minute.into(), 0))
                 .map(Schedule::Once)
-                .ok_or_else(|| "Use a 24-hour time like 09:00.".into()),
+                .ok_or_else(|| t!("routines_scheduled.problem.bad_time").into()),
             preset => preset_cron(preset, time, self.weekday)
                 .map(Schedule::Cron)
-                .ok_or_else(|| "Use a 24-hour time like 09:00.".into()),
+                .ok_or_else(|| t!("routines_scheduled.problem.bad_time").into()),
         }
     }
 }
@@ -325,7 +322,7 @@ impl ScheduledPage {
     }
 
     fn open_form(&mut self, prefill: Prefill, cx: &mut Context<Self>) {
-        let input = |placeholder: &'static str, text: &str, cx: &mut Context<Self>| {
+        let input = |placeholder: SharedString, text: &str, cx: &mut Context<Self>| {
             let text = text.to_string();
             cx.new(|cx| {
                 let mut input = ComposerInput::new(placeholder, cx);
@@ -340,11 +337,19 @@ impl ScheduledPage {
         let date = prefill
             .at
             .map_or_else(|| Local::now().date_naive(), |at| at.date());
-        let name = input("Morning triage", &prefill.name, cx);
-        let prompt = input("What should the agent do each run?", &prefill.prompt, cx);
-        let time = input("09:00", &time, cx);
-        let cron = input("0 9 * * 1-5", &prefill.cron, cx);
-        let model_query = input("Search models", "", cx);
+        let name = input(
+            t!("routines_scheduled.form.name_placeholder").into(),
+            &prefill.name,
+            cx,
+        );
+        let prompt = input(
+            t!("routines_scheduled.form.prompt_placeholder").into(),
+            &prefill.prompt,
+            cx,
+        );
+        let time = input("09:00".into(), &time, cx);
+        let cron = input("0 9 * * 1-5".into(), &prefill.cron, cx);
+        let model_query = input(t!("routines_scheduled.form.search_models").into(), "", cx);
         prompt.update(cx, |input, _| input.set_max_display_height(160.0));
         let mut events: Vec<Subscription> = [&name, &prompt]
             .into_iter()
@@ -637,17 +642,17 @@ impl ScheduledPage {
         let schedule = form.schedule(cx);
         let config = form.config.clone().or(resolved);
         let problem: Option<SharedString> = if name.is_empty() {
-            Some("Give the routine a name.".into())
+            Some(t!("routines_scheduled.problem.name_required").into())
         } else if prompt.trim().is_empty() {
-            Some("Write the prompt each run starts with.".into())
+            Some(t!("routines_scheduled.problem.prompt_required").into())
         } else if let Err(problem) = &schedule {
             Some(problem.clone())
         } else if let Preview::Invalid(problem) = &form.preview {
             Some(problem.clone())
         } else if form.space_id.is_none() {
-            Some("Pick a project.".into())
+            Some(t!("routines_scheduled.problem.pick_project").into())
         } else if config.is_none() {
-            Some("Pick a model.".into())
+            Some(t!("routines_scheduled.problem.pick_model").into())
         } else {
             None
         };
@@ -737,7 +742,10 @@ impl ScheduledPage {
                             cx.emit(ScheduledEvent::OpenChat(chat_id.to_string()));
                         }
                     }
-                    Err(err) => page.error = Some(format!("Run now failed: {err}").into()),
+                    Err(err) => {
+                        page.error =
+                            Some(t!("routines_scheduled.error.run_now_failed", error = err).into())
+                    }
                 }
                 cx.notify();
             })
@@ -759,9 +767,13 @@ impl ScheduledPage {
                 )
                 .await;
             if let Err(err) = result {
-                let verb = if paused { "Pause" } else { "Resume" };
+                let problem = if paused {
+                    t!("routines_scheduled.error.pause_failed", error = err)
+                } else {
+                    t!("routines_scheduled.error.resume_failed", error = err)
+                };
                 this.update(cx, |page, cx| {
-                    page.error = Some(format!("{verb} failed: {err}").into());
+                    page.error = Some(problem.into());
                     cx.notify();
                 })
                 .ok();
@@ -794,7 +806,8 @@ impl ScheduledPage {
                 .await;
             if let Err(err) = result {
                 this.update(cx, |page, cx| {
-                    page.error = Some(format!("Delete failed: {err}").into());
+                    page.error =
+                        Some(t!("routines_scheduled.error.delete_failed", error = err).into());
                     cx.notify();
                 })
                 .ok();
@@ -849,7 +862,7 @@ impl ScheduledPage {
                 )
             }
             (None, Some(_)) => (
-                format!("{schedule} \u{b7} Paused"),
+                format!("{schedule} \u{b7} {}", t!("routines_scheduled.card.paused")),
                 theme.text_faint,
                 theme.text_muted,
             ),
@@ -861,7 +874,7 @@ impl ScheduledPage {
                 ),
                 // A one-time Routine that has fired.
                 None if routine.at.is_some() => (
-                    format!("{schedule} \u{b7} Done"),
+                    format!("{schedule} \u{b7} {}", t!("routines_scheduled.card.done")),
                     theme.text_faint,
                     theme.text_muted,
                 ),
@@ -903,7 +916,7 @@ impl ScheduledPage {
                 })
                 .cursor_pointer()
                 .hover(move |s| s.bg(tone.opacity(0.2)))
-                .tooltip(text_tooltip("Open run"))
+                .tooltip(text_tooltip(t!("routines_scheduled.card.open_run")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.open_run(chat_id.clone(), cx);
@@ -921,7 +934,7 @@ impl ScheduledPage {
             icons::MENU_DOTS,
             false,
         )
-        .tooltip(text_tooltip("More"))
+        .tooltip(text_tooltip(t!("routines_scheduled.card.more")))
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(move |this, _, _, _| {
@@ -1015,7 +1028,7 @@ impl ScheduledPage {
         let edit_id = routine.id.clone();
         let delete_id = routine.id.clone();
         let fade = |key: &str| format!("routine-card-menu-{}-{key}", routine.id);
-        let row = |icon_path: &'static str, label: &'static str, key: &str| {
+        let row = |icon_path: &'static str, label: Cow<'static, str>, key: &str| {
             popover::menu_row(theme, false, fade(key))
                 .child(icon(icon_path).size(px(14.0)).text_color(theme.text_muted))
                 .child(label)
@@ -1028,18 +1041,26 @@ impl ScheduledPage {
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_card_menu(cx)))
             .when(!space_removed, |card| {
                 card.child(
-                    row(icons::PLAY, "Run now", "run")
-                        .id("routine-menu-run")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.close_card_menu(cx);
-                            this.run_now(run_id.clone(), cx);
-                        })),
+                    row(
+                        icons::PLAY,
+                        t!("routines_scheduled.card.menu.run_now"),
+                        "run",
+                    )
+                    .id("routine-menu-run")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_card_menu(cx);
+                        this.run_now(run_id.clone(), cx);
+                    })),
                 )
                 .child(
                     row(
                         icons::PAUSE,
-                        if paused { "Resume" } else { "Pause" },
+                        if paused {
+                            t!("routines_scheduled.card.menu.resume")
+                        } else {
+                            t!("routines_scheduled.card.menu.pause")
+                        },
                         "pause",
                     )
                     .id("routine-menu-pause")
@@ -1051,7 +1072,7 @@ impl ScheduledPage {
                 )
             })
             .child(
-                row(icons::PEN, "Edit routine", "edit")
+                row(icons::PEN, t!("routines_scheduled.card.menu.edit"), "edit")
                     .id("routine-menu-edit")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -1074,7 +1095,7 @@ impl ScheduledPage {
                             .size(px(14.0))
                             .text_color(theme.danger.opacity(0.8)),
                     )
-                    .child("Delete"),
+                    .child(t!("routines_scheduled.card.menu.delete")),
             )
             .into_any_element()
     }
@@ -1098,25 +1119,23 @@ impl ScheduledPage {
                 div()
                     .mt(px(12.0))
                     .text_size(crate::typography::ui_rems(14.0))
-                    .child(SharedString::from("No routines yet")),
+                    .child(t!("routines_scheduled.page.empty_title")),
             )
             .child(
                 div()
                     .mt(px(4.0))
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted.opacity(0.4))
-                    .child(SharedString::from(
-                        "Run a prompt on a schedule, in a fresh chat each time.",
-                    )),
+                    .child(t!("routines_scheduled.page.empty_hint")),
             )
             .into_any_element()
     }
 
     fn render_header(&self, theme: &Theme, count: usize, cx: &mut Context<Self>) -> gpui::Div {
         let summary = match count {
-            0 => "No routines".to_string(),
-            1 => "1 routine".to_string(),
-            n => format!("{n} routines"),
+            0 => t!("routines_scheduled.page.count.zero"),
+            1 => t!("routines_scheduled.page.count.one"),
+            n => t!("routines_scheduled.page.count.other", n = n),
         };
         div()
             .flex()
@@ -1129,7 +1148,11 @@ impl ScheduledPage {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    .child(widgets::page_header(theme, "Scheduled", None))
+                    .child(widgets::page_header(
+                        theme,
+                        &t!("routines_scheduled.page.title"),
+                        None,
+                    ))
                     .child(
                         div()
                             .text_size(crate::typography::ui_rems(12.5))
@@ -1138,7 +1161,7 @@ impl ScheduledPage {
                     ),
             )
             .child(
-                popover::btn_primary(theme, "New routine")
+                popover::btn_primary(theme, &t!("routines_scheduled.page.new_routine"))
                     .id("routine-new")
                     .on_click(cx.listener(|this, _, _, cx| this.open_create(cx))),
             )
@@ -1188,7 +1211,7 @@ impl ScheduledPage {
                     .map(str::to_string)
                     .unwrap_or_else(|| short_model(&model).to_string())
                     .into(),
-                _ => "Pick a model".into(),
+                _ => t!("routines_scheduled.form.pick_model").into(),
             }
         };
         // The prompt box's toolbar: each chip opens a dropdown menu, one at
@@ -1220,7 +1243,7 @@ impl ScheduledPage {
                     .find(|(space, _)| space == id)
                     .map(|(_, label)| label.clone())
             })
-            .unwrap_or_else(|| "Pick a project".into());
+            .unwrap_or_else(|| t!("routines_scheduled.form.pick_project").into());
         let space_card =
             (form_menu == Some(FormMenu::Space)).then(|| self.form_space_menu(theme, cx));
         let mode_card = (form_menu == Some(FormMenu::Mode)).then(|| self.form_mode_menu(theme, cx));
@@ -1233,10 +1256,7 @@ impl ScheduledPage {
             (form_menu == Some(FormMenu::Preset)).then(|| self.form_preset_menu(theme, cx));
         let weekday_card =
             (form_menu == Some(FormMenu::Weekday)).then(|| self.form_weekday_menu(theme, cx));
-        let preset_label = PRESETS
-            .iter()
-            .find(|(value, _)| *value == preset)
-            .map_or("Cron", |(_, label)| label);
+        let preset_label = preset_label(preset);
         let preset_chip = self.form_menu_trigger(
             select_chip(
                 theme,
@@ -1252,7 +1272,7 @@ impl ScheduledPage {
             preset_card,
             cx,
         );
-        let connective = |word: &'static str| {
+        let connective = |word: Cow<'static, str>| {
             div()
                 .flex_none()
                 .text_size(crate::typography::ui_rems(13.0))
@@ -1260,10 +1280,7 @@ impl ScheduledPage {
                 .child(word)
         };
         let weekday_chip = (preset == Preset::Weekly).then(|| {
-            let label = WEEKDAYS
-                .iter()
-                .find(|(day, _)| *day == weekday)
-                .map_or("Mon", |(_, label)| label);
+            let label = weekday_abbr(weekday);
             self.form_menu_trigger(
                 select_chip(
                     theme,
@@ -1316,7 +1333,9 @@ impl ScheduledPage {
             )
         });
         // The schedule reads as one sentence: preset, (day,) "at" time, then
-        // the engine's preview of what it spells.
+        // the engine's preview of what it spells. A language with no such
+        // connective (zh-CN) empties the word and the bar skips it.
+        let at = t!("routines_scheduled.form.at");
         let preview_line = div()
             .id("routine-form-preview")
             .debug_selector(|| "routine-form-preview".into())
@@ -1327,11 +1346,9 @@ impl ScheduledPage {
             .text_size(crate::typography::ui_rems(12.5))
             .map(|line| match preview {
                 None => line.text_color(theme.text_muted).child("\u{2026}"),
-                Some(Ok(preview)) => line.text_color(theme.text_muted).child(format!(
-                    "{} \u{b7} Next {}",
-                    preview.time_zone,
-                    preview_fires(&preview.fires)
-                )),
+                Some(Ok(preview)) => line
+                    .text_color(theme.text_muted)
+                    .child(preview_next(&preview)),
                 Some(Err(problem)) => line.text_color(theme.danger).child(problem),
             });
         let schedule_bar = div()
@@ -1347,7 +1364,9 @@ impl ScheduledPage {
             .child(preset_chip)
             .children(weekday_chip)
             .children(date_chip)
-            .when(time_chip.is_some(), |bar| bar.child(connective("at")))
+            .when(time_chip.is_some() && !at.is_empty(), |bar| {
+                bar.child(connective(at))
+            })
             .children(time_chip)
             .child(preview_line);
         let space_chip = self.form_toolbar_chip(
@@ -1378,11 +1397,7 @@ impl ScheduledPage {
                 RoutineCheckout::MainCheckout => icons::FOLDER,
                 RoutineCheckout::NewWorktree => icons::FOLDER_WITH_FILES,
             }),
-            match checkout {
-                RoutineCheckout::MainCheckout => "Main checkout",
-                RoutineCheckout::NewWorktree => "New worktree",
-            }
-            .into(),
+            checkout_label(checkout).into(),
             true,
             checkout_card,
             cx,
@@ -1450,10 +1465,10 @@ impl ScheduledPage {
                                     .gap(px(4.0))
                                     .child(widgets::page_header(
                                         theme,
-                                        if editing {
-                                            "Edit routine"
+                                        &if editing {
+                                            t!("routines_scheduled.form.title_edit")
                                         } else {
-                                            "New routine"
+                                            t!("routines_scheduled.form.title_new")
                                         },
                                         None,
                                     ))
@@ -1461,7 +1476,7 @@ impl ScheduledPage {
                                         div()
                                             .text_size(crate::typography::ui_rems(12.5))
                                             .text_color(theme.text_muted)
-                                            .child("When it fires, what it runs, and how."),
+                                            .child(t!("routines_scheduled.form.subtitle")),
                                     ),
                             ),
                     )
@@ -1469,21 +1484,25 @@ impl ScheduledPage {
                         div()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
-                            .child("\u{2318}\u{21a9} to save"),
+                            .child(t!("routines_scheduled.form.save_hint")),
                     ),
             )
             .child(field(
                 theme,
-                "Name",
+                t!("routines_scheduled.form.name"),
                 popover::dialog_field(name.into_any_element()),
             ))
-            .child(field(theme, "Schedule", schedule_bar))
+            .child(field(
+                theme,
+                t!("routines_scheduled.form.schedule"),
+                schedule_bar,
+            ))
             // The prompt box wears the composer's shape: the input on top and
             // a toolbar of dropdown chips at the bottom (project + permission
             // mode left, checkout + model right).
             .child(field(
                 theme,
-                "Prompt",
+                t!("routines_scheduled.form.prompt"),
                 div()
                     .flex()
                     .flex_col()
@@ -1534,19 +1553,21 @@ impl ScheduledPage {
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(theme, "Cancel", "routine-form-cancel")
-                            .id("routine-form-cancel")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_form(window, cx)),
-                            ),
+                        popover::btn_ghost(
+                            theme,
+                            &t!("routines_scheduled.form.cancel"),
+                            "routine-form-cancel",
+                        )
+                        .id("routine-form-cancel")
+                        .on_click(cx.listener(|this, _, window, cx| this.close_form(window, cx))),
                     )
                     .child(
                         popover::btn_primary(
                             theme,
-                            match (saving, editing) {
-                                (true, _) => "Saving…",
-                                (false, true) => "Save",
-                                (false, false) => "Create",
+                            &match (saving, editing) {
+                                (true, _) => t!("routines_scheduled.form.saving"),
+                                (false, true) => t!("routines_scheduled.form.save"),
+                                (false, false) => t!("routines_scheduled.form.create"),
                             },
                         )
                         .id("routine-form-save")
@@ -1629,7 +1650,7 @@ impl ScheduledPage {
             .flex_col()
             .gap(px(2.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
-            .children(PRESETS.into_iter().enumerate().map(|(ix, (value, label))| {
+            .children(PRESETS.into_iter().enumerate().map(|(ix, value)| {
                 popover::menu_row(
                     theme,
                     current == Some(value),
@@ -1640,7 +1661,7 @@ impl ScheduledPage {
                     this.set_preset(value, cx);
                     this.close_form_menu(cx);
                 }))
-                .child(label)
+                .child(preset_label(value))
             }))
             .into_any_element()
     }
@@ -1654,7 +1675,7 @@ impl ScheduledPage {
             .flex_col()
             .gap(px(2.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
-            .children(WEEKDAYS.into_iter().map(|(day, label)| {
+            .children(WEEKDAYS.into_iter().map(|day| {
                 popover::menu_row(
                     theme,
                     current == Some(day),
@@ -1665,7 +1686,7 @@ impl ScheduledPage {
                     this.set_weekday(day, cx);
                     this.close_form_menu(cx);
                 }))
-                .child(weekday_name(label))
+                .child(weekday_long(day))
             }))
             .into_any_element()
     }
@@ -1714,11 +1735,11 @@ impl ScheduledPage {
             .flex_row()
             .flex_wrap()
             .w(px(7.0 * 32.0))
-            .children(WEEKDAYS.iter().map(|(_, label)| {
+            .children(WEEKDAYS.iter().map(|day| {
                 cell()
                     .text_size(crate::typography::ui_rems(11.0))
                     .text_color(theme.text_faint)
-                    .child(&label[..2])
+                    .child(weekday_narrow(*day))
             }))
             .children((0..lead).map(|_| cell()));
         for day in 0..days {
@@ -1940,27 +1961,24 @@ impl ScheduledPage {
             .gap(px(2.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
             .children(
-                [
-                    ("Main checkout", RoutineCheckout::MainCheckout),
-                    ("New worktree", RoutineCheckout::NewWorktree),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(ix, (label, value))| {
-                    popover::menu_row(
-                        theme,
-                        current == Some(value),
-                        format!("routine-checkout-fade-{ix}"),
-                    )
-                    .id(("routine-checkout-row", ix))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.form.as_mut() {
-                            form.checkout = value;
-                        }
-                        this.close_form_menu(cx);
-                    }))
-                    .child(label)
-                }),
+                [RoutineCheckout::MainCheckout, RoutineCheckout::NewWorktree]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, value)| {
+                        popover::menu_row(
+                            theme,
+                            current == Some(value),
+                            format!("routine-checkout-fade-{ix}"),
+                        )
+                        .id(("routine-checkout-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(form) = this.form.as_mut() {
+                                form.checkout = value;
+                            }
+                            this.close_form_menu(cx);
+                        }))
+                        .child(checkout_label(value))
+                    }),
             )
             .into_any_element()
     }
@@ -1997,7 +2015,7 @@ impl ScheduledPage {
                                 .py(px(6.0))
                                 .text_size(crate::typography::ui_rems(12.5))
                                 .text_color(theme.text_muted)
-                                .child("No matching models"),
+                                .child(t!("routines_scheduled.form.no_matching_models")),
                         )
                     })
                     .children(rows.into_iter().enumerate().map(
@@ -2055,7 +2073,7 @@ impl ScheduledPage {
             }))
             .child(div().truncate().child(popover::dialog_title(
                 theme,
-                &format!("Delete \u{201c}{name}\u{201d}?"),
+                &t!("routines_scheduled.delete.title", name = name),
             )))
             .child(
                 div()
@@ -2070,15 +2088,19 @@ impl ScheduledPage {
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(theme, "Cancel", "routine-delete-cancel")
-                            .id("routine-delete-cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirm = None;
-                                cx.notify();
-                            })),
+                        popover::btn_ghost(
+                            theme,
+                            &t!("routines_scheduled.delete.cancel"),
+                            "routine-delete-cancel",
+                        )
+                        .id("routine-delete-cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm = None;
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        popover::btn_danger(theme, "Delete")
+                        popover::btn_danger(theme, &t!("routines_scheduled.delete.confirm"))
                             .id("routine-delete-confirm")
                             .on_click(cx.listener(|this, _, _, cx| this.delete(cx))),
                     ),
@@ -2215,23 +2237,23 @@ fn grid_columns(width: f32) -> u16 {
 fn countdown(next: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let minutes = (next - now).num_minutes();
     if next <= now {
-        return "due now".into();
+        return t!("routines_scheduled.countdown.due_now").into_owned();
     }
     let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
     match (days, hours, minutes) {
-        (0, 0, 0) => "in <1m".into(),
-        (0, 0, m) => format!("in {m}m"),
-        (0, h, m) => format!("in {h}h {m}m"),
-        (d, h, _) => format!("in {d}d {h}h"),
+        (0, 0, 0) => t!("routines_scheduled.countdown.under_minute").into_owned(),
+        (0, 0, m) => t!("routines_scheduled.countdown.minutes", m = m).into_owned(),
+        (0, h, m) => t!("routines_scheduled.countdown.hours_minutes", h = h, m = m).into_owned(),
+        (d, h, _) => t!("routines_scheduled.countdown.days_hours", d = d, h = h).into_owned(),
     }
 }
 
 /// The delete confirmation's consequence line; run Chats outlive the Routine.
 fn delete_body(runs: usize) -> String {
     match runs {
-        0 => "It stops firing.".into(),
-        1 => "It stops firing. Its run chat stays in Recent as an ordinary chat.".into(),
-        n => format!("It stops firing. Its {n} run chats stay in Recent as ordinary chats."),
+        0 => t!("routines_scheduled.delete.body.zero").into_owned(),
+        1 => t!("routines_scheduled.delete.body.one").into_owned(),
+        n => t!("routines_scheduled.delete.body.other", n = n).into_owned(),
     }
 }
 
@@ -2274,7 +2296,12 @@ fn preview_fires(fires: &[DateTime<FixedOffset>]) -> String {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                format!("{dates} at {}", times[0])
+                t!(
+                    "routines_scheduled.preview.dates_at_time",
+                    dates = dates,
+                    time = times[0]
+                )
+                .into_owned()
             } else {
                 let first_date = many[0].date();
                 let same_day = many.iter().all(|at| at.date() == first_date);
@@ -2295,14 +2322,14 @@ fn preview_fires(fires: &[DateTime<FixedOffset>]) -> String {
     }
 }
 
-fn outcome_label(outcome: RunOutcome) -> &'static str {
+fn outcome_label(outcome: RunOutcome) -> Cow<'static, str> {
     match outcome {
-        RunOutcome::Running => "Running",
-        RunOutcome::Waiting => "Waiting",
-        RunOutcome::Succeeded => "Succeeded",
-        RunOutcome::Failed => "Failed",
-        RunOutcome::Interrupted => "Interrupted",
-        RunOutcome::Skipped => "Skipped",
+        RunOutcome::Running => t!("routines_scheduled.outcome.running"),
+        RunOutcome::Waiting => t!("routines_scheduled.outcome.waiting"),
+        RunOutcome::Succeeded => t!("routines_scheduled.outcome.succeeded"),
+        RunOutcome::Failed => t!("routines_scheduled.outcome.failed"),
+        RunOutcome::Interrupted => t!("routines_scheduled.outcome.interrupted"),
+        RunOutcome::Skipped => t!("routines_scheduled.outcome.skipped"),
     }
 }
 
@@ -2363,25 +2390,85 @@ fn month_start(date: NaiveDate) -> NaiveDate {
     date.with_day(1).unwrap_or(date)
 }
 
-/// A picked day: "Today", "Tomorrow", else "Fri, Oct 9".
+/// A picked day: "Today", "Tomorrow", else "Fri, Oct 9" (the chrono pattern's
+/// month and weekday names stay English — locale-aware date formatting is a
+/// separate concern per docs/research/gpui-i18n.md).
 fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     match (date - today).num_days() {
-        0 => "Today".into(),
-        1 => "Tomorrow".into(),
+        0 => t!("routines_scheduled.date.today").into_owned(),
+        1 => t!("routines_scheduled.date.tomorrow").into_owned(),
         _ => date.format("%a, %b %-d").to_string(),
     }
 }
 
-fn weekday_name(short: &str) -> &'static str {
-    match short {
-        "Mon" => "Monday",
-        "Tue" => "Tuesday",
-        "Wed" => "Wednesday",
-        "Thu" => "Thursday",
-        "Fri" => "Friday",
-        "Sat" => "Saturday",
-        _ => "Sunday",
+/// A weekday's full name ("Monday"); 0 = Sunday.
+fn weekday_long(day: u8) -> Cow<'static, str> {
+    match day {
+        1 => t!("routines_scheduled.weekday.long.mon"),
+        2 => t!("routines_scheduled.weekday.long.tue"),
+        3 => t!("routines_scheduled.weekday.long.wed"),
+        4 => t!("routines_scheduled.weekday.long.thu"),
+        5 => t!("routines_scheduled.weekday.long.fri"),
+        6 => t!("routines_scheduled.weekday.long.sat"),
+        _ => t!("routines_scheduled.weekday.long.sun"),
     }
+}
+
+/// A weekday's short name ("Mon"), as the weekly preset's chip spells it.
+fn weekday_abbr(day: u8) -> Cow<'static, str> {
+    match day {
+        1 => t!("routines_scheduled.weekday.abbr.mon"),
+        2 => t!("routines_scheduled.weekday.abbr.tue"),
+        3 => t!("routines_scheduled.weekday.abbr.wed"),
+        4 => t!("routines_scheduled.weekday.abbr.thu"),
+        5 => t!("routines_scheduled.weekday.abbr.fri"),
+        6 => t!("routines_scheduled.weekday.abbr.sat"),
+        _ => t!("routines_scheduled.weekday.abbr.sun"),
+    }
+}
+
+/// A weekday's single-character column header ("Mo"), narrow enough for the
+/// date picker's cells; never derived by slicing (a translated short name
+/// may not slice at 2 bytes).
+fn weekday_narrow(day: u8) -> Cow<'static, str> {
+    match day {
+        1 => t!("routines_scheduled.weekday.narrow.mon"),
+        2 => t!("routines_scheduled.weekday.narrow.tue"),
+        3 => t!("routines_scheduled.weekday.narrow.wed"),
+        4 => t!("routines_scheduled.weekday.narrow.thu"),
+        5 => t!("routines_scheduled.weekday.narrow.fri"),
+        6 => t!("routines_scheduled.weekday.narrow.sat"),
+        _ => t!("routines_scheduled.weekday.narrow.sun"),
+    }
+}
+
+/// A preset's menu and chip label.
+fn preset_label(preset: Preset) -> Cow<'static, str> {
+    match preset {
+        Preset::Hourly => t!("routines_scheduled.preset.hourly"),
+        Preset::Daily => t!("routines_scheduled.preset.daily"),
+        Preset::Weekdays => t!("routines_scheduled.preset.weekdays"),
+        Preset::Weekly => t!("routines_scheduled.preset.weekly"),
+        Preset::Custom => t!("routines_scheduled.preset.custom"),
+        Preset::Cron => t!("routines_scheduled.preset.cron"),
+    }
+}
+
+/// A checkout kind's menu and chip label.
+fn checkout_label(checkout: RoutineCheckout) -> Cow<'static, str> {
+    match checkout {
+        RoutineCheckout::MainCheckout => t!("routines_scheduled.checkout.main"),
+        RoutineCheckout::NewWorktree => t!("routines_scheduled.checkout.worktree"),
+    }
+}
+
+/// The preview line's "Zone · Next <fires>" sentence.
+fn preview_next(preview: &SchedulePreview) -> Cow<'static, str> {
+    t!(
+        "routines_scheduled.form.preview_next",
+        zone = preview.time_zone,
+        fires = preview_fires(&preview.fires)
+    )
 }
 
 /// `openai/gpt-5.4` → `gpt-5.4` when the catalog hasn't named the model.
@@ -2452,22 +2539,26 @@ fn prompt_excerpt(prompt: &str) -> String {
 /// shows as itself.
 fn schedule_label(cron: &str, at: Option<NaiveDateTime>) -> String {
     if let Some(at) = at {
-        return at.format("Once on %b %-d at %H:%M").to_string();
+        return t!(
+            "routines_scheduled.schedule.once_on",
+            date = at.format("%b %-d").to_string(),
+            time = at.format("%H:%M").to_string()
+        )
+        .into_owned();
     }
     let Some((preset, time, weekday)) = cron_preset(cron) else {
         return cron.to_string();
     };
     match preset {
-        Preset::Hourly => "Hourly".into(),
-        Preset::Daily => format!("Daily at {time}"),
-        Preset::Weekdays => format!("Weekdays at {time}"),
-        Preset::Weekly => {
-            let day = WEEKDAYS
-                .iter()
-                .find(|(day, _)| *day == weekday)
-                .map_or("Sun", |(_, label)| label);
-            format!("{}s at {time}", weekday_name(day))
-        }
+        Preset::Hourly => t!("routines_scheduled.preset.hourly").into_owned(),
+        Preset::Daily => t!("routines_scheduled.schedule.daily_at", time = time).into_owned(),
+        Preset::Weekdays => t!("routines_scheduled.schedule.weekdays_at", time = time).into_owned(),
+        Preset::Weekly => t!(
+            "routines_scheduled.schedule.weekly_at",
+            weekday = weekday_long(weekday),
+            time = time
+        )
+        .into_owned(),
         Preset::Custom | Preset::Cron => cron.to_string(),
     }
 }
@@ -2488,7 +2579,7 @@ fn rpc_problem(error: &holt_rpc::RpcError) -> String {
 }
 
 /// A labeled form row in the create/edit form.
-fn field(theme: &Theme, label: &'static str, control: impl IntoElement) -> gpui::Div {
+fn field(theme: &Theme, label: impl Into<SharedString>, control: impl IntoElement) -> gpui::Div {
     div()
         .mt(px(14.0))
         .flex()
@@ -2498,7 +2589,7 @@ fn field(theme: &Theme, label: &'static str, control: impl IntoElement) -> gpui:
             div()
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_muted)
-                .child(label),
+                .child(label.into()),
         )
         .child(control)
 }
@@ -2552,8 +2643,9 @@ fn form_chip(
 }
 
 /// A hover tooltip with `text`.
-fn text_tooltip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView {
-    move |_, cx| cx.new(|_| popover::TextTooltip(text.into())).into()
+fn text_tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView {
+    let text = text.into();
+    move |_, cx| cx.new(|_| popover::TextTooltip(text.clone())).into()
 }
 
 /// A 26px square icon button; the name doubles as id and hover group so
@@ -2605,28 +2697,49 @@ mod tests {
 
     #[test]
     fn countdown_reads_at_minute_grain() {
+        let _locale = crate::i18n::tests::locale_lock();
         let now = DateTime::parse_from_rfc3339("2026-10-07T09:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let at = |minutes: i64, seconds: i64| {
             now + chrono::Duration::minutes(minutes) + chrono::Duration::seconds(seconds)
         };
-        assert_eq!(countdown(at(0, -5), now), "due now");
-        assert_eq!(countdown(at(0, 40), now), "in <1m");
-        assert_eq!(countdown(at(14, 30), now), "in 14m");
-        assert_eq!(countdown(at(134, 0), now), "in 2h 14m");
-        assert_eq!(countdown(at(3 * 1440 + 250, 0), now), "in 3d 4h");
+        assert_eq!(
+            countdown(at(0, -5), now),
+            t!("routines_scheduled.countdown.due_now")
+        );
+        assert_eq!(
+            countdown(at(0, 40), now),
+            t!("routines_scheduled.countdown.under_minute")
+        );
+        assert_eq!(
+            countdown(at(14, 30), now),
+            t!("routines_scheduled.countdown.minutes", m = 14)
+        );
+        assert_eq!(
+            countdown(at(134, 0), now),
+            t!("routines_scheduled.countdown.hours_minutes", h = 2, m = 14)
+        );
+        assert_eq!(
+            countdown(at(3 * 1440 + 250, 0), now),
+            t!("routines_scheduled.countdown.days_hours", d = 3, h = 4)
+        );
     }
 
     #[test]
     fn delete_body_counts_run_chats() {
-        assert_eq!(delete_body(0), "It stops firing.");
-        assert!(delete_body(1).contains("Its run chat stays"));
-        assert!(delete_body(4).contains("Its 4 run chats stay"));
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(delete_body(0), t!("routines_scheduled.delete.body.zero"));
+        assert_eq!(delete_body(1), t!("routines_scheduled.delete.body.one"));
+        assert_eq!(
+            delete_body(4),
+            t!("routines_scheduled.delete.body.other", n = 4)
+        );
     }
 
     #[test]
     fn preview_fires_deduplicates_repeated_dates_and_times() {
+        let _locale = crate::i18n::tests::locale_lock();
         use chrono::TimeZone;
         let at = |day: u32, hour: u32| {
             Local
@@ -2637,12 +2750,20 @@ mod tests {
         // Daily: consecutive days, one time — the span carries the dates.
         assert_eq!(
             preview_fires(&[at(8, 9), at(9, 9), at(10, 9)]),
-            "Oct 8 \u{2013} Oct 10 at 09:00"
+            t!(
+                "routines_scheduled.preview.dates_at_time",
+                dates = "Oct 8 \u{2013} Oct 10",
+                time = "09:00"
+            )
         );
         // Weekly: one time, spread out — dates listed.
         assert_eq!(
             preview_fires(&[at(9, 18), at(16, 18), at(23, 18)]),
-            "Oct 9, Oct 16, Oct 23 at 18:00"
+            t!(
+                "routines_scheduled.preview.dates_at_time",
+                dates = "Oct 9, Oct 16, Oct 23",
+                time = "18:00"
+            )
         );
         // Hourly: one day, many times — the date carries the times.
         assert_eq!(

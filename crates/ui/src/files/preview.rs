@@ -20,6 +20,7 @@ use gpui::{
     AnyElement, Context, Render, RenderImage, SharedString, Task, Window, div, prelude::*, px,
 };
 
+use crate::i18n::t;
 use crate::markdown::mermaid::{MermaidHost, MermaidStore, is_mermaid, supported_diagram};
 use crate::markdown::parser::{Block, BlockTree, parse_full};
 use crate::markdown::render::{RenderCache, RenderOptions};
@@ -205,7 +206,7 @@ impl Render for MarkdownPreview {
                     div()
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted)
-                        .child("Nothing to preview."),
+                        .child(t!("files_sidebar.preview.nothing")),
                 )
                 .into_any_element(),
             PreviewState::Parsing => div()

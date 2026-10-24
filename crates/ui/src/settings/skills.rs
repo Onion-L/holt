@@ -6,11 +6,14 @@
 //! and a `$` mention naming it is refused at submit (ADR-skill-invocation-is-an-inline-mention). The disabled set persists
 //! by catalog-unique name in `ui-settings.json` (`disabledSkills`).
 
+use std::borrow::Cow;
+
 use gpui::{Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px};
 use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing, SkillRoot};
 use holt_rpc::methods;
 
 use crate::{
+    i18n::t,
     popover::{self, Loadable},
     settings::{self, SavePolicy, widgets},
     state::AppState,
@@ -78,11 +81,14 @@ fn file_basename(path: &str) -> String {
         .to_string()
 }
 
-fn root_label(root: SkillRoot) -> &'static str {
+/// A root's display label — the catalog projection of the serialized
+/// `SkillRoot` identity, so both the row's root chip and the
+/// "shadowed by …" status read the same spelling.
+fn root_label(root: SkillRoot) -> Cow<'static, str> {
     match root {
-        SkillRoot::Project => "project",
-        SkillRoot::Personal => "personal",
-        SkillRoot::Holt => "holt",
+        SkillRoot::Project => t!("settings_providers_usage.skills.root_project"),
+        SkillRoot::Personal => t!("settings_providers_usage.skills.root_personal"),
+        SkillRoot::Holt => t!("settings_providers_usage.skills.root_holt"),
     }
 }
 
@@ -116,7 +122,7 @@ impl SkillsPage {
     /// the picked space's folder).
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.listing = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.listing = Loadable::Error(crate::state::engine_not_connected().into());
             return;
         };
         let cwd = self.state.read(cx).skills_cwd();
@@ -138,7 +144,7 @@ impl SkillsPage {
                     // UnknownMethod is version skew, same as the composer's
                     // popup: name it rather than echoing the raw error.
                     Err(holt_rpc::RpcError::UnknownMethod(_)) => Loadable::Error(
-                        "Skills aren't available — the engine doesn't support them yet".into(),
+                        t!("settings_providers_usage.skills.version_skew").into_owned(),
                     ),
                     Err(error) => Loadable::Error(error.to_string()),
                 };
@@ -169,11 +175,7 @@ impl Render for SkillsPage {
                         .mt(px(24.0))
                         .text_size(crate::typography::ui_rems(12.5))
                         .text_color(theme.text_muted)
-                        .child(
-                            "No skills found. Place a skill directory under \
-                                .agents/skills in your project, ~/.agents/skills, \
-                                or ~/.holt/skills and it appears here.",
-                        )
+                        .child(t!("settings_providers_usage.skills.empty"))
                         .into_any_element()
                 } else {
                     let disabled = settings::current(cx).disabled_skills;
@@ -188,17 +190,23 @@ impl Render for SkillsPage {
                                 _ => true,
                             };
                             let status: Option<(gpui::SharedString, gpui::Hsla)> = match row {
-                                SkillRow::Ok(skill) if skill.disable_model_invocation => {
-                                    Some(("manual only".into(), theme.text_muted.opacity(0.7)))
-                                }
+                                SkillRow::Ok(skill) if skill.disable_model_invocation => Some((
+                                    t!("settings_providers_usage.skills.status_manual_only").into(),
+                                    theme.text_muted.opacity(0.7),
+                                )),
                                 SkillRow::Ok(_) => None,
                                 SkillRow::Shadowed(entry) => Some((
-                                    format!("shadowed by {}", root_label(entry.shadowed_by)).into(),
+                                    t!(
+                                        "settings_providers_usage.skills.status_shadowed",
+                                        root = root_label(entry.shadowed_by)
+                                    )
+                                    .into(),
                                     theme.warning_muted.opacity(0.9),
                                 )),
-                                SkillRow::Invalid(_) => {
-                                    Some(("invalid".into(), theme.danger_muted.opacity(0.9)))
-                                }
+                                SkillRow::Invalid(_) => Some((
+                                    t!("settings_providers_usage.skills.status_invalid").into(),
+                                    theme.danger_muted.opacity(0.9),
+                                )),
                             };
                             let secondary: gpui::SharedString = match row {
                                 SkillRow::Ok(skill) => {
@@ -354,14 +362,12 @@ impl Render for SkillsPage {
                 widgets::page_column()
                     .child(widgets::page_header(
                         &theme,
-                        "Skills",
+                        &t!("settings_providers_usage.skills.page_title"),
                         self.listing.ready().map(|listing| listing.skills.len()),
                     ))
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Every skill discovered across your project, personal, and Holt \
-                         roots — referenced in place, never copied. Nearest root wins on \
-                         name collisions; broken entries explain themselves here.",
+                        t!("settings_providers_usage.skills.page_subtitle"),
                     ))
                     .child(body),
             )
@@ -384,6 +390,10 @@ mod tests {
 
     #[test]
     fn rows_group_ok_then_shadowed_then_invalid() {
+        // The closing assertion pins the English root label: hold the
+        // locale lock and pin the locale so a switching test can't flip it.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let listing = SkillListing {
             skills: vec![entry("grill", SkillRoot::Project)],
             shadowed: vec![ShadowedSkillEntry {

@@ -31,6 +31,7 @@ pub mod frost;
 pub mod git_panel;
 pub mod goal;
 pub mod history;
+pub mod i18n;
 pub mod icons;
 pub mod image_viewer;
 pub mod images;
@@ -66,6 +67,13 @@ use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOp
 
 pub use holt_proto::ProviderId;
 pub use state::EngineBootConfig;
+
+// The string catalog: compiles every `locales/**` yml into the binary and
+// generates the `t!` backing (`crate::_rust_i18n_t`), which hard-codes the
+// crate root — this call cannot move into a submodule. `en-US` is both the
+// source language and the compile-time fallback; `build.rs` re-runs the
+// build when a catalog file changes.
+rust_i18n::i18n!("locales", fallback = "en-US");
 
 /// Everything the headed binary passes in (config/env resolution lives in
 /// `apps/holt`, not here).
@@ -124,6 +132,11 @@ pub fn run_app(config: UiConfig) {
         let data_dir = config.boot().data_dir.clone();
         let ui_settings = settings::UiSettings::load(&data_dir);
         settings::init(ui_settings.clone(), data_dir.clone(), cx);
+        // Interface language before any menu or view is built (typography
+        // next, then menus below) — the first native menu and the first
+        // frame are already localized. Resolves the follow-OS default once
+        // and never writes it back.
+        i18n::init(ui_settings.interface_language.clone(), cx);
         let font_availability = typography::register_fonts(cx);
         // Typography first: theme installation reads the effective family, so
         // the first frame has the final font and palette without a flash.

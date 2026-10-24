@@ -6,6 +6,7 @@ use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
 
 use holt_proto::Space;
 
+use crate::i18n::t;
 use crate::popover;
 use crate::theme::Theme;
 
@@ -104,16 +105,16 @@ impl Pickers {
         let active = self.active;
         let body: AnyElement = if rows.is_empty() {
             // Distinguish "the filter ate everything" from "no projects yet".
-            let empty: &str = if self.search.read(cx).text().is_empty() {
-                "No projects."
+            let empty = if self.search.read(cx).text().is_empty() {
+                t!("pickers_dialogs.space.no_projects")
             } else {
-                "No projects match."
+                t!("pickers_dialogs.space.no_projects_match")
             };
             div()
                 .p(px(Theme::SPACE_SM))
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from(empty.to_string()))
+                .child(SharedString::from(empty))
                 .into_any_element()
         } else {
             div()
@@ -165,7 +166,7 @@ impl Pickers {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .child(SharedString::from("Work outside a project")),
+                        .child(SharedString::from(t!("pickers_dialogs.space.work_outside"))),
                 );
         let new_project = popover::menu_row_nav(&theme, false, false, "project-new".to_string())
             .id("project-new")
@@ -184,7 +185,7 @@ impl Pickers {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .child(SharedString::from("New project…")),
+                    .child(SharedString::from(t!("pickers_dialogs.space.new_project"))),
             );
         div()
             .flex()

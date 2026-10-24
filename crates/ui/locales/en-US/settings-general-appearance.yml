@@ -1,0 +1,396 @@
+_version: 2
+settings_general_appearance:
+  language:
+    group_title:
+      en-US: Language
+    group_description:
+      en-US: Device-local. Applies immediately; open cards and notices pick it up when they rebuild.
+    row_title:
+      en-US: Interface language
+    row_description:
+      en-US: Follow the system language, or pin one.
+    follow_system:
+      en-US: Follow system
+  general:
+    title:
+      en-US: General
+    subtitle:
+      en-US: Language, notifications, automatic chat titles, and keys for built-in tools.
+    instruction_placeholder:
+      en-US: Instruction sent with the first prompt
+    titles:
+      title_model:
+        en-US: Title model
+      title_model_description:
+        en-US: Choose a configured provider model. Disabled keeps the fallback title.
+      custom_style:
+        en-US: Custom title style
+      custom_style_description:
+        en-US: Style notes for automatic titles — language, tone, naming conventions. The core naming rules are built in.
+      notes_label:
+        en-US: Title style notes
+      restore_default:
+        en-US: Restore default
+      unsaved:
+        en-US: Unsaved changes
+      save:
+        en-US: Save
+    groups:
+      titles_title:
+        en-US: Automatic chat titles
+      titles_description:
+        en-US: A new chat keeps its first-line title immediately, then one background request to this model can replace it. Your manual renames always win.
+      verifier_title:
+        en-US: Goal verifier
+      verifier_description:
+        en-US: The model that judges each goal loop's turns. A different — ideally cross-provider — model catches what the working model misses. Verified at the lowest reasoning level; falls back to each chat's model when unset or unconfigured.
+      verifier_row_title:
+        en-US: Verifier model
+      verifier_row_description:
+        en-US: Runs once after each settled goal-loop turn, at minimal reasoning.
+      no_providers:
+        en-US: No configured providers — add a provider key to pick a verifier model
+    notifications:
+      title:
+        en-US: Notifications
+      description:
+        en-US: Device-local. Banners appear only while no Holt window is active.
+      completion:
+        en-US: Completion notifications
+      completion_description:
+        en-US: Show a system banner when a background Turn succeeds or fails.
+      sound:
+        en-US: Play sound
+      sound_description:
+        en-US: Play the system notification sound with each banner.
+    model_rows:
+      disabled:
+        en-US: Disabled
+      disabled_description:
+        en-US: Keep the first-line title — no background naming request
+      chat_model:
+        en-US: Chat's model
+      chat_model_description:
+        en-US: Each chat's goal loop verifies on its own model
+      not_in_catalog:
+        en-US: Not in the current provider catalog
+      unavailable:
+        en-US: unavailable
+    errors:
+      titles_unavailable:
+        en-US: Title settings aren't available — the engine doesn't support them yet
+      verifier_unavailable:
+        en-US: Goal verifier settings aren't available — the engine doesn't support them yet
+  web_search:
+    title:
+      en-US: Web search
+    description:
+      en-US: Lets the agent search the web. Exa works without a key; the others use your own API key.
+    service_row_title:
+      en-US: Search service
+    service_row_description:
+      en-US: The service the agent searches with.
+    api_key_row_title:
+      en-US: API key
+    api_key_row_description:
+      en-US: Stored on this device, separate from your provider keys.
+    api_key_placeholder:
+      en-US: API key
+    off_state:
+      en-US: "Off"
+    off_description:
+      en-US: The agent can't search the web
+    no_key_needed:
+      en-US: No API key needed
+    key_saved:
+      en-US: API key saved
+    uses_key:
+      en-US: Uses your API key
+    cancel:
+      en-US: Cancel
+    remove:
+      en-US: Remove
+    save:
+      en-US: Save
+    your_own:
+      en-US: Your own services
+    add_them:
+      en-US: Add them to %{file}, then pick them above.
+    format:
+      en-US: Format
+    errors:
+      unavailable:
+        en-US: Web search settings aren't available — the engine doesn't support them yet
+      no_key_stored:
+        en-US: No API key is stored
+      enter_key:
+        en-US: Enter an API key
+  appearance:
+    title:
+      en-US: Appearance
+    subtitle:
+      en-US: Choose how Holt looks. These settings stay on this device.
+    field_appearance:
+      en-US: Appearance
+    modes:
+      system:
+        en-US: System
+      light:
+        en-US: Light
+      dark:
+        en-US: Dark
+    light_theme:
+      en-US: Light theme
+    dark_theme:
+      en-US: Dark theme
+    theme_row_description:
+      en-US: Used whenever this appearance is active.
+    light_themes:
+      en-US: Light themes
+    dark_themes:
+      en-US: Dark themes
+    accent_row_title:
+      en-US: Accent color
+    glass_row_title:
+      en-US: Glass
+    accents:
+      holt:
+        en-US: Holt
+      orange:
+        en-US: Orange
+      amber:
+        en-US: Amber
+      green:
+        en-US: Green
+      cyan:
+        en-US: Cyan
+      blue:
+        en-US: Blue
+      pink:
+        en-US: Pink
+    accent_default_helper:
+      en-US: "Theme default · Uses the palette's intended color."
+    accent_preset_helper:
+      en-US: "%{preset} · Controls, glyphs, selections, code, and activity."
+    surfaces:
+      theme_default:
+        en-US: Theme default
+      frosted:
+        en-US: Frosted
+      opaque:
+        en-US: Opaque
+    surface_default_frosted_helper:
+      en-US: Uses this theme's frosted default.
+    surface_default_opaque_helper:
+      en-US: Uses this theme's opaque default.
+    surface_frosted_helper:
+      en-US: Theme-colored glass where supported.
+    surface_opaque_helper:
+      en-US: Solid surfaces for every theme.
+    library:
+      title:
+        en-US: Theme library
+      description:
+        en-US: Import or link custom themes.
+      add:
+        en-US: Add theme
+      imported:
+        en-US: IMPORTED
+      linked:
+        en-US: LINKED
+      snapshot:
+        en-US: Self-contained snapshot
+      status:
+        one:
+          en-US: "%{source} · %{count} variant · %{detail}"
+        other:
+          en-US: "%{source} · %{count} variants · %{detail}"
+      using_last_good:
+        en-US: Using last known good · %{message}
+      reload:
+        en-US: Reload
+      reveal:
+        en-US: Reveal
+      review:
+        en-US: Review
+      duplicate:
+        en-US: Duplicate as editable
+      unlink:
+        en-US: Unlink
+      remove:
+        en-US: Remove
+      done:
+        en-US: Done
+      sources:
+        imported:
+          en-US: Imported
+        linked_file:
+          en-US: Linked file
+        linked_package:
+          en-US: Linked package
+        editable_file:
+          en-US: Editable file
+      review_title:
+        en-US: Theme mapping
+      review_body:
+        en-US: "%{name} · %{source}"
+    import:
+      placeholder:
+        en-US: Theme file, package.json, or extension folder
+      choose_source_dialog:
+        en-US: Choose Theme Source
+      browse:
+        en-US: Browse…
+      source:
+        en-US: Source
+      keep_updated:
+        en-US: Keep it up to date
+      mode_copy:
+        en-US: Import a copy
+      mode_copy_description:
+        en-US: Works independently from the original file.
+      mode_link:
+        en-US: Link to source
+      mode_link_description:
+        en-US: Reload changes from the file on disk.
+      detected:
+        en-US: Detected themes
+      variants:
+        one:
+          en-US: "%{count} variant"
+        other:
+          en-US: "%{count} variants"
+      variant_dark:
+        en-US: Dark
+      variant_light:
+        en-US: Light
+      details:
+        en-US: Details
+      hide_details:
+        en-US: Hide details
+      failure:
+        en-US: "%{name} could not be compiled · %{message}"
+      auto_note:
+        en-US: Holt finds light and dark variants automatically.
+      dialog_title:
+        en-US: Add a theme
+      dialog_body:
+        en-US: Import a local theme into your library or keep it linked to its source.
+      cancel:
+        en-US: Cancel
+      import_selected:
+        en-US: Import selected
+      analyze:
+        en-US: Analyze theme
+      errors:
+        choose_source:
+          en-US: Choose a local theme file or extension folder.
+        select_variant:
+          en-US: Select at least one variant to import.
+      report:
+        summary:
+          en-US: "%{mapped} mapped · %{adjusted} adjusted · %{fallback} inferred/fallback · %{unsupported} unsupported · %{warnings} warnings · %{validation} validation"
+        adjusted:
+          en-US: "Adjusted · %{role} %{from} → %{to} · %{reason}"
+        fallback:
+          en-US: "Fallback · %{message}"
+        warning:
+          en-US: "Warning · %{message}"
+        validation:
+          en-US: "Validation %{category} %{severity} · %{message}"
+        unsupported:
+          en-US: "Unsupported · %{message}"
+        mapping:
+          en-US: "%{role} ← %{key}"
+    backdrop:
+      field_label:
+        en-US: Chat backdrop
+      placeholder:
+        en-US: Path to an image — ~/… works
+      enter_path:
+        en-US: Enter a path…
+      drop_here:
+        en-US: Drop an image here
+      or_browse:
+        en-US: or click to browse
+      loading:
+        en-US: Loading…
+      not_decodable:
+        en-US: Not a decodable image
+      subtle:
+        en-US: Subtle
+      balanced:
+        en-US: Balanced
+      bold:
+        en-US: Bold
+      error_not_exists:
+        en-US: That file does not exist — fix the path (or clear the field) to apply.
+      error_not_image:
+        en-US: That drop is not an image Holt can decode — png, jpeg, webp, or gif works.
+      error_failed_decode:
+        en-US: The file exists, but Holt could not decode it as an image — png, jpeg, webp, or gif works.
+    fonts:
+      interface_font:
+        en-US: Interface font
+      description:
+        en-US: Used across the interface and conversations. Code, diffs, and terminal keep their current fonts and sizes.
+      load_error:
+        en-US: This font could not be loaded. Holt is using Geist.
+  shortcuts:
+    title:
+      en-US: Keyboard shortcuts
+    subtitle:
+      en-US: Click a binding, then press the key combination you want to use. Changes apply immediately and stay on this device.
+    restore_defaults:
+      en-US: Restore defaults
+    reset:
+      en-US: Reset
+    press_keys:
+      en-US: Press keys…
+    press_escape:
+      en-US: Press Escape to cancel.
+    unique:
+      en-US: Shortcuts must be unique.
+    conflict:
+      en-US: "%{combo} is already assigned to %{label}."
+    groups:
+      panels:
+        en-US: Panels
+      sessions:
+        en-US: Sessions
+      jump:
+        en-US: Jump to session
+    labels:
+      toggle_sidebar:
+        en-US: Toggle left sidebar
+      toggle_changes:
+        en-US: Toggle right sidebar
+      toggle_terminal:
+        en-US: Toggle terminal
+      new_session:
+        en-US: New session
+      next_session:
+        en-US: Next session
+      prev_session:
+        en-US: Previous session
+      archive_session:
+        en-US: Archive session
+      jump_session:
+        en-US: Jump to session %{slot}
+    descriptions:
+      toggle_sidebar:
+        en-US: Show or hide sessions and settings navigation.
+      toggle_changes:
+        en-US: Show or hide changes for the current session.
+      toggle_terminal:
+        en-US: Show or hide the terminal for the current session.
+      new_session:
+        en-US: Open a blank session canvas to start a new session.
+      next_session:
+        en-US: Select the next session in the sidebar, wrapping at the end.
+      prev_session:
+        en-US: Select the previous session in the sidebar, wrapping at the start.
+      archive_session:
+        en-US: Move the current session to the archived shelf.
+      jump_session:
+        en-US: Open the session at this place in the sidebar list.

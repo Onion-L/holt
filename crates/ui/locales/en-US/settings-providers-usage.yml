@@ -1,0 +1,430 @@
+_version: 2
+settings_providers_usage:
+  archived:
+    page_title:
+      en-US: Archived sessions
+    page_subtitle:
+      en-US: Hidden from the sidebar until you unarchive them. Clearing permanently deletes every session here.
+    untitled:
+      en-US: Untitled session
+    unarchive:
+      en-US: Unarchive
+    unarchiving:
+      en-US: Unarchiving…
+    unarchive_failed:
+      en-US: "Unarchive failed: %{error}"
+    clear_all:
+      en-US: Clear all
+    clearing:
+      en-US: Clearing…
+    clear_failed:
+      en-US: "Clear failed: %{error}"
+    confirm_title:
+      en-US: Clear archived sessions?
+    empty_title:
+      en-US: Nothing archived
+    empty_hint:
+      en-US: Right-click a session in the sidebar to archive it.
+    confirm:
+      one:
+        en-US: "1 archived session will be permanently deleted. This can’t be undone."
+      other:
+        en-US: "%{count} archived sessions will be permanently deleted. This can’t be undone."
+    cancel:
+      en-US: Cancel
+  mcp:
+    page_title:
+      en-US: MCP Servers
+    page_subtitle:
+      en-US: "External tool providers; their tools join every chat behind the same permission gate."
+    version_skew:
+      en-US: MCP servers aren't available — the engine doesn't support them yet
+    empty:
+      en-US: No servers configured.
+    add_server:
+      en-US: Add Server
+    invalid_file:
+      en-US: "mcp.json is invalid and was not applied: %{error}"
+    no_transport:
+      en-US: no transport
+    testing:
+      en-US: Testing…
+    tools_count:
+      en-US: "✓ %{count} tools"
+    test:
+      en-US: Test
+    edit:
+      en-US: Edit
+    remove:
+      en-US: Remove
+    remove_confirm_title:
+      en-US: "Remove %{name}?"
+    test_failed:
+      en-US: "Test failed: %{reason}"
+    cancel:
+      en-US: Cancel
+    import:
+      en-US: Import
+    save:
+      en-US: Save
+    add_title:
+      en-US: Add MCP server
+    edit_title:
+      en-US: "Edit %{name}"
+    add_hint:
+      en-US: "Tools become mcp__<name>__tool in every chat, behind the same permission gate."
+    mode_form:
+      en-US: Form
+    mode_json:
+      en-US: JSON
+    field_name:
+      en-US: Name
+    field_transport:
+      en-US: Transport
+    transport_stdio:
+      en-US: Local (stdio)
+    transport_http:
+      en-US: Remote (http)
+    field_command:
+      en-US: Command
+    field_arguments:
+      en-US: Arguments
+    field_environment:
+      en-US: Environment
+    field_cwd:
+      en-US: Working directory
+    field_startup_timeout:
+      en-US: Startup timeout (ms)
+    field_call_timeout:
+      en-US: Call timeout (ms)
+    field_url:
+      en-US: URL
+    field_headers:
+      en-US: Headers
+    field_bearer:
+      en-US: Bearer token env var
+    field_enabled:
+      en-US: Enabled
+    placeholder_name:
+      en-US: "name — tools become mcp__<name>__tool"
+    placeholder_args:
+      en-US: one argument per line
+    placeholder_env:
+      en-US: KEY=VALUE per line
+    placeholder_cwd:
+      en-US: "default: holt's own directory"
+    placeholder_headers:
+      en-US: "Name: value per line"
+    error_name_invalid:
+      en-US: "Names use [A-Za-z0-9_-] — the name rides every mcp__name__tool."
+    error_timeout:
+      en-US: "%{text} is not a timeout in milliseconds"
+    error_command_required:
+      en-US: A stdio server needs a command.
+    error_url_required:
+      en-US: An http server needs a URL.
+    import_not_json:
+      en-US: "not valid JSON: %{error}"
+    import_bare_name:
+      en-US: a bare server object needs a name field — or wrap it in an mcpServers object
+    import_expected:
+      en-US: expected an mcpServers object
+    import_no_servers:
+      en-US: no servers found in the JSON
+    import_bad_name:
+      en-US: "server name %{name} is invalid: names use [A-Za-z0-9_-] only"
+    import_needs_transport:
+      en-US: "server %{name} needs either a command (stdio) or a url (http)"
+    import_entry_failed:
+      en-US: "%{name}: %{error}"
+  providers:
+    page_title:
+      en-US: Providers
+    page_subtitle:
+      en-US: "Configure API keys for the providers Holt can use. Organizations with several endpoints are configured per endpoint."
+    status_configured:
+      en-US: Configured
+    status_not_configured:
+      en-US: Not configured
+    save:
+      en-US: Save
+    test:
+      en-US: Test
+    api_key_label:
+      en-US: API key
+    remove_key:
+      en-US: Remove key
+    models_label:
+      en-US: Models
+    fetch_models:
+      en-US: Fetch models
+    add_model:
+      en-US: Add model
+    endpoint_label:
+      en-US: Endpoint
+    no_models:
+      en-US: No models available
+    hidden_label:
+      en-US: Hidden
+    error_api_key_required:
+      en-US: API key is required
+    remove:
+      en-US: Remove
+    cancel:
+      en-US: Cancel
+    probe:
+      testing:
+        en-US: Testing…
+      ok:
+        en-US: "Endpoint reachable · %{count} models"
+      ok_latency:
+        en-US: "Endpoint reachable · %{count} models · %{ms} ms"
+      key_rejected:
+        en-US: The endpoint rejected this key — replace it and save
+      unverifiable:
+        en-US: "Could not verify — %{error}"
+    reset_to_catalog:
+      en-US: Reset to catalog
+    reset_confirm:
+      en-US: "Confirm reset — drops this provider's user-written entries"
+    remove_provider:
+      en-US: Remove provider
+    remove_dialog_title:
+      en-US: "Remove %{name}?"
+    remove_dialog_body:
+      en-US: "The provider definition, custom models, model records, hidden list, and logo are deleted. The API key is kept. This can't be undone."
+    reset_all_title:
+      en-US: Reset all providers?
+    reset_all_body:
+      en-US: "Custom models, model records, hidden lists, and endpoint overrides return to the compiled catalog for every provider. API keys are kept. This can't be undone."
+    reset_all:
+      en-US: Reset all
+    logo_not_saved:
+      en-US: "Logo not saved: %{error}"
+    add_dialog:
+      add_provider:
+        en-US: Add Provider
+      reset_all_providers:
+        en-US: Reset all providers
+      logo_optional:
+        en-US: Logo (optional)
+      choose_image:
+        en-US: Choose image…
+      logo_hint:
+        en-US: PNG, JPG, WebP, or SVG (tinted to the theme)
+      clear:
+        en-US: Clear
+      field_provider_id:
+        en-US: Provider id
+      field_display_name:
+        en-US: Display name
+      field_base_url:
+        en-US: Base URL
+      field_default_api:
+        en-US: Default API dialect
+      field_api_key:
+        en-US: API key (optional)
+      save_provider:
+        en-US: Save provider
+      placeholder_provider_id:
+        en-US: "Provider id (e.g. acme)"
+      placeholder_display_name:
+        en-US: Display name
+      placeholder_base_url:
+        en-US: https://acme.example/v1
+      placeholder_default_api:
+        en-US: openai-completions
+      placeholder_api_key:
+        en-US: API key (optional)
+      error_base_url_scheme:
+        en-US: Base URL must start with http:// or https://
+      error_plaintext_http:
+        en-US: Plaintext http is allowed only for localhost endpoints
+      error_id_required:
+        en-US: Provider id is required
+      error_id_slash:
+        en-US: "Provider id cannot contain '/'"
+      error_api_required:
+        en-US: Default API dialect is required
+    logo_dialog:
+      title:
+        en-US: Provider logo
+      error_size_limit:
+        en-US: Logo exceeds the 8 MB limit
+      error_not_image:
+        en-US: Not a readable image
+      status_preview:
+        en-US: Preview — not saved yet
+      status_current:
+        en-US: Current logo
+      status_none:
+        en-US: No logo yet — showing the monogram
+      tab_file:
+        en-US: Upload file
+      tab_svg:
+        en-US: Paste SVG
+      choose_another:
+        en-US: Click to choose another
+      choose_image:
+        en-US: Choose an image
+      file_hint:
+        en-US: "PNG, JPG, WebP or SVG · up to 8 MB"
+      svg_hint:
+        en-US: Drawn as a single-colour mask tinted to the theme. Enter saves.
+      error_not_svg:
+        en-US: That doesn’t look like SVG markup
+      saving:
+        en-US: Saving…
+      remove_logo:
+        en-US: Remove logo
+    record_form:
+      title:
+        en-US: Add model record
+      api_dialect_label:
+        en-US: API dialect
+      field_model_id:
+        en-US: Model ID
+      field_name:
+        en-US: Name
+      field_context_window:
+        en-US: Context window
+      field_max_tokens:
+        en-US: Max tokens
+      field_input_cost:
+        en-US: Input cost /M
+      field_output_cost:
+        en-US: Output cost /M
+      field_cache_read_cost:
+        en-US: Cache read /M
+      field_cache_write_cost:
+        en-US: Cache write /M
+      reasoning:
+        en-US: Reasoning
+      image_input:
+        en-US: Image input
+      advanced_json:
+        en-US: Advanced JSON
+      save_record:
+        en-US: Save record
+      fetch_title:
+        en-US: "Fetch models from %{provider}"
+      add_one:
+        en-US: "Add %{count} model"
+      add_other:
+        en-US: "Add %{count} models"
+      error_id_required:
+        en-US: Model ID is required
+      error_api_required:
+        en-US: API dialect is required
+      error_whole_number:
+        en-US: "%{field} must be a whole number"
+      error_number:
+        en-US: "%{field} must be a number"
+      error_window_zero:
+        en-US: Context window must be greater than zero
+      error_advanced_parse:
+        en-US: "Advanced JSON does not parse: %{error}"
+      error_advanced_object:
+        en-US: Advanced JSON must be an object
+      error_no_transport:
+        en-US: the probe did not resolve a transport
+      error_nothing_new:
+        en-US: the vendor's listing has nothing this provider doesn't already offer
+  skills:
+    page_title:
+      en-US: Skills
+    page_subtitle:
+      en-US: "Every skill discovered across your project, personal, and Holt roots — referenced in place, never copied. Nearest root wins on name collisions; broken entries explain themselves here."
+    version_skew:
+      en-US: Skills aren't available — the engine doesn't support them yet
+    empty:
+      en-US: "No skills found. Place a skill directory under .agents/skills in your project, ~/.agents/skills, or ~/.holt/skills and it appears here."
+    root_project:
+      en-US: project
+    root_personal:
+      en-US: personal
+    root_holt:
+      en-US: holt
+    status_manual_only:
+      en-US: manual only
+    status_shadowed:
+      en-US: "shadowed by %{root}"
+    status_invalid:
+      en-US: invalid
+  usage:
+    page_title:
+      en-US: Usage
+    page_description:
+      en-US: Model token usage
+    header_count:
+      en-US: "%{chats} chats · last %{days} days"
+    version_skew:
+      en-US: Usage stats aren't available — the engine doesn't support them yet
+    error_title:
+      en-US: Couldn't load model usage
+    retry:
+      en-US: Retry
+    refresh_tooltip:
+      en-US: Refresh usage stats
+    empty_title:
+      en-US: No model usage yet
+    empty_detail:
+      en-US: "Token usage is collected from the chats you run in holt. Run a few chats and usage will appear here."
+    daily_usage:
+      en-US: Daily usage
+    total_tokens:
+      en-US: Total tokens
+    tokens_count:
+      en-US: "%{count} tokens"
+    more:
+      en-US: "+%{count} more"
+    show_less:
+      en-US: Show less
+    no_usage_range:
+      en-US: No usage in this range
+    no_usage:
+      en-US: No usage
+    total:
+      en-US: Total
+    activity:
+      en-US: Activity
+    weekday_mon:
+      en-US: Mon
+    weekday_wed:
+      en-US: Wed
+    weekday_fri:
+      en-US: Fri
+    less:
+      en-US: Less
+    more_scale:
+      en-US: More
+    heat_tooltip:
+      en-US: "%{count} tokens on %{date}"
+    breakdown:
+      en-US: Breakdown
+    by_model:
+      en-US: By model
+    by_project:
+      en-US: By project
+    others:
+      en-US: Others
+    deleted_chats:
+      en-US: Deleted chats
+    donut_tokens:
+      en-US: tokens
+    metric_input:
+      en-US: Input
+    metric_output:
+      en-US: Output
+    metric_cache_read:
+      en-US: Cache read
+    metric_cache_write:
+      en-US: Cache write
+    metric_cache_hit:
+      en-US: Cache hit
+    metric_active_days:
+      en-US: Active days
+    metric_cache_hit_detail:
+      en-US: "%{read} of %{prompt} prompt tokens served from cache"
+    metric_active_days_detail:
+      en-US: "%{active} of %{days} days in range had usage"

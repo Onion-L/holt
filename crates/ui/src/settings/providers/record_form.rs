@@ -8,17 +8,74 @@ use super::*;
 /// a record added under a provider rides that provider's endpoint; the
 /// engine fills the default, and Advanced JSON is the override hatch.
 /// `api` is not a text field: the dialect set is closed (the engine's
-/// registered list), so it rides a dropdown.
-pub(super) const RECORD_FIELDS: [(&str, &str, &str); 8] = [
-    ("id", "Model ID", "acme-1"),
-    ("name", "Name", "Acme 1"),
-    ("contextWindow", "Context window", "200000"),
-    ("maxTokens", "Max tokens", "8192"),
-    ("inputCost", "Input cost /M", "0.0"),
-    ("outputCost", "Output cost /M", "0.0"),
-    ("cacheReadCost", "Cache read /M", "0.0"),
-    ("cacheWriteCost", "Cache write /M", "0.0"),
-];
+/// registered list), so it rides a dropdown. Labels are catalog lookups,
+/// so this is a function, not a const; placeholders stay literal — they
+/// are example values, not copy.
+pub(super) fn record_fields() -> [(&'static str, Cow<'static, str>, &'static str); 8] {
+    [
+        (
+            "id",
+            t!("settings_providers_usage.providers.record_form.field_model_id"),
+            "acme-1",
+        ),
+        (
+            "name",
+            t!("settings_providers_usage.providers.record_form.field_name"),
+            "Acme 1",
+        ),
+        (
+            "contextWindow",
+            t!("settings_providers_usage.providers.record_form.field_context_window"),
+            "200000",
+        ),
+        (
+            "maxTokens",
+            t!("settings_providers_usage.providers.record_form.field_max_tokens"),
+            "8192",
+        ),
+        (
+            "inputCost",
+            t!("settings_providers_usage.providers.record_form.field_input_cost"),
+            "0.0",
+        ),
+        (
+            "outputCost",
+            t!("settings_providers_usage.providers.record_form.field_output_cost"),
+            "0.0",
+        ),
+        (
+            "cacheReadCost",
+            t!("settings_providers_usage.providers.record_form.field_cache_read_cost"),
+            "0.0",
+        ),
+        (
+            "cacheWriteCost",
+            t!("settings_providers_usage.providers.record_form.field_cache_write_cost"),
+            "0.0",
+        ),
+    ]
+}
+
+/// A numeric form field's display label, for whole-sentence error
+/// messages ("%{field} must be a number"): the same key the form's label
+/// renders, so the error names the field as the user read it.
+fn record_field_label(key: &str) -> Cow<'static, str> {
+    match key {
+        "contextWindow" => {
+            t!("settings_providers_usage.providers.record_form.field_context_window")
+        }
+        "maxTokens" => t!("settings_providers_usage.providers.record_form.field_max_tokens"),
+        "inputCost" => t!("settings_providers_usage.providers.record_form.field_input_cost"),
+        "outputCost" => t!("settings_providers_usage.providers.record_form.field_output_cost"),
+        "cacheReadCost" => {
+            t!("settings_providers_usage.providers.record_form.field_cache_read_cost")
+        }
+        "cacheWriteCost" => {
+            t!("settings_providers_usage.providers.record_form.field_cache_write_cost")
+        }
+        other => Cow::Owned(other.to_string()),
+    }
+}
 
 /// The mounted model-record form. One panel is expanded at a time, so one
 /// instance serves the whole page; it targets that panel's active variant.
@@ -147,7 +204,7 @@ pub(super) fn record_form_dialog(
     // listeners, so the dropdown (which registers its own) must borrow
     // `cx` first.
     let api_dropdown = record_api_dropdown(page, theme, cx);
-    let pair = |left: (&str, &str), right: Option<(&str, &str)>| {
+    let pair = |left: (&str, Cow<'static, str>), right: Option<(&str, Cow<'static, str>)>| {
         div()
             .flex()
             .gap(px(8.0))
@@ -179,7 +236,7 @@ pub(super) fn record_form_dialog(
                     .into_any_element()
             }))
     };
-    let flag_row = |key: &'static str, label: &str, on: bool| {
+    let flag_row = |key: &'static str, label: Cow<'static, str>, on: bool| {
         div()
             .id(SharedString::from(format!("record-flag-{key}")))
             .cursor_pointer()
@@ -199,7 +256,7 @@ pub(super) fn record_form_dialog(
                 div()
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted)
-                    .child(label.to_string()),
+                    .child(label),
             )
     };
     let mut card = popover::dialog_card(theme)
@@ -218,7 +275,10 @@ pub(super) fn record_form_dialog(
             div()
                 .flex()
                 .items_center()
-                .child(popover::dialog_title(theme, "Add model record"))
+                .child(popover::dialog_title(
+                    theme,
+                    &t!("settings_providers_usage.providers.record_form.title"),
+                ))
                 .child(div().flex_1())
                 .child(
                     widgets::ghost_action(theme)
@@ -236,41 +296,82 @@ pub(super) fn record_form_dialog(
                 ),
         );
     card = card
-        .child(pair(("id", "Model ID"), Some(("name", "Name"))))
+        .child(pair(
+            (
+                "id",
+                t!("settings_providers_usage.providers.record_form.field_model_id"),
+            ),
+            Some((
+                "name",
+                t!("settings_providers_usage.providers.record_form.field_name"),
+            )),
+        ))
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(widgets::field_label(theme, "API dialect"))
+                .child(widgets::field_label(
+                    theme,
+                    t!("settings_providers_usage.providers.record_form.api_dialect_label"),
+                ))
                 .child(api_dropdown),
         )
         .child(pair(
-            ("contextWindow", "Context window"),
-            Some(("maxTokens", "Max tokens")),
+            (
+                "contextWindow",
+                t!("settings_providers_usage.providers.record_form.field_context_window"),
+            ),
+            Some((
+                "maxTokens",
+                t!("settings_providers_usage.providers.record_form.field_max_tokens"),
+            )),
         ))
         .child(pair(
-            ("inputCost", "Input cost /M"),
-            Some(("outputCost", "Output cost /M")),
+            (
+                "inputCost",
+                t!("settings_providers_usage.providers.record_form.field_input_cost"),
+            ),
+            Some((
+                "outputCost",
+                t!("settings_providers_usage.providers.record_form.field_output_cost"),
+            )),
         ))
         .child(pair(
-            ("cacheReadCost", "Cache read /M"),
-            Some(("cacheWriteCost", "Cache write /M")),
+            (
+                "cacheReadCost",
+                t!("settings_providers_usage.providers.record_form.field_cache_read_cost"),
+            ),
+            Some((
+                "cacheWriteCost",
+                t!("settings_providers_usage.providers.record_form.field_cache_write_cost"),
+            )),
         ))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(20.0))
-                .child(flag_row("reasoning", "Reasoning", form.reasoning))
-                .child(flag_row("image", "Image input", form.image)),
+                .child(flag_row(
+                    "reasoning",
+                    t!("settings_providers_usage.providers.record_form.reasoning"),
+                    form.reasoning,
+                ))
+                .child(flag_row(
+                    "image",
+                    t!("settings_providers_usage.providers.record_form.image_input"),
+                    form.image,
+                )),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(widgets::field_label(theme, "Advanced JSON"))
+                .child(widgets::field_label(
+                    theme,
+                    t!("settings_providers_usage.providers.record_form.advanced_json"),
+                ))
                 .children(field_input("advanced").map(|input| {
                     div()
                         .id("record-advanced")
@@ -307,7 +408,9 @@ pub(super) fn record_form_dialog(
                         .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
                             page.save_record(cx);
                         }))
-                        .child("Save record"),
+                        .child(t!(
+                            "settings_providers_usage.providers.record_form.save_record"
+                        )),
                 )
                 .child(
                     widgets::ghost_action(theme)
@@ -317,7 +420,7 @@ pub(super) fn record_form_dialog(
                             page.record_form = None;
                             cx.notify();
                         }))
-                        .child("Cancel"),
+                        .child(t!("settings_providers_usage.providers.cancel")),
                 ),
         );
     card.into_any_element()
@@ -338,7 +441,7 @@ pub(super) fn fetch_models_dialog(
         return div().into_any_element();
     };
     let field_input = |key: &str| dialog.inputs.get(key).cloned();
-    let number_field = |key: &'static str, label: &str| {
+    let number_field = |key: &'static str, label: Cow<'static, str>| {
         div()
             .flex_1()
             .min_w_0()
@@ -373,7 +476,10 @@ pub(super) fn fetch_models_dialog(
                 .items_center()
                 .child(popover::dialog_title(
                     theme,
-                    &format!("Fetch models from {}", dialog.provider),
+                    &t!(
+                        "settings_providers_usage.providers.record_form.fetch_title",
+                        provider = dialog.provider.as_str()
+                    ),
                 ))
                 .child(div().flex_1())
                 .child(
@@ -459,8 +565,14 @@ pub(super) fn fetch_models_dialog(
             div()
                 .flex()
                 .gap(px(8.0))
-                .child(number_field("contextWindow", "Context window"))
-                .child(number_field("maxTokens", "Max tokens")),
+                .child(number_field(
+                    "contextWindow",
+                    t!("settings_providers_usage.providers.record_form.field_context_window"),
+                ))
+                .child(number_field(
+                    "maxTokens",
+                    t!("settings_providers_usage.providers.record_form.field_max_tokens"),
+                )),
         )
         .children(dialog.error.clone().map(|message| {
             div()
@@ -481,21 +593,27 @@ pub(super) fn fetch_models_dialog(
                         .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
                             page.save_fetch(cx);
                         }))
-                        .child(SharedString::from(format!(
-                            "Add {} model{}",
-                            count,
-                            if count == 1 { "" } else { "s" }
-                        ))),
+                        .child(if count == 1 {
+                            t!(
+                                "settings_providers_usage.providers.record_form.add_one",
+                                count = count
+                            )
+                        } else {
+                            t!(
+                                "settings_providers_usage.providers.record_form.add_other",
+                                count = count
+                            )
+                        }),
                 )
                 .child(
                     widgets::ghost_action(theme)
                         .id("cancel-fetch")
                         .hover(move |style| widgets::ghost_hover(theme, style))
-                        .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                        .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
                             page.fetch_dialog = None;
                             cx.notify();
                         }))
-                        .child("Cancel"),
+                        .child(t!("settings_providers_usage.providers.cancel")),
                 ),
         );
     card.into_any_element()
@@ -542,7 +660,9 @@ pub(super) fn build_record_json(
     let text = |key: &str| texts.get(key).cloned().unwrap_or_default();
     let id = text("id");
     if id.is_empty() {
-        return Err("Model ID is required".into());
+        return Err(
+            t!("settings_providers_usage.providers.record_form.error_id_required").into_owned(),
+        );
     }
     let name = {
         let name = text("name");
@@ -551,20 +671,31 @@ pub(super) fn build_record_json(
     let base_url = text("baseUrl");
     if !base_url.is_empty() && !base_url.starts_with("http://") && !base_url.starts_with("https://")
     {
-        return Err("Base URL must start with http:// or https://".into());
+        return Err(
+            t!("settings_providers_usage.providers.add_dialog.error_base_url_scheme").into_owned(),
+        );
     }
     let api = text("api");
     if api.is_empty() {
-        return Err("API dialect is required".into());
+        return Err(
+            t!("settings_providers_usage.providers.record_form.error_api_required").into_owned(),
+        );
     }
     let number = |key: &str| -> Result<u64, String> {
         let raw = text(key);
-        raw.parse::<u64>()
-            .map_err(|_| format!("{key} must be a whole number"))
+        raw.parse::<u64>().map_err(|_| {
+            t!(
+                "settings_providers_usage.providers.record_form.error_whole_number",
+                field = record_field_label(key)
+            )
+            .into_owned()
+        })
     };
     let context_window = number("contextWindow")?;
     if context_window == 0 {
-        return Err("Context window must be greater than zero".into());
+        return Err(
+            t!("settings_providers_usage.providers.record_form.error_window_zero").into_owned(),
+        );
     }
     let max_tokens = number("maxTokens")?;
     let cost = |key: &str| -> Result<f64, String> {
@@ -572,8 +703,13 @@ pub(super) fn build_record_json(
         if raw.is_empty() {
             return Ok(0.0);
         }
-        raw.parse::<f64>()
-            .map_err(|_| format!("{key} must be a number"))
+        raw.parse::<f64>().map_err(|_| {
+            t!(
+                "settings_providers_usage.providers.record_form.error_number",
+                field = record_field_label(key)
+            )
+            .into_owned()
+        })
     };
     let mut input = vec!["text".to_string()];
     if image {
@@ -603,10 +739,18 @@ pub(super) fn build_record_json(
     }
     let advanced = text("advanced");
     if !advanced.is_empty() {
-        let parsed: serde_json::Value = serde_json::from_str(&advanced)
-            .map_err(|error| format!("Advanced JSON does not parse: {error}"))?;
+        let parsed: serde_json::Value = serde_json::from_str(&advanced).map_err(|error| {
+            t!(
+                "settings_providers_usage.providers.record_form.error_advanced_parse",
+                error = error
+            )
+            .into_owned()
+        })?;
         let Some(object) = parsed.as_object() else {
-            return Err("Advanced JSON must be an object".into());
+            return Err(
+                t!("settings_providers_usage.providers.record_form.error_advanced_object")
+                    .into_owned(),
+            );
         };
         if let Some(target) = record.as_object_mut() {
             for (key, value) in object {
@@ -690,7 +834,10 @@ impl ProvidersPage {
         cx: &mut Context<Self>,
     ) -> Option<String> {
         let Some(dialect) = dialect else {
-            return Some("the probe did not resolve a transport".into());
+            return Some(
+                t!("settings_providers_usage.providers.record_form.error_no_transport")
+                    .into_owned(),
+            );
         };
         let offered: HashSet<String> = self
             .models
@@ -703,7 +850,7 @@ impl ProvidersPage {
         ids.retain(|id| !offered.contains(id) && !offered.contains(&format!("{provider}/{id}")));
         if ids.is_empty() {
             return Some(
-                "the vendor's listing has nothing this provider doesn't already offer".into(),
+                t!("settings_providers_usage.providers.record_form.error_nothing_new").into_owned(),
             );
         }
         let template_window = self
@@ -793,7 +940,13 @@ impl ProvidersPage {
                 .map(|input| input.read(cx).text().trim().to_string())
                 .unwrap_or_default()
                 .parse::<u64>()
-                .map_err(|_| format!("{key} must be a whole number"))
+                .map_err(|_| {
+                    t!(
+                        "settings_providers_usage.providers.record_form.error_whole_number",
+                        field = record_field_label(key)
+                    )
+                    .into_owned()
+                })
         };
         let (window, max_tokens) = match (number("contextWindow"), number("maxTokens")) {
             (Ok(window), Ok(max_tokens)) => (window, max_tokens),
@@ -807,7 +960,10 @@ impl ProvidersPage {
         };
         if window == 0 {
             if let Some(dialog) = self.fetch_dialog.as_mut() {
-                dialog.error = Some("Context window must be greater than zero".into());
+                dialog.error = Some(
+                    t!("settings_providers_usage.providers.record_form.error_window_zero")
+                        .into_owned(),
+                );
             }
             cx.notify();
             return;
@@ -874,12 +1030,14 @@ impl ProvidersPage {
 
     pub(super) fn open_record_form(&mut self, provider: String, cx: &mut Context<Self>) {
         let mut inputs = HashMap::new();
-        for (key, _, placeholder) in RECORD_FIELDS {
+        for (key, _, placeholder) in record_fields() {
             inputs.insert(
                 key.to_string(),
                 cx.new(|cx| ComposerInput::new(placeholder, cx)),
             );
         }
+        // The advanced field's placeholder is a JSON code sample, not
+        // English copy — it stays literal (identical in every locale).
         inputs.insert(
             "advanced".to_string(),
             cx.new(|cx| {
@@ -1091,6 +1249,10 @@ mod tests {
 
     #[test]
     fn record_forms_reject_bad_input_before_the_rpc() {
+        // The assertions pin the English error copy: hold the locale lock
+        // and pin the locale so a concurrent switching test can't flip it.
+        let _guard = crate::i18n::tests::locale_lock();
+        crate::i18n::tests::reset_locale();
         let base = |pairs: &[(&str, &str)]| record_texts(pairs);
         let good = |extra: &[(&str, &str)]| {
             let mut texts = base(&[

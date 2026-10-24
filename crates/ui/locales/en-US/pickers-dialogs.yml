@@ -1,0 +1,184 @@
+_version: 2
+pickers_dialogs:
+  common:
+    retry:
+      en-US: Retry
+  search:
+    default:
+      en-US: Search…
+    refs:
+      en-US: Search refs…
+    projects:
+      en-US: Search projects…
+    models:
+      en-US: Search models…
+  branch:
+    new_branch_placeholder:
+      en-US: New branch name…
+    no_project_selected:
+      en-US: No project selected
+    no_refs_found:
+      en-US: No refs found.
+    tag_current:
+      en-US: current
+    tag_worktree:
+      en-US: worktree
+    switching:
+      en-US: switching…
+    showing_refs:
+      en-US: Showing %{shown} of %{total} refs
+    create_row:
+      en-US: Create branch…
+    create:
+      en-US: Create
+    select_ref:
+      en-US: Select ref
+    from_ref:
+      en-US: From %{name}
+  checkout:
+    current:
+      en-US: Current checkout
+    new_worktree:
+      en-US: New worktree
+  session:
+    worktree:
+      en-US: Worktree
+    local_checkout:
+      en-US: Local checkout
+    no_ref:
+      en-US: No ref
+  mode:
+    label_confirm_changes:
+      en-US: Confirm changes
+    label_auto_review:
+      en-US: Auto review
+    label_full_access:
+      en-US: Full access
+    desc_confirm_changes:
+      en-US: Asks before every write, edit, or command
+    desc_auto_review:
+      en-US: The model reviews each change first; rejections come with a reason
+    desc_full_access:
+      en-US: Everything runs without asking — only for tasks you fully trust
+    footnote:
+      en-US: New chats inherit this choice · applies from the next Turn
+  space:
+    no_project:
+      en-US: No project
+    no_projects:
+      en-US: No projects.
+    no_projects_match:
+      en-US: No projects match.
+    work_outside:
+      en-US: Work outside a project
+    new_project:
+      en-US: New project…
+  provider_model:
+    configure_provider:
+      en-US: Configure provider
+    configure_provider_hint:
+      en-US: Add an API key in Settings → Providers.
+    no_models_found:
+      en-US: No models found
+    reasoning_heading:
+      en-US: Reasoning
+    default_badge:
+      en-US: Default
+  reasoning:
+    minimal:
+      en-US: Minimal
+    low:
+      en-US: Low
+    medium:
+      en-US: Medium
+    high:
+      en-US: High
+    xhigh:
+      en-US: X-High
+    max:
+      en-US: Max
+    ultra:
+      en-US: Ultra
+    ultracode:
+      en-US: Ultracode
+    ultrathink:
+      en-US: Ultrathink
+  switch_dialog:
+    title:
+      en-US: Couldn't switch branches
+    refused_message:
+      en-US: "The switch was refused to protect uncommitted changes. Commit or stash these files, then switch again:"
+    worktree_hosted_title:
+      en-US: Can't switch to that branch
+    worktree_hosted_message:
+      en-US: "%{branch} is checked out in another worktree (%{path}). To work on it there, add that folder as its own project."
+    got_it:
+      en-US: Got it
+  models:
+    context_window:
+      en-US: Context Window
+  file_dialog:
+    choose_file:
+      en-US: Choose File
+  image_viewer:
+    download_failed_title:
+      en-US: Could not download image
+    ok:
+      en-US: OK
+    download_original:
+      en-US: Download original image
+    close:
+      en-US: Close (Esc)
+    previous:
+      en-US: Previous image (←)
+    next:
+      en-US: Next image (→)
+    zoom_out:
+      en-US: Zoom out (−)
+    actual_size:
+      en-US: Actual size (1)
+    zoom_in:
+      en-US: Zoom in (+)
+    retry_preview:
+      en-US: Retry image preview
+  images:
+    not_found:
+      en-US: Image file not found.
+    unreadable:
+      en-US: "Image file could not be read: %{error}"
+    metadata_unreadable:
+      en-US: Image metadata could not be read.
+    exceeds_mib:
+      en-US: Image exceeds the 25 MiB limit.
+    exceeds_megapixel:
+      en-US: Image exceeds the 64 megapixel decode limit.
+    invalid_staging_reply:
+      en-US: "Invalid staging reply: %{error}"
+    invalid_reply:
+      en-US: "Invalid image reply: %{error}"
+    save_failed:
+      en-US: "Could not save image: %{error}"
+    format_undetermined:
+      en-US: "image format could not be determined: %{error}"
+    could_not_open:
+      en-US: "image could not be opened: %{error}"
+    orientation_unreadable:
+      en-US: "image orientation unreadable: %{error}"
+    could_not_decode:
+      en-US: "image could not be decoded (corrupt?): %{error}"
+    no_pixels:
+      en-US: image has no pixels.
+  attachments:
+    attached_images:
+      one:
+        en-US: Attached image
+      other:
+        en-US: "%{count} attached images"
+    image_name_fallback:
+      en-US: image
+    file_search_unavailable:
+      en-US: File search isn't available — the engine doesn't support it yet
+    engine_unreachable:
+      en-US: The engine is unreachable
+    file_search_failed:
+      en-US: File search failed

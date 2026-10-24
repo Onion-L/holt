@@ -27,6 +27,7 @@ use holt_proto::RunOutcome;
 use holt_rpc::methods;
 use holt_rpc::turns::{TurnOutcome, TurnTerminalEvent};
 
+use crate::i18n::t;
 use crate::settings;
 use crate::state::AppState;
 use crate::watch_coordinator::WatchCoordinator;
@@ -181,12 +182,23 @@ impl TurnNotificationController {
             .filter(|title| !title.is_empty());
         // Privacy: the body is the Chat title plus the bare outcome — never
         // answer text, reasoning, tool output, paths, or the engine's
-        // internal failure reason.
+        // internal failure reason. The title itself is user content and
+        // rides along as a placeholder, never translated.
         let body = match (chat_title, succeeded) {
-            (Some(title), true) => format!("{title} completed"),
-            (Some(title), false) => format!("{title} failed"),
-            (None, true) => "Chat completed".to_string(),
-            (None, false) => "Chat failed".to_string(),
+            (Some(title), true) => {
+                t!(
+                    "notifications_status.notification.title_completed",
+                    title = title
+                )
+            }
+            (Some(title), false) => {
+                t!(
+                    "notifications_status.notification.title_failed",
+                    title = title
+                )
+            }
+            (None, true) => t!("notifications_status.notification.chat_completed"),
+            (None, false) => t!("notifications_status.notification.chat_failed"),
         };
         // Tagged by Chat identity: a newer result replaces the older banner
         // for that Chat while other Chats stay distinct. Every eligible event
@@ -235,6 +247,7 @@ impl TurnNotificationController {
                 !(window_active && state.selected_chat.as_deref() == Some(chat_id.as_str()))
             })
             .map(|chat_id| {
+                let fallback_title = t!("notifications_status.notification.scheduled_run");
                 let title = state
                     .chats
                     .iter()
@@ -242,9 +255,9 @@ impl TurnNotificationController {
                     .and_then(|chat| chat.title.as_deref())
                     .map(str::trim)
                     .filter(|title| !title.is_empty())
-                    .unwrap_or("A scheduled run");
-                let body = format!("{title} is waiting for you");
-                (chat_id, body)
+                    .unwrap_or(fallback_title.as_ref());
+                let body = t!("notifications_status.notification.waiting", title = title);
+                (chat_id, body.into_owned())
             })
             .collect();
         for (chat_id, body) in posts {
@@ -602,6 +615,8 @@ mod tests {
 
     #[gpui::test]
     async fn succeeded_event_posts_titled_banner(cx: &mut TestAppContext) {
+        // Asserts catalog text: hold the locale lock against the i18n switch tests.
+        let _locale = crate::i18n::tests::locale_lock();
         let harness = harness(cx, |_| {});
         harness.engine.push_chats(serde_json::json!([chat_json(
             "chat-1",
@@ -623,6 +638,7 @@ mod tests {
 
     #[gpui::test]
     async fn failed_event_posts_failed_wording_without_reason(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         let harness = harness(cx, |_| {});
         harness.engine.push_chats(serde_json::json!([chat_json(
             "chat-1",
@@ -658,6 +674,7 @@ mod tests {
 
     #[gpui::test]
     async fn empty_or_missing_title_uses_neutral_wording(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         let harness = harness(cx, |_| {});
         harness.engine.push_chats(serde_json::json!([
             chat_json("chat-empty", Some("   ")),
@@ -959,6 +976,7 @@ mod tests {
 
     #[gpui::test]
     async fn a_waiting_run_posts_even_while_a_window_is_active(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         let harness = harness(cx, |_| {});
         harness.engine.push_chats(serde_json::json!([chat_json(
             "run-chat",

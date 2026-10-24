@@ -1,6 +1,9 @@
 //! Chat-owned terminal groups. A pane retains its viewport while its host moves.
 
+use std::borrow::Cow;
+
 use super::pane::TerminalPane;
+use crate::i18n::t;
 use crate::{state::AppState, theme::Theme};
 use gpui::{
     App, Context, Entity, FocusHandle, IntoElement, KeyBinding, Render, SharedString, Subscription,
@@ -380,8 +383,9 @@ impl TerminalPanel {
                             // The program's OSC title wins (the contextual
                             // name, user request); else this group's stable
                             // "Terminal N" — unique among the chat's tabs.
-                            pane.and_then(|p| p.osc_title(cx))
-                                .unwrap_or_else(|| format!("Terminal {}", g.no).into()),
+                            pane.and_then(|p| p.osc_title(cx)).unwrap_or_else(|| {
+                                t!("terminal_panel.tab_title", no = g.no).into()
+                            }),
                             exited,
                         )
                     })
@@ -509,11 +513,12 @@ impl TerminalPanel {
                 let prompt = this.update_in(cx, |_, window, cx| {
                     window.prompt(
                         gpui::PromptLevel::Warning,
-                        "Close running terminals?",
-                        Some(&format!(
-                            "This will end {running} terminal(s) and their running programs."
-                        )),
-                        &["Cancel", "Close terminals"],
+                        &t!("terminal_panel.confirm.close_running_title"),
+                        Some(&t!("terminal_panel.confirm.end_detail", count = running)),
+                        &[
+                            t!("terminal_panel.confirm.cancel").as_ref(),
+                            t!("terminal_panel.confirm.close_terminals").as_ref(),
+                        ],
                         cx,
                     )
                 });
@@ -679,7 +684,7 @@ impl TerminalPanel {
 pub(super) fn tool(
     id: &'static str,
     icon: &'static str,
-    title: &'static str,
+    title: Cow<'static, str>,
     cx: &App,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::of(cx);
@@ -692,7 +697,10 @@ pub(super) fn tool(
         .justify_center()
         .rounded_sm()
         .hover(|s| s.bg(theme.element_hover))
-        .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(title.into())).into())
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::popover::TextTooltip(title.clone().into()))
+                .into()
+        })
         .child(
             crate::icons::icon(icon)
                 .size_4()
@@ -787,7 +795,7 @@ impl Render for TerminalPanel {
                                         .tooltip(move |_, cx| {
                                             cx.new(|_| {
                                                 crate::popover::TextTooltip(
-                                                    "Close terminal group".into(),
+                                                    t!("terminal_panel.drawer.close_group").into(),
                                                 )
                                             })
                                             .into()
@@ -806,16 +814,25 @@ impl Render for TerminalPanel {
                     )),
             )
             .child(
-                tool("new-terminal", crate::icons::PLUS, "New terminal", cx).on_click(cx.listener(
-                    |this, _, window, cx| {
-                        this.open_tab_for_selected(cx);
-                        window.focus(&this.focus, cx);
-                    },
-                )),
+                tool(
+                    "new-terminal",
+                    crate::icons::PLUS,
+                    t!("terminal_panel.drawer.new_terminal"),
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_tab_for_selected(cx);
+                    window.focus(&this.focus, cx);
+                })),
             )
             .children((!self.embedded).then(|| {
-                tool("close-terminal", crate::icons::CLOSE, "Close terminal", cx)
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTerminal), cx))
+                tool(
+                    "close-terminal",
+                    crate::icons::CLOSE,
+                    t!("terminal_panel.drawer.close_terminal"),
+                    cx,
+                )
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTerminal), cx))
             }));
         let body = layout
             .map(|l| self.render_layout(&l, window, cx))
@@ -827,9 +844,9 @@ impl Render for TerminalPanel {
                     .justify_center()
                     .text_color(theme.text_muted)
                     .child(if self.chat(cx).is_some() {
-                        "No terminals"
+                        t!("terminal_panel.drawer.no_terminals")
                     } else {
-                        "Select a chat"
+                        t!("terminal_panel.drawer.select_chat")
                     })
                     .into_any_element()
             });

@@ -1,0 +1,359 @@
+_version: 2
+conversation_transcript:
+  common:
+    cancel:
+      en-US: Cancel
+    close:
+      en-US: Close
+    send:
+      en-US: Send
+    open:
+      en-US: Open
+    workspace:
+      en-US: workspace
+    error:
+      en-US: Error
+    copied:
+      en-US: Copied
+  edit:
+    placeholder:
+      en-US: Edit message
+    send_failed:
+      en-US: "Could not send the edit: %{error}"
+  retry:
+    label:
+      en-US: "Retrying · attempt %{attempt}/%{max}"
+    in:
+      en-US: "in %{secs}s"
+  question:
+    label:
+      en-US: Question
+    awaiting:
+      en-US: Awaiting your answer…
+    waiting:
+      en-US: Waiting for your answer…
+    answered:
+      en-US: "✓ Answered · %{question} → %{answer}"
+    inactive:
+      en-US: "%{summary} — no longer active"
+  plan:
+    proposed:
+      en-US: Proposed plan
+    approved:
+      en-US: ✓ Plan approved
+    rejected:
+      en-US: ⊘ Plan rejected
+    still_planning:
+      en-US: ⏸ Still in planning
+    dismissed:
+      en-US: — Planning dismissed
+  approval:
+    cwd_line:
+      en-US: "cwd: %{path}"
+    verdict:
+      allowed:
+        en-US: ✓ Approved
+      always_allowed:
+        en-US: ✓ Always allowed
+      exempted:
+        en-US: ⚡ Prefix exempt · auto-passed
+      review_passed:
+        en-US: Auto review · passed
+      review_rejected:
+        en-US: Auto review · rejected
+      review_rejected_reason:
+        en-US: Auto review · rejected · "%{reason}"
+      denied:
+        en-US: ⊘ Denied
+      denied_note:
+        en-US: ⊘ Denied · "%{note}"
+      aborted:
+        en-US: ⊘ Interrupted
+  tool:
+    thought_process:
+      en-US: Thought process
+    thought_times:
+      en-US: "Thought %{count} times"
+    thought_with_base:
+      en-US: "Thought · %{base}"
+    thought_times_with_base:
+      en-US: "Thought %{count} times · %{base}"
+    search_in:
+      en-US: "%{pattern} in %{path}"
+    tokens:
+      en-US: "%{count} tokens"
+    what:
+      diff:
+        en-US: diff
+      output:
+        en-US: output
+    show_full:
+      en-US: "Show full %{what}"
+    show_full_size:
+      en-US: "Show full %{what} (%{size})"
+    loading_full:
+      en-US: "Loading full %{what}…"
+    load_failed:
+      en-US: Couldn't load full %{what} — tap to retry
+    more_lines:
+      en-US: "… %{count} more lines"
+    subagent:
+      en-US: Subagent
+  turn_card:
+    edited_files:
+      one:
+        en-US: "Edited %{count} file"
+      other:
+        en-US: "Edited %{count} files"
+    undo:
+      en-US: Undo
+    review_changes:
+      en-US: Review changes
+    show_more:
+      en-US: "Show %{count} more"
+    show_less:
+      en-US: Show less
+    diff_truncated:
+      en-US: diff truncated
+    restore:
+      running:
+        en-US: Restoring…
+      restored:
+        en-US: Undone
+      partial:
+        en-US: Partially restored
+      failed:
+        en-US: Restore failed
+  rewind:
+    failed:
+      en-US: "Rewind failed: %{error}"
+    malformed:
+      en-US: "Rewind failed: malformed reply"
+    title_cant:
+      en-US: Can't rewind
+    title_confirm:
+      en-US: Rewind to this step?
+    conflicts_intro:
+      en-US: "Nothing was changed. These files block it:"
+    conflict_changed:
+      en-US: changed since that step
+    conflict_not_stored:
+      en-US: content was not saved
+    conflict_unsafe:
+      en-US: outside the working tree
+    conflict_line:
+      en-US: "%{path} — %{reason}"
+    conversation_removed:
+      en-US: The conversation after this step will be removed.
+    files_intro:
+      en-US: "The conversation after this step will be removed. These files go back to how they were:"
+    file_restored:
+      en-US: "%{path} — restored"
+    file_deleted:
+      en-US: "%{path} — deleted"
+    and_more:
+      en-US: "…and %{count} more"
+    button:
+      en-US: Rewind
+    tooltip:
+      en-US: Rewind to this step
+    summary:
+      none:
+        en-US: Rewound the conversation.
+      one:
+        en-US: "Rewound the conversation and %{count} file."
+      other:
+        en-US: "Rewound the conversation and %{count} files."
+  goal:
+    chip:
+      en-US: goal
+  run_caption:
+    catchup:
+      en-US: " · catch-up"
+  provider:
+    stale:
+      en-US: Catalog changed — ask to re-propose.
+    write:
+      en-US: Write
+    writing:
+      en-US: Writing…
+    discard:
+      en-US: Discard
+    written:
+      en-US: ✓ Written
+    written_to:
+      en-US: "✓ Written to %{names}"
+    open_in_settings:
+      en-US: Open in Settings
+    discarded:
+      en-US: Discarded
+    proposal_superseded:
+      en-US: Superseded by a newer proposal
+    which_provider:
+      en-US: Which provider?
+    which_provider_inactive:
+      en-US: Which provider? — no longer active
+    configured:
+      en-US: Configured
+    using:
+      en-US: "✓ Using %{name} · %{id}"
+    api_key_placeholder:
+      en-US: API key
+    api_key_for:
+      en-US: "API key for %{name}"
+    key_privacy:
+      en-US: Saved locally and sent only to this destination — never to the chat.
+    save_key:
+      en-US: Save key
+    dismiss:
+      en-US: Dismiss
+    key_saved:
+      en-US: ✓ Key saved
+    key_dismissed:
+      en-US: Dismissed
+    key_superseded:
+      en-US: "API key for %{name} — superseded by a newer request"
+  history:
+    fetch_all:
+      en-US: Fetch all
+    fetching:
+      en-US: Fetching…
+    commits:
+      one:
+        en-US: "%{count} commit"
+      other:
+        en-US: "%{count} commits"
+    ref:
+      branch:
+        en-US: Branch
+      remote:
+        en-US: Remote branch
+      tag:
+        en-US: Tag
+    ref_description:
+      en-US: "%{kind}: %{label}"
+    loading:
+      en-US: Loading…
+    retry:
+      en-US: Retry
+    load_more:
+      en-US: Load more
+    no_subject:
+      en-US: "(no subject)"
+    unknown_author:
+      en-US: Unknown
+    no_repo:
+      en-US: No repository selected
+    loading_history:
+      en-US: Loading history…
+    no_commits:
+      en-US: No commits yet
+    fetch_failed:
+      en-US: "Fetch failed: %{error}"
+    col:
+      commit:
+        en-US: Commit
+      author:
+        en-US: Author
+      date:
+        en-US: Date
+      sha:
+        en-US: SHA
+  usage:
+    kind:
+      turn:
+        en-US: Turns
+      subagent:
+        en-US: Subagents
+      compaction:
+        en-US: Compaction
+      auto_review:
+        en-US: Auto review
+    window_unknown:
+      en-US: · window unknown
+    records:
+      one:
+        en-US: "%{count} record"
+      other:
+        en-US: "%{count} records"
+    note:
+      estimated_unknown:
+        en-US: "Estimated from history; the window is unknown."
+      estimated:
+        en-US: Estimated from history until the next reply reports usage.
+      window_unknown:
+        en-US: Context window size is unknown.
+    section:
+      context:
+        en-US: Context
+      usage:
+        en-US: Usage
+      cache_hit:
+        en-US: Cache hit
+    cache_note:
+      en-US: "%{input} input · %{read} read"
+    cache_note_written:
+      en-US: "%{input} input · %{read} read · %{written} written"
+  user_row:
+    open_skill:
+      en-US: Open SKILL.md
+    compacting:
+      en-US: Compacting Context
+    compacted:
+      en-US: Context Compacted
+    not_delivered_retry:
+      en-US: Not delivered — click to retry
+    checking_goal:
+      en-US: Checking the goal…
+    queued_hint:
+      en-US: Queued — will send automatically
+    sending:
+      en-US: Sending
+    to_interrupt:
+      en-US: to interrupt
+  flavour:
+    thinking:
+      en-US: Thinking
+    pondering:
+      en-US: Pondering
+    scheming:
+      en-US: Scheming
+    brewing:
+      en-US: Brewing
+    weaving:
+      en-US: Weaving
+    tinkering:
+      en-US: Tinkering
+    musing:
+      en-US: Musing
+    composing:
+      en-US: Composing
+    sifting:
+      en-US: Sifting
+    untangling:
+      en-US: Untangling
+    distilling:
+      en-US: Distilling
+    sketching:
+      en-US: Sketching
+    plotting:
+      en-US: Plotting
+    riffing:
+      en-US: Riffing
+    combobulating:
+      en-US: Combobulating
+    percolating:
+      en-US: Percolating
+    marinating:
+      en-US: Marinating
+    noodling:
+      en-US: Noodling
+    puzzling:
+      en-US: Puzzling
+    conjuring:
+      en-US: Conjuring
+  markdown:
+    copied:
+      en-US: Copied
+    fit:
+      en-US: Fit
