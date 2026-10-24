@@ -257,7 +257,7 @@ impl Shell {
                         SettingsSection::ALL.into_iter().map(|item| {
                             let selected = item == section;
                             div()
-                                .id(SharedString::from(format!("settings-nav-{}", item.label())))
+                                .id(SharedString::from(format!("settings-nav-{}", item.slug())))
                                 .flex()
                                 .flex_row()
                                 .items_center()

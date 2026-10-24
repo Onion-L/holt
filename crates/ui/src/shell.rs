@@ -239,6 +239,23 @@ impl SettingsSection {
         SettingsSection::Archived,
     ];
 
+    /// The stable identity slug for element ids and test selectors —
+    /// never the label: the label is localized, and an id built from it
+    /// would change with the language and reset hover/focus state on a
+    /// switch (see the same rule in `theme_selector` and `menu_bar`).
+    pub fn slug(self) -> &'static str {
+        match self {
+            SettingsSection::General => "general",
+            SettingsSection::Providers => "providers",
+            SettingsSection::Appearance => "appearance",
+            SettingsSection::Shortcuts => "shortcuts",
+            SettingsSection::Skills => "skills",
+            SettingsSection::Mcp => "mcp",
+            SettingsSection::Usage => "usage",
+            SettingsSection::Archived => "archived",
+        }
+    }
+
     /// Sidebar + header label (holt settings-sidebar.tsx SECTIONS / __root.tsx
     /// `settingsTitle` — the same strings in both places). Localized through
     /// the catalog; render sites (the settings sidebar) receive a `Cow`.
