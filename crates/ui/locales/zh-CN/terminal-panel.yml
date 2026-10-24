@@ -1,0 +1,93 @@
+_version: 2
+terminal_panel:
+  tab_title:
+    zh-CN: 终端 %{no}
+  surface:
+    file:
+      zh-CN: 文件
+    terminal:
+      zh-CN: 终端
+    git:
+      zh-CN: Git
+    diff:
+      zh-CN: 差异
+    review:
+      zh-CN: 审查
+    show_file_sidebar:
+      zh-CN: 显示文件侧栏
+  drawer:
+    no_terminals:
+      zh-CN: 暂无终端
+    select_chat:
+      zh-CN: 选择一个会话
+    new_terminal:
+      zh-CN: 新建终端
+    close_terminal:
+      zh-CN: 关闭终端
+    close_group:
+      zh-CN: 关闭终端组
+  confirm:
+    close_running_title:
+      zh-CN: 关闭正在运行的终端？
+    end_detail:
+      zh-CN: 这将结束 %{count} 个终端及其正在运行的程序。
+    close_terminals:
+      zh-CN: 关闭终端
+    cancel:
+      zh-CN: 取消
+    ok:
+      zh-CN: 确定
+  search:
+    placeholder:
+      zh-CN: 在终端中查找
+    no_matches:
+      zh-CN: 无匹配
+    prev:
+      zh-CN: 上一个匹配
+    next:
+      zh-CN: 下一个匹配
+    close:
+      zh-CN: 关闭搜索
+  pane:
+    select_chat_hint:
+      zh-CN: 选择一个会话以打开终端
+    exited:
+      zh-CN: 已退出
+    restart:
+      zh-CN: 重启终端
+  notice:
+    output_lost:
+      zh-CN: 断开连接期间输出有丢失，此屏幕内容不完整。
+    input_failed:
+      zh-CN: 终端输入失败：%{error}
+    open_failed:
+      zh-CN: 打开终端失败：%{error}
+    process_exited:
+      zh-CN: "[进程已退出，退出码 %{code}]"
+  lifecycle:
+    quit_unsaved_title:
+      zh-CN: 有未保存的文件，仍要退出 Holt？
+    close_unsaved_title:
+      zh-CN: 有未保存的文件，仍要关闭窗口？
+    unsaved_detail:
+      zh-CN: "%{count} 个文件有未保存的更改。保存会写入磁盘，放弃将丢失。"
+    discard_changes:
+      zh-CN: 放弃更改
+    save_and_continue:
+      zh-CN: 保存并继续
+    save_failed_title:
+      zh-CN: 无法保存全部文件
+    save_failed_detail:
+      zh-CN: "%{count} 个文件未能保存。应用保持打开，未丢失任何内容。"
+    check_failed_title:
+      zh-CN: 无法检查正在运行的终端
+    quit_end_title:
+      zh-CN: 退出 Holt 并结束正在运行的终端？
+    close_end_title:
+      zh-CN: 关闭窗口并结束正在运行的终端？
+    quit_holt:
+      zh-CN: 退出 Holt
+    close_window:
+      zh-CN: 关闭窗口
+    close_failed_title:
+      zh-CN: 无法关闭终端

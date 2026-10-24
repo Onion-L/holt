@@ -4,6 +4,7 @@
 
 use gpui::{AnyElement, Context, KeyDownEvent, SharedString, div, prelude::*, px};
 
+use crate::i18n::t;
 use crate::motion;
 use crate::popover::{self, Loadable};
 use crate::theme::Theme;
@@ -303,7 +304,7 @@ impl Pickers {
                         // The mode menu loads nothing; no retry surface exists.
                         PickerKind::Mode => {}
                     }))
-                    .child(SharedString::from("Retry")),
+                    .child(SharedString::from(t!("pickers_dialogs.common.retry"))),
             )
             .into_any_element()
     }

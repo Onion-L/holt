@@ -92,7 +92,9 @@ pub(super) fn read_logo_file(path: &std::path::Path) -> Result<Vec<u8>, String> 
         .map_err(|error| error.to_string())?
         .len();
     if size > MAX_LOGO_BYTES {
-        return Err("Logo exceeds the 8 MB limit".into());
+        return Err(
+            t!("settings_providers_usage.providers.logo_dialog.error_size_limit").into_owned(),
+        );
     }
     std::fs::read(path).map_err(|error| error.to_string())
 }
@@ -185,7 +187,9 @@ impl ProvidersPage {
                 .map(|(image, _, _)| BrandMark::Image(image)),
         };
         if preview.is_none() {
-            dialog.error = Some("Not a readable image".into());
+            dialog.error = Some(
+                t!("settings_providers_usage.providers.logo_dialog.error_not_image").into_owned(),
+            );
             cx.notify();
             return;
         }
@@ -273,7 +277,13 @@ impl ProvidersPage {
                     dialog.error = Some(error);
                     cx.notify();
                 } else {
-                    self.fail(format!("Logo not saved: {error}"), cx);
+                    self.fail(
+                        t!(
+                            "settings_providers_usage.providers.logo_not_saved",
+                            error = error
+                        ),
+                        cx,
+                    );
                 }
             }
         }
@@ -291,12 +301,12 @@ pub(super) fn logo_dialog(
     let preview = dialog.preview(cx);
     let has_preview = preview.is_some();
     let can_save = !dialog.saving && dialog.pending(cx).is_some();
-    let status: SharedString = if has_preview {
-        "Preview — not saved yet".into()
+    let status = if has_preview {
+        t!("settings_providers_usage.providers.logo_dialog.status_preview")
     } else if dialog.has_logo {
-        "Current logo".into()
+        t!("settings_providers_usage.providers.logo_dialog.status_current")
     } else {
-        "No logo yet — showing the monogram".into()
+        t!("settings_providers_usage.providers.logo_dialog.status_none")
     };
     let mark = preview
         .or_else(|| provider_logos::custom_mark(&dialog.provider))
@@ -327,7 +337,10 @@ pub(super) fn logo_dialog(
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(popover::dialog_title(theme, "Provider logo"))
+                .child(popover::dialog_title(
+                    theme,
+                    &t!("settings_providers_usage.providers.logo_dialog.title"),
+                ))
                 .child(
                     div()
                         .truncate()
@@ -351,7 +364,7 @@ pub(super) fn logo_dialog(
                 ),
         );
 
-    let tab = |source: LogoSource, id: &'static str, label: &'static str| {
+    let tab = |source: LogoSource, id: &'static str, label: Cow<'static, str>| {
         let active = dialog.source == source;
         let hover_text = theme.text;
         let mut chip = div()
@@ -385,16 +398,27 @@ pub(super) fn logo_dialog(
         .gap(px(2.0))
         .rounded(px(9.0))
         .bg(theme.ink(0.04))
-        .child(tab(LogoSource::File, "logo-dialog-tab-file", "Upload file"))
-        .child(tab(LogoSource::Svg, "logo-dialog-tab-svg", "Paste SVG"));
+        .child(tab(
+            LogoSource::File,
+            "logo-dialog-tab-file",
+            t!("settings_providers_usage.providers.logo_dialog.tab_file"),
+        ))
+        .child(tab(
+            LogoSource::Svg,
+            "logo-dialog-tab-svg",
+            t!("settings_providers_usage.providers.logo_dialog.tab_svg"),
+        ));
 
     let source_area = match dialog.source {
         LogoSource::File => {
             let (title, hint): (SharedString, SharedString) = match &dialog.file {
-                Some(file) => (file.name.clone(), "Click to choose another".into()),
+                Some(file) => (
+                    file.name.clone(),
+                    t!("settings_providers_usage.providers.logo_dialog.choose_another").into(),
+                ),
                 None => (
-                    "Choose an image".into(),
-                    "PNG, JPG, WebP or SVG · up to 8 MB".into(),
+                    t!("settings_providers_usage.providers.logo_dialog.choose_image").into(),
+                    t!("settings_providers_usage.providers.logo_dialog.file_hint").into(),
                 ),
             };
             let hover_bg = theme.ink(0.05);
@@ -458,7 +482,9 @@ pub(super) fn logo_dialog(
                 div()
                     .text_size(crate::typography::ui_rems(11.5))
                     .text_color(theme.text_muted)
-                    .child("Drawn as a single-colour mask tinted to the theme. Enter saves."),
+                    .child(t!(
+                        "settings_providers_usage.providers.logo_dialog.svg_hint"
+                    )),
             )
             .into_any_element(),
     };
@@ -467,13 +493,17 @@ pub(super) fn logo_dialog(
         (dialog.source == LogoSource::Svg
             && !svg_text.is_empty()
             && !provider_logos::looks_like_svg(svg_text))
-        .then(|| "That doesn\u{2019}t look like SVG markup".to_string())
+        .then(|| t!("settings_providers_usage.providers.logo_dialog.error_not_svg").into_owned())
     });
 
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
-    let save_label = if dialog.saving { "Saving…" } else { "Save" };
-    let save = popover::btn_primary(theme, save_label)
+    let save_label = if dialog.saving {
+        t!("settings_providers_usage.providers.logo_dialog.saving")
+    } else {
+        t!("settings_providers_usage.providers.save")
+    };
+    let save = popover::btn_primary(theme, &save_label)
         .id("logo-dialog-save")
         .debug_selector(|| "logo-dialog-save".into());
     let save = if can_save {
@@ -498,13 +528,19 @@ pub(super) fn logo_dialog(
                         .size(px(13.0))
                         .text_color(theme.text_muted),
                 )
-                .child("Remove logo")
+                .child(t!(
+                    "settings_providers_usage.providers.logo_dialog.remove_logo"
+                ))
         }))
         .child(div().flex_1())
         .child(
-            popover::btn_ghost(theme, "Cancel", "logo-dialog-cancel")
-                .id("logo-dialog-cancel")
-                .on_click(cx.listener(|page, _, _, cx| page.close_logo_dialog(cx))),
+            popover::btn_ghost(
+                theme,
+                &t!("settings_providers_usage.providers.cancel"),
+                "logo-dialog-cancel",
+            )
+            .id("logo-dialog-cancel")
+            .on_click(cx.listener(|page, _, _, cx| page.close_logo_dialog(cx))),
         )
         .child(save);
 

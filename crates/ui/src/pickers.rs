@@ -33,6 +33,7 @@ const MAX_REF_ROWS: usize = 300;
 const PROVIDER_TOOLTIP_DELAY: Duration = Duration::from_secs(1);
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::popover::{self, Loadable, MenuKey};
 use crate::settings::composer::ComposerDefaults;
 use crate::state::{AppState, EngineHandle, Indicator};
@@ -214,10 +215,11 @@ pub struct Pickers {
 
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| ComposerInput::new("Search…", cx));
+        let search = cx.new(|cx| ComposerInput::new(t!("pickers_dialogs.search.default"), cx));
         // The branch picker's create-row input: Enter submits, Escape is the
         // frame's to handle (abandon the row, keep the popover open).
-        let branch_create = cx.new(|cx| ComposerInput::new("New branch name…", cx));
+        let branch_create = cx
+            .new(|cx| ComposerInput::new(t!("pickers_dialogs.branch.new_branch_placeholder"), cx));
         let create_events = cx.subscribe(&branch_create, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.create_branch_submit(cx);
@@ -683,7 +685,7 @@ impl Pickers {
         // reason).
         self.search_reset_muted = !self.search.read(cx).text().is_empty();
         self.search.update(cx, |input, cx| {
-            input.set_placeholder("Search…", cx);
+            input.set_placeholder(t!("pickers_dialogs.search.default"), cx);
             if !input.text().is_empty() {
                 input.set_text("", cx);
             }
@@ -720,21 +722,21 @@ impl Pickers {
             PickerKind::Branch => {
                 let handle = self.search.read(cx).focus_handle(cx);
                 self.search.update(cx, |input, cx| {
-                    input.set_placeholder("Search refs…", cx);
+                    input.set_placeholder(t!("pickers_dialogs.search.refs"), cx);
                 });
                 window.focus(&handle, cx);
             }
             PickerKind::Space => {
                 let handle = self.search.read(cx).focus_handle(cx);
                 self.search.update(cx, |input, cx| {
-                    input.set_placeholder("Search projects…", cx);
+                    input.set_placeholder(t!("pickers_dialogs.search.projects"), cx);
                 });
                 window.focus(&handle, cx);
             }
             PickerKind::ProviderModel => {
                 let handle = self.search.read(cx).focus_handle(cx);
                 self.search.update(cx, |input, cx| {
-                    input.set_placeholder("Search models…", cx);
+                    input.set_placeholder(t!("pickers_dialogs.search.models"), cx);
                 });
                 window.focus(&handle, cx);
             }
@@ -934,7 +936,7 @@ impl Pickers {
                 .justify_end()
                 .gap(px(8.0))
                 .child(
-                    popover::btn_primary(&theme, "Got it")
+                    popover::btn_primary(&theme, &t!("pickers_dialogs.switch_dialog.got_it"))
                         .id("switch-dialog-dismiss")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.switch_dialog = None;
@@ -968,7 +970,7 @@ impl Pickers {
             state
                 .selected_space_row()
                 .map(|s| s.display_name().to_string())
-                .unwrap_or_else(|| "No project".to_string())
+                .unwrap_or_else(|| t!("pickers_dialogs.space.no_project").into_owned())
                 .into()
         };
         let project_chip = self.footer_chip(
@@ -1235,7 +1237,7 @@ impl Render for Pickers {
             match self.open_kind() {
                 Some(PickerKind::Branch) => {
                     self.search.update(cx, |input, cx| {
-                        input.set_placeholder("Search refs…", cx);
+                        input.set_placeholder(t!("pickers_dialogs.search.refs"), cx);
                     });
                     let handle = self.search.read(cx).focus_handle(cx);
                     if handle.is_focused(window) {
@@ -1281,7 +1283,7 @@ impl Render for Pickers {
         // so instead of wearing a provider mark that cannot run.
         let no_providers = self.no_providers_available() && self.effective_provider(cx).is_none();
         let model_label: SharedString = if no_providers {
-            SharedString::from("Configure provider")
+            SharedString::from(t!("pickers_dialogs.provider_model.configure_provider"))
         } else {
             let loaded = self.selected_model(cx).map(|m| m.label.clone());
             let label = loaded.or_else(|| {

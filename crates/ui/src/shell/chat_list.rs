@@ -3,6 +3,7 @@
 //! `Shell`'s private state.
 
 use super::*;
+use crate::i18n::t;
 
 /// Sidebar resort glide (feature-inventory §1.6): 260ms
 /// `cubic-bezier(0.22,1,0.36,1)` per-row translate, the View Transitions
@@ -151,6 +152,22 @@ fn sidebar_key_order_changed(old: &[(String, f32)], new: &[(String, f32)]) -> bo
 pub(super) fn chat_row_height(metadata_line: bool) -> f32 {
     if metadata_line { 63.0 } else { 45.0 }
 }
+/// The settings nav row's display name, projected onto this group's catalog
+/// keys by section identity — the enum's own `label` stays the English
+/// identity string (element ids and other surfaces read it).
+fn settings_nav_label(section: SettingsSection) -> std::borrow::Cow<'static, str> {
+    match section {
+        SettingsSection::Providers => t!("sidebar_spaces.settings_nav.providers"),
+        SettingsSection::Appearance => t!("sidebar_spaces.settings_nav.appearance"),
+        SettingsSection::Shortcuts => t!("sidebar_spaces.settings_nav.shortcuts"),
+        SettingsSection::Skills => t!("sidebar_spaces.settings_nav.skills"),
+        SettingsSection::Mcp => t!("sidebar_spaces.settings_nav.mcp"),
+        SettingsSection::Usage => t!("sidebar_spaces.settings_nav.usage"),
+        SettingsSection::General => t!("sidebar_spaces.settings_nav.general"),
+        SettingsSection::Archived => t!("sidebar_spaces.settings_nav.archived"),
+    }
+}
+
 /// Flex gap between sidebar list items.
 pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
 /// Provider/title geometry for the active multi-line cards: identity close
@@ -234,13 +251,13 @@ impl Shell {
                             .text_size(crate::typography::ui_rems(11.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text_muted.opacity(0.6))
-                            .child(SharedString::from("Settings")),
+                            .child(t!("sidebar_spaces.sidebar.settings")),
                     )
                     .child(div().flex().flex_col().gap(px(2.0)).children(
                         SettingsSection::ALL.into_iter().map(|item| {
                             let selected = item == section;
                             div()
-                                .id(SharedString::from(format!("settings-nav-{}", item.label())))
+                                .id(SharedString::from(format!("settings-nav-{}", item.slug())))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -270,7 +287,7 @@ impl Shell {
                                         .size(px(16.0))
                                         .text_color(theme.text_muted),
                                 )
-                                .child(SharedString::from(item.label()))
+                                .child(settings_nav_label(item))
                         }),
                     )),
             )
@@ -298,7 +315,7 @@ impl Shell {
                                 .size(px(16.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from("Back")),
+                        .child(t!("sidebar_spaces.sidebar.back")),
                 ),
             )
             .into_any_element()
@@ -355,16 +372,24 @@ impl Shell {
         } else {
             spaces::status_dot_color(status, theme)
         };
-        let status_label: Option<&'static str> = if undelivered {
-            Some("Failed")
+        let status_label: Option<std::borrow::Cow<'static, str>> = if undelivered {
+            Some(t!("sidebar_spaces.sidebar.status.failed"))
         } else if queued {
-            Some("Queued")
+            Some(t!("sidebar_spaces.sidebar.status.queued"))
         } else {
             match status {
-                holt_proto::ChatIndicator::Working => Some("Working"),
-                holt_proto::ChatIndicator::AwaitingInput => Some("Input"),
-                holt_proto::ChatIndicator::Errored => Some("Failed"),
-                holt_proto::ChatIndicator::Completed => Some("Done"),
+                holt_proto::ChatIndicator::Working => {
+                    Some(t!("sidebar_spaces.sidebar.status.working"))
+                }
+                holt_proto::ChatIndicator::AwaitingInput => {
+                    Some(t!("sidebar_spaces.sidebar.status.input"))
+                }
+                holt_proto::ChatIndicator::Errored => {
+                    Some(t!("sidebar_spaces.sidebar.status.failed"))
+                }
+                holt_proto::ChatIndicator::Completed => {
+                    Some(t!("sidebar_spaces.sidebar.status.done"))
+                }
                 holt_proto::ChatIndicator::Idle => None,
             }
         };
@@ -441,7 +466,7 @@ impl Shell {
                                 .text_size(crate::typography::ui_rems(10.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(status_color)
-                                .child(SharedString::from(label)),
+                                .child(label),
                         )
                         .into_any_element()
                 }
@@ -748,7 +773,7 @@ impl Shell {
         let (label, glyph): (SharedString, AnyElement) = match conn.state {
             S::Disabled | S::Connected => return None,
             S::Offline => (
-                "Offline — sends are saved".into(),
+                t!("sidebar_spaces.sidebar.offline").into(),
                 div()
                     .size(px(5.0))
                     .rounded_full()
@@ -756,7 +781,7 @@ impl Shell {
                     .into_any_element(),
             ),
             S::Reconnecting => (
-                "Reconnecting…".into(),
+                t!("sidebar_spaces.sidebar.reconnecting").into(),
                 loaders::mini_mono_spinner(
                     "connection-spinner",
                     2.0,
@@ -1009,7 +1034,7 @@ impl Shell {
                                     .pb(px(Theme::SPACE_SM))
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_faint)
-                                    .child(SharedString::from("No sessions yet"))
+                                    .child(t!("sidebar_spaces.sidebar.no_sessions"))
                                     .into_any_element()
                             }),
                     ),
@@ -1170,7 +1195,7 @@ impl Shell {
                     .size(px(16.0))
                     .text_color(theme.text_muted),
             )
-            .child(SharedString::from("Settings"))
+            .child(t!("sidebar_spaces.sidebar.settings"))
             .into_any_element()
     }
 }

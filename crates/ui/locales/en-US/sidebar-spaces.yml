@@ -1,0 +1,310 @@
+_version: 2
+sidebar_spaces:
+  errors:
+    engine_unresponsive:
+      en-US: The engine didn't respond — is it running?
+  spaces:
+    filter:
+      all_projects:
+        en-US: All projects
+      new_project:
+        en-US: New project…
+      search_placeholder:
+        en-US: Search projects…
+    view:
+      aria_label:
+        en-US: Sidebar view options
+      sort:
+        en-US: Sort
+      show:
+        en-US: Show
+      last_updated:
+        en-US: Last updated
+      created:
+        en-US: Created
+      manual:
+        en-US: Manual
+      provider_logo:
+        en-US: Provider logo
+      branch:
+        en-US: Branch
+      pull_request:
+        en-US: Pull request
+    rows:
+      new_session:
+        en-US: New session
+  add_space:
+    search_placeholder:
+      en-US: Search folders…
+    enter:
+      en-US: Enter
+    adding:
+      en-US: Adding…
+    retry:
+      en-US: Retry
+    empty_here:
+      en-US: No folders here
+    empty_match:
+      en-US: No folders match
+    home:
+      en-US: Home
+    locations:
+      en-US: Locations
+    hint_navigate:
+      en-US: Navigate
+    hint_up:
+      en-US: Up
+    hint_open:
+      en-US: Open
+    hint_complete:
+      en-US: Complete
+  space_menu:
+    rename_ellipsis:
+      en-US: Rename…
+    remove_ellipsis:
+      en-US: Remove…
+    rename_title:
+      en-US: Rename project
+    name_placeholder:
+      en-US: Project name
+    cancel:
+      en-US: Cancel
+    rename:
+      en-US: Rename
+    remove_title:
+      en-US: Remove project?
+    delete_this_project:
+      en-US: this project
+    delete_confirm_one:
+      en-US: Removing “%{name}” permanently deletes its 1 session. This can’t be undone.
+    delete_confirm_other:
+      en-US: Removing “%{name}” permanently deletes its %{count} sessions. This can’t be undone.
+    remove:
+      en-US: Remove
+  sidebar:
+    settings:
+      en-US: Settings
+    back:
+      en-US: Back
+    no_sessions:
+      en-US: No sessions yet
+    offline:
+      en-US: "Offline — sends are saved"
+    reconnecting:
+      en-US: Reconnecting…
+    status:
+      failed:
+        en-US: Failed
+      queued:
+        en-US: Queued
+      working:
+        en-US: Working
+      input:
+        en-US: Input
+      done:
+        en-US: Done
+  settings_nav:
+    providers:
+      en-US: Providers
+    appearance:
+      en-US: Appearance
+    shortcuts:
+      en-US: Shortcuts
+    skills:
+      en-US: Skills
+    mcp:
+      en-US: MCP Servers
+    usage:
+      en-US: Usage
+    general:
+      en-US: General
+    archived:
+      en-US: Archived sessions
+  chat_menu:
+    pin:
+      en-US: Pin
+    unpin:
+      en-US: Unpin
+    rename:
+      en-US: Rename...
+    archive:
+      en-US: Archive
+    copy:
+      en-US: Copy
+    delete:
+      en-US: Delete...
+    copy_directory:
+      en-US: Copy working directory
+    copy_link:
+      en-US: Copy deep link
+    copy_markdown:
+      en-US: Copy as Markdown
+    copied_directory:
+      en-US: Working directory copied
+    no_directory:
+      en-US: This session has no working directory
+    copy_unavailable:
+      en-US: "Cannot copy session: engine is unavailable"
+    read_timeout:
+      en-US: Reading session timed out
+    copied_markdown:
+      en-US: Session copied as Markdown
+    copy_failed:
+      en-US: "Could not copy session: %{error}"
+    stream_closed:
+      en-US: Session stream closed
+    snapshot_unavailable:
+      en-US: Session snapshot is unavailable
+  state_card:
+    plan_name:
+      en-US: Plan Mode
+    plan_status:
+      en-US: planning
+    plan_blurb:
+      en-US: Read-only planning. Approving a plan exits and restores the %{mode} permission mode.
+    plan_leave_tooltip:
+      en-US: Leave Plan Mode (/plan off)
+    provider_name:
+      en-US: Provider Mode
+    provider_status:
+      en-US: setup
+    provider_blurb:
+      en-US: Catalog setup — the conversation adds and updates providers.
+    provider_leave_tooltip:
+      en-US: Leave Provider Mode (/provider off)
+    mode_engine_unreachable:
+      en-US: Engine not connected — couldn't reach %{mode}.
+    mode_leave_failed:
+      en-US: "Leaving %{mode} failed: %{error}"
+    goal_engine_unreachable:
+      en-US: Engine not connected — couldn't reach the goal.
+    pause_failed:
+      en-US: "Pausing the goal failed: %{error}"
+    resume_failed:
+      en-US: "Resuming the goal failed: %{error}"
+    goal_cleared:
+      en-US: Goal cleared
+    clear_failed:
+      en-US: "Clearing the goal failed: %{error}"
+    resume_tooltip:
+      en-US: Resume the goal (/goal resume)
+    pause_tooltip:
+      en-US: Pause the goal (/goal pause)
+    clear_tooltip:
+      en-US: Clear the goal (/goal off)
+    collapse_tooltip:
+      en-US: Collapse the card
+    verified_count:
+      en-US: "%{verified}/%{total} verified"
+    verified_tooltip:
+      en-US: "The verifier's latest pass: %{verified} of %{total} steps backed by concrete evidence"
+    todo:
+      en-US: Todo
+    todo_dismiss:
+      en-US: Close until the next list
+    goal_fallback:
+      en-US: Goal
+    status_working:
+      en-US: working
+    status_round:
+      en-US: round %{n} · %{verb}
+    status_checking:
+      en-US: checking
+    status_queued:
+      en-US: after your queue
+    status_awaiting:
+      en-US: waiting for you
+    status_paused:
+      en-US: paused
+    status_blocked:
+      en-US: blocked
+    verifier_failed:
+      en-US: The verifier couldn't reach a verdict (%{count}/3) — the loop keeps going.
+  goal:
+    round:
+      en-US: Round %{n}
+    resumed:
+      en-US: Resumed
+    retry:
+      en-US: Retry
+  chat_manager:
+    title:
+      en-US: Chat manager
+    search_placeholder:
+      en-US: Search sessions
+    filter_all:
+      en-US: All
+    filter_active:
+      en-US: Active
+    filter_archived:
+      en-US: Archived
+    all_routines:
+      en-US: All Routines
+    col_title:
+      en-US: Title
+    col_project:
+      en-US: Project
+    col_updated:
+      en-US: Updated
+    untitled:
+      en-US: Untitled session
+    tag_worktree:
+      en-US: Worktree
+    tag_archived:
+      en-US: Archived
+    action_open:
+      en-US: Open
+    action_archive:
+      en-US: Archive
+    action_unarchive:
+      en-US: Unarchive
+    action_delete:
+      en-US: Delete
+    clear_selection:
+      en-US: Clear selection
+    batch_failed:
+      en-US: "%{action} failed: %{error}"
+    selected:
+      en-US: "%{count} selected"
+    selected_hidden:
+      en-US: "%{count} selected · %{hidden} hidden"
+    bucket_today:
+      en-US: Today
+    bucket_yesterday:
+      en-US: Yesterday
+    bucket_week:
+      en-US: Previous 7 days
+    bucket_month:
+      en-US: Previous 30 days
+    bucket_older:
+      en-US: Older
+    delete_one_title:
+      en-US: Delete “%{title}”?
+    delete_untitled_title:
+      en-US: Delete this session?
+    delete_count:
+      en-US: Delete %{count} sessions?
+    across_projects:
+      en-US: Across %{count} projects
+    note_worktree:
+      en-US: "%{count} in a session worktree"
+    note_live:
+      en-US: "%{count} still running"
+    delete_body:
+      en-US: The transcript, terminals, and running programs go with it. This can’t be undone.
+    cancel:
+      en-US: Cancel
+    archiving:
+      en-US: Archiving…
+    unarchiving:
+      en-US: Unarchiving…
+    deleting:
+      en-US: Deleting…
+    empty_none_headline:
+      en-US: No sessions yet
+    empty_none_hint:
+      en-US: Sessions you start show up here.
+    empty_match_headline:
+      en-US: Nothing matches
+    empty_match_hint:
+      en-US: Try a different search or filter.

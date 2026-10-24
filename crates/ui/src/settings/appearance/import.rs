@@ -19,7 +19,7 @@ impl AppearancePage {
     pub(super) fn open_import(&mut self, cx: &mut Context<Self>) {
         let input = cx.new(|cx| {
             ComposerInput::with_context(
-                "Theme file, package.json, or extension folder",
+                t!("settings_general_appearance.appearance.import.placeholder"),
                 "PaletteSearch",
                 cx,
             )
@@ -77,7 +77,9 @@ impl AppearancePage {
         };
         let source = dialog.input.read(cx).text().trim().to_owned();
         if source.is_empty() {
-            dialog.error = Some("Choose a local theme file or extension folder.".into());
+            dialog.error = Some(
+                t!("settings_general_appearance.appearance.import.errors.choose_source").into(),
+            );
             cx.notify();
             return;
         }
@@ -104,8 +106,11 @@ impl AppearancePage {
     }
 
     pub(super) fn choose_import_source(&mut self, cx: &mut Context<Self>) {
-        let receiver =
-            crate::file_dialog::prompt_for_files_and_dirs("Choose Theme Source", false, cx);
+        let receiver = crate::file_dialog::prompt_for_files_and_dirs(
+            &t!("settings_general_appearance.appearance.import.choose_source_dialog"),
+            false,
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             let path = match receiver.await {
                 Ok(Ok(Some(mut paths))) => paths.pop(),
@@ -131,7 +136,9 @@ impl AppearancePage {
             return;
         };
         if dialog.selected.is_empty() {
-            dialog.error = Some("Select at least one variant to import.".into());
+            dialog.error = Some(
+                t!("settings_general_appearance.appearance.import.errors.select_variant").into(),
+            );
             cx.notify();
             return;
         }
@@ -174,13 +181,13 @@ impl AppearancePage {
         let ready = compilation.is_some() && !selected.is_empty();
         let hairline = crate::theme::hairline(0.08);
 
-        let mode_control = |label: &'static str, description: &'static str, value: InstallMode| {
+        let mode_control = |slug: &'static str,
+                            label: Cow<'static, str>,
+                            description: Cow<'static, str>,
+                            value: InstallMode| {
             let active = mode == value;
             div()
-                .id(SharedString::from(format!(
-                    "theme-import-mode-{}",
-                    slug(label)
-                )))
+                .id(SharedString::from(format!("theme-import-mode-{slug}")))
                 .flex_1()
                 .min_w_0()
                 .p(px(10.0))
@@ -242,7 +249,7 @@ impl AppearancePage {
                 )
         };
 
-        let section_label = |label: &'static str| {
+        let section_label = |label: Cow<'static, str>| {
             div()
                 .mb(px(7.0))
                 .text_size(crate::typography::ui_rems(11.0))
@@ -259,7 +266,9 @@ impl AppearancePage {
             .pb(px(18.0))
             .flex()
             .flex_col()
-            .child(section_label("Source"))
+            .child(section_label(t!(
+                "settings_general_appearance.appearance.import.source"
+            )))
             .child(
                 div()
                     .flex()
@@ -275,35 +284,55 @@ impl AppearancePage {
                             .items_center(),
                     )
                     .child(
-                        compact_action(theme, "Browse…", "theme-import-browse")
-                            .h(px(36.0))
-                            .px(px(12.0))
-                            .flex_none()
-                            .on_click(cx.listener(|this, _, _, cx| this.choose_import_source(cx))),
+                        compact_action(
+                            theme,
+                            &t!("settings_general_appearance.appearance.import.browse"),
+                            "theme-import-browse",
+                        )
+                        .h(px(36.0))
+                        .px(px(12.0))
+                        .flex_none()
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_import_source(cx))),
                     ),
             )
             .child(
                 div()
                     .mt(px(16.0))
-                    .child(section_label("Keep it up to date"))
+                    .child(section_label(t!(
+                        "settings_general_appearance.appearance.import.keep_updated"
+                    )))
                     .child(
                         div()
                             .flex()
                             .gap(px(8.0))
                             .child(mode_control(
-                                "Import a copy",
-                                "Works independently from the original file.",
+                                "import-copy",
+                                t!("settings_general_appearance.appearance.import.mode_copy"),
+                                t!("settings_general_appearance.appearance.import.mode_copy_description"),
                                 InstallMode::Snapshot,
                             ))
                             .child(mode_control(
-                                "Link to source",
-                                "Reload changes from the file on disk.",
+                                "link-source",
+                                t!("settings_general_appearance.appearance.import.mode_link"),
+                                t!("settings_general_appearance.appearance.import.mode_link_description"),
                                 InstallMode::Link,
                             )),
                     ),
             );
 
         if let Some(ref compilation) = compilation {
+            let variant_count = compilation.family.variants.len();
+            let variants_label = if variant_count == 1 {
+                t!(
+                    "settings_general_appearance.appearance.import.variants.one",
+                    count = variant_count
+                )
+            } else {
+                t!(
+                    "settings_general_appearance.appearance.import.variants.other",
+                    count = variant_count
+                )
+            };
             main = main.child(
                 div()
                     .mt(px(18.0))
@@ -313,20 +342,15 @@ impl AppearancePage {
                     .flex()
                     .items_baseline()
                     .justify_between()
-                    .child(section_label("Detected themes").mb(px(0.0)))
+                    .child(
+                        section_label(t!("settings_general_appearance.appearance.import.detected"))
+                            .mb(px(0.0)),
+                    )
                     .child(
                         div()
                             .text_size(crate::typography::ui_rems(10.5))
                             .text_color(theme.text_muted.opacity(0.65))
-                            .child(SharedString::from(format!(
-                                "{} variant{}",
-                                compilation.family.variants.len(),
-                                if compilation.family.variants.len() == 1 {
-                                    ""
-                                } else {
-                                    "s"
-                                }
-                            ))),
+                            .child(variants_label),
                     ),
             );
             for variant in &compilation.family.variants {
@@ -334,9 +358,9 @@ impl AppearancePage {
                 let selected_now = selected.contains(&variant_id);
                 let review_open = review_variant.as_deref() == Some(variant_id.as_str());
                 let appearance = if variant.appearance.is_dark() {
-                    "Dark"
+                    t!("settings_general_appearance.appearance.import.variant_dark")
                 } else {
-                    "Light"
+                    t!("settings_general_appearance.appearance.import.variant_light")
                 };
                 let report = compilation.reports.get(&variant.id);
                 let sample = Theme::from_variant(
@@ -424,14 +448,15 @@ impl AppearancePage {
                                                 .child(appearance),
                                         ),
                                 )
-                                .child(
+                                .child({
+                                    let review_label = if review_open {
+                                        t!("settings_general_appearance.appearance.import.hide_details")
+                                    } else {
+                                        t!("settings_general_appearance.appearance.import.details")
+                                    };
                                     compact_action(
                                         theme,
-                                        if review_open {
-                                            "Hide details"
-                                        } else {
-                                            "Details"
-                                        },
+                                        &review_label,
                                         format!("theme-import-review-{variant_id}"),
                                     )
                                     .on_click(cx.listener({
@@ -449,8 +474,8 @@ impl AppearancePage {
                                             }
                                             cx.notify();
                                         }
-                                    })),
-                                ),
+                                    }))
+                                }),
                         )
                         .when(review_open, |row| {
                             row.child(
@@ -474,10 +499,11 @@ impl AppearancePage {
                         .bg(theme.warning.opacity(0.08))
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.warning)
-                        .child(SharedString::from(format!(
-                            "{} could not be compiled · {}",
-                            failure.name, failure.message
-                        ))),
+                        .child(t!(
+                            "settings_general_appearance.appearance.import.failure",
+                            name = failure.name,
+                            message = failure.message
+                        )),
                 );
             }
         } else {
@@ -496,7 +522,9 @@ impl AppearancePage {
                             .mt(px(1.0))
                             .flex_none(),
                     )
-                    .child("Holt finds light and dark variants automatically."),
+                    .child(t!(
+                        "settings_general_appearance.appearance.import.auto_note"
+                    )),
             );
         }
 
@@ -534,11 +562,14 @@ impl AppearancePage {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(popover::dialog_title(theme, "Add a theme"))
+                    .child(popover::dialog_title(
+                        theme,
+                        &t!("settings_general_appearance.appearance.import.dialog_title"),
+                    ))
                     .child(
                         popover::dialog_body(
                             theme,
-                            "Import a local theme into your library or keep it linked to its source.",
+                            t!("settings_general_appearance.appearance.import.dialog_body"),
                         )
                         .mt(px(4.0)),
                     ),
@@ -578,46 +609,48 @@ impl AppearancePage {
             .justify_end()
             .gap(px(8.0))
             .child(
-                compact_action(theme, "Cancel", "theme-import-cancel")
-                    .h(px(34.0))
-                    .px(px(13.0))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.import_dialog = None;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                popover::btn_primary(
+                compact_action(
                     theme,
-                    if compilation.is_some() {
-                        "Import selected"
-                    } else {
-                        "Analyze theme"
-                    },
+                    &t!("settings_general_appearance.appearance.import.cancel"),
+                    "theme-import-cancel",
                 )
-                .id("theme-import-action")
                 .h(px(34.0))
-                .px(px(14.0))
-                .py(px(0.0))
-                .flex()
-                .items_center()
-                .when(compilation.is_some() && !ready, |button| {
-                    button.opacity(0.45)
-                })
-                .when(compilation.is_none() || ready, |button| {
-                    button.on_click(cx.listener(move |this, _, _, cx| {
-                        if this
-                            .import_dialog
-                            .as_ref()
-                            .is_some_and(|dialog| dialog.compilation.is_some())
-                        {
-                            this.finish_import(cx);
-                        } else {
-                            this.compile_import(cx);
-                        }
-                    }))
-                }),
-            );
+                .px(px(13.0))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.import_dialog = None;
+                    cx.notify();
+                })),
+            )
+            .child({
+                let action_label = if compilation.is_some() {
+                    t!("settings_general_appearance.appearance.import.import_selected")
+                } else {
+                    t!("settings_general_appearance.appearance.import.analyze")
+                };
+                popover::btn_primary(theme, &action_label)
+                    .id("theme-import-action")
+                    .h(px(34.0))
+                    .px(px(14.0))
+                    .py(px(0.0))
+                    .flex()
+                    .items_center()
+                    .when(compilation.is_some() && !ready, |button| {
+                        button.opacity(0.45)
+                    })
+                    .when(compilation.is_none() || ready, |button| {
+                        button.on_click(cx.listener(move |this, _, _, cx| {
+                            if this
+                                .import_dialog
+                                .as_ref()
+                                .is_some_and(|dialog| dialog.compilation.is_some())
+                            {
+                                this.finish_import(cx);
+                            } else {
+                                this.compile_import(cx);
+                            }
+                        }))
+                    })
+            });
 
         let card = popover::dialog_card(theme)
             .id("theme-import-card")
@@ -797,14 +830,14 @@ pub(super) fn import_scene_preview(variant: &holt_theme::ThemeVariant) -> AnyEle
 }
 
 pub(super) fn report_panel(theme: &Theme, report: &ImportReport) -> gpui::Stateful<gpui::Div> {
-    let summary = format!(
-        "{} mapped · {} adjusted · {} inferred/fallback · {} unsupported · {} warnings · {} validation",
-        report.mappings.len(),
-        report.adjustments.len(),
-        report.fallbacks.len(),
-        report.dropped.len(),
-        report.warnings.len(),
-        report.validation.len(),
+    let summary = t!(
+        "settings_general_appearance.appearance.import.report.summary",
+        mapped = report.mappings.len(),
+        adjusted = report.adjustments.len(),
+        fallback = report.fallbacks.len(),
+        unsupported = report.dropped.len(),
+        warnings = report.warnings.len(),
+        validation = report.validation.len(),
     );
     div()
         .id(SharedString::from(format!(
@@ -825,36 +858,45 @@ pub(super) fn report_panel(theme: &Theme, report: &ImportReport) -> gpui::Statef
         .text_color(theme.text_muted)
         .child(div().text_color(theme.text).child(summary))
         .children(report.adjustments.iter().map(|adjustment| {
-            div().mt(px(4.0)).child(SharedString::from(format!(
-                "Adjusted · {} {} → {} · {}",
-                adjustment.holt_role, adjustment.original, adjustment.resolved, adjustment.reason
-            )))
+            div().mt(px(4.0)).child(t!(
+                "settings_general_appearance.appearance.import.report.adjusted",
+                role = adjustment.holt_role,
+                from = adjustment.original,
+                to = adjustment.resolved,
+                reason = adjustment.reason
+            ))
         }))
         .children(report.fallbacks.iter().map(|message| {
-            div()
-                .mt(px(4.0))
-                .child(SharedString::from(format!("Fallback · {message}")))
+            div().mt(px(4.0)).child(t!(
+                "settings_general_appearance.appearance.import.report.fallback",
+                message = message
+            ))
         }))
         .children(report.warnings.iter().map(|message| {
-            div()
-                .mt(px(4.0))
-                .child(SharedString::from(format!("Warning · {message}")))
+            div().mt(px(4.0)).child(t!(
+                "settings_general_appearance.appearance.import.report.warning",
+                message = message
+            ))
         }))
         .children(report.validation.iter().map(|issue| {
-            div().mt(px(4.0)).child(SharedString::from(format!(
-                "Validation {:?} {:?} · {}",
-                issue.category, issue.severity, issue.message
-            )))
+            div().mt(px(4.0)).child(t!(
+                "settings_general_appearance.appearance.import.report.validation",
+                category = format!("{:?}", issue.category),
+                severity = format!("{:?}", issue.severity),
+                message = issue.message
+            ))
         }))
         .children(report.dropped.iter().map(|message| {
-            div()
-                .mt(px(4.0))
-                .child(SharedString::from(format!("Unsupported · {message}")))
+            div().mt(px(4.0)).child(t!(
+                "settings_general_appearance.appearance.import.report.unsupported",
+                message = message
+            ))
         }))
         .children(report.mappings.iter().map(|mapping| {
-            div().mt(px(4.0)).child(SharedString::from(format!(
-                "{} ← {}",
-                mapping.holt_role, mapping.vscode_key
-            )))
+            div().mt(px(4.0)).child(t!(
+                "settings_general_appearance.appearance.import.report.mapping",
+                role = mapping.holt_role,
+                key = mapping.vscode_key
+            ))
         }))
 }

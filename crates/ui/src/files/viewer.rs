@@ -9,6 +9,7 @@
 //! `ReadWorkspaceImage`; unsupported content (oversized, non-UTF-8, binary)
 //! stays read-only with an external-open action.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use gpui::prelude::*;
@@ -21,6 +22,7 @@ use gpui::{
 use super::editor::{CodeEditor, EDITOR_LINE_HEIGHT, EDITOR_TEXT_SIZE, EditorEvent};
 use super::image_surface::{FileImageSurface, FileImageSurfaceEvent};
 use super::preview::{MarkdownPreview, is_markdown_path};
+use crate::i18n::t;
 use crate::icons::{self, icon};
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -378,7 +380,8 @@ impl FileViewer {
                         cx.emit(FileViewerEvent::DirtyChanged { dirty: false });
                     }
                     Ok(_) => {
-                        viewer.save_error = Some("The destination already exists.".into());
+                        viewer.save_error =
+                            Some(t!("files_sidebar.viewer.destination_exists").into());
                     }
                     Err(message) => {
                         viewer.save_error = Some(message.into());
@@ -539,7 +542,11 @@ impl FileViewer {
             return;
         }
         let input = cx.new(|cx| {
-            crate::composer::ComposerInput::with_context("Find in file", "PaletteSearch", cx)
+            crate::composer::ComposerInput::with_context(
+                t!("files_sidebar.viewer.find_placeholder"),
+                "PaletteSearch",
+                cx,
+            )
         });
         cx.subscribe(
             &input,
@@ -679,7 +686,7 @@ impl FileViewer {
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.view = ViewerState::Failed {
-                message: "The engine is not available.".into(),
+                message: t!("files_sidebar.viewer.engine_unavailable").into(),
             };
             return;
         };
@@ -740,7 +747,9 @@ impl FileViewer {
                                 reason: read
                                     .unsupported_reason
                                     .clone()
-                                    .unwrap_or_else(|| "This file cannot be opened.".into())
+                                    .unwrap_or_else(|| {
+                                        t!("files_sidebar.viewer.cannot_open").into()
+                                    })
                                     .into(),
                             },
                         };
@@ -811,7 +820,7 @@ impl FileViewer {
         };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             surface.update(cx, |surface, cx| {
-                surface.set_failed("The engine is not available.".into(), cx);
+                surface.set_failed(t!("files_sidebar.viewer.engine_unavailable").into(), cx);
             });
             cx.notify();
             return;
@@ -936,14 +945,14 @@ impl FileViewer {
                 .child(mode_chip(
                     &theme,
                     "file-md-source",
-                    "Source",
+                    t!("files_sidebar.viewer.mode_source"),
                     source_active,
                     cx.listener(|this, _, _, cx| this.select_source_mode(cx)),
                 ))
                 .child(mode_chip(
                     &theme,
                     "file-md-preview-toggle",
-                    "Preview",
+                    t!("files_sidebar.viewer.mode_preview"),
                     !source_active,
                     cx.listener(|this, _, _, cx| this.select_preview_mode(cx)),
                 ))
@@ -989,7 +998,7 @@ impl FileViewer {
         }
         let facts = self.facts.clone()?;
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.save_error = Some("The engine is not available.".into());
+            self.save_error = Some(t!("files_sidebar.viewer.engine_unavailable").into());
             cx.notify();
             return None;
         };
@@ -1166,7 +1175,7 @@ impl FileViewer {
                         .min_w_0()
                         .text_size(crate::typography::ui_rems(11.5))
                         .text_color(theme.warning_muted)
-                        .child("This file changed on disk. Your changes are kept."),
+                        .child(t!("files_sidebar.viewer.conflict.banner")),
                 );
             if let Some(input) = save_as_input {
                 bar = bar
@@ -1180,7 +1189,7 @@ impl FileViewer {
                     .child(conflict_action(
                         &theme,
                         "conflict-save-as-go",
-                        "Save",
+                        &t!("files_sidebar.common.save"),
                         cx.listener(|this, _, _, cx| {
                             let destination = this
                                 .save_as_input
@@ -1194,21 +1203,24 @@ impl FileViewer {
                         }),
                     ));
             }
+            // Bind both toggle labels up front: a `t!` inside an if/else arm
+            // borrows a temporary that dies with the arm's block.
+            let compare_label = if self.compare_open {
+                t!("files_sidebar.viewer.conflict.hide_changes")
+            } else {
+                t!("files_sidebar.viewer.conflict.compare")
+            };
             bar = bar
                 .child(conflict_action(
                     &theme,
                     "conflict-compare",
-                    if self.compare_open {
-                        "Hide changes"
-                    } else {
-                        "Compare"
-                    },
+                    &compare_label,
                     cx.listener(|this, _, _, cx| this.conflict_toggle_compare(cx)),
                 ))
                 .child(conflict_action(
                     &theme,
                     "conflict-save-as",
-                    "Save As…",
+                    &t!("files_sidebar.viewer.conflict.save_as"),
                     cx.listener(|this, _, window, cx| {
                         // Seed a real input with a sibling destination — the
                         // engine resolves relatives against the root and
@@ -1217,7 +1229,7 @@ impl FileViewer {
                             format!("{}/{}-copy", this.parent_dir(), this.path_basename());
                         let input = cx.new(|cx| {
                             crate::composer::ComposerInput::with_context(
-                                "Destination path",
+                                t!("files_sidebar.viewer.conflict.destination_placeholder"),
                                 "PaletteSearch",
                                 cx,
                             )
@@ -1232,7 +1244,7 @@ impl FileViewer {
                 .child(conflict_action(
                     &theme,
                     "conflict-reload",
-                    "Reload (discard draft)",
+                    &t!("files_sidebar.viewer.conflict.reload"),
                     cx.listener(|this, _, _, cx| {
                         this.conflict_reload(cx);
                     }),
@@ -1240,7 +1252,7 @@ impl FileViewer {
                 .child(conflict_action(
                     &theme,
                     "conflict-overwrite",
-                    "Overwrite disk",
+                    &t!("files_sidebar.viewer.conflict.overwrite"),
                     cx.listener(|this, _, _, cx| {
                         this.conflict_overwrite(cx);
                     }),
@@ -1295,7 +1307,10 @@ impl FileViewer {
                                     .px(px(8.0))
                                     .py(px(2.0))
                                     .text_color(theme.text_muted)
-                                    .child(format!("… {} more changed lines", count - 400)),
+                                    .child(t!(
+                                        "files_sidebar.viewer.more_changed_lines",
+                                        count = count - 400
+                                    )),
                             )
                         }),
                 )
@@ -1307,7 +1322,7 @@ impl FileViewer {
             let label: SharedString = if self.search_query_is_empty(cx) {
                 "".into()
             } else if count == 0 {
-                "No matches".into()
+                t!("files_sidebar.viewer.no_matches").into()
             } else {
                 format!("{}/{}", self.search_active.map_or(1, |ix| ix + 1), count).into()
             };
@@ -1346,11 +1361,17 @@ impl FileViewer {
                     div()
                         .flex_none()
                         .text_size(crate::typography::ui_rems(10.5))
-                        .text_color(if label.as_ref() == "No matches" {
-                            theme.warning_muted
-                        } else {
-                            theme.text_muted
-                        })
+                        // Same-key t! on both the construction above and this
+                        // comparison: the label picks its warning color only
+                        // when it IS the no-matches catalog entry, in any
+                        // locale (same frame → same lookup).
+                        .text_color(
+                            if label.as_ref() == t!("files_sidebar.viewer.no_matches").as_ref() {
+                                theme.warning_muted
+                            } else {
+                                theme.text_muted
+                            },
+                        )
                         .child(label),
                 )
                 .child(search_icon_button(
@@ -1373,7 +1394,7 @@ impl FileViewer {
                 ))
         });
         let content: AnyElement = match &self.view {
-            ViewerState::Loading => centered_muted("Loading…", &theme),
+            ViewerState::Loading => centered_muted(&t!("files_sidebar.common.loading"), &theme),
             ViewerState::Unsupported { reason } => {
                 unsupported_state(&self.path, reason.clone(), &theme, cx)
             }
@@ -1536,7 +1557,7 @@ fn conflict_action(
 fn mode_chip(
     theme: &Theme,
     id: &'static str,
-    label: &'static str,
+    label: Cow<'static, str>,
     active: bool,
     handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
@@ -1692,7 +1713,7 @@ fn unsupported_state(
                             div()
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text)
-                                .child("Open externally"),
+                                .child(t!("files_sidebar.common.open_externally")),
                         ),
                 ),
         )

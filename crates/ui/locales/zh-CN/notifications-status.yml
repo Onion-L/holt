@@ -1,0 +1,42 @@
+_version: 2
+notifications_status:
+  engine_not_connected:
+    zh-CN: 引擎未连接
+  notification:
+    chat_completed:
+      zh-CN: 会话已完成
+    chat_failed:
+      zh-CN: 会话失败
+    title_completed:
+      zh-CN: "%{title} 已完成"
+    title_failed:
+      zh-CN: "%{title} 失败"
+    scheduled_run:
+      zh-CN: 一次定时运行
+    waiting:
+      zh-CN: "%{title} 正在等待你"
+  deep_link:
+    other_workspace:
+      zh-CN: 此会话链接属于另一个工作区
+    not_found:
+      zh-CN: 未找到链接指向的会话
+  todo:
+    task_list:
+      zh-CN: 任务列表
+    done:
+      zh-CN: 已完成
+    todo:
+      zh-CN: 待办
+    collapse:
+      zh-CN: 收起
+    close_until_next:
+      zh-CN: 关闭，直到下一个列表
+  file_lookup:
+    placeholder:
+      zh-CN: 按路径搜索文件…
+    select_space:
+      zh-CN: 选择一个空间以搜索其中的文件。
+    search_hint:
+      zh-CN: 输入即可搜索 %{name} 中的所有文件与文件夹——包括隐藏条目。
+    no_matches:
+      zh-CN: 无匹配路径

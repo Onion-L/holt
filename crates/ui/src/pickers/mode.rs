@@ -12,11 +12,14 @@
 //! stays draft-local ([`DraftConfig::permission_mode`]) and rides the first
 //! send — see `composer/send.rs`.
 
+use std::borrow::Cow;
+
 use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
 
 use holt_proto::PermissionMode;
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::popover;
 use crate::theme::Theme;
 
@@ -30,24 +33,20 @@ pub const MODE_TIERS: [PermissionMode; 3] = [
 ];
 
 /// The tier's display name.
-pub fn mode_label(mode: PermissionMode) -> &'static str {
+pub fn mode_label(mode: PermissionMode) -> Cow<'static, str> {
     match mode {
-        PermissionMode::ConfirmChanges => "Confirm changes",
-        PermissionMode::AutoReview => "Auto review",
-        PermissionMode::FullAccess => "Full access",
+        PermissionMode::ConfirmChanges => t!("pickers_dialogs.mode.label_confirm_changes"),
+        PermissionMode::AutoReview => t!("pickers_dialogs.mode.label_auto_review"),
+        PermissionMode::FullAccess => t!("pickers_dialogs.mode.label_full_access"),
     }
 }
 
 /// The tier's one-line description in the menu (prototype 1-B).
-pub fn mode_description(mode: PermissionMode) -> &'static str {
+pub fn mode_description(mode: PermissionMode) -> Cow<'static, str> {
     match mode {
-        PermissionMode::ConfirmChanges => "Asks before every write, edit, or command",
-        PermissionMode::AutoReview => {
-            "The model reviews each change first; rejections come with a reason"
-        }
-        PermissionMode::FullAccess => {
-            "Everything runs without asking — only for tasks you fully trust"
-        }
+        PermissionMode::ConfirmChanges => t!("pickers_dialogs.mode.desc_confirm_changes"),
+        PermissionMode::AutoReview => t!("pickers_dialogs.mode.desc_auto_review"),
+        PermissionMode::FullAccess => t!("pickers_dialogs.mode.desc_full_access"),
     }
 }
 
@@ -292,9 +291,7 @@ impl Pickers {
                     .text_size(crate::typography::ui_rems(11.0))
                     .line_height(px(15.0))
                     .text_color(theme.text_faint)
-                    .child(SharedString::from(
-                        "New chats inherit this choice · applies from the next Turn",
-                    )),
+                    .child(SharedString::from(t!("pickers_dialogs.mode.footnote"))),
             )
             .into_any_element()
     }
@@ -353,6 +350,7 @@ mod tests {
 
     #[test]
     fn tier_order_matches_the_menu() {
+        let _locale = crate::i18n::tests::locale_lock();
         assert_eq!(
             MODE_TIERS,
             [

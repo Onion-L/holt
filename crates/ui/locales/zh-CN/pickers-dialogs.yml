@@ -1,0 +1,184 @@
+_version: 2
+pickers_dialogs:
+  common:
+    retry:
+      zh-CN: 重试
+  search:
+    default:
+      zh-CN: 搜索…
+    refs:
+      zh-CN: 搜索引用…
+    projects:
+      zh-CN: 搜索项目…
+    models:
+      zh-CN: 搜索模型…
+  branch:
+    new_branch_placeholder:
+      zh-CN: 新分支名称…
+    no_project_selected:
+      zh-CN: 未选择项目
+    no_refs_found:
+      zh-CN: 未找到引用。
+    tag_current:
+      zh-CN: 当前
+    tag_worktree:
+      zh-CN: 工作树
+    switching:
+      zh-CN: 切换中…
+    showing_refs:
+      zh-CN: 显示 %{total} 个引用中的 %{shown} 个
+    create_row:
+      zh-CN: 新建分支…
+    create:
+      zh-CN: 创建
+    select_ref:
+      zh-CN: 选择引用
+    from_ref:
+      zh-CN: 基于 %{name}
+  checkout:
+    current:
+      zh-CN: 当前检出
+    new_worktree:
+      zh-CN: 新建工作树
+  session:
+    worktree:
+      zh-CN: 工作树
+    local_checkout:
+      zh-CN: 本地检出
+    no_ref:
+      zh-CN: 无引用
+  mode:
+    label_confirm_changes:
+      zh-CN: 确认更改
+    label_auto_review:
+      zh-CN: 自动审查
+    label_full_access:
+      zh-CN: 完全访问
+    desc_confirm_changes:
+      zh-CN: 每次写入、编辑或执行命令前都会先询问
+    desc_auto_review:
+      zh-CN: 模型会先审查每一处更改；拒绝时会附带原因
+    desc_full_access:
+      zh-CN: 所有操作不再询问——仅适用于你完全信任的任务
+    footnote:
+      zh-CN: 新会话将继承此选择 · 自下一轮起生效
+  space:
+    no_project:
+      zh-CN: 无项目
+    no_projects:
+      zh-CN: 暂无项目。
+    no_projects_match:
+      zh-CN: 没有匹配的项目。
+    work_outside:
+      zh-CN: 在项目外工作
+    new_project:
+      zh-CN: 新建项目…
+  provider_model:
+    configure_provider:
+      zh-CN: 配置提供商
+    configure_provider_hint:
+      zh-CN: 在“设置 → 提供商”中添加 API 密钥。
+    no_models_found:
+      zh-CN: 未找到模型
+    reasoning_heading:
+      zh-CN: 推理
+    default_badge:
+      zh-CN: 默认
+  reasoning:
+    minimal:
+      zh-CN: 最低
+    low:
+      zh-CN: 低
+    medium:
+      zh-CN: 中
+    high:
+      zh-CN: 高
+    xhigh:
+      zh-CN: 超高
+    max:
+      zh-CN: 最高
+    ultra:
+      zh-CN: 极高
+    ultracode:
+      zh-CN: Ultracode
+    ultrathink:
+      zh-CN: 深度思考
+  switch_dialog:
+    title:
+      zh-CN: 无法切换分支
+    refused_message:
+      zh-CN: 为保护未提交的更改，已拒绝此次切换。请先提交或贮藏这些文件，然后重试：
+    worktree_hosted_title:
+      zh-CN: 无法切换到该分支
+    worktree_hosted_message:
+      zh-CN: "%{branch} 已在另一个工作树中检出（%{path}）。要在那里继续工作，请将该文件夹添加为独立项目。"
+    got_it:
+      zh-CN: 知道了
+  models:
+    context_window:
+      zh-CN: 上下文窗口
+  file_dialog:
+    choose_file:
+      zh-CN: 选择文件
+  image_viewer:
+    download_failed_title:
+      zh-CN: 无法下载图片
+    ok:
+      zh-CN: 好
+    download_original:
+      zh-CN: 下载原图
+    close:
+      zh-CN: 关闭 (Esc)
+    previous:
+      zh-CN: 上一张图片 (←)
+    next:
+      zh-CN: 下一张图片 (→)
+    zoom_out:
+      zh-CN: 缩小 (−)
+    actual_size:
+      zh-CN: 实际大小 (1)
+    zoom_in:
+      zh-CN: 放大 (+)
+    retry_preview:
+      zh-CN: 重试图片预览
+  images:
+    not_found:
+      zh-CN: 未找到图片文件。
+    unreadable:
+      zh-CN: "无法读取图片文件：%{error}"
+    metadata_unreadable:
+      zh-CN: 无法读取图片元数据。
+    exceeds_mib:
+      zh-CN: 图片超出 25 MiB 限制。
+    exceeds_megapixel:
+      zh-CN: 图片超出 6400 万像素的解码上限。
+    invalid_staging_reply:
+      zh-CN: "暂存响应无效：%{error}"
+    invalid_reply:
+      zh-CN: "图片响应无效：%{error}"
+    save_failed:
+      zh-CN: "无法保存图片：%{error}"
+    format_undetermined:
+      zh-CN: "无法确定图片格式：%{error}"
+    could_not_open:
+      zh-CN: "无法打开图片：%{error}"
+    orientation_unreadable:
+      zh-CN: "无法读取图片方向：%{error}"
+    could_not_decode:
+      zh-CN: "无法解码图片（可能已损坏）：%{error}"
+    no_pixels:
+      zh-CN: 图片不含任何像素。
+  attachments:
+    attached_images:
+      one:
+        zh-CN: 已附加图片
+      other:
+        zh-CN: "已附加 %{count} 张图片"
+    image_name_fallback:
+      zh-CN: 图片
+    file_search_unavailable:
+      zh-CN: 文件搜索不可用——引擎尚不支持此功能
+    engine_unreachable:
+      zh-CN: 无法连接引擎
+    file_search_failed:
+      zh-CN: 文件搜索失败

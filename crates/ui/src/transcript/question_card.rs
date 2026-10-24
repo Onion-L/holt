@@ -11,6 +11,7 @@ use gpui::{AnyElement, App, SharedString, div, prelude::*, px};
 use holt_doc::{CardQuestion, ChoiceCardState, MessagePart, SessionMessageEntry};
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -126,7 +127,11 @@ pub(super) fn render_question_card(
         ChoiceCardState::Chosen => {
             for (question, answer) in questions.iter().zip(answers) {
                 card = card.child(state_line(
-                    format!("✓ Answered · {question} → {answer}"),
+                    t!(
+                        "conversation_transcript.question.answered",
+                        question = question.as_ref(),
+                        answer = answer.as_ref()
+                    ),
                     theme,
                 ));
             }
@@ -140,14 +145,26 @@ pub(super) fn render_question_card(
             return div()
                 .py(px(4.0))
                 .w_full()
-                .child(state_line(format!("{summary} — no longer active"), theme).truncate())
+                .child(
+                    state_line(
+                        t!(
+                            "conversation_transcript.question.inactive",
+                            summary = summary
+                        ),
+                        theme,
+                    )
+                    .truncate(),
+                )
                 .into_any_element();
         }
         ChoiceCardState::Pending => {
             for question in questions {
                 card = card.child(state_line(question.clone(), theme));
             }
-            card = card.child(state_line("Waiting for your answer…", theme));
+            card = card.child(state_line(
+                t!("conversation_transcript.question.waiting"),
+                theme,
+            ));
         }
     }
     div().py(px(4.0)).w_full().child(card).into_any_element()

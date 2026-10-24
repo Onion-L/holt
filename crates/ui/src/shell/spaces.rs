@@ -8,6 +8,7 @@
 //! Child module of `shell` so it renders straight off `Shell`'s private state.
 
 use super::*;
+use crate::i18n::t;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::FocusHandle;
 use holt_proto::{ChatIndicator, DriveEntry, DriveListing, FolderListing, Space};
@@ -70,7 +71,7 @@ type ChatGroups = Vec<(Option<(String, String)>, Vec<ActiveChatRow>)>;
 fn folder_browse_error(error: &holt_rpc::RpcError) -> String {
     match error {
         holt_rpc::RpcError::Transport(_) | holt_rpc::RpcError::Closed => {
-            "The engine didn't respond — is it running?".to_string()
+            t!("sidebar_spaces.errors.engine_unresponsive").into()
         }
         _ => error.to_string(),
     }
@@ -276,6 +277,90 @@ fn path_under(path: &str, base: &str) -> bool {
     base.is_empty() || path == base || path.starts_with(&format!("{base}/"))
 }
 
+/// The palette footer's tiny verb, localized: the shared `popover::key_hint`
+/// types its label as `&'static str` (a component this group does not own),
+/// so these three helpers mirror its exact recipe beside the one footer that
+/// needs catalog text. Keep the geometry in lockstep with popover.rs.
+fn palette_key_verb(theme: &Theme, label: std::borrow::Cow<'static, str>) -> gpui::Div {
+    div()
+        .text_size(crate::typography::ui_rems(10.5))
+        .text_color(theme.text_muted.opacity(0.45))
+        .child(label)
+}
+
+fn palette_key_hint(
+    theme: &Theme,
+    icon_path: &'static str,
+    label: std::borrow::Cow<'static, str>,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .child(
+            popover::key_cap(theme).child(
+                icon(icon_path)
+                    .size(px(12.5))
+                    .text_color(theme.text_muted.opacity(0.7)),
+            ),
+        )
+        .child(palette_key_verb(theme, label))
+}
+
+fn palette_key_hint_text(
+    theme: &Theme,
+    cap: &'static str,
+    label: std::borrow::Cow<'static, str>,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .child(
+            popover::key_cap(theme)
+                .text_size(px(11.0))
+                .font_family(theme.font_mono.clone())
+                .text_color(theme.text_muted.opacity(0.7))
+                .child(cap),
+        )
+        .child(palette_key_verb(theme, label))
+}
+
+fn palette_key_hint_pair(
+    theme: &Theme,
+    first: &'static str,
+    second: &'static str,
+    label: std::borrow::Cow<'static, str>,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .child(
+            popover::key_cap(theme)
+                .child(
+                    icon(first)
+                        .size(px(12.5))
+                        .text_color(theme.text_muted.opacity(0.7)),
+                )
+                .child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(11.0))
+                        .bg(crate::theme::hairline(0.10)),
+                )
+                .child(
+                    icon(second)
+                        .size(px(12.5))
+                        .text_color(theme.text_muted.opacity(0.7)),
+                ),
+        )
+        .child(palette_key_verb(theme, label))
+}
+
 /// The space-row Rename dialog (same shape as [`RenameChatDialog`]).
 pub(super) struct RenameSpaceDialog {
     pub space_id: String,
@@ -473,8 +558,13 @@ impl Shell {
         self.close_sidebar_view_menu(cx);
         // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
         // to the card's key handler.
-        let search =
-            cx.new(|cx| ComposerInput::with_context("Search projects…", "PaletteSearch", cx));
+        let search = cx.new(|cx| {
+            ComposerInput::with_context(
+                t!("sidebar_spaces.spaces.filter.search_placeholder"),
+                "PaletteSearch",
+                cx,
+            )
+        });
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 if let Some(menu) = this.spaces_menu.open_mut() {
@@ -572,7 +662,7 @@ impl Shell {
             let state = self.state.read(cx);
             match filter.as_deref().and_then(|id| state.space_row(id)) {
                 Some(space) => space.display_name().to_string().into(),
-                None => SharedString::from("All projects"),
+                None => t!("sidebar_spaces.spaces.filter.all_projects").into(),
             }
         };
         let open = self.spaces_menu.is_open();
@@ -655,7 +745,7 @@ impl Shell {
         let view_trigger = div()
             .id("sidebar-view-options")
             .role(gpui::Role::Button)
-            .aria_label("Sidebar view options")
+            .aria_label(t!("sidebar_spaces.spaces.view.aria_label"))
             .track_focus(&view_focus)
             .size(px(29.0))
             .flex_none()
@@ -700,7 +790,7 @@ impl Shell {
                 }
             }))
             .tooltip(|_, cx| {
-                cx.new(|_| SidebarTooltip("Sidebar view options".into()))
+                cx.new(|_| SidebarTooltip(t!("sidebar_spaces.spaces.view.aria_label").into()))
                     .into()
             })
             .tooltip_show_delay(std::time::Duration::from_millis(350))
@@ -757,12 +847,18 @@ impl Shell {
             let state = self.state.read(cx);
             rows.iter()
                 .map(|row| match row {
-                    SpacesMenuRow::All => (row.clone(), SharedString::from("All projects")),
+                    SpacesMenuRow::All => (
+                        row.clone(),
+                        t!("sidebar_spaces.spaces.filter.all_projects").into(),
+                    ),
                     SpacesMenuRow::Space(id) => match state.space_row(id) {
                         Some(space) => (row.clone(), space.display_name().to_string().into()),
                         None => (row.clone(), SharedString::from("?")),
                     },
-                    SpacesMenuRow::AddSpace => (row.clone(), SharedString::from("New project…")),
+                    SpacesMenuRow::AddSpace => (
+                        row.clone(),
+                        t!("sidebar_spaces.spaces.filter.new_project").into(),
+                    ),
                 })
                 .collect()
         };
@@ -1005,19 +1101,35 @@ impl Shell {
         let mut rows: Vec<AnyElement> = Vec::with_capacity(SIDEBAR_VIEW_ROWS.len() + 2);
         for (ix, row) in SIDEBAR_VIEW_ROWS.into_iter().enumerate() {
             if ix == 0 {
-                rows.push(popover::menu_heading(theme, "Sort").into_any_element());
+                rows.push(
+                    popover::menu_heading(theme, &t!("sidebar_spaces.spaces.view.sort"))
+                        .into_any_element(),
+                );
             } else if ix == SIDEBAR_VIEW_SHOW_START {
                 rows.push(popover::menu_separator().into_any_element());
-                rows.push(popover::menu_heading(theme, "Show").into_any_element());
+                rows.push(
+                    popover::menu_heading(theme, &t!("sidebar_spaces.spaces.view.show"))
+                        .into_any_element(),
+                );
             }
             let selected = self.sidebar_view_row_selected(row);
             let label: SharedString = match row {
-                SidebarViewRow::Sort(SidebarSort::LastUpdated) => "Last updated".into(),
-                SidebarViewRow::Sort(SidebarSort::Created) => "Created".into(),
-                SidebarViewRow::Sort(SidebarSort::Manual) => "Manual".into(),
-                SidebarViewRow::ShowProvider => "Provider logo".into(),
-                SidebarViewRow::ShowBranch => "Branch".into(),
-                SidebarViewRow::ShowPullRequest => "Pull request".into(),
+                SidebarViewRow::Sort(SidebarSort::LastUpdated) => {
+                    t!("sidebar_spaces.spaces.view.last_updated").into()
+                }
+                SidebarViewRow::Sort(SidebarSort::Created) => {
+                    t!("sidebar_spaces.spaces.view.created").into()
+                }
+                SidebarViewRow::Sort(SidebarSort::Manual) => {
+                    t!("sidebar_spaces.spaces.view.manual").into()
+                }
+                SidebarViewRow::ShowProvider => {
+                    t!("sidebar_spaces.spaces.view.provider_logo").into()
+                }
+                SidebarViewRow::ShowBranch => t!("sidebar_spaces.spaces.view.branch").into(),
+                SidebarViewRow::ShowPullRequest => {
+                    t!("sidebar_spaces.spaces.view.pull_request").into()
+                }
             };
             rows.push(
                 popover::menu_row_nav(
@@ -1203,25 +1315,26 @@ impl Shell {
                     .routine_run
                     .as_ref()
                     .map(|marker| self.state.read(cx).routine_run_count(&marker.routine_id));
-                let element = self.render_chat_row(
-                    chat.id.clone(),
-                    transcript::single_line(
-                        &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                    )
-                    .into(),
-                    time_ago,
-                    folder.into(),
-                    branch.map(SharedString::from),
-                    change_request,
-                    provider,
-                    status,
-                    is_selected,
-                    chat.pinned,
-                    jump_label,
-                    routine_runs,
-                    theme,
-                    cx,
-                );
+                let element =
+                    self.render_chat_row(
+                        chat.id.clone(),
+                        transcript::single_line(&chat.title.clone().unwrap_or_else(|| {
+                            t!("sidebar_spaces.spaces.rows.new_session").into()
+                        }))
+                        .into(),
+                        time_ago,
+                        folder.into(),
+                        branch.map(SharedString::from),
+                        change_request,
+                        provider,
+                        status,
+                        is_selected,
+                        chat.pinned,
+                        jump_label,
+                        routine_runs,
+                        theme,
+                        cx,
+                    );
                 rendered_rows.push((format!("c:{}", chat.id), height, element));
             }
 
@@ -1297,8 +1410,13 @@ impl Shell {
         // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
         // bubble to the palette frame (`add_space_key`) instead of moving the
         // text caret — Enter and ⌘Enter are both handled there.
-        let search =
-            cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
+        let search = cx.new(|cx| {
+            ComposerInput::with_context(
+                t!("sidebar_spaces.add_space.search_placeholder"),
+                "PaletteSearch",
+                cx,
+            )
+        });
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 // Typing `/` after a query that names a folder descends into
@@ -1899,9 +2017,11 @@ impl Shell {
                         .size(px(11.0))
                         .text_color(theme.on_solid.opacity(0.8)),
                 )
-                .child(SharedString::from("Enter"))
+                .child(t!("sidebar_spaces.add_space.enter"))
             })
-            .when(submit_busy, |el| el.child(SharedString::from("Adding…")));
+            .when(submit_busy, |el| {
+                el.child(t!("sidebar_spaces.add_space.adding"))
+            });
         // Header and footer sit a shade DEEPER than the body (the shared
         // recessed-band tone) — the bands frame the folder list, which stays
         // on the brighter tint.
@@ -2133,7 +2253,7 @@ impl Shell {
                             let path = this.add_space.as_ref().and_then(|f| f.browser_path.clone());
                             this.load_space_folders(path, cx);
                         }))
-                        .child(SharedString::from("Retry")),
+                        .child(t!("sidebar_spaces.add_space.retry")),
                 )
                 .into_any_element()
         } else if rows.is_empty() {
@@ -2142,11 +2262,11 @@ impl Shell {
                 .py(px(16.0))
                 .text_size(crate::typography::ui_rems(12.5))
                 .text_color(theme.text_faint)
-                .child(SharedString::from(if query_empty {
-                    "No folders here"
+                .child(if query_empty {
+                    t!("sidebar_spaces.add_space.empty_here")
                 } else {
-                    "No folders match"
-                }))
+                    t!("sidebar_spaces.add_space.empty_match")
+                })
                 .into_any_element()
         } else {
             // The 6px gutters live on a WRAPPER, outside the scroll viewport:
@@ -2214,7 +2334,7 @@ impl Shell {
         let location_rows: Vec<(LocationRow, SharedString, &'static str, Option<String>)> =
             std::iter::once((
                 LocationRow::Home,
-                SharedString::from("Home"),
+                t!("sidebar_spaces.add_space.home").into(),
                 icons::HOME,
                 None,
             ))
@@ -2252,7 +2372,7 @@ impl Shell {
                     .text_size(crate::typography::ui_rems(11.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text_muted.opacity(0.6))
-                    .child(SharedString::from("Locations")),
+                    .child(t!("sidebar_spaces.add_space.locations")),
             )
             .children(location_rows.into_iter().enumerate().map(
                 |(ix, (row, name, glyph, path))| {
@@ -2324,15 +2444,27 @@ impl Shell {
             .flex_row()
             .items_center()
             .gap(px(12.0))
-            .child(popover::key_hint_pair(
+            .child(palette_key_hint_pair(
                 &theme,
                 icons::ARROW_UP,
                 icons::ARROW_DOWN,
-                "Navigate",
+                t!("sidebar_spaces.add_space.hint_navigate"),
             ))
-            .child(popover::key_hint(&theme, icons::ARROW_LEFT, "Up"))
-            .child(popover::key_hint(&theme, icons::ARROW_RIGHT, "Open"))
-            .child(popover::key_hint_text(&theme, "tab", "Complete"))
+            .child(palette_key_hint(
+                &theme,
+                icons::ARROW_LEFT,
+                t!("sidebar_spaces.add_space.hint_up"),
+            ))
+            .child(palette_key_hint(
+                &theme,
+                icons::ARROW_RIGHT,
+                t!("sidebar_spaces.add_space.hint_open"),
+            ))
+            .child(palette_key_hint_text(
+                &theme,
+                "tab",
+                t!("sidebar_spaces.add_space.hint_complete"),
+            ))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -2392,7 +2524,8 @@ impl Shell {
             .space_row(&space_id)
             .map(|s| s.display_name().to_string())
             .unwrap_or_default();
-        let input = cx.new(|cx| ComposerInput::new("Project name", cx));
+        let input =
+            cx.new(|cx| ComposerInput::new(t!("sidebar_spaces.space_menu.name_placeholder"), cx));
         input.update(cx, |input, cx| input.set_text(current, cx));
         let events = cx.subscribe(&input, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
@@ -2477,7 +2610,7 @@ impl Shell {
                             this.open_rename_space(rename_id.clone(), cx)
                         }))
                         .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
-                        .child(SharedString::from("Rename…")),
+                        .child(t!("sidebar_spaces.space_menu.rename_ellipsis")),
                 )
                 .child(popover::menu_separator())
                 .child(
@@ -2494,7 +2627,7 @@ impl Shell {
                                 .size(px(16.0))
                                 .text_color(theme.danger),
                         )
-                        .child(SharedString::from("Remove…")),
+                        .child(t!("sidebar_spaces.space_menu.remove_ellipsis")),
                 )
                 .into_any_element();
             overlays.push(popover::menu_at(
@@ -2521,7 +2654,10 @@ impl Shell {
                         cx.notify();
                     }
                 }))
-                .child(popover::dialog_title(&theme, "Rename project"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("sidebar_spaces.space_menu.rename_title"),
+                ))
                 .child(
                     div()
                         .mt(px(12.0))
@@ -2535,15 +2671,19 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "rename-space-cancel")
-                                .id("rename-space-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.rename_space_dialog = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("sidebar_spaces.space_menu.cancel"),
+                                "rename-space-cancel",
+                            )
+                            .id("rename-space-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.rename_space_dialog = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Rename")
+                            popover::btn_primary(&theme, &t!("sidebar_spaces.space_menu.rename"))
                                 .id("rename-space-save")
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.submit_rename_space(cx)),
@@ -2561,17 +2701,19 @@ impl Shell {
                 (
                     space
                         .map(|s| s.display_name().to_string())
-                        .unwrap_or_else(|| "this project".into()),
+                        .unwrap_or_else(|| {
+                            t!("sidebar_spaces.space_menu.delete_this_project").into()
+                        }),
                     state.chats_in_space(&space_id).len(),
                 )
             };
             let copy = if count == 1 {
-                format!(
-                    "Removing “{name}” permanently deletes its 1 session. This can’t be undone."
-                )
+                t!("sidebar_spaces.space_menu.delete_confirm_one", name = name)
             } else {
-                format!(
-                    "Removing “{name}” permanently deletes its {count} sessions. This can’t be undone."
+                t!(
+                    "sidebar_spaces.space_menu.delete_confirm_other",
+                    name = name,
+                    count = count
                 )
             };
             let card = popover::dialog_card(&theme)
@@ -2579,7 +2721,10 @@ impl Shell {
                     this.delete_space_confirm = None;
                     cx.notify();
                 }))
-                .child(popover::dialog_title(&theme, "Remove project?"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("sidebar_spaces.space_menu.remove_title"),
+                ))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, copy)))
                 .child(
                     div()
@@ -2589,15 +2734,19 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "delete-space-cancel")
-                                .id("delete-space-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.delete_space_confirm = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("sidebar_spaces.space_menu.cancel"),
+                                "delete-space-cancel",
+                            )
+                            .id("delete-space-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.delete_space_confirm = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_danger(&theme, "Remove")
+                            popover::btn_danger(&theme, &t!("sidebar_spaces.space_menu.remove"))
                                 .id("delete-space-confirm")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_space(space_id.clone(), cx)

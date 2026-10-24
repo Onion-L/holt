@@ -235,7 +235,10 @@ impl StickSpring {
 // Working indicator flavour (pure; rendered by the shell strip)
 // ---------------------------------------------------------------------------
 
-/// Rotating flavour vocabulary (20 words / 7s, seeded per chat).
+/// Rotating flavour vocabulary (20 words / 7s, seeded per chat). The array
+/// is the identity table (and the English spelling doubles as the key
+/// stem); the localized display goes through [`flavour_word`], whose match
+/// arms are literal `t!` calls so the catalog scan sees every key.
 pub const FLAVOUR_WORDS: [&str; 20] = [
     "Thinking",
     "Pondering",
@@ -260,10 +263,40 @@ pub const FLAVOUR_WORDS: [&str; 20] = [
 ];
 pub const FLAVOUR_ROTATE_SECS: i64 = 7;
 
-/// The flavour word for a seed at an elapsed time.
-pub fn flavour_word(seed: u64, elapsed_secs: i64) -> &'static str {
+/// The localized flavour word for a seed at an elapsed time.
+pub fn flavour_word(seed: u64, elapsed_secs: i64) -> std::borrow::Cow<'static, str> {
     let step = (elapsed_secs.max(0) / FLAVOUR_ROTATE_SECS) as u64;
-    FLAVOUR_WORDS[((seed.wrapping_add(step)) % FLAVOUR_WORDS.len() as u64) as usize]
+    flavour_display(((seed.wrapping_add(step)) % FLAVOUR_WORDS.len() as u64) as usize)
+}
+
+/// A literal-`t!` lookup per slot — the all-literal form the completeness
+/// scan requires (the `ts` dynamic path would hide the keys from it).
+fn flavour_display(index: usize) -> std::borrow::Cow<'static, str> {
+    match index {
+        0 => crate::i18n::t!("conversation_transcript.flavour.thinking"),
+        1 => crate::i18n::t!("conversation_transcript.flavour.pondering"),
+        2 => crate::i18n::t!("conversation_transcript.flavour.scheming"),
+        3 => crate::i18n::t!("conversation_transcript.flavour.brewing"),
+        4 => crate::i18n::t!("conversation_transcript.flavour.weaving"),
+        5 => crate::i18n::t!("conversation_transcript.flavour.tinkering"),
+        6 => crate::i18n::t!("conversation_transcript.flavour.musing"),
+        7 => crate::i18n::t!("conversation_transcript.flavour.composing"),
+        8 => crate::i18n::t!("conversation_transcript.flavour.sifting"),
+        9 => crate::i18n::t!("conversation_transcript.flavour.untangling"),
+        10 => crate::i18n::t!("conversation_transcript.flavour.distilling"),
+        11 => crate::i18n::t!("conversation_transcript.flavour.sketching"),
+        12 => crate::i18n::t!("conversation_transcript.flavour.plotting"),
+        13 => crate::i18n::t!("conversation_transcript.flavour.riffing"),
+        14 => crate::i18n::t!("conversation_transcript.flavour.combobulating"),
+        15 => crate::i18n::t!("conversation_transcript.flavour.percolating"),
+        16 => crate::i18n::t!("conversation_transcript.flavour.marinating"),
+        17 => crate::i18n::t!("conversation_transcript.flavour.noodling"),
+        18 => crate::i18n::t!("conversation_transcript.flavour.puzzling"),
+        19 => crate::i18n::t!("conversation_transcript.flavour.conjuring"),
+        // Unreachable by construction (the index is taken mod 20); the
+        // first word is the honest floor if the table ever shrinks.
+        _ => crate::i18n::t!("conversation_transcript.flavour.thinking"),
+    }
 }
 
 /// A stable per-chat seed.

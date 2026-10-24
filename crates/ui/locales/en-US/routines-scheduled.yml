@@ -1,0 +1,218 @@
+_version: 2
+routines_scheduled:
+  page:
+    title:
+      en-US: Scheduled
+    new_routine:
+      en-US: New routine
+    count:
+      zero:
+        en-US: No routines
+      one:
+        en-US: 1 routine
+      other:
+        en-US: "%{n} routines"
+    empty_title:
+      en-US: No routines yet
+    empty_hint:
+      en-US: Run a prompt on a schedule, in a fresh chat each time.
+  card:
+    paused:
+      en-US: Paused
+    done:
+      en-US: Done
+    open_run:
+      en-US: Open run
+    more:
+      en-US: More
+    menu:
+      run_now:
+        en-US: Run now
+      pause:
+        en-US: Pause
+      resume:
+        en-US: Resume
+      edit:
+        en-US: Edit routine
+      delete:
+        en-US: Delete
+  outcome:
+    running:
+      en-US: Running
+    waiting:
+      en-US: Waiting
+    succeeded:
+      en-US: Succeeded
+    failed:
+      en-US: Failed
+    interrupted:
+      en-US: Interrupted
+    skipped:
+      en-US: Skipped
+  countdown:
+    due_now:
+      en-US: due now
+    under_minute:
+      en-US: in <1m
+    minutes:
+      en-US: in %{m}m
+    hours_minutes:
+      en-US: in %{h}h %{m}m
+    days_hours:
+      en-US: in %{d}d %{h}h
+  schedule:
+    once_on:
+      en-US: Once on %{date} at %{time}
+    daily_at:
+      en-US: Daily at %{time}
+    weekdays_at:
+      en-US: Weekdays at %{time}
+    weekly_at:
+      en-US: "%{weekday}s at %{time}"
+  preset:
+    hourly:
+      en-US: Hourly
+    daily:
+      en-US: Daily
+    weekdays:
+      en-US: Weekdays
+    weekly:
+      en-US: Weekly
+    custom:
+      en-US: Custom
+    cron:
+      en-US: Cron
+  weekday:
+    long:
+      mon:
+        en-US: Monday
+      tue:
+        en-US: Tuesday
+      wed:
+        en-US: Wednesday
+      thu:
+        en-US: Thursday
+      fri:
+        en-US: Friday
+      sat:
+        en-US: Saturday
+      sun:
+        en-US: Sunday
+    abbr:
+      mon:
+        en-US: Mon
+      tue:
+        en-US: Tue
+      wed:
+        en-US: Wed
+      thu:
+        en-US: Thu
+      fri:
+        en-US: Fri
+      sat:
+        en-US: Sat
+      sun:
+        en-US: Sun
+    narrow:
+      mon:
+        en-US: Mo
+      tue:
+        en-US: Tu
+      wed:
+        en-US: We
+      thu:
+        en-US: Th
+      fri:
+        en-US: Fr
+      sat:
+        en-US: Sa
+      sun:
+        en-US: Su
+  date:
+    today:
+      en-US: Today
+    tomorrow:
+      en-US: Tomorrow
+  checkout:
+    main:
+      en-US: Main checkout
+    worktree:
+      en-US: New worktree
+  form:
+    title_new:
+      en-US: New routine
+    title_edit:
+      en-US: Edit routine
+    subtitle:
+      en-US: When it fires, what it runs, and how.
+    save_hint:
+      en-US: ⌘↩ to save
+    name:
+      en-US: Name
+    schedule:
+      en-US: Schedule
+    prompt:
+      en-US: Prompt
+    name_placeholder:
+      en-US: Morning triage
+    prompt_placeholder:
+      en-US: What should the agent do each run?
+    search_models:
+      en-US: Search models
+    pick_project:
+      en-US: Pick a project
+    pick_model:
+      en-US: Pick a model
+    at:
+      en-US: at
+    preview_next:
+      en-US: "%{zone} · Next %{fires}"
+    no_matching_models:
+      en-US: No matching models
+    cancel:
+      en-US: Cancel
+    save:
+      en-US: Save
+    saving:
+      en-US: Saving…
+    create:
+      en-US: Create
+  preview:
+    dates_at_time:
+      en-US: "%{dates} at %{time}"
+  problem:
+    set_cron:
+      en-US: Set a cron schedule.
+    bad_time:
+      en-US: Use a 24-hour time like 09:00.
+    name_required:
+      en-US: Give the routine a name.
+    prompt_required:
+      en-US: Write the prompt each run starts with.
+    pick_project:
+      en-US: Pick a project.
+    pick_model:
+      en-US: Pick a model.
+  error:
+    run_now_failed:
+      en-US: "Run now failed: %{error}"
+    pause_failed:
+      en-US: "Pause failed: %{error}"
+    resume_failed:
+      en-US: "Resume failed: %{error}"
+    delete_failed:
+      en-US: "Delete failed: %{error}"
+  delete:
+    title:
+      en-US: Delete “%{name}”?
+    body:
+      zero:
+        en-US: It stops firing.
+      one:
+        en-US: It stops firing. Its run chat stays in Recent as an ordinary chat.
+      other:
+        en-US: It stops firing. Its %{n} run chats stay in Recent as ordinary chats.
+    cancel:
+      en-US: Cancel
+    confirm:
+      en-US: Delete

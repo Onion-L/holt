@@ -1,0 +1,359 @@
+_version: 2
+conversation_transcript:
+  common:
+    cancel:
+      zh-CN: 取消
+    close:
+      zh-CN: 关闭
+    send:
+      zh-CN: 发送
+    open:
+      zh-CN: 打开
+    workspace:
+      zh-CN: 工作区
+    error:
+      zh-CN: 错误
+    copied:
+      zh-CN: 已复制
+  edit:
+    placeholder:
+      zh-CN: 编辑消息
+    send_failed:
+      zh-CN: "无法发送编辑内容：%{error}"
+  retry:
+    label:
+      zh-CN: "重试中 · 第 %{attempt}/%{max} 次尝试"
+    in:
+      zh-CN: "%{secs} 秒后"
+  question:
+    label:
+      zh-CN: 问题
+    awaiting:
+      zh-CN: 等待你的回答…
+    waiting:
+      zh-CN: 正在等待你的回答…
+    answered:
+      zh-CN: "✓ 已回答 · %{question} → %{answer}"
+    inactive:
+      zh-CN: "%{summary}——已不再生效"
+  plan:
+    proposed:
+      zh-CN: 提议的计划
+    approved:
+      zh-CN: ✓ 计划已批准
+    rejected:
+      zh-CN: ⊘ 计划已拒绝
+    still_planning:
+      zh-CN: ⏸ 仍在规划中
+    dismissed:
+      zh-CN: — 规划已取消
+  approval:
+    cwd_line:
+      zh-CN: "cwd: %{path}"
+    verdict:
+      allowed:
+        zh-CN: ✓ 已批准
+      always_allowed:
+        zh-CN: ✓ 始终允许
+      exempted:
+        zh-CN: ⚡ 前缀豁免 · 自动通过
+      review_passed:
+        zh-CN: 自动审查 · 通过
+      review_rejected:
+        zh-CN: 自动审查 · 未通过
+      review_rejected_reason:
+        zh-CN: 自动审查 · 未通过 · "%{reason}"
+      denied:
+        zh-CN: ⊘ 已拒绝
+      denied_note:
+        zh-CN: ⊘ 已拒绝 · "%{note}"
+      aborted:
+        zh-CN: ⊘ 已中断
+  tool:
+    thought_process:
+      zh-CN: 思考过程
+    thought_times:
+      zh-CN: "思考了 %{count} 次"
+    thought_with_base:
+      zh-CN: "思考 · %{base}"
+    thought_times_with_base:
+      zh-CN: "思考了 %{count} 次 · %{base}"
+    search_in:
+      zh-CN: "在 %{path} 中搜索 %{pattern}"
+    tokens:
+      zh-CN: "%{count} token"
+    what:
+      diff:
+        zh-CN: diff
+      output:
+        zh-CN: 输出
+    show_full:
+      zh-CN: 查看完整 %{what}
+    show_full_size:
+      zh-CN: "查看完整 %{what}（%{size}）"
+    loading_full:
+      zh-CN: 正在加载完整 %{what}…
+    load_failed:
+      zh-CN: 无法加载完整 %{what}——点击重试
+    more_lines:
+      zh-CN: "… 还有 %{count} 行"
+    subagent:
+      zh-CN: Subagent
+  turn_card:
+    edited_files:
+      one:
+        zh-CN: "编辑了 %{count} 个文件"
+      other:
+        zh-CN: "编辑了 %{count} 个文件"
+    undo:
+      zh-CN: 撤销
+    review_changes:
+      zh-CN: 查看变更
+    show_more:
+      zh-CN: 再显示 %{count} 个
+    show_less:
+      zh-CN: 收起
+    diff_truncated:
+      zh-CN: diff 已截断
+    restore:
+      running:
+        zh-CN: 正在恢复…
+      restored:
+        zh-CN: 已撤销
+      partial:
+        zh-CN: 部分已恢复
+      failed:
+        zh-CN: 恢复失败
+  rewind:
+    failed:
+      zh-CN: "回退失败：%{error}"
+    malformed:
+      zh-CN: "回退失败：响应格式错误"
+    title_cant:
+      zh-CN: 无法回退
+    title_confirm:
+      zh-CN: 回退到这一步？
+    conflicts_intro:
+      zh-CN: "没有任何更改。以下文件阻止了回退："
+    conflict_changed:
+      zh-CN: 自该步骤后已被更改
+    conflict_not_stored:
+      zh-CN: 内容未保存
+    conflict_unsafe:
+      zh-CN: 在工作树之外
+    conflict_line:
+      zh-CN: "%{path} — %{reason}"
+    conversation_removed:
+      zh-CN: 该步骤之后的对话将被移除。
+    files_intro:
+      zh-CN: "该步骤之后的对话将被移除。以下文件将恢复原状："
+    file_restored:
+      zh-CN: "%{path} — 已恢复"
+    file_deleted:
+      zh-CN: "%{path} — 已删除"
+    and_more:
+      zh-CN: "…还有 %{count} 个"
+    button:
+      zh-CN: 回退
+    tooltip:
+      zh-CN: 回退到这一步
+    summary:
+      none:
+        zh-CN: 已回退对话。
+      one:
+        zh-CN: "已回退对话和 %{count} 个文件。"
+      other:
+        zh-CN: "已回退对话和 %{count} 个文件。"
+  goal:
+    chip:
+      zh-CN: 目标
+  run_caption:
+    catchup:
+      zh-CN: " · 补跑"
+  provider:
+    stale:
+      zh-CN: 目录已更改——请重新提议。
+    write:
+      zh-CN: 写入
+    writing:
+      zh-CN: 写入中…
+    discard:
+      zh-CN: 放弃
+    written:
+      zh-CN: ✓ 已写入
+    written_to:
+      zh-CN: "✓ 已写入 %{names}"
+    open_in_settings:
+      zh-CN: 在设置中打开
+    discarded:
+      zh-CN: 已放弃
+    proposal_superseded:
+      zh-CN: 已被更新的提议取代
+    which_provider:
+      zh-CN: 选择哪个提供商？
+    which_provider_inactive:
+      zh-CN: 选择哪个提供商？——已不再生效
+    configured:
+      zh-CN: 已配置
+    using:
+      zh-CN: "✓ 正在使用 %{name} · %{id}"
+    api_key_placeholder:
+      zh-CN: API 密钥
+    api_key_for:
+      zh-CN: "%{name} 的 API 密钥"
+    key_privacy:
+      zh-CN: 仅保存在本地，且只发送到该目的地——绝不会进入对话。
+    save_key:
+      zh-CN: 保存密钥
+    dismiss:
+      zh-CN: 忽略
+    key_saved:
+      zh-CN: ✓ 密钥已保存
+    key_dismissed:
+      zh-CN: 已忽略
+    key_superseded:
+      zh-CN: "%{name} 的 API 密钥——已被更新的请求取代"
+  history:
+    fetch_all:
+      zh-CN: 全部拉取
+    fetching:
+      zh-CN: 拉取中…
+    commits:
+      one:
+        zh-CN: "%{count} 次提交"
+      other:
+        zh-CN: "%{count} 次提交"
+    ref:
+      branch:
+        zh-CN: 分支
+      remote:
+        zh-CN: 远程分支
+      tag:
+        zh-CN: 标签
+    ref_description:
+      zh-CN: "%{kind}：%{label}"
+    loading:
+      zh-CN: 加载中…
+    retry:
+      zh-CN: 重试
+    load_more:
+      zh-CN: 加载更多
+    no_subject:
+      zh-CN: （无主题）
+    unknown_author:
+      zh-CN: 未知
+    no_repo:
+      zh-CN: 未选择仓库
+    loading_history:
+      zh-CN: 正在加载历史记录…
+    no_commits:
+      zh-CN: 还没有任何提交
+    fetch_failed:
+      zh-CN: "拉取失败：%{error}"
+    col:
+      commit:
+        zh-CN: 提交
+      author:
+        zh-CN: 作者
+      date:
+        zh-CN: 日期
+      sha:
+        zh-CN: SHA
+  usage:
+    kind:
+      turn:
+        zh-CN: 轮次
+      subagent:
+        zh-CN: Subagent
+      compaction:
+        zh-CN: 上下文压缩
+      auto_review:
+        zh-CN: 自动审查
+    window_unknown:
+      zh-CN: · 窗口未知
+    records:
+      one:
+        zh-CN: "%{count} 条记录"
+      other:
+        zh-CN: "%{count} 条记录"
+    note:
+      estimated_unknown:
+        zh-CN: "由历史记录估算；窗口大小未知。"
+      estimated:
+        zh-CN: 在下一条回复报告用量之前，此数值由历史记录估算。
+      window_unknown:
+        zh-CN: 上下文窗口大小未知。
+    section:
+      context:
+        zh-CN: 上下文
+      usage:
+        zh-CN: 用量
+      cache_hit:
+        zh-CN: 缓存命中
+    cache_note:
+      zh-CN: "输入 %{input} · 读取 %{read}"
+    cache_note_written:
+      zh-CN: "输入 %{input} · 读取 %{read} · 写入 %{written}"
+  user_row:
+    open_skill:
+      zh-CN: 打开 SKILL.md
+    compacting:
+      zh-CN: 正在压缩上下文
+    compacted:
+      zh-CN: 上下文已压缩
+    not_delivered_retry:
+      zh-CN: 未送达 — 点击重试
+    checking_goal:
+      zh-CN: 正在检查目标…
+    queued_hint:
+      zh-CN: 已排队 — 将自动发送
+    sending:
+      zh-CN: 发送中
+    to_interrupt:
+      zh-CN: 可中断
+  flavour:
+    thinking:
+      zh-CN: 思考中
+    pondering:
+      zh-CN: 沉思中
+    scheming:
+      zh-CN: 谋划中
+    brewing:
+      zh-CN: 酝酿中
+    weaving:
+      zh-CN: 编织中
+    tinkering:
+      zh-CN: 修补中
+    musing:
+      zh-CN: 冥想中
+    composing:
+      zh-CN: 谱写中
+    sifting:
+      zh-CN: 筛选中
+    untangling:
+      zh-CN: 解结中
+    distilling:
+      zh-CN: 提炼中
+    sketching:
+      zh-CN: 素描中
+    plotting:
+      zh-CN: 构思中
+    riffing:
+      zh-CN: 即兴中
+    combobulating:
+      zh-CN: 理顺中
+    percolating:
+      zh-CN: 沉淀中
+    marinating:
+      zh-CN: 发酵中
+    noodling:
+      zh-CN: 琢磨中
+    puzzling:
+      zh-CN: 推敲中
+    conjuring:
+      zh-CN: 召唤中
+  markdown:
+    copied:
+      zh-CN: 已复制
+    fit:
+      zh-CN: 适应

@@ -27,6 +27,7 @@ use gpui::{
 use holt_proto::{TerminalEvent, TerminalSession};
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::motion::{self, AnimationExt as _, TAB_SLIDE};
 use crate::settings::{TERMINAL_MAX_VH, TERMINAL_MIN_HEIGHT};
 use crate::state::{AppState, EngineHandle};
@@ -136,7 +137,11 @@ pub fn active_after_close(active: usize, closed: usize, len_after: usize) -> usi
 
 /// The `[process exited N]` trailer, dimmed (§1.10).
 pub fn exit_message(code: i32) -> Vec<u8> {
-    format!("\r\n\x1b[90m[process exited {code}]\x1b[0m\r\n").into_bytes()
+    format!(
+        "\r\n\x1b[90m{}\x1b[0m\r\n",
+        t!("terminal_panel.notice.process_exited", code = code)
+    )
+    .into_bytes()
 }
 
 /// Tab title from the session's shell path ("/bin/zsh" → "zsh").
@@ -398,7 +403,9 @@ impl TerminalPane {
             chat_id,
             marked: String::new(),
             marked_selection: 0..0,
-            search: cx.new(|cx| crate::composer::ComposerInput::new("Find in terminal", cx)),
+            search: cx.new(|cx| {
+                crate::composer::ComposerInput::new(t!("terminal_panel.search.placeholder"), cx)
+            }),
             search_open: false,
             search_match: true,
             search_sub: None,
@@ -703,7 +710,7 @@ impl TerminalPane {
         let tab_no = entry.tabs.len() + 1;
         entry.tabs.push(TerminalTab {
             key,
-            title: format!("Terminal {tab_no}").into(),
+            title: t!("terminal_panel.tab_title", no = tab_no).into(),
             terminal_id: None,
             emulator: Emulator::new(80, 24),
             exited: None,
@@ -766,8 +773,11 @@ impl TerminalPane {
                     let _ = this.update(cx, |panel, cx| {
                         if let Some(tab) = panel.tab_mut(&chat, key) {
                             tab.emulator.feed(
-                                format!("\x1b[31mfailed to open terminal: {err}\x1b[0m\r\n")
-                                    .as_bytes(),
+                                format!(
+                                    "\x1b[31m{}\x1b[0m\r\n",
+                                    t!("terminal_panel.notice.open_failed", error = err)
+                                )
+                                .as_bytes(),
                             );
                             tab.exited = Some(-1);
                             cx.notify();
@@ -889,8 +899,7 @@ impl TerminalPane {
         };
         match event {
             TerminalEvent::Gap { seq } => {
-                self.stream_notice =
-                    Some("Output was lost while disconnected; this screen is incomplete.".into());
+                self.stream_notice = Some(t!("terminal_panel.notice.output_lost").into());
                 let Some(tab) = self.tab_mut(chat, key) else {
                     return StreamDisposition::Stop;
                 };
@@ -898,7 +907,7 @@ impl TerminalPane {
                 tab.emulator =
                     Emulator::new(tab.emulator.cols() as u16, tab.emulator.rows() as u16);
                 tab.emulator
-                    .feed(b"[Output was lost while disconnected; this screen is incomplete.]\r\n");
+                    .feed(format!("[{}]\r\n", t!("terminal_panel.notice.output_lost")).as_bytes());
                 cx.notify();
                 StreamDisposition::Continue
             }
@@ -1010,7 +1019,8 @@ impl TerminalPane {
                     .await
                 {
                     let _ = this.update(cx, |pane, cx| {
-                        pane.stream_notice = Some(format!("Terminal input failed: {error}"));
+                        pane.stream_notice =
+                            Some(t!("terminal_panel.notice.input_failed", error = error).into());
                         cx.notify();
                     });
                     break;
@@ -1978,7 +1988,9 @@ impl Render for TerminalPane {
                 .justify_center()
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from("Select a chat to open a terminal"))
+                .child(SharedString::from(t!(
+                    "terminal_panel.pane.select_chat_hint"
+                )))
                 .into_any_element();
         };
         let focused = self.focus_handle.is_focused(window);
@@ -2031,13 +2043,17 @@ impl Render for TerminalPane {
                                 .child(self.search.clone()),
                         )
                         .when(!self.search_match, |d| {
-                            d.child(div().text_color(theme.text_muted).child("No matches"))
+                            d.child(
+                                div()
+                                    .text_color(theme.text_muted)
+                                    .child(t!("terminal_panel.search.no_matches")),
+                            )
                         })
                         .child(
                             super::panel::tool(
                                 "terminal-find-prev",
                                 crate::icons::ARROW_UP,
-                                "Previous match",
+                                t!("terminal_panel.search.prev"),
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.find(true, false, cx))),
@@ -2046,7 +2062,7 @@ impl Render for TerminalPane {
                             super::panel::tool(
                                 "terminal-find-next",
                                 crate::icons::ALT_ARROW_DOWN,
-                                "Next match",
+                                t!("terminal_panel.search.next"),
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.find(false, false, cx))),
@@ -2055,7 +2071,7 @@ impl Render for TerminalPane {
                             super::panel::tool(
                                 "terminal-find-close",
                                 crate::icons::CLOSE,
-                                "Close search",
+                                t!("terminal_panel.search.close"),
                                 cx,
                             )
                             .on_click(cx.listener(
@@ -2076,12 +2092,12 @@ impl Render for TerminalPane {
                         .items_center()
                         .px_2()
                         .gap_2()
-                        .child("Exited")
+                        .child(t!("terminal_panel.pane.exited"))
                         .child(
                             super::panel::tool(
                                 "terminal-restart",
                                 crate::icons::RESTART,
-                                "Restart terminal",
+                                t!("terminal_panel.pane.restart"),
                                 cx,
                             )
                             .on_click(cx.listener(
@@ -2402,10 +2418,14 @@ mod tests {
 
     #[test]
     fn exit_message_format() {
+        // The production call and this assertion are two separate catalog
+        // reads; hold the locale so a concurrent switching test cannot flip
+        // the language between them.
+        let _locale = crate::i18n::tests::locale_lock();
         let text = String::from_utf8(exit_message(0)).unwrap();
-        assert!(text.contains("[process exited 0]"));
+        assert!(text.contains(t!("terminal_panel.notice.process_exited", code = 0).as_ref()));
         let text = String::from_utf8(exit_message(137)).unwrap();
-        assert!(text.contains("[process exited 137]"));
+        assert!(text.contains(t!("terminal_panel.notice.process_exited", code = 137).as_ref()));
         assert!(text.starts_with("\r\n"));
         assert!(text.ends_with("\r\n"));
     }
@@ -2464,9 +2484,13 @@ mod tests {
 
     #[test]
     fn exit_message_feeds_cleanly_through_the_emulator() {
+        let _locale = crate::i18n::tests::locale_lock();
         let mut emulator = Emulator::new(40, 4);
         emulator.feed(b"$ done");
         emulator.feed(&exit_message(1));
-        assert_eq!(emulator.row_text(1), "[process exited 1]");
+        assert_eq!(
+            emulator.row_text(1),
+            t!("terminal_panel.notice.process_exited", code = 1).as_ref()
+        );
     }
 }

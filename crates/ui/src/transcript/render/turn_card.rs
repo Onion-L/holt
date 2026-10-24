@@ -60,10 +60,22 @@ impl Transcript {
         // A clean restore leaves the card as history: counts and paths fade.
         let undone = restore_mark == Some(TurnRestoreMark::Restored);
         let mark = restore_mark.map(|mark| match mark {
-            TurnRestoreMark::Running => ("Restoring…", theme.text_faint),
-            TurnRestoreMark::Restored => ("Undone", theme.text_muted),
-            TurnRestoreMark::Partial => ("Partially restored", theme.warning),
-            TurnRestoreMark::Failed => ("Restore failed", theme.danger),
+            TurnRestoreMark::Running => (
+                t!("conversation_transcript.turn_card.restore.running"),
+                theme.text_faint,
+            ),
+            TurnRestoreMark::Restored => (
+                t!("conversation_transcript.turn_card.restore.restored"),
+                theme.text_muted,
+            ),
+            TurnRestoreMark::Partial => (
+                t!("conversation_transcript.turn_card.restore.partial"),
+                theme.warning,
+            ),
+            TurnRestoreMark::Failed => (
+                t!("conversation_transcript.turn_card.restore.failed"),
+                theme.danger,
+            ),
         });
         let summary = div()
             .flex()
@@ -86,7 +98,7 @@ impl Transcript {
                     div()
                         .text_size(crate::typography::ui_rems(11.5))
                         .text_color(theme.text_faint)
-                        .child("diff truncated"),
+                        .child(t!("conversation_transcript.turn_card.diff_truncated")),
                 )
             })
             .when_some(mark, |el, (label, color)| {
@@ -117,10 +129,19 @@ impl Transcript {
                             .text_size(crate::typography::ui_rems(13.0))
                             .line_height(px(18.0))
                             .text_color(theme.text)
-                            .child(SharedString::from(format!(
-                                "Edited {count} file{}",
-                                if count == 1 { "" } else { "s" }
-                            ))),
+                            .child(if count == 1 {
+                                t!(
+                                    "conversation_transcript.turn_card.edited_files.one",
+                                    count = count
+                                )
+                                .into_any_element()
+                            } else {
+                                t!(
+                                    "conversation_transcript.turn_card.edited_files.other",
+                                    count = count
+                                )
+                                .into_any_element()
+                            }),
                     )
                     .child(
                         crate::icons::icon(if open {
@@ -157,7 +178,7 @@ impl Transcript {
             .text_color(theme.text_muted)
             .cursor_pointer()
             .hover(|el| el.bg(crate::theme::wash(0.06)))
-            .child("Undo")
+            .child(t!("conversation_transcript.turn_card.undo"))
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.stop_propagation();
                 cx.emit(super::TranscriptEvent::RestoreTurnChanges {
@@ -182,7 +203,7 @@ impl Transcript {
             .text_color(theme.text)
             .cursor_pointer()
             .hover(|el| el.bg(crate::theme::wash(0.06)))
-            .child("Review changes")
+            .child(t!("conversation_transcript.turn_card.review_changes"))
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.stop_propagation();
                 cx.emit(super::TranscriptEvent::ReviewTurnChanges {
@@ -246,7 +267,7 @@ impl Transcript {
                     .group_hover(group.clone(), |el| el.opacity(1.0))
                     .cursor_pointer()
                     .hover(|el| el.bg(crate::theme::wash(0.08)))
-                    .child("Open")
+                    .child(t!("conversation_transcript.common.open"))
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.stop_propagation();
                         cx.emit(super::TranscriptEvent::OpenTurnFile {
@@ -301,9 +322,13 @@ impl Transcript {
                 .cursor_pointer()
                 .hover(|el| el.bg(crate::theme::wash(0.04)).text_color(theme.text_muted))
                 .child(SharedString::from(if hidden > 0 {
-                    format!("Show {hidden} more")
+                    t!(
+                        "conversation_transcript.turn_card.show_more",
+                        count = hidden
+                    )
+                    .into_owned()
                 } else {
-                    "Show less".to_string()
+                    t!("conversation_transcript.turn_card.show_less").into_owned()
                 }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let fold = this.folds.entry(more_id.clone()).or_default();

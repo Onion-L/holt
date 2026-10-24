@@ -1,0 +1,161 @@
+_version: 2
+files_sidebar:
+  common:
+    cancel:
+      zh-CN: 取消
+    discard:
+      zh-CN: 放弃
+    discard_all:
+      zh-CN: 全部放弃
+    save:
+      zh-CN: 保存
+    save_all:
+      zh-CN: 全部保存
+    loading:
+      zh-CN: "加载中…"
+    open_externally:
+      zh-CN: 在外部打开
+  tree:
+    search_files:
+      zh-CN: 搜索文件
+    hide_tooltip:
+      zh-CN: 隐藏文件侧栏
+    select_space:
+      zh-CN: 选择一个空间以浏览其文件
+    row_empty:
+      zh-CN: "（空）"
+    row_truncated:
+      zh-CN: "（列表已截断）"
+    failed_to_load:
+      zh-CN: 加载失败
+    retry_with_reason:
+      zh-CN: "重试：%{message}"
+    unexpected_reply:
+      zh-CN: "意外的响应：%{error}"
+    git:
+      untracked:
+        zh-CN: "未跟踪 — 新文件，尚未纳入 git"
+      added:
+        zh-CN: "已添加 — 已暂存的新文件"
+      modified:
+        zh-CN: "已修改 — 有未提交的更改"
+      conflicted:
+        zh-CN: "有冲突 — 未解决的合并冲突"
+      deleted:
+        zh-CN: 已从工作树删除
+  viewer:
+    engine_unavailable:
+      zh-CN: 引擎不可用。
+    cannot_open:
+      zh-CN: 无法打开此文件。
+    destination_exists:
+      zh-CN: 目标路径已存在。
+    mode_source:
+      zh-CN: 源码
+    mode_preview:
+      zh-CN: 预览
+    find_placeholder:
+      zh-CN: 在文件中查找
+    no_matches:
+      zh-CN: 无匹配
+    more_changed_lines:
+      zh-CN: "… 还有 %{count} 行更改"
+    conflict:
+      banner:
+        zh-CN: 此文件已在磁盘上修改。你的更改已保留。
+      compare:
+        zh-CN: 对比
+      hide_changes:
+        zh-CN: 隐藏对比
+      save_as:
+        zh-CN: "另存为…"
+      reload:
+        zh-CN: 重新加载（放弃草稿）
+      overwrite:
+        zh-CN: 覆盖磁盘文件
+      destination_placeholder:
+        zh-CN: 目标路径
+  image:
+    zoom_in:
+      zh-CN: 放大
+    zoom_out:
+      zh-CN: 缩小
+    actual_size:
+      zh-CN: 实际大小
+    fit:
+      zh-CN: 适应
+    fit_to_pane:
+      zh-CN: 适应面板
+    retry:
+      zh-CN: 重试
+    retry_aria:
+      zh-CN: 重试图片预览
+  preview:
+    nothing:
+      zh-CN: 没有可预览的内容。
+  menu:
+    paste:
+      zh-CN: "粘贴“%{name}”"
+    cant_paste:
+      zh-CN: "无法粘贴到这里：%{reason}"
+    paste_already_there:
+      zh-CN: 它已在该目录中。
+    paste_into_itself:
+      zh-CN: 条目不能粘贴到自身或其子级内。
+    new_file:
+      zh-CN: 新建文件
+    new_directory:
+      zh-CN: 新建目录
+    add_to_chat:
+      zh-CN: 添加到会话
+    cut:
+      zh-CN: 剪切
+    rename:
+      zh-CN: "重命名…"
+    move_to_trash:
+      zh-CN: 移到废纸篓
+  dialog:
+    new_file:
+      zh-CN: 新建文件
+    new_directory:
+      zh-CN: 新建目录
+    rename:
+      zh-CN: 重命名
+    name_placeholder:
+      zh-CN: 名称
+    name_empty:
+      zh-CN: 名称不能为空。
+    name_invalid:
+      zh-CN: "%{name} 不是有效名称。"
+    create:
+      zh-CN: 创建
+    working:
+      zh-CN: "处理中…"
+    in_hint:
+      zh-CN: "位于 %{path}"
+  close_dialog:
+    title:
+      zh-CN: 保存更改？
+    body:
+      zh-CN: "“%{title}”有未保存的修改。关闭标签页前要保存吗？"
+  space_dialog:
+    title:
+      zh-CN: 移除含未保存文件的空间？
+    body:
+      zh-CN: "%{name} 有 %{count} 个文件存在未保存的修改。移除空间前要保存吗？"
+    this_space:
+      zh-CN: 此空间
+  trash_dialog:
+    title:
+      zh-CN: 连未保存的文件一起移到废纸篓？
+    body:
+      zh-CN: "“%{name}”下有 %{count} 个打开的文件存在未保存的修改。移到废纸篓前要保存吗？若选择放弃，未保存的修改将在移动后丢失。"
+  errors:
+    save_all_failed_space:
+      zh-CN: "未能保存全部已修改的文件 — 空间已保留。"
+    save_all_failed_trash:
+      zh-CN: "未能保存全部已修改的文件 — 未移入废纸篓。"
+    attach_failed:
+      zh-CN: "无法附加 %{path}：%{error}"
+  empty_edit_message:
+    zh-CN: 没有可发送的内容 — 请添加文字或保留一个附件

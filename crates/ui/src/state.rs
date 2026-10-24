@@ -323,8 +323,14 @@ impl Default for AppState {
 
 /// The one failure text for "no engine handle" — shared by every
 /// `engine()` guard site, and matched by the composer's offline styling
-/// (amber vs red) instead of each site re-spelling the literal.
-pub(crate) const ENGINE_NOT_CONNECTED: &str = "Engine not connected";
+/// (amber vs red, `composer.rs`) instead of each site re-spelling the
+/// literal. Translated at read time so every guard site flips languages
+/// together; the composer's equality check compares this same output, and
+/// stays correct per-render (the locale cannot change mid-render — a
+/// switch lands between frames).
+pub(crate) fn engine_not_connected() -> std::borrow::Cow<'static, str> {
+    crate::i18n::t!("notifications_status.engine_not_connected")
+}
 
 impl AppState {
     pub fn new() -> Self {
@@ -1339,7 +1345,8 @@ impl AppState {
         };
         if locator != link.workspace {
             self.pending_deep_link = None;
-            self.deep_link_notice = Some("This Chat link belongs to another Workspace".into());
+            self.deep_link_notice =
+                Some(crate::i18n::t!("notifications_status.deep_link.other_workspace").into());
             return;
         }
         if self.chats.iter().any(|chat| chat.id == link.chat_id) {
@@ -1347,7 +1354,8 @@ impl AppState {
             self.select_chat(Some(link.chat_id), cx);
         } else if self.chats_synced {
             self.pending_deep_link = None;
-            self.deep_link_notice = Some("The linked conversation was not found".into());
+            self.deep_link_notice =
+                Some(crate::i18n::t!("notifications_status.deep_link.not_found").into());
         }
     }
 

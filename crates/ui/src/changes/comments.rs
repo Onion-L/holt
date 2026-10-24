@@ -7,6 +7,7 @@ use gpui::{App, AppContext, Context, Focusable as _, Window};
 
 use crate::comments::{CommentSide, DiffComment};
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 
 use super::model::comment_state_key;
 use super::rows::{DiffRow, body_rows};
@@ -155,7 +156,8 @@ impl Changes {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = cx.new(|cx| ComposerInput::new("Request a change…", cx));
+        let input =
+            cx.new(|cx| ComposerInput::new(t!("changes_git.comment.request_placeholder"), cx));
         let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.commit_draft(cx),
             ComposerInputEvent::Edited => cx.notify(),

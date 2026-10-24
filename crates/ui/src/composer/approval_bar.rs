@@ -34,11 +34,14 @@
 
 use super::Composer;
 
+use std::borrow::Cow;
+
 use gpui::{App, Context, KeyDownEvent, SharedString, Window, div, prelude::*, px};
 
 use holt_doc::SessionMessageEntry;
 use holt_proto::{ApprovalVerdict, ToolCall};
 
+use crate::i18n::t;
 use crate::motion;
 use crate::theme::Theme;
 use crate::transcript::{
@@ -91,7 +94,7 @@ pub(crate) struct ApprovalPrompt {
     pub target: Option<String>,
     pub options: Vec<ApprovalOption>,
     /// The note row's placeholder.
-    pub note_placeholder: &'static str,
+    pub note_placeholder: Cow<'static, str>,
     /// The question card's pager: the 1-based page and the question count.
     /// `None` on the single-surface kinds.
     pub pager: Option<(usize, usize)>,
@@ -102,34 +105,34 @@ pub(crate) struct ApprovalPrompt {
 /// option — it is the free-text input.
 pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
     let title = match call {
-        ToolCall::Exec { .. } => "Run this command?",
-        ToolCall::WriteFile { .. } => "Write this file?",
-        ToolCall::EditFile { .. } => "Edit this file?",
-        ToolCall::ApplyPatch { .. } => "Apply this patch?",
-        _ => "Allow this action?",
+        ToolCall::Exec { .. } => t!("composer_input.approval.gate_exec"),
+        ToolCall::WriteFile { .. } => t!("composer_input.approval.gate_write"),
+        ToolCall::EditFile { .. } => t!("composer_input.approval.gate_edit"),
+        ToolCall::ApplyPatch { .. } => t!("composer_input.approval.gate_patch"),
+        _ => t!("composer_input.approval.gate_generic"),
     };
     ApprovalPrompt {
         kind: BarKind::Gate,
-        title: title.to_string(),
+        title: title.into(),
         target: Some(approval_target(call)),
         options: vec![
             ApprovalOption {
-                label: "Allow once".into(),
+                label: t!("composer_input.approval.allow_once").into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::Allow),
                 danger: false,
             },
             ApprovalOption {
-                label: "Always allow · this session".into(),
+                label: t!("composer_input.approval.always_allow_session").into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::AlwaysAllow),
                 danger: false,
             },
             ApprovalOption {
-                label: "Deny".into(),
+                label: t!("composer_input.approval.deny").into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::Deny { note: None }),
                 danger: true,
             },
         ],
-        note_placeholder: "Deny with a note…",
+        note_placeholder: t!("composer_input.approval.deny_note_placeholder"),
         pager: None,
     }
 }
@@ -140,14 +143,14 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
 pub(crate) fn plan_prompt() -> ApprovalPrompt {
     ApprovalPrompt {
         kind: BarKind::Plan,
-        title: "Approve this plan?".to_string(),
+        title: t!("composer_input.approval.plan_title").into(),
         target: None,
         options: vec![ApprovalOption {
-            label: "Approve".into(),
+            label: t!("composer_input.approval.approve").into(),
             verdict: BarVerdict::Plan("approve"),
             danger: false,
         }],
-        note_placeholder: "Enter feedback…",
+        note_placeholder: t!("composer_input.approval.plan_note_placeholder"),
         pager: None,
     }
 }
@@ -172,7 +175,7 @@ pub(crate) fn question_prompt(questions: &[holt_doc::CardQuestion], page: usize)
                 danger: false,
             })
             .collect(),
-        note_placeholder: "Answer in words…",
+        note_placeholder: t!("composer_input.approval.question_note_placeholder"),
         pager: (questions.len() > 1).then_some((page + 1, questions.len())),
     }
 }
@@ -243,7 +246,7 @@ impl PendingApproval {
                             BarVerdict::Gate(ApprovalVerdict::AlwaysAllow)
                         )
                     });
-                    prompt.title = "Apply these catalog changes?".to_string();
+                    prompt.title = t!("composer_input.approval.model_apply").into();
                     if let Some(summary) = note {
                         prompt.target = Some(summary.clone());
                     }
@@ -394,7 +397,7 @@ impl Composer {
         self.answered_approvals.insert(bar.id.clone());
         self.input.update(cx, |input, cx| {
             input.set_text("", cx);
-            input.set_placeholder("Do anything…", cx);
+            input.set_placeholder(t!("composer_input.placeholder.idle"), cx);
         });
         match verdict {
             BarVerdict::Gate(verdict) => resolve_approval(&self.state, bar.id, verdict, cx),
@@ -476,7 +479,7 @@ impl Composer {
         self.answered_approvals.insert(bar.id.clone());
         self.input.update(cx, |input, cx| {
             input.set_text("", cx);
-            input.set_placeholder("Do anything…", cx);
+            input.set_placeholder(t!("composer_input.placeholder.idle"), cx);
         });
         crate::transcript::question_card::dismiss_question(&self.state, bar.id, cx);
         cx.notify();
@@ -838,7 +841,7 @@ impl Composer {
                                                 .line_height(px(14.0))
                                                 .child("Esc"),
                                         )
-                                        .child(" to dismiss"),
+                                        .child(t!("composer_input.approval.esc_to_dismiss")),
                                 )
                             }),
                     ),
@@ -854,6 +857,7 @@ mod tests {
 
     #[test]
     fn a_forced_model_apply_prompt_titles_the_action_and_leads_with_the_summary() {
+        let _locale = crate::i18n::tests::locale_lock();
         let entry = SessionMessageEntry {
             id: "entry-1".into(),
             role: holt_doc::MessageRole::Assistant,
@@ -890,7 +894,7 @@ mod tests {
         };
         let pending = PendingApproval::from_transcript(&[entry]).expect("pending gate");
         let prompt = pending.prompt();
-        assert_eq!(prompt.title, "Apply these catalog changes?");
+        assert_eq!(prompt.title, t!("composer_input.approval.model_apply"));
         assert_eq!(
             prompt.target.as_deref(),
             Some("Apply 1 catalog change for openai")
@@ -908,30 +912,37 @@ mod tests {
             name: "something_else".into(),
             input: None,
         };
-        assert_eq!(gate_prompt(&ordinary).title, "Allow this action?");
+        assert_eq!(
+            gate_prompt(&ordinary).title,
+            t!("composer_input.approval.gate_generic")
+        );
         assert_eq!(gate_prompt(&ordinary).options.len(), 3);
     }
 
     #[test]
     fn gate_prompt_titles_and_targets_follow_the_call_kind() {
+        let _locale = crate::i18n::tests::locale_lock();
         let exec = gate_prompt(&ToolCall::Exec {
             command: "cargo test".into(),
         });
         assert_eq!(exec.kind, BarKind::Gate);
-        assert_eq!(exec.title, "Run this command?");
+        assert_eq!(exec.title, t!("composer_input.approval.gate_exec"));
         assert_eq!(exec.target.as_deref(), Some("$ cargo test"));
         assert_eq!(exec.options.len(), 3);
-        assert_eq!(exec.note_placeholder, "Deny with a note…");
+        assert_eq!(
+            exec.note_placeholder,
+            t!("composer_input.approval.deny_note_placeholder")
+        );
 
         let write = gate_prompt(&ToolCall::WriteFile {
             path: "src/main.rs".into(),
             content: None,
         });
-        assert_eq!(write.title, "Write this file?");
+        assert_eq!(write.title, t!("composer_input.approval.gate_write"));
         assert_eq!(write.target.as_deref(), Some("src/main.rs"));
 
         let patch = gate_prompt(&ToolCall::ApplyPatch { path: None });
-        assert_eq!(patch.title, "Apply this patch?");
+        assert_eq!(patch.title, t!("composer_input.approval.gate_patch"));
         assert_eq!(patch.target.as_deref(), Some("workspace"));
     }
 
@@ -958,19 +969,26 @@ mod tests {
 
     #[test]
     fn the_plan_prompt_maps_to_the_plan_contract() {
+        let _locale = crate::i18n::tests::locale_lock();
         let prompt = plan_prompt();
         assert_eq!(prompt.kind, BarKind::Plan);
-        assert_eq!(prompt.title, "Approve this plan?");
+        assert_eq!(prompt.title, t!("composer_input.approval.plan_title"));
         // No target line: the plan document is the transcript card.
         assert_eq!(prompt.target, None);
-        assert_eq!(prompt.note_placeholder, "Enter feedback…");
+        assert_eq!(
+            prompt.note_placeholder,
+            t!("composer_input.approval.plan_note_placeholder")
+        );
         let verdicts: Vec<BarVerdict> = prompt
             .options
             .iter()
             .map(|option| option.verdict.clone())
             .collect();
         assert_eq!(verdicts, vec![BarVerdict::Plan("approve")]);
-        assert_eq!(prompt.options[0].label.as_ref(), "Approve");
+        assert_eq!(
+            prompt.options[0].label.as_ref(),
+            t!("composer_input.approval.approve").as_ref()
+        );
         assert!(!prompt.options[0].danger);
     }
 
@@ -1120,6 +1138,7 @@ mod tests {
 
     #[test]
     fn the_question_prompt_serves_one_page_of_the_card() {
+        let _locale = crate::i18n::tests::locale_lock();
         let questions = vec![
             holt_doc::CardQuestion {
                 question: "Prefix or suffix?".into(),
@@ -1135,7 +1154,10 @@ mod tests {
         assert_eq!(prompt.kind, BarKind::Question);
         assert_eq!(prompt.title, "Prefix or suffix?");
         assert_eq!(prompt.target, None);
-        assert_eq!(prompt.note_placeholder, "Answer in words…");
+        assert_eq!(
+            prompt.note_placeholder,
+            t!("composer_input.approval.question_note_placeholder")
+        );
         assert_eq!(prompt.pager, Some((1, 2)));
         assert_eq!(
             prompt.options,

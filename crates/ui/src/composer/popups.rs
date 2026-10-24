@@ -4,6 +4,7 @@
 
 use super::Composer;
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use gpui::{App, Context, SharedString, Window, div, prelude::*, px};
@@ -12,6 +13,7 @@ use holt_proto::{FileSearchMatch, ProviderId, SkillListing, SlashCommand};
 use holt_rpc::{RpcError, methods};
 
 use super::slash::{SlashCandidate, popup_candidates};
+use crate::i18n::t;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,12 +141,12 @@ fn mention_response_is_current(state: &FileMentionState, request: u64) -> bool {
 /// A failed command discovery, translated for the popup.
 fn slash_error_message(err: &RpcError) -> SharedString {
     match err {
-        RpcError::UnknownMethod(_) => {
-            "Command listing isn't available — the engine doesn't support it yet".into()
+        RpcError::UnknownMethod(_) => t!("composer_input.slash_popup.commands_unsupported").into(),
+        RpcError::Transport(_) | RpcError::Closed => {
+            t!("composer_input.slash_popup.engine_unreachable").into()
         }
-        RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
         RpcError::BadParams(_) | RpcError::Failed(_) | RpcError::Coded { .. } => {
-            "Couldn't load this agent's commands".into()
+            t!("composer_input.slash_popup.commands_failed").into()
         }
     }
 }
@@ -152,12 +154,12 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 /// A failed skill listing, translated for the popup.
 fn skills_error_message(err: &RpcError) -> SharedString {
     match err {
-        RpcError::UnknownMethod(_) => {
-            "Skills aren't available — the engine doesn't support them yet".into()
+        RpcError::UnknownMethod(_) => t!("composer_input.slash_popup.skills_unsupported").into(),
+        RpcError::Transport(_) | RpcError::Closed => {
+            t!("composer_input.slash_popup.engine_unreachable").into()
         }
-        RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
         RpcError::BadParams(_) | RpcError::Failed(_) | RpcError::Coded { .. } => {
-            "Couldn't load skills".into()
+            t!("composer_input.slash_popup.skills_failed").into()
         }
     }
 }
@@ -406,9 +408,9 @@ impl Composer {
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted)
                     .child(if token.query.is_empty() {
-                        "No files available"
+                        t!("composer_input.mention_popup.no_files")
                     } else {
-                        "No matching files"
+                        t!("composer_input.mention_popup.no_matches")
                     }),
             );
         } else {
@@ -812,9 +814,9 @@ impl Composer {
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted)
                     .child(if candidates.is_empty() {
-                        "No slash commands or skills available"
+                        t!("composer_input.slash_popup.none_available")
                     } else {
-                        "No matching commands or skills"
+                        t!("composer_input.slash_popup.no_matches")
                     }),
             );
         } else {
@@ -832,7 +834,11 @@ impl Composer {
                     in_skills_section = Some(is_skill);
                     rows.push(slash_section_header(
                         theme,
-                        if is_skill { "Skills" } else { "Commands" },
+                        if is_skill {
+                            t!("composer_input.slash_popup.section_skills")
+                        } else {
+                            t!("composer_input.slash_popup.section_commands")
+                        },
                     ));
                 }
                 let selected = self.slash.active == Some(row_ix);
@@ -1060,7 +1066,7 @@ fn slash_row_child_index(
 
 /// A slash popup section caption ("Skills" / "Commands"), reference-menu
 /// style: small, quiet, aligned with the rows' content column.
-fn slash_section_header(theme: &Theme, label: &'static str) -> gpui::AnyElement {
+fn slash_section_header(theme: &Theme, label: Cow<'static, str>) -> gpui::AnyElement {
     div()
         .px(px(12.0))
         .pt(px(8.0))
@@ -1068,7 +1074,7 @@ fn slash_section_header(theme: &Theme, label: &'static str) -> gpui::AnyElement 
         .text_size(crate::typography::ui_rems(10.5))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(theme.text_muted.opacity(0.6))
-        .child(SharedString::from(label))
+        .child(label)
         .into_any_element()
 }
 

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 
 use holt_proto::FileSearchMatch;
 
+use crate::i18n::t;
+
 /// The search owner snapshotted with a request: the RPC selector plus the
 /// absolute root results join against — one owner, selector and root from
 /// the same selection read so they can never disagree. A reply that
@@ -73,8 +75,13 @@ impl Shell {
     pub(super) fn open_file_lookup(&mut self, cx: &mut Context<Self>) {
         // "PaletteSearch" context: navigation keys stay unbound so ↑↓/⏎
         // bubble to the palette card instead of moving the text caret.
-        let search =
-            cx.new(|cx| ComposerInput::with_context("Search files by path…", "PaletteSearch", cx));
+        let search = cx.new(|cx| {
+            ComposerInput::with_context(
+                t!("notifications_status.file_lookup.placeholder"),
+                "PaletteSearch",
+                cx,
+            )
+        });
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 this.on_file_lookup_query(cx);
@@ -157,14 +164,14 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             lookup.loading = false;
             lookup.results.clear();
-            lookup.error = Some(crate::state::ENGINE_NOT_CONNECTED.into());
+            lookup.error = Some(crate::state::engine_not_connected().into());
             cx.notify();
             return;
         };
         let Some(scope) = scope else {
             lookup.loading = false;
             lookup.results.clear();
-            lookup.error = Some("Select a space to search its files.".into());
+            lookup.error = Some(t!("notifications_status.file_lookup.select_space").into());
             cx.notify();
             return;
         };
@@ -389,17 +396,17 @@ impl Shell {
         let body: AnyElement = if let Some(error) = error {
             popover::error_row(&theme, &error).into_any_element()
         } else if query_empty {
+            // The workspace name is user content: it rides as a placeholder
+            // inside one whole translated sentence (a translator may move it).
             let hint = match scope.as_ref().map(|scope| scope.root.clone()) {
                 Some(root) => {
                     let name = root
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| root.to_string_lossy().into_owned());
-                    format!(
-                        "Type to search every file and folder in {name} — hidden entries included."
-                    )
+                    t!("notifications_status.file_lookup.search_hint", name = name)
                 }
-                None => "Select a space to search its files.".to_string(),
+                None => t!("notifications_status.file_lookup.select_space"),
             };
             div()
                 .px(px(12.0))
@@ -417,7 +424,7 @@ impl Shell {
                 .py(px(12.0))
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_muted)
-                .child("No matching paths")
+                .child(t!("notifications_status.file_lookup.no_matches"))
                 .into_any_element()
         } else {
             let root = scope.as_ref().map(|scope| scope.root.clone());

@@ -34,6 +34,7 @@ use approval_bar::{ApprovalBar, PendingApproval};
 use layout::composer_width_changed;
 use popups::{FileMentionState, SlashState};
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,7 @@ use gpui::{
 
 use holt_proto::{ProviderId, SlashCommand};
 
+use crate::i18n::t;
 use crate::image_viewer::{ImageViewer, ImageViewerEvent, ViewerTarget};
 use crate::motion;
 use crate::path_refs::PathRef;
@@ -112,7 +114,14 @@ pub struct Composer {
     plan_mode_draft: bool,
     sending: bool,
     failed_submissions: std::collections::HashMap<String, FailedSubmission>,
-    failure: Option<SharedString>,
+    /// The composer's failure notice: the text snapshot rendered as-is,
+    /// and whether it is the engine-not-connected class — the one styled
+    /// amber. The class is a TYPED flag, never derived from comparing the
+    /// text: the snapshot freezes the locale it was written in, while the
+    /// styling decision renders in the current one, so a language switch
+    /// between the failure and this frame would re-file the notice from
+    /// amber to red if the text were the key.
+    failure: Option<FailureNotice>,
     /// The chat key `failure` belongs to (`None` = global, e.g. "Engine not
     /// connected"). Chat-scoped failures survive navigation and render only
     /// under their own chat — a blanket clear-on-switch erased the one
@@ -220,9 +229,64 @@ pub(crate) struct FailedSubmission {
     pub(crate) managed_refs: Vec<PathRef>,
 }
 
+/// One composer failure: catalog text plus its class. Built from any
+/// string at the call sites (`.into()`), with [`FailureNotice::offline`]
+/// marking the engine-not-connected class.
+#[derive(Clone)]
+pub(crate) struct FailureNotice {
+    pub(crate) text: SharedString,
+    engine_not_connected: bool,
+}
+
+impl FailureNotice {
+    /// The engine-not-connected notice — the amber class. Routed through
+    /// [`Composer::fail_offline`] so the flag and the text never drift.
+    fn offline() -> Self {
+        Self {
+            text: crate::state::engine_not_connected().into(),
+            engine_not_connected: true,
+        }
+    }
+}
+
+impl From<SharedString> for FailureNotice {
+    fn from(text: SharedString) -> Self {
+        Self {
+            text,
+            engine_not_connected: false,
+        }
+    }
+}
+
+impl From<Cow<'static, str>> for FailureNotice {
+    fn from(text: Cow<'static, str>) -> Self {
+        Self {
+            text: text.into_owned().into(),
+            engine_not_connected: false,
+        }
+    }
+}
+
+impl From<String> for FailureNotice {
+    fn from(text: String) -> Self {
+        Self {
+            text: text.into(),
+            engine_not_connected: false,
+        }
+    }
+}
+
 impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
+    /// Record the engine-not-connected failure — the one class styled
+    /// amber. Routed through here so the typed class flag and the text
+    /// never drift apart; every other failure writes its text with
+    /// `.into()` and defaults to the red class.
+    pub(crate) fn fail_offline(&mut self) {
+        self.failure = Some(FailureNotice::offline());
+    }
+
     /// The picker entity, for the shell's canvas target selectors.
     pub fn pickers(&self) -> &Entity<Pickers> {
         &self.pickers
@@ -245,7 +309,7 @@ impl Composer {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         crate::images::observe(cx);
         let input = cx.new(|cx| {
-            let mut input = ComposerInput::new("Do anything…", cx);
+            let mut input = ComposerInput::new(t!("composer_input.placeholder.idle"), cx);
             input.enable_mentions();
             input
         });
@@ -492,7 +556,7 @@ impl Composer {
                     self.advance_task = None;
                     // The shared input becomes the panel's free-text override.
                     self.input.update(cx, |input, cx| {
-                        input.set_placeholder("Type your own answer, or pick an option above", cx)
+                        input.set_placeholder(t!("composer_input.placeholder.wizard_pick"), cx)
                     });
                 }
             }
@@ -514,8 +578,9 @@ impl Composer {
                     if released {
                         self.wizard = None;
                         self.advance_task = None;
-                        self.input
-                            .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                        self.input.update(cx, |input, cx| {
+                            input.set_placeholder(t!("composer_input.placeholder.idle"), cx)
+                        });
                     }
                 }
             }
@@ -558,8 +623,9 @@ impl Composer {
             }
             _ => {
                 if self.approval_bar.take().is_some() {
-                    self.input
-                        .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                    self.input.update(cx, |input, cx| {
+                        input.set_placeholder(t!("composer_input.placeholder.idle"), cx)
+                    });
                 }
             }
         }
@@ -573,10 +639,10 @@ impl Composer {
                     crate::goal::LoopPhase::Working
                     | crate::goal::LoopPhase::Checking
                     | crate::goal::LoopPhase::Queued,
-                ) => GOAL_PLACEHOLDER,
-                _ => "Do anything…",
+                ) => t!("composer_input.placeholder.goal"),
+                _ => t!("composer_input.placeholder.idle"),
             };
-            if self.input.read(cx).placeholder().as_ref() != idle {
+            if self.input.read(cx).placeholder().as_ref() != idle.as_ref() {
                 self.input
                     .update(cx, |input, cx| input.set_placeholder(idle, cx));
             }
@@ -584,9 +650,6 @@ impl Composer {
         cx.notify();
     }
 }
-
-/// The idle placeholder while a goal loop is live.
-const GOAL_PLACEHOLDER: &str = "Steer the goal — or /goal pause to stop it";
 
 /// Focus lands on the prompt input (window-level focus fallbacks — e.g. after
 /// the focused terminal panel is hidden — route here).
@@ -728,7 +791,7 @@ impl Render for Composer {
             })
             .or_else(|| {
                 (!self.sending && self.failed_submissions.contains_key(&self.current_key))
-                    .then(|| "Message delivery was not confirmed.".into())
+                    .then(|| t!("composer_input.banner.delivery_unconfirmed").into())
             });
         // Composer honesty: when the delivery path is degraded, say UP FRONT
         // that a send will queue (a durable local write delivered on
@@ -744,9 +807,9 @@ impl Render for Composer {
             let offline = state.connectivity.state == S::Offline;
             degraded.then(|| {
                 let text: SharedString = if offline {
-                    "Offline — messages will send when you're back online.".into()
+                    t!("composer_input.banner.offline").into()
                 } else {
-                    "Messages will send once the connection recovers.".into()
+                    t!("composer_input.banner.recovering").into()
                 };
                 (text, offline)
             })
@@ -778,7 +841,11 @@ impl Render for Composer {
                 // DangerTriangle — a subtle tinted wash, not a bare red
                 // stroke. Amber for the offline-ish case (engine not
                 // connected), red for send/run failures. Click dismisses.
-                let offline = message.as_ref() == crate::state::ENGINE_NOT_CONNECTED;
+                // The typed flag decides: the text snapshot froze the
+                // locale it was written in, so comparing it against the
+                // live catalog would mis-file the notice after a language
+                // switch (amber would degrade to red).
+                let offline = message.engine_not_connected;
                 let (border_c, wash, text_c) = if offline {
                     let amber = theme.warning; // amber-400
                     let amber_200 = theme.warning_muted;
@@ -828,7 +895,7 @@ impl Render for Composer {
                                 .mt(px(2.0))
                                 .text_color(text_c),
                         )
-                        .child(div().min_w_0().flex_1().child(message))
+                        .child(div().min_w_0().flex_1().child(message.text))
                         .when(
                             self.failed_submissions.contains_key(&self.current_key),
                             |el| {
@@ -836,7 +903,7 @@ impl Render for Composer {
                                     div()
                                         .id("retry-message")
                                         .role(gpui::Role::Button)
-                                        .aria_label("Retry message")
+                                        .aria_label(t!("composer_input.banner.retry_aria"))
                                         .focusable()
                                         .px_2()
                                         .cursor_pointer()
@@ -856,7 +923,7 @@ impl Render for Composer {
                                                 }
                                             },
                                         ))
-                                        .child("Retry"),
+                                        .child(t!("composer_input.banner.retry")),
                                 )
                             },
                         ),
@@ -1154,10 +1221,10 @@ impl Render for Composer {
         let container = container.when(has_images, |container| {
             let notice = match capability {
                 holt_proto::ImageCapability::Unsupported => {
-                    Some("This model cannot view images. Paths can still be sent.")
+                    Some(t!("composer_input.banner.images_unsupported"))
                 }
                 holt_proto::ImageCapability::Unknown => {
-                    Some("Image support is unknown for this model.")
+                    Some(t!("composer_input.banner.images_unknown"))
                 }
                 holt_proto::ImageCapability::Supported => None,
             };

@@ -11,6 +11,7 @@
 //! ghost view + `on_drag_move::<Marker>` on the root), the same idiom as Zed's
 //! dock. Double-clicking a handle resets that pane to its default width.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -32,6 +33,7 @@ use crate::files::FileStateMap;
 use crate::files::tree::{FileMenuTarget, FileTreeEvent, FileTreePanel};
 use crate::files::viewer::{FileScope, FileViewerEvent};
 use crate::git_panel::{GitPanel, GitPanelEvent};
+use crate::i18n::t;
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
@@ -237,18 +239,36 @@ impl SettingsSection {
         SettingsSection::Archived,
     ];
 
-    /// Sidebar + header label (holt settings-sidebar.tsx SECTIONS / __root.tsx
-    /// `settingsTitle` — the same strings in both places).
-    pub fn label(self) -> &'static str {
+    /// The stable identity slug for element ids and test selectors —
+    /// never the label: the label is localized, and an id built from it
+    /// would change with the language and reset hover/focus state on a
+    /// switch (see the same rule in `theme_selector` and `menu_bar`).
+    pub fn slug(self) -> &'static str {
         match self {
-            SettingsSection::Providers => "Providers",
-            SettingsSection::Appearance => "Appearance",
-            SettingsSection::Shortcuts => "Shortcuts",
-            SettingsSection::Skills => "Skills",
-            SettingsSection::Mcp => "MCP Servers",
-            SettingsSection::Usage => "Usage",
-            SettingsSection::General => "General",
-            SettingsSection::Archived => "Archived sessions",
+            SettingsSection::General => "general",
+            SettingsSection::Providers => "providers",
+            SettingsSection::Appearance => "appearance",
+            SettingsSection::Shortcuts => "shortcuts",
+            SettingsSection::Skills => "skills",
+            SettingsSection::Mcp => "mcp",
+            SettingsSection::Usage => "usage",
+            SettingsSection::Archived => "archived",
+        }
+    }
+
+    /// Sidebar + header label (holt settings-sidebar.tsx SECTIONS / __root.tsx
+    /// `settingsTitle` — the same strings in both places). Localized through
+    /// the catalog; render sites (the settings sidebar) receive a `Cow`.
+    pub fn label(self) -> Cow<'static, str> {
+        match self {
+            SettingsSection::Providers => t!("shell_chrome.settings_section.providers"),
+            SettingsSection::Appearance => t!("shell_chrome.settings_section.appearance"),
+            SettingsSection::Shortcuts => t!("shell_chrome.settings_section.shortcuts"),
+            SettingsSection::Skills => t!("shell_chrome.settings_section.skills"),
+            SettingsSection::Mcp => t!("shell_chrome.settings_section.mcp"),
+            SettingsSection::Usage => t!("shell_chrome.settings_section.usage"),
+            SettingsSection::General => t!("shell_chrome.settings_section.general"),
+            SettingsSection::Archived => t!("shell_chrome.settings_section.archived"),
         }
     }
 }
@@ -1112,11 +1132,15 @@ impl Shell {
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.push_holt_notice(HoltNoticeKind::Success, "Holt Chat link copied".into(), cx);
+            self.push_holt_notice(
+                HoltNoticeKind::Success,
+                t!("shell_chrome.chat_link.copied").into(),
+                cx,
+            );
         } else {
             self.push_holt_notice(
                 HoltNoticeKind::Warning,
-                "Chat link is not ready yet".into(),
+                t!("shell_chrome.chat_link.not_ready").into(),
                 cx,
             );
         }
@@ -1401,7 +1425,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 HoltNoticeKind::Error,
-                crate::state::ENGINE_NOT_CONNECTED.into(),
+                crate::state::engine_not_connected().into(),
                 cx,
             );
             cx.notify();
@@ -1428,7 +1452,8 @@ impl Shell {
             .find(|c| c.id == chat_id)
             .and_then(|c| c.title.clone())
             .unwrap_or_default();
-        let input = cx.new(|cx| ComposerInput::new("Session title", cx));
+        let input =
+            cx.new(|cx| ComposerInput::new(t!("shell_chrome.rename_dialog.placeholder"), cx));
         input.update(cx, |input, cx| input.set_text(current, cx));
         let events = cx.subscribe(&input, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
@@ -1611,7 +1636,10 @@ impl Shell {
                         cx.notify();
                     }
                 }))
-                .child(popover::dialog_title(&theme, "Rename session"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("shell_chrome.rename_dialog.title"),
+                ))
                 .child(
                     div()
                         .mt(px(12.0))
@@ -1625,15 +1653,19 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "rename-chat-cancel")
-                                .id("rename-chat-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.rename_dialog = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("shell_chrome.common.cancel"),
+                                "rename-chat-cancel",
+                            )
+                            .id("rename-chat-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.rename_dialog = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Rename")
+                            popover::btn_primary(&theme, &t!("shell_chrome.rename_dialog.confirm"))
                                 .id("rename-chat-save")
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.submit_rename_chat(cx)),
@@ -1732,17 +1764,20 @@ impl Shell {
                     .iter()
                     .find(|c| c.id == chat_id)
                     .and_then(|c| c.title.clone())
-                    .unwrap_or_else(|| "New session".into()),
+                    .unwrap_or_else(|| t!("shell_chrome.session.default_title").into_owned()),
             );
             let card = popover::dialog_card(&theme)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.delete_confirm = None;
                     cx.notify();
                 }))
-                .child(popover::dialog_title(&theme, "Delete session?"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("shell_chrome.delete_dialog.title"),
+                ))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
-                    format!("\u{201C}{title}\u{201D} will be permanently deleted. Its terminals and running programs will also end. This can\u{2019}t be undone."),
+                    t!("shell_chrome.delete_dialog.body", title = title),
                 )))
                 .child(
                     div()
@@ -1752,15 +1787,19 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "delete-chat-cancel")
-                                .id("delete-chat-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.delete_confirm = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("shell_chrome.common.cancel"),
+                                "delete-chat-cancel",
+                            )
+                            .id("delete-chat-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.delete_confirm = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_danger(&theme, "Delete")
+                            popover::btn_danger(&theme, &t!("shell_chrome.delete_dialog.confirm"))
                                 .id("delete-chat-confirm")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_chat(chat_id.clone(), cx)
@@ -1780,17 +1819,20 @@ impl Shell {
                     .iter()
                     .find(|c| c.id == chat_id)
                     .and_then(|c| c.title.clone())
-                    .unwrap_or_else(|| "New session".into()),
+                    .unwrap_or_else(|| t!("shell_chrome.session.default_title").into_owned()),
             );
             let card = popover::dialog_card(&theme)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.archive_confirm = None;
                     cx.notify();
                 }))
-                .child(popover::dialog_title(&theme, "Archive session?"))
+                .child(popover::dialog_title(
+                    &theme,
+                    &t!("shell_chrome.archive_dialog.title"),
+                ))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
-                    format!("\u{201C}{title}\u{201D} will move to Settings \u{2192} Archived. You can unarchive it there anytime."),
+                    t!("shell_chrome.archive_dialog.body", title = title),
                 )))
                 .child(
                     div()
@@ -1800,19 +1842,28 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "archive-chat-cancel")
-                                .id("archive-chat-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.archive_confirm = None;
-                                    cx.notify();
-                                })),
+                            popover::btn_ghost(
+                                &theme,
+                                &t!("shell_chrome.common.cancel"),
+                                "archive-chat-cancel",
+                            )
+                            .id("archive-chat-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.archive_confirm = None;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Archive")
-                                .id("archive-chat-confirm")
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                            popover::btn_primary(
+                                &theme,
+                                &t!("shell_chrome.archive_dialog.confirm"),
+                            )
+                            .id("archive-chat-confirm")
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     this.confirm_archive_chat(chat_id.clone(), cx)
-                                })),
+                                },
+                            )),
                         ),
                 )
                 .into_any_element();
@@ -2011,8 +2062,8 @@ impl Shell {
                 .selected_space_row()
                 .map(|space| space.display_name().to_string());
             let prompt: SharedString = match project {
-                Some(name) => format!("What should we build in {name}?").into(),
-                None => "What should we build?".into(),
+                Some(name) => t!("shell_chrome.canvas.prompt_in_project", name = name).into(),
+                None => t!("shell_chrome.canvas.prompt").into(),
             };
             // First-project hint: only while the Home space is the whole
             // world (ADR-home-space-for-project-less-chats) — the canvas works without a project, the
@@ -2059,11 +2110,16 @@ impl Shell {
                                     .flex()
                                     .items_center()
                                     .child(
-                                        popover::btn_primary(&theme_owned, "Add a project")
-                                            .id("home-add-space")
-                                            .on_click(cx.listener(|this, _, _, cx| {
+                                        popover::btn_primary(
+                                            &theme_owned,
+                                            &t!("shell_chrome.canvas.add_project"),
+                                        )
+                                        .id("home-add-space")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
                                                 this.open_add_space(cx);
-                                            })),
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         div()
@@ -2072,7 +2128,7 @@ impl Shell {
                                             .text_size(crate::typography::ui_rems(12.0))
                                             .text_color(theme.text_faint)
                                             .hover(|style| style.text_color(theme.text_muted))
-                                            .child(SharedString::from("Dismiss"))
+                                            .child(t!("shell_chrome.canvas.dismiss"))
                                             .on_click(cx.listener(|_, _, _, cx| {
                                                 crate::settings::update(
                                                     crate::settings::SavePolicy::Immediate,
@@ -2194,7 +2250,7 @@ impl Shell {
                     .justify_center()
                     .text_size(crate::typography::ui_rems(13.0))
                     .text_color(theme.text)
-                    .child("Drop images to attach")
+                    .child(t!("shell_chrome.dropzone.drop_images"))
                     .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.visible())
                     .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                         let paths = paths.paths().to_vec();
@@ -2220,7 +2276,7 @@ impl Shell {
                     .justify_center()
                     .text_size(crate::typography::ui_rems(13.0))
                     .text_color(theme.text)
-                    .child("Drop to attach")
+                    .child(t!("shell_chrome.dropzone.drop_to_attach"))
                     .drag_over::<crate::files::tree::TreeEntryDrag>(|style, _, _, _| {
                         style.visible()
                     })
@@ -2335,7 +2391,7 @@ impl Shell {
                         div()
                             .text_size(crate::typography::ui_rems(13.0))
                             .text_color(theme.text)
-                            .child(SharedString::from("Scroll to bottom")),
+                            .child(t!("shell_chrome.jump_pill.scroll_to_bottom")),
                     ),
             );
         // Frost OUTSIDE the entry animation (the composer pill's exact
@@ -2476,7 +2532,7 @@ impl Shell {
             Indicator::AwaitingInput => strip.into_any_element(),
             Indicator::Errored => strip
                 .text_color(theme.danger)
-                .child(SharedString::from("Run failed"))
+                .child(t!("shell_chrome.status_strip.run_failed"))
                 .into_any_element(),
             Indicator::None if sending => strip
                 .child(loaders::gradient_spinner(
@@ -2490,7 +2546,7 @@ impl Shell {
                     div()
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from("Sending…")),
+                        .child(t!("shell_chrome.status_strip.sending")),
                 )
                 .into_any_element(),
             Indicator::None => strip.into_any_element(),
@@ -2525,7 +2581,7 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.glass_hover()))
                     .on_click(cx.listener(|this, _, _, cx| this.retry_engine(cx)))
-                    .child(SharedString::from("Retry")),
+                    .child(t!("shell_chrome.gate.retry")),
             );
         div()
             .size_full()
@@ -3182,6 +3238,9 @@ mod tests {
     /// stacking tabs; a closed review is recreated by the next selection.
     #[gpui::test]
     fn turn_review_opens_reaims_and_recreates(cx: &mut gpui::TestAppContext) {
+        // The surface row label is catalog-driven (`terminal_panel.surface.
+        // review`): hold the locale lock against the i18n switch tests.
+        let _locale = crate::i18n::tests::locale_lock();
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| {
             let mut state = AppState::new();
@@ -3274,7 +3333,10 @@ mod tests {
                 assert_eq!(aimed_path(shell, second, cx).as_deref(), Some("gone.txt"));
                 let rows = shell.right_surface_rows(cx);
                 assert_eq!(rows.len(), 1, "the review stacks no tabs");
-                assert_eq!(rows[0].1.as_ref(), "Review");
+                assert_eq!(
+                    rows[0].1.as_ref(),
+                    crate::i18n::t!("terminal_panel.surface.review").as_ref()
+                );
 
                 // Closing drops the companion; the next selection builds a
                 // fresh surface instead of resurrecting the old one.

@@ -32,10 +32,11 @@ pub fn strip_block(text: &str) -> Option<String> {
 /// A goal-loop continuation's leading label (ADR-goal-mode-verified-loop-at-turn-settle): the transcript's
 /// loop row and the queue's pending row both lead with it.
 pub fn round_label(kind: &holt_proto::GoalRoundKind) -> String {
+    use crate::i18n::t;
     match kind {
-        holt_proto::GoalRoundKind::Continue(n) => format!("Round {n}"),
-        holt_proto::GoalRoundKind::Resume => "Resumed".into(),
-        holt_proto::GoalRoundKind::Retry => "Retry".into(),
+        holt_proto::GoalRoundKind::Continue(n) => t!("sidebar_spaces.goal.round", n = n).into(),
+        holt_proto::GoalRoundKind::Resume => t!("sidebar_spaces.goal.resumed").into(),
+        holt_proto::GoalRoundKind::Retry => t!("sidebar_spaces.goal.retry").into(),
     }
 }
 

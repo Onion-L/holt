@@ -15,6 +15,7 @@ use gpui::{
 use holt_proto::{GitHistoryCommit, GitHistoryPage, GitHistoryRef, GitHistoryRefKind};
 use holt_rpc::methods;
 
+use crate::i18n::t;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -275,11 +276,16 @@ fn ref_icon(kind: GitHistoryRefKind) -> &'static str {
 
 fn ref_description(reference: &GitHistoryRef) -> SharedString {
     let kind = match reference.kind {
-        GitHistoryRefKind::Branch => "Branch",
-        GitHistoryRefKind::Remote => "Remote branch",
-        GitHistoryRefKind::Tag => "Tag",
+        GitHistoryRefKind::Branch => t!("conversation_transcript.history.ref.branch"),
+        GitHistoryRefKind::Remote => t!("conversation_transcript.history.ref.remote"),
+        GitHistoryRefKind::Tag => t!("conversation_transcript.history.ref.tag"),
     };
-    format!("{kind}: {}", reference.label).into()
+    t!(
+        "conversation_transcript.history.ref_description",
+        kind = kind.as_ref(),
+        label = reference.label.as_str()
+    )
+    .into()
 }
 
 fn graph_color(mut color: gpui::Hsla) -> gpui::Hsla {
@@ -438,7 +444,11 @@ impl Render for GitHistoryFetchButton {
                     } else {
                         theme.text_muted
                     })
-                    .child(if fetching { "Fetching…" } else { "Fetch all" }),
+                    .child(if fetching {
+                        t!("conversation_transcript.history.fetching").into_any_element()
+                    } else {
+                        t!("conversation_transcript.history.fetch_all").into_any_element()
+                    }),
             )
     }
 }
@@ -472,10 +482,16 @@ impl Render for GitHistoryCount {
                         .whitespace_nowrap()
                         .text_size(px(11.0))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from(format!(
-                            "{count} commit{}",
-                            if count == 1 { "" } else { "s" }
-                        ))),
+                        .child(if count == 1 {
+                            t!("conversation_transcript.history.commits.one", count = count)
+                                .into_any_element()
+                        } else {
+                            t!(
+                                "conversation_transcript.history.commits.other",
+                                count = count
+                            )
+                            .into_any_element()
+                        }),
                 )
             })
             .when_some(branch, |element, branch| {
@@ -1021,11 +1037,11 @@ impl GitHistory {
             let theme = Theme::of(cx).clone();
             let has_error = self.error.is_some();
             let label = if self.loading {
-                "Loading…"
+                t!("conversation_transcript.history.loading")
             } else if has_error {
-                "Retry"
+                t!("conversation_transcript.history.retry")
             } else {
-                "Load more"
+                t!("conversation_transcript.history.load_more")
             };
             let button = div()
                 .id("history-load-older")
@@ -1068,7 +1084,7 @@ impl GitHistory {
                         .text_color(theme.text_faint),
                     )
                 })
-                .child(SharedString::from(label));
+                .child(SharedString::from(label.into_owned()));
             return div()
                 .w_full()
                 .h(px(48.0))
@@ -1090,7 +1106,7 @@ impl GitHistory {
         let open_commit = commit.clone();
         let copied = self.copied_sha.as_deref() == Some(sha.as_str());
         let commit_subject = if commit.subject.is_empty() {
-            "(no subject)".to_string()
+            t!("conversation_transcript.history.no_subject").into_owned()
         } else {
             commit.subject
         };
@@ -1159,7 +1175,7 @@ impl GitHistory {
                     .pr(px(8.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(if commit.author_name.is_empty() {
-                        "Unknown".to_string()
+                        t!("conversation_transcript.history.unknown_author").into_owned()
                     } else {
                         commit.author_name
                     })),
@@ -1199,7 +1215,7 @@ impl GitHistory {
                         this.copy_sha(sha.clone(), cx)
                     }))
                     .child(SharedString::from(if copied {
-                        "Copied".to_string()
+                        t!("conversation_transcript.common.copied").into_owned()
                     } else {
                         commit.sha.chars().take(7).collect()
                     })),
@@ -1222,7 +1238,7 @@ impl Render for GitHistory {
                 .justify_center()
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
-                .child("No repository selected")
+                .child(t!("conversation_transcript.history.no_repo"))
                 .into_any_element()
         } else if self.loading && self.commits.is_empty() {
             div()
@@ -1243,7 +1259,7 @@ impl Render for GitHistory {
                     div()
                         .text_size(px(12.0))
                         .text_color(theme.text_faint)
-                        .child("Loading history…"),
+                        .child(t!("conversation_transcript.history.loading_history")),
                 )
                 .into_any_element()
         } else if self.commits.is_empty() {
@@ -1253,7 +1269,7 @@ impl Render for GitHistory {
             let message = self
                 .error
                 .clone()
-                .unwrap_or_else(|| SharedString::from("No commits yet"));
+                .unwrap_or_else(|| t!("conversation_transcript.history.no_commits").into());
             div()
                 .flex_1()
                 .flex()
@@ -1300,7 +1316,13 @@ impl Render for GitHistory {
                         .truncate()
                         .text_size(px(11.0))
                         .text_color(theme.danger_muted)
-                        .child(SharedString::from(format!("Fetch failed: {error}"))),
+                        .child(SharedString::from(
+                            t!(
+                                "conversation_transcript.history.fetch_failed",
+                                error = error.as_ref()
+                            )
+                            .into_owned(),
+                        )),
                 )
             })
             .when_some(
@@ -1335,10 +1357,30 @@ impl Render for GitHistory {
                         .text_size(px(9.5))
                         .text_color(theme.text_faint)
                         .child(div().w(px(graph_column)).flex_none())
-                        .child(div().flex_1().min_w(px(80.0)).child("Commit"))
-                        .child(div().w(px(88.0)).flex_none().child("Author"))
-                        .child(div().w(px(88.0)).flex_none().child("Date"))
-                        .child(div().w(px(74.0)).flex_none().child("SHA")),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(80.0))
+                                .child(t!("conversation_transcript.history.col.commit")),
+                        )
+                        .child(
+                            div()
+                                .w(px(88.0))
+                                .flex_none()
+                                .child(t!("conversation_transcript.history.col.author")),
+                        )
+                        .child(
+                            div()
+                                .w(px(88.0))
+                                .flex_none()
+                                .child(t!("conversation_transcript.history.col.date")),
+                        )
+                        .child(
+                            div()
+                                .w(px(74.0))
+                                .flex_none()
+                                .child(t!("conversation_transcript.history.col.sha")),
+                        ),
                 )
             })
             .child(body)
@@ -1438,21 +1480,37 @@ mod tests {
 
     #[test]
     fn ref_tooltip_describes_each_reference_kind() {
+        let _locale = crate::i18n::tests::locale_lock();
         let reference = |kind: GitHistoryRefKind, label: &str| GitHistoryRef {
             kind,
             label: label.into(),
         };
         assert_eq!(
-            ref_description(&reference(GitHistoryRefKind::Branch, "main")),
-            "Branch: main"
+            ref_description(&reference(GitHistoryRefKind::Branch, "main")).as_ref(),
+            t!(
+                "conversation_transcript.history.ref_description",
+                kind = t!("conversation_transcript.history.ref.branch").as_ref(),
+                label = "main"
+            )
+            .as_ref()
         );
         assert_eq!(
-            ref_description(&reference(GitHistoryRefKind::Remote, "origin/main")),
-            "Remote branch: origin/main"
+            ref_description(&reference(GitHistoryRefKind::Remote, "origin/main")).as_ref(),
+            t!(
+                "conversation_transcript.history.ref_description",
+                kind = t!("conversation_transcript.history.ref.remote").as_ref(),
+                label = "origin/main"
+            )
+            .as_ref()
         );
         assert_eq!(
-            ref_description(&reference(GitHistoryRefKind::Tag, "v0.1.52")),
-            "Tag: v0.1.52"
+            ref_description(&reference(GitHistoryRefKind::Tag, "v0.1.52")).as_ref(),
+            t!(
+                "conversation_transcript.history.ref_description",
+                kind = t!("conversation_transcript.history.ref.tag").as_ref(),
+                label = "v0.1.52"
+            )
+            .as_ref()
         );
     }
 }

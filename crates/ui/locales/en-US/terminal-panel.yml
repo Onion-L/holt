@@ -1,0 +1,93 @@
+_version: 2
+terminal_panel:
+  tab_title:
+    en-US: Terminal %{no}
+  surface:
+    file:
+      en-US: File
+    terminal:
+      en-US: Terminal
+    git:
+      en-US: Git
+    diff:
+      en-US: Diff
+    review:
+      en-US: Review
+    show_file_sidebar:
+      en-US: Show file sidebar
+  drawer:
+    no_terminals:
+      en-US: No terminals
+    select_chat:
+      en-US: Select a chat
+    new_terminal:
+      en-US: New terminal
+    close_terminal:
+      en-US: Close terminal
+    close_group:
+      en-US: Close terminal group
+  confirm:
+    close_running_title:
+      en-US: Close running terminals?
+    end_detail:
+      en-US: This will end %{count} terminal(s) and their running programs.
+    close_terminals:
+      en-US: Close terminals
+    cancel:
+      en-US: Cancel
+    ok:
+      en-US: OK
+  search:
+    placeholder:
+      en-US: Find in terminal
+    no_matches:
+      en-US: No matches
+    prev:
+      en-US: Previous match
+    next:
+      en-US: Next match
+    close:
+      en-US: Close search
+  pane:
+    select_chat_hint:
+      en-US: Select a chat to open a terminal
+    exited:
+      en-US: Exited
+    restart:
+      en-US: Restart terminal
+  notice:
+    output_lost:
+      en-US: Output was lost while disconnected; this screen is incomplete.
+    input_failed:
+      en-US: "Terminal input failed: %{error}"
+    open_failed:
+      en-US: "failed to open terminal: %{error}"
+    process_exited:
+      en-US: "[process exited %{code}]"
+  lifecycle:
+    quit_unsaved_title:
+      en-US: Quit Holt with unsaved files?
+    close_unsaved_title:
+      en-US: Close window with unsaved files?
+    unsaved_detail:
+      en-US: "%{count} file(s) have unsaved changes. Saving writes them to disk; discarding loses them."
+    discard_changes:
+      en-US: Discard changes
+    save_and_continue:
+      en-US: Save and continue
+    save_failed_title:
+      en-US: Could not save every file
+    save_failed_detail:
+      en-US: "%{count} file(s) could not be saved. The app stays open — nothing was lost."
+    check_failed_title:
+      en-US: Could not check running terminals
+    quit_end_title:
+      en-US: Quit Holt and end running terminals?
+    close_end_title:
+      en-US: Close window and end running terminals?
+    quit_holt:
+      en-US: Quit Holt
+    close_window:
+      en-US: Close window
+    close_failed_title:
+      en-US: Could not close terminals

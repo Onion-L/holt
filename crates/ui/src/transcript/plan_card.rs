@@ -11,11 +11,14 @@
 
 use gpui::{AnyElement, App, Entity, SharedString, div, prelude::*, px};
 
+use std::borrow::Cow;
+
 use holt_doc::{MessagePart, PlanApprovalState, PlanApprovalVerdict, SessionMessageEntry};
 use holt_rpc::methods;
 
 use super::Transcript;
 use super::approval::{VerdictTint, verdict_tint_color};
+use crate::i18n::t;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -115,7 +118,7 @@ impl Transcript {
         state: &PlanApprovalState,
         theme: &Theme,
     ) -> AnyElement {
-        let settled = |text: String, tint: VerdictTint| {
+        let settled = |text: Cow<'static, str>, tint: VerdictTint| {
             div()
                 .py(px(4.0))
                 .w_full()
@@ -150,21 +153,34 @@ impl Transcript {
                             .flex_col()
                             .py(px(10.0))
                             .text_size(crate::typography::ui_rems(12.0))
-                            .child(div().w_full().text_color(theme.text).child("Proposed plan"))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_color(theme.text)
+                                    .child(t!("conversation_transcript.plan.proposed")),
+                            )
                             .child(render_plan_content(content, row_id, theme)),
                     )
                     .into_any_element();
             }
         };
         let (text, tint) = match verdict {
-            PlanApprovalVerdict::Approved => ("✓ Plan approved".to_string(), VerdictTint::Neutral),
-            PlanApprovalVerdict::Rejected => ("⊘ Plan rejected".to_string(), VerdictTint::Danger),
-            PlanApprovalVerdict::Remained => {
-                ("⏸ Still in planning".to_string(), VerdictTint::Neutral)
-            }
-            PlanApprovalVerdict::Dismissed => {
-                ("— Planning dismissed".to_string(), VerdictTint::Neutral)
-            }
+            PlanApprovalVerdict::Approved => (
+                t!("conversation_transcript.plan.approved"),
+                VerdictTint::Neutral,
+            ),
+            PlanApprovalVerdict::Rejected => (
+                t!("conversation_transcript.plan.rejected"),
+                VerdictTint::Danger,
+            ),
+            PlanApprovalVerdict::Remained => (
+                t!("conversation_transcript.plan.still_planning"),
+                VerdictTint::Neutral,
+            ),
+            PlanApprovalVerdict::Dismissed => (
+                t!("conversation_transcript.plan.dismissed"),
+                VerdictTint::Neutral,
+            ),
         };
         settled(text, tint)
     }

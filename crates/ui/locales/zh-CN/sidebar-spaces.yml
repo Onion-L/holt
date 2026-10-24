@@ -1,0 +1,310 @@
+_version: 2
+sidebar_spaces:
+  errors:
+    engine_unresponsive:
+      zh-CN: 引擎没有响应——请确认它是否在运行
+  spaces:
+    filter:
+      all_projects:
+        zh-CN: 所有项目
+      new_project:
+        zh-CN: 新建项目…
+      search_placeholder:
+        zh-CN: 搜索项目…
+    view:
+      aria_label:
+        zh-CN: 侧栏视图选项
+      sort:
+        zh-CN: 排序
+      show:
+        zh-CN: 显示
+      last_updated:
+        zh-CN: 最近更新
+      created:
+        zh-CN: 创建时间
+      manual:
+        zh-CN: 手动
+      provider_logo:
+        zh-CN: 提供商图标
+      branch:
+        zh-CN: 分支
+      pull_request:
+        zh-CN: 拉取请求
+    rows:
+      new_session:
+        zh-CN: 新会话
+  add_space:
+    search_placeholder:
+      zh-CN: 搜索文件夹…
+    enter:
+      zh-CN: 回车
+    adding:
+      zh-CN: 正在添加…
+    retry:
+      zh-CN: 重试
+    empty_here:
+      zh-CN: 此处没有文件夹
+    empty_match:
+      zh-CN: 没有匹配的文件夹
+    home:
+      zh-CN: 主目录
+    locations:
+      zh-CN: 位置
+    hint_navigate:
+      zh-CN: 导航
+    hint_up:
+      zh-CN: 上一级
+    hint_open:
+      zh-CN: 打开
+    hint_complete:
+      zh-CN: 补全
+  space_menu:
+    rename_ellipsis:
+      zh-CN: 重命名…
+    remove_ellipsis:
+      zh-CN: 移除…
+    rename_title:
+      zh-CN: 重命名项目
+    name_placeholder:
+      zh-CN: 项目名称
+    cancel:
+      zh-CN: 取消
+    rename:
+      zh-CN: 重命名
+    remove_title:
+      zh-CN: 移除项目？
+    delete_this_project:
+      zh-CN: 此项目
+    delete_confirm_one:
+      zh-CN: 移除“%{name}”将永久删除其中的 1 个会话，此操作无法撤销。
+    delete_confirm_other:
+      zh-CN: 移除“%{name}”将永久删除其中的 %{count} 个会话，此操作无法撤销。
+    remove:
+      zh-CN: 移除
+  sidebar:
+    settings:
+      zh-CN: 设置
+    back:
+      zh-CN: 返回
+    no_sessions:
+      zh-CN: 还没有会话
+    offline:
+      zh-CN: 离线中——发送内容将被保存
+    reconnecting:
+      zh-CN: 正在重新连接…
+    status:
+      failed:
+        zh-CN: 失败
+      queued:
+        zh-CN: 排队中
+      working:
+        zh-CN: 进行中
+      input:
+        zh-CN: 待输入
+      done:
+        zh-CN: 完成
+  settings_nav:
+    providers:
+      zh-CN: 提供商
+    appearance:
+      zh-CN: 外观
+    shortcuts:
+      zh-CN: 快捷键
+    skills:
+      zh-CN: 技能
+    mcp:
+      zh-CN: MCP 服务器
+    usage:
+      zh-CN: 用量
+    general:
+      zh-CN: 通用
+    archived:
+      zh-CN: 已归档会话
+  chat_menu:
+    pin:
+      zh-CN: 置顶
+    unpin:
+      zh-CN: 取消置顶
+    rename:
+      zh-CN: 重命名…
+    archive:
+      zh-CN: 归档
+    copy:
+      zh-CN: 复制
+    delete:
+      zh-CN: 删除…
+    copy_directory:
+      zh-CN: 复制工作目录
+    copy_link:
+      zh-CN: 复制深层链接
+    copy_markdown:
+      zh-CN: 复制为 Markdown
+    copied_directory:
+      zh-CN: 已复制工作目录
+    no_directory:
+      zh-CN: 此会话没有工作目录
+    copy_unavailable:
+      zh-CN: 无法复制会话：引擎不可用
+    read_timeout:
+      zh-CN: 读取会话超时
+    copied_markdown:
+      zh-CN: 已将会话复制为 Markdown
+    copy_failed:
+      zh-CN: 无法复制会话：%{error}
+    stream_closed:
+      zh-CN: 会话流已关闭
+    snapshot_unavailable:
+      zh-CN: 会话快照不可用
+  state_card:
+    plan_name:
+      zh-CN: 计划模式
+    plan_status:
+      zh-CN: 规划中
+    plan_blurb:
+      zh-CN: 只读规划。批准计划后将退出并恢复 %{mode} 权限模式。
+    plan_leave_tooltip:
+      zh-CN: 退出计划模式（/plan off）
+    provider_name:
+      zh-CN: 提供商模式
+    provider_status:
+      zh-CN: 配置中
+    provider_blurb:
+      zh-CN: 目录配置——在对话中添加和更新提供商。
+    provider_leave_tooltip:
+      zh-CN: 退出提供商模式（/provider off）
+    mode_engine_unreachable:
+      zh-CN: 引擎未连接——无法访问%{mode}。
+    mode_leave_failed:
+      zh-CN: 退出%{mode}失败：%{error}
+    goal_engine_unreachable:
+      zh-CN: 引擎未连接——无法访问目标。
+    pause_failed:
+      zh-CN: 暂停目标失败：%{error}
+    resume_failed:
+      zh-CN: 恢复目标失败：%{error}
+    goal_cleared:
+      zh-CN: 已清除目标
+    clear_failed:
+      zh-CN: 清除目标失败：%{error}
+    resume_tooltip:
+      zh-CN: 恢复目标（/goal resume）
+    pause_tooltip:
+      zh-CN: 暂停目标（/goal pause）
+    clear_tooltip:
+      zh-CN: 清除目标（/goal off）
+    collapse_tooltip:
+      zh-CN: 折叠卡片
+    verified_count:
+      zh-CN: "%{verified}/%{total} 已验证"
+    verified_tooltip:
+      zh-CN: 验证器最近一次检查：%{total} 个步骤中有 %{verified} 个有据可查
+    todo:
+      zh-CN: 待办
+    todo_dismiss:
+      zh-CN: 关闭，直到下一个列表
+    goal_fallback:
+      zh-CN: 目标
+    status_working:
+      zh-CN: 进行中
+    status_round:
+      zh-CN: 第 %{n} 轮 · %{verb}
+    status_checking:
+      zh-CN: 验证中
+    status_queued:
+      zh-CN: 排在队列任务之后
+    status_awaiting:
+      zh-CN: 等待你的回复
+    status_paused:
+      zh-CN: 已暂停
+    status_blocked:
+      zh-CN: 已受阻
+    verifier_failed:
+      zh-CN: 验证器未能作出判定（%{count}/3）——循环仍在继续。
+  goal:
+    round:
+      zh-CN: 第 %{n} 轮
+    resumed:
+      zh-CN: 已恢复
+    retry:
+      zh-CN: 重试
+  chat_manager:
+    title:
+      zh-CN: 会话管理器
+    search_placeholder:
+      zh-CN: 搜索会话
+    filter_all:
+      zh-CN: 全部
+    filter_active:
+      zh-CN: 活跃
+    filter_archived:
+      zh-CN: 已归档
+    all_routines:
+      zh-CN: 所有定时任务
+    col_title:
+      zh-CN: 标题
+    col_project:
+      zh-CN: 项目
+    col_updated:
+      zh-CN: 更新时间
+    untitled:
+      zh-CN: 未命名会话
+    tag_worktree:
+      zh-CN: 工作树
+    tag_archived:
+      zh-CN: 已归档
+    action_open:
+      zh-CN: 打开
+    action_archive:
+      zh-CN: 归档
+    action_unarchive:
+      zh-CN: 取消归档
+    action_delete:
+      zh-CN: 删除
+    clear_selection:
+      zh-CN: 清除选择
+    batch_failed:
+      zh-CN: "%{action} 失败：%{error}"
+    selected:
+      zh-CN: 已选 %{count} 个
+    selected_hidden:
+      zh-CN: 已选 %{count} 个 · 另有 %{hidden} 个未显示
+    bucket_today:
+      zh-CN: 今天
+    bucket_yesterday:
+      zh-CN: 昨天
+    bucket_week:
+      zh-CN: 过去 7 天
+    bucket_month:
+      zh-CN: 过去 30 天
+    bucket_older:
+      zh-CN: 更早
+    delete_one_title:
+      zh-CN: 删除“%{title}”？
+    delete_untitled_title:
+      zh-CN: 删除此会话？
+    delete_count:
+      zh-CN: 删除 %{count} 个会话？
+    across_projects:
+      zh-CN: 跨 %{count} 个项目
+    note_worktree:
+      zh-CN: 其中 %{count} 个在会话工作树中
+    note_live:
+      zh-CN: 其中 %{count} 个仍在运行
+    delete_body:
+      zh-CN: 会话记录、终端和运行中的程序都会一并删除。此操作无法撤销。
+    cancel:
+      zh-CN: 取消
+    archiving:
+      zh-CN: 正在归档…
+    unarchiving:
+      zh-CN: 正在取消归档…
+    deleting:
+      zh-CN: 正在删除…
+    empty_none_headline:
+      zh-CN: 还没有会话
+    empty_none_hint:
+      zh-CN: 你开始的会话会显示在这里。
+    empty_match_headline:
+      zh-CN: 没有匹配项
+    empty_match_hint:
+      zh-CN: 换个搜索词或筛选条件试试。

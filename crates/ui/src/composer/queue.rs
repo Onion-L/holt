@@ -1,5 +1,6 @@
 //! Presentation and commands for the selected chat's engine-owned queue.
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use gpui::{Context, Entity, Focusable, KeyDownEvent, Subscription, Window, div, prelude::*, px};
@@ -7,6 +8,7 @@ use holt_rpc::methods;
 
 use super::layout::INPUT_LINE_HEIGHT;
 use super::{Composer, ComposerInput, ComposerInputEvent};
+use crate::i18n::t;
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
@@ -165,7 +167,8 @@ impl Composer {
                         }
                     }
                     Err(error) => {
-                        this.failure = Some(format!("Send failed: {error}").into());
+                        this.failure =
+                            Some(t!("composer_input.failure.send_failed", error = error).into());
                         this.failure_key = Some(chat_id);
                     }
                 }
@@ -198,7 +201,7 @@ impl Composer {
             };
             split
         };
-        let placeholder = "Edit the queued message";
+        let placeholder = t!("composer_input.placeholder.edit_queued");
         let input = cx.new(|cx| ComposerInput::new(placeholder, cx));
         input.update(cx, |input, cx| {
             // The editor lives in a fixed 30px `uniform_list` row: clamp the
@@ -268,7 +271,8 @@ impl Composer {
             this.update(cx, |this, cx| {
                 this.queue_busy = false;
                 if let Err(error) = result {
-                    this.failure = Some(format!("Could not run queued message: {error}").into());
+                    this.failure =
+                        Some(t!("composer_input.queue.run_failed", error = error).into());
                     this.failure_key = Some(chat_id);
                 }
                 cx.notify();
@@ -296,7 +300,7 @@ impl Composer {
         if prompt.trim().is_empty() {
             // Body cleared and every attachment removed — there is nothing
             // left to send. Say so instead of silently swallowing the Save.
-            self.failure = Some(crate::path_refs::EMPTY_EDIT_MESSAGE.into());
+            self.failure = Some(crate::path_refs::empty_edit_message().into());
             self.failure_key = Some(self.current_key.clone());
             cx.notify();
             return;
@@ -331,7 +335,8 @@ impl Composer {
                         }
                     }
                     Err(error) => {
-                        this.failure = Some(format!("Could not save the edit: {error}").into());
+                        this.failure =
+                            Some(t!("composer_input.queue.save_failed", error = error).into());
                         this.failure_key = Some(chat_id);
                     }
                 }
@@ -371,7 +376,8 @@ impl Composer {
             this.update(cx, |this, cx| {
                 this.queue_busy = false;
                 if let Err(error) = result {
-                    this.failure = Some(format!("Could not delete the message: {error}").into());
+                    this.failure =
+                        Some(t!("composer_input.queue.delete_failed", error = error).into());
                     this.failure_key = Some(chat_id);
                 }
                 cx.notify();
@@ -404,7 +410,8 @@ impl Composer {
             this.update(cx, |this, cx| {
                 this.queue_busy = false;
                 if let Err(error) = result {
-                    this.failure = Some(format!("Could not resume the queue: {error}").into());
+                    this.failure =
+                        Some(t!("composer_input.queue.resume_failed", error = error).into());
                     this.failure_key = Some(chat_id);
                 }
                 cx.notify();
@@ -504,9 +511,9 @@ impl Composer {
             .clone()
             .or_else(|| pending.first().and_then(|item| item.error.clone()));
         let header = if queue.paused {
-            format!("Queue paused ({count})")
+            t!("composer_input.queue.paused_count", count = count)
         } else {
-            format!("Queued ({count})")
+            t!("composer_input.queue.queued_count", count = count)
         };
         let expanded = self.queue_expanded;
         // Body height for the expand/collapse tween: the list viewport (the
@@ -746,7 +753,7 @@ impl Composer {
                                             .gap(px(2.0))
                                             .child(queue_row_action(
                                                 format!("queue-save-{}", item.message_id),
-                                                "Save the queued message edit",
+                                                t!("composer_input.queue.save_aria"),
                                                 crate::icons::CHECK,
                                                 theme.glass_hover(),
                                                 theme.text_muted,
@@ -764,7 +771,7 @@ impl Composer {
                                             ))
                                             .child(queue_row_action(
                                                 format!("queue-cancel-{}", item.message_id),
-                                                "Cancel editing the queued message",
+                                                t!("composer_input.queue.cancel_aria"),
                                                 crate::icons::CLOSE,
                                                 theme.glass_hover(),
                                                 theme.text_muted,
@@ -784,9 +791,9 @@ impl Composer {
                                 let delete = queue_row_action(
                                     format!("queue-delete-{}", item.message_id),
                                     if item.goal_continuation {
-                                        "Delete — pauses the goal"
+                                        t!("composer_input.queue.delete_goal_aria")
                                     } else {
-                                        "Delete queued message"
+                                        t!("composer_input.queue.delete_aria")
                                     },
                                     crate::icons::TRASH_BIN_MINIMALISTIC,
                                     theme.glass_hover(),
@@ -826,7 +833,7 @@ impl Composer {
                                         .gap(px(2.0))
                                         .child(queue_row_action(
                                             format!("queue-run-{}", item.message_id),
-                                            "Run queued message now",
+                                            t!("composer_input.queue.run_now_aria"),
                                             crate::icons::ARROW_RIGHT,
                                             theme.glass_hover(),
                                             theme.text_muted,
@@ -847,7 +854,7 @@ impl Composer {
                                         ))
                                         .child(queue_row_action(
                                             format!("queue-edit-{}", item.message_id),
-                                            "Edit queued message",
+                                            t!("composer_input.queue.edit_aria"),
                                             crate::icons::PEN,
                                             theme.glass_hover(),
                                             theme.text_muted,
@@ -964,9 +971,9 @@ impl Composer {
                     .id("message-queue-header")
                     .role(gpui::Role::Button)
                     .aria_label(if expanded {
-                        "Collapse message queue"
+                        t!("composer_input.queue.collapse_aria")
                     } else {
-                        "Expand message queue"
+                        t!("composer_input.queue.expand_aria")
                     })
                     .focusable()
                     .flex()
@@ -987,7 +994,7 @@ impl Composer {
                             .when(queue_resume_visible(&queue), |el| {
                                 el.child(queue_row_action(
                                     "queue-resume".into(),
-                                    "Resume the message queue",
+                                    t!("composer_input.queue.resume_aria"),
                                     crate::icons::ARROW_RIGHT,
                                     theme.glass_hover(),
                                     theme.text_muted,
@@ -1024,7 +1031,7 @@ impl Composer {
 /// with `&mut App`; row handlers dispatch through the composer's weak handle.
 fn queue_row_action(
     id: String,
-    label: &'static str,
+    label: Cow<'static, str>,
     icon_path: &'static str,
     hover_bg: gpui::Hsla,
     icon_color: gpui::Hsla,

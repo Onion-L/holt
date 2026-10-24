@@ -3,6 +3,7 @@
 //! running-terminal check (ADR-file-editing-state-belongs-to-spaces; decision 11): a failed save refuses the
 //! exit, and cancelling either keeps the app — and the terminals — alive.
 
+use crate::i18n::t;
 use crate::shell::Shell;
 use crate::state::AppState;
 use gpui::{App, Entity, Global, Window};
@@ -72,22 +73,31 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
             // keeps the app — and the terminals — exactly as they were.
             let drafts = shell
                 .as_ref()
-                .and_then(|shell| cx.update(|_, cx| shell.read(cx).dirty_file_tabs_everywhere(cx)).ok())
+                .and_then(|shell| {
+                    cx.update(|_, cx| shell.read(cx).dirty_file_tabs_everywhere(cx))
+                        .ok()
+                })
                 .map(|drafts| drafts.len())
                 .unwrap_or(0);
             if drafts > 0 {
                 let answer = cx.update(|window, cx| {
+                    let title = if quit {
+                        t!("terminal_panel.lifecycle.quit_unsaved_title")
+                    } else {
+                        t!("terminal_panel.lifecycle.close_unsaved_title")
+                    };
                     window.prompt(
                         gpui::PromptLevel::Warning,
-                        if quit {
-                            "Quit Holt with unsaved files?"
-                        } else {
-                            "Close window with unsaved files?"
-                        },
-                        Some(&format!(
-                            "{drafts} file(s) have unsaved changes. Saving writes them to disk; discarding loses them."
+                        &title,
+                        Some(&t!(
+                            "terminal_panel.lifecycle.unsaved_detail",
+                            count = drafts
                         )),
-                        &["Cancel", "Discard changes", "Save and continue"],
+                        &[
+                            t!("terminal_panel.confirm.cancel").as_ref(),
+                            t!("terminal_panel.lifecycle.discard_changes").as_ref(),
+                            t!("terminal_panel.lifecycle.save_and_continue").as_ref(),
+                        ],
                         cx,
                     )
                 });
@@ -112,11 +122,12 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
                                 cx.global_mut::<Lifecycle>().pending = false;
                                 drop(window.prompt(
                                     gpui::PromptLevel::Critical,
-                                    "Could not save every file",
-                                    Some(&format!(
-                                        "{failed} file(s) could not be saved. The app stays open — nothing was lost."
+                                    &t!("terminal_panel.lifecycle.save_failed_title"),
+                                    Some(&t!(
+                                        "terminal_panel.lifecycle.save_failed_detail",
+                                        count = failed
                                     )),
-                                    &["OK"],
+                                    &[t!("terminal_panel.confirm.ok").as_ref()],
                                     cx,
                                 ));
                             });
@@ -151,9 +162,9 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
                         cx.global_mut::<Lifecycle>().pending = false;
                         drop(window.prompt(
                             gpui::PromptLevel::Critical,
-                            "Could not check running terminals",
+                            &t!("terminal_panel.lifecycle.check_failed_title"),
                             Some(&error.to_string()),
-                            &["OK"],
+                            &[t!("terminal_panel.confirm.ok").as_ref()],
                             cx,
                         ));
                     });
@@ -162,17 +173,24 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
             };
             if running > 0 {
                 let answer = cx.update(|window, cx| {
+                    let title = if quit {
+                        t!("terminal_panel.lifecycle.quit_end_title")
+                    } else {
+                        t!("terminal_panel.lifecycle.close_end_title")
+                    };
+                    let confirm = if quit {
+                        t!("terminal_panel.lifecycle.quit_holt")
+                    } else {
+                        t!("terminal_panel.lifecycle.close_window")
+                    };
                     window.prompt(
                         gpui::PromptLevel::Warning,
-                        if quit {
-                            "Quit Holt and end running terminals?"
-                        } else {
-                            "Close window and end running terminals?"
-                        },
-                        Some(&format!(
-                            "This will end {running} terminal(s) and their running programs."
-                        )),
-                        &["Cancel", if quit { "Quit Holt" } else { "Close window" }],
+                        &title,
+                        Some(&t!("terminal_panel.confirm.end_detail", count = running)),
+                        &[
+                            t!("terminal_panel.confirm.cancel").as_ref(),
+                            confirm.as_ref(),
+                        ],
                         cx,
                     )
                 });
@@ -195,9 +213,9 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
                     cx.global_mut::<Lifecycle>().pending = false;
                     drop(window.prompt(
                         gpui::PromptLevel::Critical,
-                        "Could not close terminals",
+                        &t!("terminal_panel.lifecycle.close_failed_title"),
                         Some(&error.to_string()),
-                        &["OK"],
+                        &[t!("terminal_panel.confirm.ok").as_ref()],
                         cx,
                     ));
                 });
