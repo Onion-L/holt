@@ -407,6 +407,7 @@ impl GeneralPage {
     /// language on the same frame.
     fn render_language(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         div()
+            .mt(px(GROUP_GAP))
             .child(group_header(
                 theme,
                 &t!("settings_general_appearance.language.group_title"),
