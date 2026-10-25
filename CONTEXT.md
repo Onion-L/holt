@@ -169,6 +169,10 @@ one word could mean two things. How a term behaves lives on its
 
 - **Terminal**: an interactive shell session owned by one Chat and operated directly by the user inside Holt; switching chats or hiding its view keeps it running. It is independent of the agent's bash tool calls and does not automatically contribute to History or Transcript.
 
+## App updates
+
+- **Managed install**: the install shape the engine can recognize and update in place — a macOS `.app` bundle, a Windows directory carrying `holt-release.marker` beside the exe, or the AppImage that `$APPIMAGE` names on Linux.
+
 ## Usage
 
 - **Usage record**: the token measurements of one provider round-trip — input, output, and cache tokens — attributed to the Chat that caused it and stamped with its source (Turn work, Subagent, Compaction, Auto-review, Title task), provider, and model. Every model call a chat causes produces one; an interrupted Turn keeps whatever the provider reported.

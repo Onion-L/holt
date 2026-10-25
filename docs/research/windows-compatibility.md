@@ -72,7 +72,7 @@ displayed, stored, or compared — every raw call site is a latent bug.
 Known producers of verbatim strings: `files.rs` (`canonicalize_lenient`),
 `git.rs:226-246` (repo discovery — the workdir string reaches the UI in
 status payloads), `subagents.rs`, `rpc/workspace.rs`, `rpc/spaces.rs`,
-`update.rs`, and `LocalExecutionEnv::new` (now strips it).
+and `LocalExecutionEnv::new` (now strips it).
 
 Canonicalize call sites that already do it right, as patterns to copy:
 `git.rs` `relative_path` (strips verbatim on **both** sides before the
@@ -402,26 +402,36 @@ must name a face present on Windows 10 or embed one.
   certificate store**: corporate intercept roots that are installed for the
   user just work; ones that aren't fail with chain errors macOS CI never
   saw.
-- Self-update's engine side is cross-platform (issue #61:
-  `update.rs` + `update_platform.rs`): the macOS arm keeps the
-  `hdiutil`/`codesign`/`ditto` chain; Windows and Linux stage the
-  verified download beside the running binary and swap it in place, and
-  fail closed unless the release carries a `manifest.json` with
-  per-asset sha256s. The remaining open piece is release-side: the
-  Release workflow publishing that manifest (and the Windows setup
-  install that drops the marker file).
+- Self-update is cross-platform end to end (issue #61: `update.rs` +
+  `update_platform.rs`, the Release workflow's `manifest.json` step, and
+  the Inno Setup install): the macOS arm keeps the
+  `hdiutil`/`codesign`/`ditto` chain; Windows and Linux fail closed
+  unless the release carries a `manifest.json` with per-asset sha256s,
+  then stage the verified download beside the running binary and swap it
+  in place. The Windows arm (`update_platform.rs`
+  `install_windows_exe`) unzips, stages `holt.exe` as
+  `holt.exe.incoming`, and rename-dances it over the running exe —
+  Windows allows renaming (not deleting) a running exe, so the displaced
+  `.old` copy survives until the next start's cleanup. A directory
+  counts as a managed install only when `holt-release.marker` sits
+  beside the exe (the release zip and the setup install both put it
+  there); a bare hand-copied `holt.exe` reports availability but cannot
+  apply.
 
 ## 9. Known-open Windows gaps (do not re-diagnose these)
 
 Survey update 2026-10-23: the cross-platform branch has since closed most
 of the original gaps — terminals flags, MCP `.cmd` resolution, Job Objects,
 native noreplace rename, drive enumeration, core's home chain, the
-settings pickers, and the console-window pair. What remains open:
+settings pickers, and the console-window pair. Self-update followed on
+2026-10-25 (issue #61) when the Release workflow began publishing
+`manifest.json` and the Windows setup install landed; its row stays below
+so nobody re-diagnoses its gate. What remains open:
 
 | Gap | Where | Status |
 | --- | --- | --- |
 | Trash unavailable | `trash.rs` | open (macOS-only impl; needs IFileOperation) |
-| Self-update unavailable | `update.rs`, `update_platform.rs` | engine side cross-platform (#61); blocked on release-side `manifest.json` publishing + the setup install |
+| Self-update unavailable | `update.rs`, `update_platform.rs` | closed (#61): the workflow publishes `manifest.json`, the zip and setup install drop `holt-release.marker`, and the Windows arm swaps the exe in place — an unmarked directory (a hand-copied exe, `cargo run`) reports availability but cannot apply; the marker is the gate, not a bug |
 | Terminal `has_running_jobs` always false | `terminals.rs` unix-only session scan | open (documented on terminals page) |
 | `holt://` scheme not registered | gpui_windows `register_url_scheme` no-op | open |
 | Credential files not hardened (no ACLs) | `credentials.rs`, `mcp/config.rs`, `provider_*.rs` | unix-only 0600 |
@@ -474,7 +484,7 @@ settings pickers, and the console-window pair. What remains open:
 | Duplicate checkout/change-set history for one repo | 1/6 | `checkout_identity` spelling hash (§6) |
 | Logo picker button does nothing | — | fixed: pickers use gpui's dialog off macOS (`ui/file_dialog.rs`) |
 | Delete-to-trash errors | — | `trash.rs` macOS-only |
-| Update check never runs | — | `update.rs` `bundle_path` `None` |
+| Update check never runs | — | fixed (#61): any non-prerelease build polls; a prerelease build never polls by design — a manual `CheckUpdate` still runs one round |
 | Console window opens beside the app | 4 | fixed: release-only `windows_subsystem` + `CREATE_NO_WINDOW` on every spawn (§5) |
 | Fresh box: `cargo build` fails before Holt code | — | missing MSVC toolchain or `fxc.exe` (§10) |
 
