@@ -16,8 +16,8 @@
 //! drops to skeletons.
 //!
 //! The chart is gpui self-drawn over the shared day axis: one bar per
-//! day, the visible models stacked bottom-to-top in rank order with a
-//! rounded cap on the stack's topmost segment, over one hairline
+//! day, the visible models stacked bottom-to-top in rank order with
+//! square edges, over one hairline
 //! gridline per Y rung (the git graph's palette, so legend chips and
 //! bar segments share one color per rank). Hovering a day washes its
 //! column and pins the day readout inside the plot over that day's
@@ -2229,9 +2229,8 @@ fn donut_chart(entries: &[BreakdownEntry], grand: u64, hover: Option<usize>) -> 
 }
 
 /// The chart's paint pass: one hairline per Y rung, then one bar per day —
-/// the visible models stacked bottom-to-top in rank order, the stack's
-/// topmost nonzero segment carrying the rounded cap (the reference
-/// chart's pill-tipped bars). `rungs` is the shared Y scale bottom-up;
+/// the visible models stacked bottom-to-top in rank order, with square
+/// edges on every segment. `rungs` is the shared Y scale bottom-up;
 /// its last value is the ceiling every bar and gridline divides by.
 fn bar_chart(
     summary: &Arc<Summary>,
@@ -2275,31 +2274,18 @@ fn bar_chart(
                     .iter()
                     .map(|(color, per_day)| (*color, per_day.get(day).copied().unwrap_or(0) as f32))
                     .collect();
-                // The stack's topmost nonzero segment owns the rounded cap.
-                let cap = segments.iter().rposition(|(_, tokens)| *tokens > 0.0);
                 let x0 = left + slot * (day as f32 + 0.5) - bar_w / 2.0;
                 let mut below = 0.0f32;
-                for (index, (color, tokens)) in segments.iter().enumerate() {
+                for (color, tokens) in &segments {
                     if *tokens <= 0.0 {
                         continue;
                     }
                     let seg_h = height * (tokens / top);
                     let y = baseline - below - seg_h;
-                    let mut quad = gpui::fill(
+                    let quad = gpui::fill(
                         Bounds::new(point(px(x0), px(y)), size(px(bar_w), px(seg_h))),
                         *color,
                     );
-                    if Some(index) == cap {
-                        // The cap's radius yields to the segment it rounds:
-                        // a corner taller than half its side paints sharp.
-                        let radius = 5.0f32.min(seg_h * 0.5).min(bar_w * 0.5);
-                        quad = quad.corner_radii(gpui::Corners {
-                            top_left: px(radius),
-                            top_right: px(radius),
-                            bottom_right: px(0.0),
-                            bottom_left: px(0.0),
-                        });
-                    }
                     window.paint_quad(quad);
                     below += seg_h;
                 }
