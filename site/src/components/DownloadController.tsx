@@ -94,9 +94,17 @@ export default function DownloadController() {
               if (asset && !firstAvailable) firstAvailable = option;
             }
             // A preselected chip the release does not carry falls back to the
-            // first one it does.
+            // first one it does — on the visitor's own row, first to another
+            // build of their arch (an ARM64 Windows visitor keeps the native
+            // zip over an emulated x64 installer).
             const current = Array.from(select.options).find((o) => o.value === select.value);
-            if (current?.disabled && firstAvailable) select.value = firstAvailable.value;
+            if (current?.disabled && firstAvailable) {
+              const sameArch =
+                row === yours && arch
+                  ? Array.from(select.options).find((o) => !o.disabled && o.value.includes(arch))
+                  : undefined;
+              select.value = (sameArch ?? firstAvailable).value;
+            }
             // Nothing to choose from: the selector greys out with the button.
             select.disabled = !firstAvailable;
           }
