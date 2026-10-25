@@ -494,6 +494,11 @@ pub mod methods {
     // Updates (ControlRpc, relay-forwardable — a device reports/applies its own
     // binary's update). Stream: current UpdateStatus, then every change.
     pub const UPDATE_STATUS: &str = "UpdateStatus";
+    /// Run one availability check right now and reply with the UpdateStatus
+    /// after that round completes (the same state also publishes on the
+    /// UpdateStatus stream). A `HOLT_FAKE_UPDATE` debug install answers
+    /// immediately without checking.
+    pub const CHECK_UPDATE: &str = "CheckUpdate";
     /// Download + apply the newest release on the target device (managed
     /// installs only: the binary is replaced in place, and restarting
     /// onto it is the UI's job).

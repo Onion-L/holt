@@ -63,6 +63,17 @@ settings_general_appearance:
         zh-CN: 播放声音
       sound_description:
         zh-CN: 每条横幅附带播放系统通知音。
+    updates:
+      title:
+        zh-CN: 更新
+      description:
+        zh-CN: Holt 每 6 小时在后台检查新版本；可在此手动检查，也可前往发布页下载。
+      row_title:
+        zh-CN: 版本
+      check:
+        zh-CN: 检查更新
+      checking:
+        zh-CN: 正在检查…
     model_rows:
       disabled:
         zh-CN: 已禁用

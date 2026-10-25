@@ -1,15 +1,16 @@
-//! App self-update behind `UpdateStatus` / `ApplyUpdate`: polls the latest
-//! GitHub release, and on apply downloads this platform's release asset
-//! (`update_platform` owns what that means per OS), checks its sha256
-//! against the release's `manifest.json`, and hands it to the platform
-//! arm to swap in place of the running install. The download streams
-//! progress on the status and can be cancelled until the install starts;
-//! restarting onto the new build is the UI's job. Any non-prerelease
-//! build reports availability, but only a managed install (an `.app`
-//! bundle, a release-marked Windows directory, an AppImage) may apply
-//! one. A prerelease build (`-alpha.N`) never checks — testers stay on
-//! the build they installed until they replace it by hand. Debug builds
-//! can fake a release with `HOLT_FAKE_UPDATE`.
+//! App self-update behind `UpdateStatus` / `ApplyUpdate` / `CheckUpdate`:
+//! polls the latest GitHub release, and on apply downloads this platform's
+//! release asset (`update_platform` owns what that means per OS), checks
+//! its sha256 against the release's `manifest.json`, and hands it to the
+//! platform arm to swap in place of the running install. The download
+//! streams progress on the status and can be cancelled until the install
+//! starts; restarting onto the new build is the UI's job. Any
+//! non-prerelease build reports availability, but only a managed install
+//! (an `.app` bundle, a release-marked Windows directory, an AppImage) may
+//! apply one. A prerelease build (`-alpha.N`) never polls — testers stay
+//! on the build they installed until they replace it by hand, though a
+//! manual `CheckUpdate` still runs one round on demand. Debug builds can
+//! fake a release with `HOLT_FAKE_UPDATE`.
 
 use std::{
     collections::HashMap,
@@ -22,7 +23,7 @@ use futures::StreamExt;
 use holt_proto::{UpdatePhase, UpdateStatus};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tokio::{io::AsyncWriteExt, sync::watch};
+use tokio::{io::AsyncWriteExt, sync::Notify, sync::watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::update_platform::{self, InstallTarget};
@@ -47,6 +48,15 @@ const ARCH: &str = if cfg!(target_arch = "aarch64") {
 pub(crate) struct Updater {
     tx: watch::Sender<serde_json::Value>,
     inner: Mutex<Inner>,
+    /// Wakes the background loop for an immediate round (`CheckUpdate`).
+    /// Cloned out so the loop can await it without holding the `Updater`
+    /// alive across its sleep.
+    wake: std::sync::Arc<Notify>,
+    /// Completed-round counter, bumped by [`run_check`] on every round,
+    /// successful or not. `check_now` records the current count and waits
+    /// for it to advance — reading the current value each pass, so a round
+    /// that already settled is never missed.
+    rounds: watch::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -59,7 +69,12 @@ struct Inner {
     /// path verifies a signature may proceed (see
     /// `update_platform::digest_required`).
     asset_digest: Option<String>,
+    /// `subscribe` has run once — its one-shot start latch.
     checking: bool,
+    /// The background check loop is actually running (it is not, on a
+    /// prerelease build or before any subscriber); a `check_now` outside
+    /// it runs its round inline.
+    loop_running: bool,
     /// Aborts the running download; `None` outside `Downloading`.
     cancel: Option<CancellationToken>,
 }
@@ -101,15 +116,21 @@ impl Updater {
         update_platform::cleanup_stale();
         let status = UpdateStatus {
             current_version: CURRENT_VERSION.to_string(),
+            // A debug fake reports managed so the whole apply flow can be
+            // exercised; otherwise the running install decides.
+            managed: fake_update() || update_platform::managed_install().is_some(),
             ..Default::default()
         };
         let (tx, _) = watch::channel(serde_json::to_value(&status).unwrap_or_default());
+        let (rounds, _) = watch::channel(0u64);
         Arc::new(Self {
             tx,
             inner: Mutex::new(Inner {
                 status,
                 ..Default::default()
             }),
+            wake: std::sync::Arc::new(Notify::new()),
+            rounds,
         })
     }
 
@@ -131,9 +152,35 @@ impl Updater {
             }
             self.publish();
         } else if start && !CURRENT_VERSION.contains('-') {
+            self.lock().loop_running = true;
             tokio::spawn(check_loop(Arc::downgrade(self)));
         }
         self.tx.subscribe()
+    }
+
+    /// One immediate availability round (`CheckUpdate`), replying with the
+    /// status after that round. With the background loop running, wake it
+    /// and wait for its next completed round; without one (a prerelease
+    /// build, or no subscriber ever started it), run the shared round
+    /// function inline. A `HOLT_FAKE_UPDATE` debug install is an
+    /// immediate no-op — its fake release is already in place.
+    pub(crate) async fn check_now(self: &Arc<Self>) -> UpdateStatus {
+        if self.lock().loop_running {
+            let mut rounds = self.rounds.subscribe();
+            let before = *rounds.borrow_and_update();
+            self.wake.notify_one();
+            // Read the current value each pass, not only the next change:
+            // the woken round may already have completed (or this call may
+            // have landed inside a round that was already in flight).
+            while *rounds.borrow() <= before {
+                if rounds.changed().await.is_err() {
+                    break;
+                }
+            }
+        } else if !fake_update() {
+            run_check(self).await;
+        }
+        self.lock().status.clone()
     }
 
     /// Download and install the available release. Returns once the new
@@ -333,55 +380,82 @@ impl Updater {
 }
 
 async fn check_loop(updater: Weak<Updater>) {
+    let Some(start) = updater.upgrade() else {
+        return;
+    };
+    // The wake handle outlives each upgrade: holding the `Updater` across
+    // the sleep would keep it alive forever (the loop is its own last
+    // strong reference otherwise).
+    let wake = start.wake.clone();
+    drop(start);
     let mut failures = 0u32;
     loop {
-        match latest_release().await {
-            Ok(release) => {
-                failures = 0;
-                let manifest = fetch_manifest(&release.assets).await;
-                let Some(updater) = updater.upgrade() else {
-                    return;
-                };
-                let version = manifest
-                    .as_ref()
-                    .map(|m| m.version.clone())
-                    .unwrap_or_else(|| release.tag_name.trim_start_matches('v').to_string());
-                let name = asset_name(&version, ARCH, update_platform::asset_suffix());
-                let asset = release.assets.into_iter().find(|a| a.name == name);
-                let digest = manifest
-                    .as_ref()
-                    .and_then(|m| m.digest_for(&name))
-                    .map(str::to_string);
-                let newer = is_newer(&version, CURRENT_VERSION);
-                // Fail closed: without a digest, only a platform whose
-                // install arm verifies a signature may offer the update.
-                let provable = digest.is_some() || !update_platform::digest_required();
-                let changed = {
-                    let mut inner = updater.lock();
-                    let available = (newer && asset.is_some() && provable).then_some(version);
-                    let changed = inner.status.phase == UpdatePhase::Idle
-                        && inner.status.available != available;
-                    if changed {
-                        inner.status.available = available;
-                        inner.asset_url = asset.map(|a| a.browser_download_url);
-                        inner.asset_digest = digest;
-                    }
-                    changed
-                };
-                if changed {
-                    updater.publish();
-                }
-            }
-            Err(error) => {
-                failures += 1;
-                tracing::debug!(%error, "update check failed");
-            }
+        let succeeded = match updater.upgrade() {
+            Some(updater) => run_check(&updater).await,
+            None => return,
+        };
+        failures = if succeeded { 0 } else { failures + 1 };
+        tokio::select! {
+            // A stored permit survives until the next `notified()` — a
+            // wake that lands mid-round is consumed after it.
+            _ = wake.notified() => {}
+            _ = tokio::time::sleep(next_delay(failures)) => {}
         }
-        tokio::time::sleep(next_delay(failures)).await;
         if updater.strong_count() == 0 {
             return;
         }
     }
+}
+
+/// One availability round, shared by the background loop and
+/// [`Updater::check_now`]: fetch the latest release and its manifest, fold
+/// the verdict into the status, then count the round as completed (what a
+/// waiting `check_now` returns on). Returns whether the round succeeded,
+/// for the loop's backoff.
+async fn run_check(updater: &Updater) -> bool {
+    let succeeded = match latest_release().await {
+        Ok(release) => {
+            let manifest = fetch_manifest(&release.assets).await;
+            let version = manifest
+                .as_ref()
+                .map(|m| m.version.clone())
+                .unwrap_or_else(|| release.tag_name.trim_start_matches('v').to_string());
+            let name = asset_name(&version, ARCH, update_platform::asset_suffix());
+            let asset = release.assets.into_iter().find(|a| a.name == name);
+            let digest = manifest
+                .as_ref()
+                .and_then(|m| m.digest_for(&name))
+                .map(str::to_string);
+            let newer = is_newer(&version, CURRENT_VERSION);
+            // Fail closed: without a digest, only a platform whose
+            // install arm verifies a signature may offer the update.
+            let provable = digest.is_some() || !update_platform::digest_required();
+            let changed = {
+                let mut inner = updater.lock();
+                let available = (newer && asset.is_some() && provable).then_some(version);
+                let changed =
+                    inner.status.phase == UpdatePhase::Idle && inner.status.available != available;
+                if changed {
+                    inner.status.available = available;
+                    inner.asset_url = asset.map(|a| a.browser_download_url);
+                    inner.asset_digest = digest;
+                }
+                changed
+            };
+            if changed {
+                updater.publish();
+            }
+            true
+        }
+        Err(error) => {
+            tracing::debug!(%error, "update check failed");
+            false
+        }
+    };
+    // Even a failed round is a completed one — a manual check must not
+    // wait out the failure backoff for its reply.
+    updater.rounds.send_modify(|rounds| *rounds += 1);
+    succeeded
 }
 
 /// Download and parse the release's `manifest.json` when it carries one.
@@ -570,5 +644,29 @@ mod tests {
         assert_ne!(tampered, digest);
         assert!(!digest_matches(&tampered, expected));
         assert!(!digest_matches(&digest, &"0".repeat(64)));
+    }
+
+    /// The `CheckUpdate` handshake: with the loop running, `check_now`
+    /// returns once a round completes — including one that settles while
+    /// the caller is between reading the counter and waiting (the wait
+    /// re-reads the current value each pass, never only the next change).
+    /// No network here: the round counter is advanced by hand.
+    #[tokio::test]
+    async fn check_now_returns_when_a_round_completes() {
+        let updater = Updater::new();
+        updater.lock().loop_running = true;
+        let check = {
+            let updater = updater.clone();
+            tokio::spawn(async move { updater.check_now().await })
+        };
+        // Let the caller reach its wait, then complete a round.
+        tokio::task::yield_now().await;
+        updater.rounds.send_modify(|rounds| *rounds += 1);
+        let status = tokio::time::timeout(Duration::from_secs(5), check)
+            .await
+            .expect("the completed round releases the caller")
+            .unwrap();
+        assert_eq!(status.current_version, CURRENT_VERSION);
+        assert_eq!(status.phase, UpdatePhase::Idle);
     }
 }

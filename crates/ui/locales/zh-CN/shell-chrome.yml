@@ -154,6 +154,12 @@ shell_chrome:
       zh-CN: 立即重启
     failed_notice:
       zh-CN: "更新失败：%{error}"
+    body_unmanaged:
+      zh-CN: 此 Holt 安装不受更新器管理——请从发布页手动下载新版本并自行替换。
+    up_to_date_notice:
+      zh-CN: Holt 已是最新版本
+    check_failed_notice:
+      zh-CN: "检查更新失败：%{error}"
   chat_link:
     copied:
       zh-CN: Holt 会话链接已复制

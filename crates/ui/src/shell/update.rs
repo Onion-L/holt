@@ -1,7 +1,9 @@
-//! App self-update: the sidebar disc beside Settings and its dialog. The
-//! engine owns the flow (`UpdateStatus` phases); the dialog only confirms the
-//! download, shows progress, offers Cancel while bytes are still moving, and
-//! relaunches on Restart once the new bundle is in place.
+//! App self-update: the sidebar disc beside Settings, the Settings →
+//! General check that opens it, and its dialog. The engine owns the flow
+//! (`UpdateStatus` phases); the dialog only confirms the download, shows
+//! progress, offers Cancel while bytes are still moving, and relaunches on
+//! Restart once the new bundle is in place. An unmanaged install sees the
+//! dialog too — with the download withheld (it could not apply).
 
 use gpui::relative;
 use holt_proto::UpdatePhase;
@@ -189,6 +191,13 @@ impl Shell {
             );
 
         let body = match update.phase {
+            // An unmanaged install still hears about a release, but the
+            // download would be refused by `ApplyUpdate` — say so and
+            // render no button that fails.
+            UpdatePhase::Idle if !update.managed => div().child(popover::dialog_body(
+                theme,
+                t!("shell_chrome.update.body_unmanaged"),
+            )),
             UpdatePhase::Idle => div()
                 .flex()
                 .flex_col()
@@ -265,20 +274,26 @@ impl Shell {
                     .child(
                         popover::btn_ghost(theme, &t!("shell_chrome.update.later"), "update-later")
                             .id("update-later")
+                            .debug_selector(|| "update-later".into())
                             .on_click(cx.listener(Self::hide_update_dialog)),
                     )
-                    .child(
-                        popover::btn_primary(
-                            theme,
-                            &if update.error.is_some() {
-                                t!("shell_chrome.update.try_again")
-                            } else {
-                                t!("shell_chrome.update.download")
-                            },
+                    // An unmanaged install cannot apply — no Download to
+                    // click into a refusal.
+                    .when(update.managed, |el| {
+                        el.child(
+                            popover::btn_primary(
+                                theme,
+                                &if update.error.is_some() {
+                                    t!("shell_chrome.update.try_again")
+                                } else {
+                                    t!("shell_chrome.update.download")
+                                },
+                            )
+                            .id("update-download")
+                            .debug_selector(|| "update-download".into())
+                            .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx))),
                         )
-                        .id("update-download")
-                        .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx))),
-                    ),
+                    }),
                 UpdatePhase::Downloading => el
                     .child(
                         popover::btn_ghost(
@@ -390,6 +405,38 @@ impl Shell {
             )
     }
 
+    /// A manual update check from the General settings page settled: a hit
+    /// opens the update dialog — echoing the engine's reply into
+    /// `AppState` first, because the UpdateStatus watch frame carrying the
+    /// same status may still be in flight and the dialog's render closes
+    /// itself while `available` reads `None`; anything else reports with a
+    /// notice chip.
+    pub(super) fn handle_general_page_event(
+        &mut self,
+        event: crate::settings::general::GeneralPageEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::settings::general::GeneralPageEvent;
+        match event {
+            GeneralPageEvent::UpdateAvailable(status) => {
+                self.state
+                    .update(cx, |state, _| state.apply_update_status(status));
+                self.update_dialog = true;
+                cx.notify();
+            }
+            GeneralPageEvent::UpToDate => self.push_holt_notice(
+                HoltNoticeKind::Success,
+                t!("shell_chrome.update.up_to_date_notice").into(),
+                cx,
+            ),
+            GeneralPageEvent::CheckFailed(error) => self.push_holt_notice(
+                HoltNoticeKind::Error,
+                t!("shell_chrome.update.check_failed_notice", error = error).into(),
+                cx,
+            ),
+        }
+    }
+
     /// Start the download + install. The dialog follows the phase stream;
     /// a failure surfaces inline there, or as a notice when it's hidden.
     fn apply_update(&mut self, cx: &mut Context<Self>) {
@@ -475,5 +522,97 @@ mod tests {
         assert_eq!(download_fraction(10, Some(0)), None);
         assert_eq!(download_fraction(50, Some(100)), Some(0.5));
         assert_eq!(download_fraction(200, Some(100)), Some(1.0));
+    }
+
+    /// Renders just the update dialog against a real `Shell` (the
+    /// chat-menu test harness pattern — the full shell needs an engine).
+    struct UpdateHarness {
+        shell: Entity<Shell>,
+        _observe: Subscription,
+    }
+
+    impl Render for UpdateHarness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::of(cx).clone();
+            let viewport = window.viewport_size();
+            let dialog = self.shell.update(cx, |shell, cx| {
+                shell.render_update_dialog(&theme, viewport, cx)
+            });
+            div().size_full().children(dialog)
+        }
+    }
+
+    fn dialog_shell(cx: &mut gpui::TestAppContext, managed: bool) -> Entity<Shell> {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.update = holt_proto::UpdateStatus {
+                current_version: "0.6.1".into(),
+                available: Some("0.6.2".into()),
+                managed,
+                ..Default::default()
+            };
+            state
+        });
+        cx.new(|cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.update_dialog = true;
+            shell
+        })
+    }
+
+    fn park_dialog<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        shell: &Entity<Shell>,
+    ) -> &'a mut gpui::VisualTestContext {
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let _observe = cx.observe(shell, |_, _, cx| cx.notify());
+            // Force the first frame: a window only paints after a notify.
+            shell.update(cx, |_, cx| cx.notify());
+            UpdateHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+        cx
+    }
+
+    /// An unmanaged install still hears about a release — but the dialog
+    /// says so in its own words and offers no Download that `ApplyUpdate`
+    /// would refuse.
+    #[gpui::test]
+    fn an_unmanaged_install_dialog_withholds_the_download(cx: &mut gpui::TestAppContext) {
+        let shell = dialog_shell(cx, false);
+        let cx = park_dialog(cx, &shell);
+        assert!(
+            cx.debug_bounds("update-dialog").is_some(),
+            "the dialog opens for an unmanaged install"
+        );
+        assert!(
+            cx.debug_bounds("update-later").is_some(),
+            "Later still dismisses"
+        );
+        assert!(
+            cx.debug_bounds("update-download").is_none(),
+            "no download button — applying would be refused"
+        );
+    }
+
+    /// The managed install keeps the download button the flow needs.
+    #[gpui::test]
+    fn a_managed_install_dialog_offers_the_download(cx: &mut gpui::TestAppContext) {
+        let shell = dialog_shell(cx, true);
+        let cx = park_dialog(cx, &shell);
+        assert!(
+            cx.debug_bounds("update-download").is_some(),
+            "a managed install can start the download"
+        );
     }
 }
