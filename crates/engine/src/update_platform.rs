@@ -111,7 +111,8 @@ pub(crate) fn digest_required() -> bool {
 }
 
 /// Replace the managed install from the verified download. Blocking —
-/// call on `spawn_blocking`. Each arm cleans `work` up on both paths.
+/// call on `spawn_blocking`. Each arm cleans `work` up on both paths and
+/// drops the file it staged beside the install when the swap fails.
 pub(crate) fn install(downloaded: &Path, work: &Path, target: InstallTarget) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -148,6 +149,7 @@ pub(crate) fn install(downloaded: &Path, work: &Path, target: InstallTarget) -> 
 #[cfg(target_os = "windows")]
 fn install_windows_exe(downloaded: &Path, work: &Path, exe: &Path) -> Result<(), String> {
     let unpacked = work.join("unpacked");
+    let staged = exe.with_file_name("holt.exe.incoming");
     let installed = (|| {
         std::fs::create_dir(&unpacked).map_err(|e| e.to_string())?;
         let file = std::fs::File::open(downloaded).map_err(|e| e.to_string())?;
@@ -160,11 +162,15 @@ fn install_windows_exe(downloaded: &Path, work: &Path, exe: &Path) -> Result<(),
         if !new_exe.is_file() {
             return Err("release archive does not contain holt.exe".into());
         }
-        let staged = exe.with_file_name("holt.exe.incoming");
         std::fs::copy(&new_exe, &staged)
             .map_err(|e| format!("cannot stage {}: {e}", staged.display()))?;
         swap_with_backup(exe, &staged, &exe.with_file_name("holt.exe.old"))
     })();
+    // The staged file sits in the install directory, outside `work` — a
+    // failure must take it back out.
+    if installed.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
     let _ = std::fs::remove_dir_all(work);
     installed
 }
@@ -175,10 +181,8 @@ fn install_windows_exe(downloaded: &Path, work: &Path, exe: &Path) -> Result<(),
 /// executable bit survives.
 #[cfg(target_os = "linux")]
 fn install_appimage(downloaded: &Path, work: &Path, appimage: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
+    let staged = appimage.with_file_name("holt.appimage.incoming");
     let installed = (|| {
-        let staged = appimage.with_file_name("holt.appimage.incoming");
         std::fs::copy(downloaded, &staged)
             .map_err(|e| format!("cannot stage {}: {e}", staged.display()))?;
         let permissions = std::fs::metadata(appimage)
@@ -191,6 +195,11 @@ fn install_appimage(downloaded: &Path, work: &Path, appimage: &Path) -> Result<(
             &appimage.with_file_name("holt.appimage.old"),
         )
     })();
+    // The staged file sits beside the AppImage, outside `work` — a
+    // failure must take it back out.
+    if installed.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
     let _ = std::fs::remove_dir_all(work);
     installed
 }
@@ -223,14 +232,18 @@ fn restore(backup: &Path, target: &Path) {
 }
 
 /// Remove the previous update's leftovers: the old exe/AppImage that
-/// could not be deleted while it was running. Best-effort.
+/// could not be deleted while it was running, and the staging file a
+/// crashed apply left beside the install (a failed one removes it
+/// itself). Best-effort.
 pub(crate) fn cleanup_stale() {
     match managed_install() {
         Some(InstallTarget::WindowsExe { exe }) => {
             let _ = std::fs::remove_file(exe.with_file_name("holt.exe.old"));
+            let _ = std::fs::remove_file(exe.with_file_name("holt.exe.incoming"));
         }
         Some(InstallTarget::AppImage { file }) => {
             let _ = std::fs::remove_file(file.with_file_name("holt.appimage.old"));
+            let _ = std::fs::remove_file(file.with_file_name("holt.appimage.incoming"));
         }
         _ => {}
     }

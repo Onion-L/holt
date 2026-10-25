@@ -32,7 +32,7 @@ Not here: the run loop and queue (run-loop, conversation-policy), each capabilit
 - **Registry files are whole-file truth.** No partial writes, no migration journals; a file that will not parse fails startup loudly rather than serving a subset.
 - **The Home space is a floor, not a row.** It cannot be removed by any mutation path, so "a chat with nowhere to go" is unreachable — that is what makes chat-less defaults (the new-chat canvas, terminals without a chat) well-defined.
 - **The unserved surface is deliberate.** `UnknownMethod` for the sync/account family is the contract, not a regression; the UI keeps those surfaces rendered.
-- **Update fails closed.** Windows and Linux are not offered an update at all unless the release's `manifest.json` carries a sha256 for this arch's asset, and a digest mismatch aborts with nothing replaced; macOS's gate is unchanged — nothing installs without the Developer ID code-requirement match. A build that is not a managed install still reports availability but cannot apply, and a cancelled or failed update leaves the running install as it was (a half-done swap puts the old file back).
+- **Update fails closed.** Windows and Linux are not offered an update at all unless the release's `manifest.json` carries a sha256 for this arch's asset, and a digest mismatch aborts with nothing replaced; macOS's gate is unchanged — nothing installs without the Developer ID code-requirement match. A build that is not a managed install still reports availability but cannot apply, and a cancelled or failed update leaves the running install as it was (a half-done swap puts the old file back; the `.incoming` file staged beside the install is dropped on failure, and at next start's cleanup if a crash left one).
 
 ## Verification
 
