@@ -634,7 +634,7 @@ translation on disk are the point.
 
 ## self-update-trust-is-per-platform
 
-`#61` (engine stage; release-pipeline stage to follow). Windows and Linux
+`#61` (engine and release-pipeline stages). Windows and Linux
 fail closed unless the release carries a `manifest.json` asset mapping
 each artifact name to its sha256, and only macOS may install without one —
 its DMG path verifies the Developer ID requirement instead, a chain this
