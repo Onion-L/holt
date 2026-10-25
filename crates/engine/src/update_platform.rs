@@ -85,11 +85,15 @@ pub(crate) fn windows_managed_layout(exe: &Path, marker_exists: bool) -> Option<
 }
 
 /// Updatable on Linux when the runtime-injected `$APPIMAGE` names a file
-/// (absolute, with a file name — never a bare `/` or a relative
-/// fragment); the caller checks existence, which is a syscall.
+/// (rooted, with a file name — never a bare `/` or a relative fragment);
+/// the caller checks existence, which is a syscall. `has_root`, not
+/// `is_absolute`: on the Unix host this arm runs on they are identical,
+/// and a rooted check keeps this contract observable on every host the
+/// cfg-balanced tests run on (`is_absolute` rejects `/home/...` on
+/// Windows, where this arm never runs but its tests do).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn linux_appimage_path(appimage: &Path) -> Option<PathBuf> {
-    (appimage.is_absolute() && appimage.file_name().is_some()).then(|| appimage.to_path_buf())
+    (appimage.has_root() && appimage.file_name().is_some()).then(|| appimage.to_path_buf())
 }
 
 /// The release asset this platform updates from — the naming the site's
