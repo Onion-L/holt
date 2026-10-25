@@ -1,16 +1,20 @@
-//! App self-update behind `UpdateStatus` / `ApplyUpdate`: polls the latest
-//! GitHub release, and on apply downloads this arch's DMG, verifies the
-//! bundle's signature against the release team, and swaps it in place of
-//! the running `.app`. The download streams progress on the status and can
-//! be cancelled until the install starts; restarting onto the new bundle is
-//! the UI's job. A binary not running from an `.app` bundle (`cargo run`)
-//! never checks, and neither does a prerelease build (`-alpha.N` — testers
-//! stay on the build they installed until they replace it by hand). Debug
-//! builds can fake a release with `HOLT_FAKE_UPDATE`.
+//! App self-update behind `UpdateStatus` / `ApplyUpdate` / `CheckUpdate`:
+//! polls the latest GitHub release, and on apply downloads this platform's
+//! release asset (`update_platform` owns what that means per OS), checks
+//! its sha256 against the release's `manifest.json`, and hands it to the
+//! platform arm to swap in place of the running install. The download
+//! streams progress on the status and can be cancelled until the install
+//! starts; restarting onto the new build is the UI's job. Any
+//! non-prerelease build reports availability, but only a managed install
+//! (an `.app` bundle, a release-marked Windows directory, an AppImage) may
+//! apply one. A prerelease build (`-alpha.N`) never polls — testers stay
+//! on the build they installed until they replace it by hand, though a
+//! manual `CheckUpdate` still runs one round on demand. Debug builds can
+//! fake a release with `HOLT_FAKE_UPDATE`.
 
 use std::{
-    path::{Path, PathBuf},
-    process::Command,
+    collections::HashMap,
+    path::Path,
     sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
@@ -18,18 +22,22 @@ use std::{
 use futures::StreamExt;
 use holt_proto::{UpdatePhase, UpdateStatus};
 use serde::Deserialize;
-use tokio::{io::AsyncWriteExt, sync::watch};
+use sha2::{Digest, Sha256};
+use tokio::{io::AsyncWriteExt, sync::Notify, sync::watch};
 use tokio_util::sync::CancellationToken;
+
+use crate::update_platform::{self, InstallTarget};
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Onion-L/holt/releases/latest";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Minimum gap between download-progress frames.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const CANCELLED: &str = "update cancelled";
-/// Designated requirement every release bundle must satisfy (the Developer
-/// ID team `scripts/build-dmg.sh` signs with).
-const CODE_REQUIREMENT: &str =
-    "anchor apple generic and certificate leaf[subject.OU] = \"AQMMZQ3MDX\"";
+/// The release asset carrying per-asset sha256 digests.
+const MANIFEST_ASSET: &str = "manifest.json";
+/// Upper bound on the manifest download — it is a handful of asset names
+/// and hex strings; anything bigger is not ours.
+const MANIFEST_LIMIT: usize = 64 * 1024;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ARCH: &str = if cfg!(target_arch = "aarch64") {
     "arm64"
@@ -40,14 +48,37 @@ const ARCH: &str = if cfg!(target_arch = "aarch64") {
 pub(crate) struct Updater {
     tx: watch::Sender<serde_json::Value>,
     inner: Mutex<Inner>,
+    /// Wakes the background loop for an immediate round (`CheckUpdate`).
+    /// Cloned out so the loop can await it without holding the `Updater`
+    /// alive across its sleep.
+    wake: std::sync::Arc<Notify>,
+    /// Completed-round counter, bumped by [`run_check`] on every round,
+    /// successful or not. `check_now` records the current count and waits
+    /// for it to advance — reading the current value each pass, so a round
+    /// that already settled is never missed.
+    rounds: watch::Sender<u64>,
 }
 
 #[derive(Default)]
 struct Inner {
     status: UpdateStatus,
-    /// Download URL of `status.available`'s DMG.
+    /// Download URL of `status.available`'s release asset.
     asset_url: Option<String>,
+    /// Manifest digest (hex sha256) expected of that asset. `None` when
+    /// the release carries no manifest — then only a platform whose DMG
+    /// path verifies a signature may proceed (see
+    /// `update_platform::digest_required`).
+    asset_digest: Option<String>,
+    /// `subscribe` has run once — its one-shot start latch.
     checking: bool,
+    /// The background check loop is actually running (it is not, on a
+    /// prerelease build or before any subscriber); a `check_now` outside
+    /// it runs its round inline.
+    loop_running: bool,
+    /// Why the last completed round failed, cleared by the next one that
+    /// succeeds. The status itself carries no failure slot, so this is
+    /// how a manual check tells "nothing newer" from "could not ask".
+    last_check_error: Option<String>,
     /// Aborts the running download; `None` outside `Downloading`.
     cancel: Option<CancellationToken>,
 }
@@ -65,24 +96,53 @@ struct Asset {
     browser_download_url: String,
 }
 
+/// The `manifest.json` release asset: the release's own version plus a
+/// sha256 hex per asset name. Published by the release pipeline; without
+/// it the checker falls back to the API's tag and downloads without a
+/// digest, which only macOS (`update_platform::digest_required`) accepts.
+#[derive(Deserialize)]
+struct Manifest {
+    version: String,
+    #[serde(default)]
+    artifacts: HashMap<String, String>,
+}
+
+impl Manifest {
+    fn digest_for(&self, asset: &str) -> Option<&str> {
+        self.artifacts.get(asset).map(|hex| hex.as_str())
+    }
+}
+
 impl Updater {
     pub(crate) fn new() -> Arc<Self> {
+        // Best-effort: drop the previous update's leftovers (the old
+        // binary that could not be deleted while it ran).
+        update_platform::cleanup_stale();
         let status = UpdateStatus {
             current_version: CURRENT_VERSION.to_string(),
+            // A debug fake reports managed so the whole apply flow can be
+            // exercised; otherwise the running install decides.
+            managed: fake_update() || update_platform::managed_install().is_some(),
             ..Default::default()
         };
         let (tx, _) = watch::channel(serde_json::to_value(&status).unwrap_or_default());
+        let (rounds, _) = watch::channel(0u64);
         Arc::new(Self {
             tx,
             inner: Mutex::new(Inner {
                 status,
                 ..Default::default()
             }),
+            wake: std::sync::Arc::new(Notify::new()),
+            rounds,
         })
     }
 
     /// Subscribe to status frames; the first subscriber starts the check
-    /// loop (it needs the runtime, which `assemble` does not have).
+    /// loop (it needs the runtime, which `assemble` does not have). Any
+    /// non-prerelease build checks — an unmanaged install (`cargo run`, a
+    /// hand-copied binary) still reports availability; only applying is
+    /// gated on a managed install.
     pub(crate) fn subscribe(self: &Arc<Self>) -> watch::Receiver<serde_json::Value> {
         let start = {
             let mut inner = self.lock();
@@ -95,22 +155,65 @@ impl Updater {
                 inner.asset_url = Some(String::new());
             }
             self.publish();
-        } else if start && !CURRENT_VERSION.contains('-') && bundle_path().is_some() {
+        } else if start && !CURRENT_VERSION.contains('-') {
+            self.lock().loop_running = true;
             tokio::spawn(check_loop(Arc::downgrade(self)));
         }
         self.tx.subscribe()
     }
 
+    /// One immediate availability round (`CheckUpdate`), replying with the
+    /// status after that round. With the background loop running, wake it
+    /// and wait for its next completed round; without one (a prerelease
+    /// build, or no subscriber ever started it), run the shared round
+    /// function inline. A `HOLT_FAKE_UPDATE` debug install is an
+    /// immediate no-op — its fake release is already in place.
+    ///
+    /// A round that could not reach the release metadata is an `Err`: the
+    /// status alone cannot say so (`available: None` is also what "nothing
+    /// newer" looks like), and a UI that showed "up to date" for a failed
+    /// check would be stating something it does not know.
+    pub(crate) async fn check_now(self: &Arc<Self>) -> Result<UpdateStatus, String> {
+        if self.lock().loop_running {
+            let mut rounds = self.rounds.subscribe();
+            let before = *rounds.borrow_and_update();
+            self.wake.notify_one();
+            // Read the current value each pass, not only the next change:
+            // the woken round may already have completed (or this call may
+            // have landed inside a round that was already in flight).
+            while *rounds.borrow() <= before {
+                if rounds.changed().await.is_err() {
+                    break;
+                }
+            }
+            // A round settles its verdict before it bumps the counter, so
+            // this read cannot see a half-updated verdict.
+            let (status, error) = {
+                let inner = self.lock();
+                (inner.status.clone(), inner.last_check_error.clone())
+            };
+            error.map_or(Ok(status), Err)
+        } else if fake_update() {
+            Ok(self.lock().status.clone())
+        } else {
+            run_check(self).await?;
+            Ok(self.lock().status.clone())
+        }
+    }
+
     /// Download and install the available release. Returns once the new
-    /// bundle is in place (`Ready`), or `Ok` on a cancel.
+    /// build is in place (`Ready`), or `Ok` on a cancel.
     pub(crate) async fn apply(&self) -> Result<(), String> {
-        let bundle = if fake_update() {
+        let target = if fake_update() {
             None
         } else {
-            Some(bundle_path().ok_or("Holt is not running from an app bundle")?)
+            Some(
+                update_platform::managed_install()
+                    .ok_or("Holt is not running from a managed install")?,
+            )
         };
         let token = CancellationToken::new();
-        let (version, url) = {
+        let (version, url, digest) = {
             let mut inner = self.lock();
             if inner.status.phase != UpdatePhase::Idle {
                 return Err("an update is already in progress".into());
@@ -120,16 +223,20 @@ impl Updater {
             else {
                 return Err("no update available".into());
             };
+            let digest = inner.asset_digest.clone();
             inner.status.phase = UpdatePhase::Downloading;
             inner.status.downloaded = 0;
             inner.status.total = None;
             inner.status.error = None;
             inner.cancel = Some(token.clone());
-            (version, url)
+            (version, url, digest)
         };
         self.publish();
-        let result = match bundle {
-            Some(bundle) => self.install(&version, &url, bundle, &token).await,
+        let result = match target {
+            Some(target) => {
+                self.install(&version, &url, digest.as_deref(), target, &token)
+                    .await
+            }
             None => self.fake_install(&token).await,
         };
         let cancelled = token.is_cancelled() && result.is_err();
@@ -161,31 +268,51 @@ impl Updater {
         &self,
         version: &str,
         url: &str,
-        bundle: PathBuf,
+        digest: Option<&str>,
+        target: InstallTarget,
         token: &CancellationToken,
     ) -> Result<(), String> {
-        let work = std::env::temp_dir().join(format!("holt-update-{version}"));
+        // The version names a directory this function then removes
+        // recursively — keep it to what a version can carry, whatever the
+        // release manifest says.
+        let work = std::env::temp_dir().join(format!("holt-update-{}", safe_component(version)));
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-        let dmg = work.join("Holt.dmg");
-        let downloaded = async {
-            self.download(url, &dmg, token).await?;
+        let downloaded = work.join("release-download");
+        let verified = async {
+            self.download(url, &downloaded, digest, token).await?;
+            // The digest gate precedes the no-cancel point: only a fully
+            // verified download may begin installing.
             self.begin_install(token)
         }
         .await;
-        if let Err(error) = downloaded {
+        if let Err(error) = verified {
             let _ = std::fs::remove_dir_all(&work);
             return Err(error);
         }
-        tokio::task::spawn_blocking(move || swap_from_dmg(&dmg, &work, &bundle))
-            .await
-            .map_err(|e| e.to_string())?
+        // The platform arms clean `work` up themselves; a panic inside one
+        // (a `JoinError` here) or an arm that bailed before its own cleanup
+        // must not leave the staging copy behind.
+        let cleanup = work.clone();
+        let result = match tokio::task::spawn_blocking(move || {
+            update_platform::install(&downloaded, &work, target)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(error.to_string()),
+        };
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&cleanup);
+        }
+        result
     }
 
     async fn download(
         &self,
         url: &str,
-        dmg: &Path,
+        to: &Path,
+        expected: Option<&str>,
         token: &CancellationToken,
     ) -> Result<(), String> {
         let failed = |e: reqwest::Error| format!("download failed: {e}");
@@ -198,9 +325,10 @@ impl Updater {
             .map_err(failed)?;
         let total = response.content_length();
         self.set_progress(0, total);
-        let mut file = tokio::fs::File::create(dmg)
+        let mut file = tokio::fs::File::create(to)
             .await
             .map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
         let mut stream = response.bytes_stream();
         let mut downloaded = 0;
         let mut published = Instant::now();
@@ -213,6 +341,7 @@ impl Updater {
                 break;
             };
             let chunk = chunk.map_err(failed)?;
+            hasher.update(&chunk);
             file.write_all(&chunk).await.map_err(|e| e.to_string())?;
             downloaded += chunk.len() as u64;
             if published.elapsed() >= PROGRESS_INTERVAL {
@@ -222,11 +351,17 @@ impl Updater {
         }
         file.flush().await.map_err(|e| e.to_string())?;
         self.set_progress(downloaded, total);
+        if let Some(expected) = expected
+            && !digest_matches(&hasher.finalize(), expected)
+        {
+            let _ = std::fs::remove_file(to);
+            return Err("digest mismatch".into());
+        }
         Ok(())
     }
 
     /// `HOLT_FAKE_UPDATE`'s stand-in for [`Self::install`]: ticks a 48 MB
-    /// download over ~6 s, then "installs" without touching the bundle.
+    /// download over ~6 s, then "installs" without touching the install.
     async fn fake_install(&self, token: &CancellationToken) -> Result<(), String> {
         const TOTAL: u64 = 48 << 20;
         let mut downloaded = 0;
@@ -253,7 +388,7 @@ impl Updater {
     }
 
     /// Leave `Downloading` for `Installing`; past this point a cancel can
-    /// no longer land (the bundle swap must not stop halfway).
+    /// no longer land (the swap must not stop halfway).
     fn begin_install(&self, token: &CancellationToken) -> Result<(), String> {
         {
             let mut inner = self.lock();
@@ -278,38 +413,166 @@ impl Updater {
 }
 
 async fn check_loop(updater: Weak<Updater>) {
+    let Some(start) = updater.upgrade() else {
+        return;
+    };
+    // The wake handle outlives each upgrade: holding the `Updater` across
+    // the sleep would keep it alive forever (the loop is its own last
+    // strong reference otherwise).
+    let wake = start.wake.clone();
+    drop(start);
+    let mut failures = 0u32;
     loop {
-        match latest_release().await {
-            Ok(release) => {
-                let Some(updater) = updater.upgrade() else {
-                    return;
-                };
-                let version = release.tag_name.trim_start_matches('v').to_string();
-                let asset_name = format!("Holt-{version}-{ARCH}.dmg");
-                let asset = release.assets.into_iter().find(|a| a.name == asset_name);
-                let newer = is_newer(&version, CURRENT_VERSION);
-                let changed = {
-                    let mut inner = updater.lock();
-                    let available = (newer && asset.is_some()).then_some(version);
-                    let changed = inner.status.phase == UpdatePhase::Idle
-                        && inner.status.available != available;
-                    if changed {
-                        inner.status.available = available;
-                        inner.asset_url = asset.map(|a| a.browser_download_url);
-                    }
-                    changed
-                };
-                if changed {
-                    updater.publish();
-                }
-            }
-            Err(error) => tracing::debug!(%error, "update check failed"),
+        let succeeded = match updater.upgrade() {
+            Some(updater) => run_check(&updater).await.is_ok(),
+            None => return,
+        };
+        failures = if succeeded { 0 } else { failures + 1 };
+        tokio::select! {
+            // A stored permit survives until the next `notified()` — a
+            // wake that lands mid-round is consumed after it.
+            _ = wake.notified() => {}
+            _ = tokio::time::sleep(next_delay(failures)) => {}
         }
-        tokio::time::sleep(CHECK_INTERVAL).await;
         if updater.strong_count() == 0 {
             return;
         }
     }
+}
+
+/// One availability round, shared by the background loop and
+/// [`Updater::check_now`]: fetch the latest release and its manifest, fold
+/// the verdict into the status, then count the round as completed (what a
+/// waiting `check_now` returns on). The `Err` is the round's failure, for
+/// the caller's reply and for the loop's backoff.
+async fn run_check(updater: &Updater) -> Result<(), String> {
+    let outcome = availability_round(updater).await;
+    if let Err(error) = &outcome {
+        tracing::debug!(%error, "update check failed");
+    }
+    // Both halves settle before the counter moves, so a `check_now`
+    // released by it reads a complete verdict.
+    updater.lock().last_check_error = outcome.as_ref().err().cloned();
+    // Even a failed round is a completed one — a manual check must not
+    // wait out the failure backoff for its reply.
+    updater.rounds.send_modify(|rounds| *rounds += 1);
+    outcome
+}
+
+/// The network half of a round: any failure here leaves the status
+/// untouched. A transient error must not withdraw an update the previous
+/// round found, nor overwrite the digest it recorded.
+async fn availability_round(updater: &Updater) -> Result<(), String> {
+    let release = latest_release().await?;
+    let manifest = fetch_manifest(&release.assets).await?;
+    let decision = decide(
+        &release.tag_name,
+        &release.assets,
+        manifest.as_ref(),
+        CURRENT_VERSION,
+        ARCH,
+        update_platform::asset_suffix(),
+        update_platform::digest_required(),
+    );
+    let changed = {
+        let mut inner = updater.lock();
+        if inner.status.phase != UpdatePhase::Idle {
+            // A download owns the status; the next round folds in afresh.
+            false
+        } else {
+            // Refresh the coordinates on every good round — a re-cut
+            // asset keeps its version but not its digest — while only an
+            // availability change earns a frame on the stream.
+            let changed = inner.status.available != decision.available;
+            inner.status.available = decision.available;
+            inner.asset_url = decision.asset_url;
+            inner.asset_digest = decision.digest;
+            changed
+        }
+    };
+    if changed {
+        updater.publish();
+    }
+    Ok(())
+}
+
+/// What one round's metadata implies: the availability, plus the download
+/// coordinates `apply` needs. Pure, so the fail-closed gate can be held
+/// still in a test without the network.
+struct Decision {
+    available: Option<String>,
+    asset_url: Option<String>,
+    digest: Option<String>,
+}
+
+fn decide(
+    tag_name: &str,
+    assets: &[Asset],
+    manifest: Option<&Manifest>,
+    current_version: &str,
+    arch: &str,
+    suffix: &str,
+    digest_required: bool,
+) -> Decision {
+    // The manifest's own version decides: it is what the release pipeline
+    // keyed the digests by, and the tag carries a `v` prefix.
+    let version = manifest
+        .map(|manifest| manifest.version.clone())
+        .unwrap_or_else(|| tag_name.trim_start_matches('v').to_string());
+    let name = asset_name(&version, arch, suffix);
+    let asset = assets.iter().find(|asset| asset.name == name);
+    let digest = manifest
+        .and_then(|manifest| manifest.digest_for(&name))
+        .map(str::to_string);
+    // Fail closed: without a digest, only a platform whose install arm
+    // verifies a signature may offer the update.
+    let provable = digest.is_some() || !digest_required;
+    Decision {
+        available: (is_newer(&version, current_version) && asset.is_some() && provable)
+            .then_some(version),
+        asset_url: asset.map(|asset| asset.browser_download_url.clone()),
+        digest,
+    }
+}
+
+/// Download and parse the release's `manifest.json`. `Ok(None)` when the
+/// release ships none (a release cut before the pipeline published one):
+/// the caller falls back to the API's tag, and digest-requiring platforms
+/// stay unavailable — fail closed. An error fetching one that does exist
+/// is the round's failure, not an absence.
+async fn fetch_manifest(assets: &[Asset]) -> Result<Option<Manifest>, String> {
+    let Some(url) = assets
+        .iter()
+        .find(|asset| asset.name == MANIFEST_ASSET)
+        .map(|asset| asset.browser_download_url.clone())
+    else {
+        return Ok(None);
+    };
+    let response = client()?
+        .get(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("manifest fetch failed: {error}"))?;
+    if let Some(length) = response.content_length()
+        && length > MANIFEST_LIMIT as u64
+    {
+        return Err(format!("manifest exceeds {MANIFEST_LIMIT} bytes"));
+    }
+    // The cap bounds the read, not just what it already swallowed.
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("manifest read failed: {error}"))?;
+        if body.len() + chunk.len() > MANIFEST_LIMIT {
+            return Err(format!("manifest exceeds {MANIFEST_LIMIT} bytes"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|error| format!("manifest unparsable: {error}"))
 }
 
 fn client() -> Result<reqwest::Client, String> {
@@ -334,6 +597,33 @@ async fn latest_release() -> Result<Release, String> {
         .map_err(|e| e.to_string())
 }
 
+/// `Holt-<version>-<arch><suffix>` — the release asset naming the site's
+/// download page already matches on.
+fn asset_name(version: &str, arch: &str, suffix: &str) -> String {
+    format!("Holt-{version}-{arch}{suffix}")
+}
+
+/// The staging directory's name segment. The version comes from the
+/// release manifest and the directory is created then removed
+/// recursively, so anything but a version-shaped character becomes `_`.
+fn safe_component(version: &str) -> String {
+    let sanitized: String = version
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "release".to_string()
+    } else {
+        sanitized
+    }
+}
+
 /// `major.minor.patch` numeric compare; a pre-release suffix sorts as its
 /// base version.
 fn is_newer(candidate: &str, current: &str) -> bool {
@@ -348,74 +638,39 @@ fn is_newer(candidate: &str, current: &str) -> bool {
     parts(candidate) > parts(current)
 }
 
+/// Sleep before the next check after `consecutive_failures` failures in a
+/// row: the usual `CHECK_INTERVAL` after a success, else 15 minutes
+/// doubling per failure and capped at `CHECK_INTERVAL`; a success resets
+/// the count.
+fn next_delay(consecutive_failures: u32) -> Duration {
+    if consecutive_failures == 0 {
+        return CHECK_INTERVAL;
+    }
+    const BASE: Duration = Duration::from_secs(15 * 60);
+    let shift = (consecutive_failures - 1).min(16);
+    BASE.saturating_mul(1u32 << shift).min(CHECK_INTERVAL)
+}
+
+/// Hex sha256 comparison, case-insensitive (our manifests are lowercase;
+/// a hand-assembled one may not be).
+fn digest_matches(computed: &[u8], expected: &str) -> bool {
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(computed.len() * 2);
+    for byte in computed {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex.eq_ignore_ascii_case(expected)
+}
+
 /// Debug builds only: `HOLT_FAKE_UPDATE` offers a fake release, so the
 /// update flow can be exercised from `cargo run`.
 fn fake_update() -> bool {
     cfg!(debug_assertions) && std::env::var_os("HOLT_FAKE_UPDATE").is_some()
 }
 
-/// `…/Holt.app` when the running binary sits at `Holt.app/Contents/MacOS/`.
-fn bundle_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let bundle = exe.parent()?.parent()?.parent()?;
-    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
-}
-
-fn swap_from_dmg(dmg: &Path, work: &Path, bundle: &Path) -> Result<(), String> {
-    let mount = work.join("mnt");
-    run(Command::new("hdiutil")
-        .args([
-            "attach",
-            "-nobrowse",
-            "-readonly",
-            "-noautoopen",
-            "-mountpoint",
-        ])
-        .arg(&mount)
-        .arg(dmg))?;
-    let staged = bundle.with_file_name(".Holt.app.update");
-    let copied = (|| {
-        let source = mount.join("Holt.app");
-        run(Command::new("codesign")
-            .args(["--verify", "--deep", "--strict"])
-            .arg(format!("-R={CODE_REQUIREMENT}"))
-            .arg(&source))?;
-        let _ = std::fs::remove_dir_all(&staged);
-        run(Command::new("ditto").arg(&source).arg(&staged))
-    })();
-    let _ = run(Command::new("hdiutil")
-        .args(["detach", "-force"])
-        .arg(&mount));
-    let _ = std::fs::remove_dir_all(work);
-    copied?;
-
-    let old = bundle.with_file_name(".Holt.app.old");
-    let _ = std::fs::remove_dir_all(&old);
-    std::fs::rename(bundle, &old)
-        .map_err(|e| format!("cannot replace {}: {e}", bundle.display()))?;
-    if let Err(e) = std::fs::rename(&staged, bundle) {
-        let _ = std::fs::rename(&old, bundle);
-        return Err(format!("cannot replace {}: {e}", bundle.display()));
-    }
-    let _ = std::fs::remove_dir_all(&old);
-    Ok(())
-}
-
-fn run(command: &mut Command) -> Result<(), String> {
-    let output = command.output().map_err(|e| e.to_string())?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let program = command.get_program().to_string_lossy().into_owned();
-    Err(format!(
-        "{program} failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::is_newer;
+    use super::*;
 
     #[test]
     fn newer_compares_numerically() {
@@ -424,5 +679,262 @@ mod tests {
         assert!(!is_newer("0.1.5", "0.1.5"));
         assert!(!is_newer("0.1.4", "0.1.5"));
         assert!(!is_newer("0.1.5-beta", "0.1.5"));
+        // A pre-release sorts as its base: newer base still wins.
+        assert!(is_newer("0.2.0-beta", "0.1.9"));
+        // Build metadata is not a version: same base is not newer.
+        assert!(!is_newer("0.2.0+build.7", "0.2.0"));
+    }
+
+    #[test]
+    fn asset_names_match_the_site_naming() {
+        assert_eq!(asset_name("0.7.0", "arm64", ".dmg"), "Holt-0.7.0-arm64.dmg");
+        assert_eq!(
+            asset_name("0.7.0", "x64", "-win.zip"),
+            "Holt-0.7.0-x64-win.zip"
+        );
+        assert_eq!(
+            asset_name("0.7.0", "x64", ".AppImage"),
+            "Holt-0.7.0-x64.AppImage"
+        );
+    }
+
+    /// The staging directory's name is built from the release manifest's
+    /// version and then removed recursively — keep it a single, plain
+    /// path segment whatever the metadata says.
+    #[test]
+    fn the_staging_directory_name_survives_a_hostile_version() {
+        assert_eq!(safe_component("0.7.0"), "0.7.0");
+        assert_eq!(safe_component("0.7.0-alpha.1"), "0.7.0-alpha.1");
+        assert_eq!(safe_component("../../etc"), ".._.._etc");
+        assert_eq!(safe_component("0.7.0:bad"), "0.7.0_bad");
+        assert_eq!(safe_component(""), "release");
+    }
+
+    fn asset(name: &str) -> Asset {
+        Asset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+        }
+    }
+
+    fn manifest(version: &str, digest: Option<&str>) -> Manifest {
+        let mut artifacts = HashMap::new();
+        if let Some(digest) = digest {
+            artifacts.insert(format!("Holt-{version}-x64-win.zip"), digest.to_string());
+        }
+        Manifest {
+            version: version.to_string(),
+            artifacts,
+        }
+    }
+
+    /// The round's fail-closed table: what the release metadata alone
+    /// decides, with no network in the way.
+    #[test]
+    fn availability_fails_closed_without_a_digest() {
+        const CURRENT: &str = "0.6.2";
+        let zip = vec![asset("Holt-0.7.0-x64-win.zip")];
+        let digest = "ab".repeat(32);
+        let digests = manifest("0.7.0", Some(&digest));
+
+        // Newer release, this arch's archive, its digest: offered.
+        let decision = decide(
+            "v0.7.0",
+            &zip,
+            Some(&digests),
+            CURRENT,
+            "x64",
+            "-win.zip",
+            true,
+        );
+        assert_eq!(decision.available.as_deref(), Some("0.7.0"));
+        assert_eq!(
+            decision.asset_url.as_deref(),
+            Some("https://example.invalid/Holt-0.7.0-x64-win.zip")
+        );
+        assert_eq!(decision.digest, Some(digest.clone()));
+
+        // No manifest at all: a digest-requiring platform is not offered
+        // the update, while macOS — whose gate is the DMG's signature —
+        // still is.
+        assert_eq!(
+            decide("v0.7.0", &zip, None, CURRENT, "x64", "-win.zip", true).available,
+            None
+        );
+        let dmg = vec![asset("Holt-0.7.0-x64.dmg")];
+        assert_eq!(
+            decide("v0.7.0", &dmg, None, CURRENT, "x64", ".dmg", false)
+                .available
+                .as_deref(),
+            Some("0.7.0")
+        );
+
+        // A manifest that names no digest for this asset is the same as
+        // none: still closed.
+        let undigested = manifest("0.7.0", None);
+        assert_eq!(
+            decide(
+                "v0.7.0",
+                &zip,
+                Some(&undigested),
+                CURRENT,
+                "x64",
+                "-win.zip",
+                true
+            )
+            .available,
+            None
+        );
+
+        // The running version, an archive this arch is not shipped, and
+        // the manifest's version disagreeing with the tag (the asset name
+        // is built from the former) all yield nothing.
+        let current_zip = vec![asset("Holt-0.6.2-x64-win.zip")];
+        let current_manifest = manifest("0.6.2", Some(&digest));
+        assert_eq!(
+            decide(
+                "v0.6.2",
+                &current_zip,
+                Some(&current_manifest),
+                CURRENT,
+                "x64",
+                "-win.zip",
+                true
+            )
+            .available,
+            None
+        );
+        assert_eq!(
+            decide(
+                "v0.7.0",
+                &[],
+                Some(&digests),
+                CURRENT,
+                "x64",
+                "-win.zip",
+                true
+            )
+            .available,
+            None
+        );
+        let stale = manifest("0.6.9", Some(&digest));
+        assert_eq!(
+            decide(
+                "v0.7.0",
+                &zip,
+                Some(&stale),
+                CURRENT,
+                "x64",
+                "-win.zip",
+                false
+            )
+            .available,
+            None
+        );
+    }
+
+    #[test]
+    fn manifest_carries_version_and_per_asset_digests() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"version":"0.7.0","artifacts":{"Holt-0.7.0-x64-win.zip":"abc0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.version, "0.7.0");
+        assert_eq!(manifest.digest_for("Holt-0.7.0-x64-win.zip"), Some("abc0"));
+        assert_eq!(manifest.digest_for("missing"), None);
+    }
+
+    #[test]
+    fn manifest_without_artifacts_still_parses() {
+        let manifest: Manifest = serde_json::from_str(r#"{"version":"0.7.0"}"#).unwrap();
+        assert_eq!(manifest.digest_for("anything"), None);
+    }
+
+    #[test]
+    fn manifest_rejects_broken_json_and_a_missing_version() {
+        assert!(serde_json::from_str::<Manifest>("{broken").is_err());
+        assert!(serde_json::from_str::<Manifest>(r#"{"artifacts":{}}"#).is_err());
+    }
+
+    #[test]
+    fn backoff_starts_at_15_minutes_doubles_and_caps() {
+        assert_eq!(next_delay(0), CHECK_INTERVAL);
+        assert_eq!(next_delay(1), Duration::from_secs(15 * 60));
+        assert_eq!(next_delay(2), Duration::from_secs(30 * 60));
+        assert_eq!(next_delay(5), Duration::from_secs(4 * 60 * 60));
+        // 8 h would exceed the cap.
+        assert_eq!(next_delay(6), CHECK_INTERVAL);
+        assert_eq!(next_delay(1000), CHECK_INTERVAL);
+    }
+
+    /// The download gate's comparison against a known-answer digest of
+    /// the bytes on disk.
+    #[test]
+    fn digests_compare_as_case_insensitive_hex() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("asset");
+        std::fs::write(&path, b"payload").unwrap();
+        // sha256("payload"), computed independently of the code under test.
+        let expected = "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5";
+        let digest = Sha256::digest(b"payload");
+        assert!(digest_matches(&digest, expected));
+        assert!(digest_matches(&digest, &expected.to_uppercase()));
+        // Tampered content does not match the payload's digest, and an
+        // all-zero hex of the right length does not either.
+        let tampered = Sha256::digest(b"tampered");
+        assert_ne!(tampered, digest);
+        assert!(!digest_matches(&tampered, expected));
+        assert!(!digest_matches(&digest, &"0".repeat(64)));
+    }
+
+    /// The `CheckUpdate` handshake: with the loop running, `check_now`
+    /// returns once a round completes — including one that settles while
+    /// the caller is between reading the counter and waiting (the wait
+    /// re-reads the current value each pass, never only the next change).
+    /// No network here: the round counter is advanced by hand.
+    #[tokio::test]
+    async fn check_now_returns_when_a_round_completes() {
+        let updater = Updater::new();
+        updater.lock().loop_running = true;
+        let check = {
+            let updater = updater.clone();
+            tokio::spawn(async move { updater.check_now().await })
+        };
+        // Let the caller reach its wait, then complete a round.
+        tokio::task::yield_now().await;
+        updater.rounds.send_modify(|rounds| *rounds += 1);
+        let status = tokio::time::timeout(Duration::from_secs(5), check)
+            .await
+            .expect("the completed round releases the caller")
+            .expect("the caller task survives")
+            .expect("a round that set no failure replies with the status");
+        assert_eq!(status.current_version, CURRENT_VERSION);
+        assert_eq!(status.phase, UpdatePhase::Idle);
+    }
+
+    /// A round that could not reach the release metadata replies with its
+    /// error: `available: None` alone cannot tell the UI "nothing newer"
+    /// from "could not ask", and the check must not claim the first.
+    #[tokio::test]
+    async fn check_now_reports_a_failed_round_as_an_error() {
+        let updater = Updater::new();
+        updater.lock().loop_running = true;
+        let check = {
+            let updater = updater.clone();
+            tokio::spawn(async move { updater.check_now().await })
+        };
+        tokio::task::yield_now().await;
+        {
+            // What `run_check` records before it bumps the counter.
+            let mut inner = updater.lock();
+            inner.last_check_error = Some("manifest fetch failed".into());
+        }
+        updater.rounds.send_modify(|rounds| *rounds += 1);
+        let error = tokio::time::timeout(Duration::from_secs(5), check)
+            .await
+            .expect("the completed round releases the caller")
+            .expect("the caller task survives")
+            .expect_err("a failed round is an error, not an empty status");
+        assert_eq!(error, "manifest fetch failed");
     }
 }

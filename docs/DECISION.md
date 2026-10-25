@@ -34,7 +34,7 @@ in the same commit.
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) |
+| [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
 | UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
@@ -631,3 +631,40 @@ mistagged entry); and Zed's RFC stance that embedding is a non-starter —
 right for a public translation pipeline, inverted for a fixed language set
 shipped with the binary, where no runtime asset IO and no partial
 translation on disk are the point.
+
+## self-update-trust-is-per-platform
+
+`5a950a6`, `f533149` (issue #61). Windows and Linux
+fail closed unless the release carries a `manifest.json` asset mapping
+each artifact name to its sha256, and only macOS may install without one —
+its DMG path verifies the Developer ID requirement instead, a chain this
+decision stacks on and never weakens. Availability is reported from any
+non-prerelease build; only applying is gated on a managed install (an
+`.app` bundle, a release-marked Windows directory, an AppImage), so a
+`cargo run` or hand-copied binary can see an update but cannot take it.
+Rejected: trusting the download URL alone for the unsigned archives
+(TLS protects the pipe, not the artifact, and there is no signature to
+check); skipping digests everywhere to mirror macOS (would keep
+Windows/Linux locked out of self-update entirely); and gating the check
+loop itself on a managed install (the issue's acceptance asks unmanaged
+installs for availability only).
+
+## self-update-swaps-the-install-in-place-from-a-release-manifest
+
+`5a950a6`, `f533149` (issue #61). Cross-platform self-update is one
+mechanism: the Release workflow publishes a `manifest.json` asset — the
+release's own version plus a sha256 per artifact name — and each
+platform's verified download replaces the running install where it lives
+(the macOS bundle from its DMG, the Windows exe, the AppImage), reusing
+the asset names the site's download page already serves. Which platform
+trusts what is `self-update-trust-is-per-platform`. Rejected: Windows
+Authenticode signing (no certificate to sign with; the digest path must
+not presuppose one); a Linux tarball + `install.sh` + symlink
+(a new asset, download-page changes, and a second install location beside
+the AppImage the user already has — in-place replacement is enough);
+overwriting the running Windows exe in place (a running exe is locked —
+renaming it aside is the one move Windows allows, which forces the
+two-step swap and the `.old` leftover cleaned at next start); and
+trusting GitHub's TLS alone with no digest binding (no integrity
+constraint on unsigned assets — the argument recorded in
+`self-update-trust-is-per-platform`).

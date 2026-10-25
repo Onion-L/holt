@@ -10,10 +10,10 @@
 //! own so its dropdown and key field stay out of this page.
 
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, MouseButton, Render, SharedString, Task, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, SharedString,
+    Subscription, Task, Window, div, prelude::*, px,
 };
-use holt_proto::{GoalSettingsState, Model, Provider, TitleSettingsState};
+use holt_proto::{GoalSettingsState, Model, Provider, TitleSettingsState, UpdateStatus};
 use holt_rpc::methods;
 
 mod web_search;
@@ -106,6 +106,17 @@ fn effective_instruction(custom_enabled: bool, instruction: &str) -> String {
     }
 }
 
+/// The version the updates row shows: the engine's `UpdateStatus` report
+/// once its first watch frame lands, the binary's own version before that
+/// (same workspace version — the About dialog shows the same fallback).
+fn display_version<'a>(reported: &'a str, fallback: &'a str) -> &'a str {
+    if reported.is_empty() {
+        fallback
+    } else {
+        reported
+    }
+}
+
 fn configured_providers(providers: &[Provider]) -> Vec<Provider> {
     providers
         .iter()
@@ -133,6 +144,23 @@ enum ModelTarget {
     Verifier,
 }
 
+/// What the General page asks the shell to do once a manual update check
+/// settles. The page owns the busy flag; the outcome surfaces through the
+/// shell, which owns the update dialog and the notice chips.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GeneralPageEvent {
+    /// A newer release is available: open the update dialog. Carries the
+    /// engine's reply so the shell can echo it into `AppState` — the
+    /// UpdateStatus watch frame carrying the same value may still be in
+    /// flight, and the dialog's render closes itself on a missing
+    /// `available`.
+    UpdateAvailable(UpdateStatus),
+    /// No newer release: confirm with a notice.
+    UpToDate,
+    /// The check itself failed (transport or engine error).
+    CheckFailed(String),
+}
+
 pub struct GeneralPage {
     state: Entity<AppState>,
     settings: Loadable<TitleSettingsState>,
@@ -153,11 +181,20 @@ pub struct GeneralPage {
     web_search: Entity<web_search::WebSearchGroup>,
     /// The interface-language picker (`i18n`): device-local, no engine.
     language_menu: Popup<()>,
+    /// A manual update check (`CheckUpdate`) is in flight: the button
+    /// reads "Checking…" and stops taking clicks.
+    update_checking: bool,
+    /// The updates row reads `AppState.update` (the engine's own version
+    /// report), so a watch frame has to repaint the page.
+    _observe: Subscription,
 }
+
+impl EventEmitter<GeneralPageEvent> for GeneralPage {}
 
 impl GeneralPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let web_search = cx.new(|cx| web_search::WebSearchGroup::new(state.clone(), cx));
+        let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let mut page = Self {
             state,
             settings: Loadable::Idle,
@@ -179,6 +216,8 @@ impl GeneralPage {
             task: None,
             web_search,
             language_menu: Popup::default(),
+            update_checking: false,
+            _observe: observe,
         };
         page.load(cx);
         page
@@ -548,6 +587,109 @@ impl GeneralPage {
                 ))
             })
             .into_any_element()
+    }
+
+    /// Run one availability check on demand (`CheckUpdate`) and hand the
+    /// outcome to the shell as an event: the update dialog on a hit, a
+    /// notice otherwise. The engine also publishes the same status on the
+    /// UpdateStatus watch — the sidebar disc appears without this page.
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        // The render already drops the handler while a check runs; a
+        // second click in the same frame would still reach it.
+        if self.update_checking {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            cx.emit(GeneralPageEvent::CheckFailed(
+                crate::state::engine_not_connected().into(),
+            ));
+            return;
+        };
+        self.update_checking = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::CHECK_UPDATE, serde_json::json!({}))
+                .await;
+            this.update(cx, |page, cx| {
+                page.update_checking = false;
+                let event = match result {
+                    Ok(value) => match serde_json::from_value::<UpdateStatus>(value) {
+                        Ok(status) if status.available.is_some() => {
+                            GeneralPageEvent::UpdateAvailable(status)
+                        }
+                        Ok(_) => GeneralPageEvent::UpToDate,
+                        Err(error) => GeneralPageEvent::CheckFailed(error.to_string()),
+                    },
+                    Err(error) => GeneralPageEvent::CheckFailed(error.to_string()),
+                };
+                cx.emit(event);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The Application-updates group: the engine-reported version plus the
+    /// manual check. Rendering reads the watch-backed status — an
+    /// unmanaged install keeps its button (it still checks; the dialog is
+    /// the surface that declines to apply).
+    fn render_updates(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let reported = self.state.read(cx).update.current_version.clone();
+        let version = display_version(&reported, env!("CARGO_PKG_VERSION"));
+        let checking = self.update_checking;
+        let label = if checking {
+            t!("settings_general_appearance.general.updates.checking")
+        } else {
+            t!("settings_general_appearance.general.updates.check")
+        };
+        let button = save_button(theme, "check-updates")
+            .when(!checking, |button| {
+                button
+                    .cursor_pointer()
+                    .on_click(cx.listener(|page, _, _, cx| page.check_for_updates(cx)))
+            })
+            .when(checking, |button| button.opacity(0.6))
+            .child(label);
+        div()
+            .mt(px(GROUP_GAP))
+            .child(group_header(
+                theme,
+                &t!("settings_general_appearance.general.updates.title"),
+                None,
+                &t!("settings_general_appearance.general.updates.description"),
+            ))
+            .child(
+                group_rows().child(
+                    group_row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(
+                                    theme,
+                                    t!("settings_general_appearance.general.updates.row_title")
+                                        .into_owned(),
+                                ))
+                                // The version reads as data, not copy.
+                                .child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(
+                                            widgets::ROW_DESCRIPTION_SIZE,
+                                        ))
+                                        .font_family(theme.font_mono.clone())
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(version.to_string())),
+                                ),
+                        )
+                        .child(button),
+                ),
+            )
     }
 
     fn menu_for(&mut self, target: ModelTarget) -> &mut Popup<()> {
@@ -1144,7 +1286,8 @@ impl Render for GeneralPage {
                         &theme,
                         cx,
                     ))
-                    .child(self.web_search.clone()),
+                    .child(self.web_search.clone())
+                    .child(self.render_updates(&theme, cx)),
             )
     }
 }
@@ -1324,6 +1467,131 @@ mod tests {
             holt_proto::DEFAULT_TITLE_INSTRUCTION
         );
         assert_eq!(effective_instruction(true, "custom"), "custom");
+    }
+
+    /// Before the first UpdateStatus watch frame the engine report is
+    /// blank — the row falls back to the binary's own version (the same
+    /// workspace version the About dialog shows).
+    #[test]
+    fn version_display_falls_back_before_the_first_watch_frame() {
+        assert_eq!(display_version("", "0.6.2"), "0.6.2");
+        assert_eq!(display_version("0.7.0", "0.6.2"), "0.7.0");
+    }
+
+    /// The updates group drives `CheckUpdate` and reports the engine's
+    /// verdict as an event for the shell: a release opens the update
+    /// dialog (the event carries the reply's status), its absence reads
+    /// as up to date. The unmanaged case (`managed: false`) still gets
+    /// its event — the dialog is what declines to apply.
+    #[gpui::test]
+    fn the_check_button_reports_the_engines_verdict(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU8, Ordering};
+
+        /// Serves the page's reads; `CheckUpdate` replies "available" on
+        /// the first call and "up to date" after.
+        struct UpdatesEngine {
+            checks: AtomicU8,
+        }
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for UpdatesEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                _params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                match method {
+                    methods::GET_TITLE_SETTINGS => holt_rpc::RpcReply::value(&serde_json::json!({
+                        "settings": { "modelId": null, "instruction": "name it" }
+                    })),
+                    methods::GET_GOAL_SETTINGS => holt_rpc::RpcReply::value(
+                        &serde_json::json!({ "settings": { "modelId": null } }),
+                    ),
+                    // No configured providers: the model catalog stays
+                    // empty, which the updates group never reads.
+                    methods::LIST_PROVIDERS => holt_rpc::RpcReply::value(&serde_json::json!([])),
+                    methods::CHECK_UPDATE => {
+                        let call = self.checks.fetch_add(1, Ordering::SeqCst);
+                        holt_rpc::RpcReply::value(&serde_json::json!({
+                            "currentVersion": "0.6.1",
+                            "available": if call == 0 {
+                                serde_json::json!("0.6.2")
+                            } else {
+                                serde_json::Value::Null
+                            },
+                            "managed": false,
+                            "phase": "idle",
+                        }))
+                    }
+                    _ => Err(holt_rpc::RpcError::UnknownMethod(method.to_string())),
+                }
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let engine = Arc::new(UpdatesEngine {
+            checks: AtomicU8::new(0),
+        });
+        let state = cx.new(|_| AppState::new());
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let (page, visual) = cx.add_window_view(|_window, cx| GeneralPage::new(state.clone(), cx));
+        page.update(&mut *visual, |_page, cx| cx.notify());
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let observed = page.clone();
+        let _subscription = page.update(&mut *visual, |_, cx| {
+            cx.subscribe(&observed, move |_, _, event: &GeneralPageEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+
+        // The group renders at the very bottom of the page — below the
+        // test window's fold, where a simulated click cannot reach it —
+        // so the flow is driven through the page method the button's
+        // on_click calls (`page.check_for_updates`).
+        assert!(
+            visual.debug_bounds("check-updates").is_some(),
+            "the check button renders"
+        );
+        let check_and_park = |visual: &mut gpui::VisualTestContext| {
+            page.update(&mut *visual, |page, cx| page.check_for_updates(cx));
+            for _ in 0..8 {
+                runtime.block_on(async {
+                    tokio::task::yield_now().await;
+                });
+                visual.run_until_parked();
+            }
+        };
+        check_and_park(&mut *visual);
+        check_and_park(&mut *visual);
+
+        assert_eq!(engine.checks.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                GeneralPageEvent::UpdateAvailable(UpdateStatus {
+                    current_version: "0.6.1".into(),
+                    available: Some("0.6.2".into()),
+                    managed: false,
+                    ..Default::default()
+                }),
+                GeneralPageEvent::UpToDate,
+            ]
+        );
+        // The busy flag settled — the button takes clicks again.
+        page.update(&mut *visual, |page, _| assert!(!page.update_checking));
     }
 
     /// The Goal verifier group drives its own RPC: the picker lists the

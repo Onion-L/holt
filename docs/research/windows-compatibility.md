@@ -31,10 +31,11 @@ Two structural facts amplify all six:
   the engine integration suite is compiled whole except for one unix-gated
   module (§10), and the unit tests that need `cfg`-balanced fixtures skip
   their unix arm. Read the test counts, do not just read "ok".
-- **The repo has no `.gitattributes`**, and Windows checkouts commonly run
-  `core.autocrlf=true` (this survey's box does). Working-tree bytes can be
-  CRLF where macOS CI sees LF — any byte-exact fixture or comparison is
-  platform-sensitive before the code even runs.
+- **The repo's only `.gitattributes` pins `scripts/holt-setup.iss` to
+  CRLF** (Inno Setup's compiler); nothing else is declared, and Windows
+  checkouts commonly run `core.autocrlf=true` (this survey's box does).
+  Working-tree bytes can be CRLF where macOS CI sees LF — any byte-exact
+  fixture or comparison is platform-sensitive before the code even runs.
 
 ## 2. Class 1 — the path vocabulary
 
@@ -72,7 +73,7 @@ displayed, stored, or compared — every raw call site is a latent bug.
 Known producers of verbatim strings: `files.rs` (`canonicalize_lenient`),
 `git.rs:226-246` (repo discovery — the workdir string reaches the UI in
 status payloads), `subagents.rs`, `rpc/workspace.rs`, `rpc/spaces.rs`,
-`update.rs`, and `LocalExecutionEnv::new` (now strips it).
+and `LocalExecutionEnv::new` (now strips it).
 
 Canonicalize call sites that already do it right, as patterns to copy:
 `git.rs` `relative_path` (strips verbatim on **both** sides before the
@@ -245,9 +246,9 @@ POSIX shells — cmd.exe takes no session flags
 
 ### 4.4 Line endings and code pages
 
-- With `core.autocrlf=true` and no `.gitattributes`, a Windows checkout of
-  *this repo* rewrites text files to CRLF (git says so on every `git add`
-  here). Engine test fixtures pin `core.autocrlf=false` at init
+- With `core.autocrlf=true` and no `.gitattributes` covering source, a Windows
+  checkout of *this repo* rewrites text files to CRLF (git says so on every
+  `git add` here). Engine test fixtures pin `core.autocrlf=false` at init
   (`common::init_repo`), so byte-exact assertions are hermetic; the runtime
   side is not — checkpoints snapshot exact workdir bytes and see CRLF where
   CI sees LF.
@@ -402,31 +403,43 @@ must name a face present on Windows 10 or embed one.
   certificate store**: corporate intercept roots that are installed for the
   user just work; ones that aren't fail with chain errors macOS CI never
   saw.
-- Self-update is macOS-only end to end: `update.rs` `bundle_path` requires
-  an `.app` bundle layout (returns `None` on Windows, so the check loop
-  never even starts), the swap shells out to `hdiutil`/`codesign`/`ditto`,
-  and asset names are `.dmg`s. The site already ships a per-platform
-  download page (commit d351cb7) — a Windows update path (replace-on-restart
-  pattern) is an open gap, not a regression.
+- Self-update is cross-platform end to end (issue #61: `update.rs` +
+  `update_platform.rs`, the Release workflow's `manifest.json` step, and
+  the Inno Setup install): the macOS arm keeps the
+  `hdiutil`/`codesign`/`ditto` chain; Windows and Linux fail closed
+  unless the release carries a `manifest.json` with per-asset sha256s,
+  then stage the verified download beside the running binary and swap it
+  in place. The Windows arm (`update_platform.rs`
+  `install_windows_exe`) unzips, stages `holt.exe` as
+  `holt.exe.incoming`, and rename-dances it over the running exe —
+  Windows allows renaming (not deleting) a running exe, so the displaced
+  `.old` copy survives until the next start's cleanup. A directory
+  counts as a managed install only when `holt-release.marker` sits
+  beside the exe (the release zip and the setup install both put it
+  there); a bare hand-copied `holt.exe` reports availability but cannot
+  apply.
 
 ## 9. Known-open Windows gaps (do not re-diagnose these)
 
 Survey update 2026-10-23: the cross-platform branch has since closed most
 of the original gaps — terminals flags, MCP `.cmd` resolution, Job Objects,
 native noreplace rename, drive enumeration, core's home chain, the
-settings pickers, and the console-window pair. What remains open:
+settings pickers, and the console-window pair. Self-update followed on
+2026-10-25 (issue #61) when the Release workflow began publishing
+`manifest.json` and the Windows setup install landed; its row stays below
+so nobody re-diagnoses its gate. What remains open:
 
 | Gap | Where | Status |
 | --- | --- | --- |
 | Trash unavailable | `trash.rs` | open (macOS-only impl; needs IFileOperation) |
-| Self-update unavailable | `update.rs` | open (macOS-only impl; needs a Windows replace-on-restart path) |
+| Self-update unavailable | `update.rs`, `update_platform.rs` | closed (#61): the workflow publishes `manifest.json`, the zip and setup install drop `holt-release.marker`, and the Windows arm swaps the exe in place — an unmarked directory (a hand-copied exe, `cargo run`) reports availability but cannot apply; the marker is the gate, not a bug |
 | Terminal `has_running_jobs` always false | `terminals.rs` unix-only session scan | open (documented on terminals page) |
 | `holt://` scheme not registered | gpui_windows `register_url_scheme` no-op | open |
 | Credential files not hardened (no ACLs) | `credentials.rs`, `mcp/config.rs`, `provider_*.rs` | unix-only 0600 |
 | MCP children get no login-PATH injection | `shell_env::login_path` None on Windows | by design (registry PATH); watch for minimal-PATH launchers |
 | OS dialogs cannot mix files and folders | `ui/file_dialog.rs` `prompt_for_files_and_dirs` | worked around (two sequential passes) |
 | cmd.exe output decodes in the OEM code page | `Shell::exec` lossy UTF-8 decode | open (set `CHCP 65001` or decode the page for non-ASCII fidelity) |
-| `core.autocrlf` CRLF vs byte-exact checkpoints | `git/checkpoints.rs` | open (no `.gitattributes`; tests that byte-compare working-tree fixtures are platform-sensitive) |
+| `core.autocrlf` CRLF vs byte-exact checkpoints | `git/checkpoints.rs` | open (only `*.iss` is pinned in `.gitattributes`; tests that byte-compare working-tree fixtures are platform-sensitive) |
 
 ## 10. Testing on Windows
 
@@ -472,7 +485,7 @@ settings pickers, and the console-window pair. What remains open:
 | Duplicate checkout/change-set history for one repo | 1/6 | `checkout_identity` spelling hash (§6) |
 | Logo picker button does nothing | — | fixed: pickers use gpui's dialog off macOS (`ui/file_dialog.rs`) |
 | Delete-to-trash errors | — | `trash.rs` macOS-only |
-| Update check never runs | — | `update.rs` `bundle_path` `None` |
+| Update check never runs | — | fixed (#61): any non-prerelease build polls; a prerelease build never polls by design — a manual `CheckUpdate` still runs one round |
 | Console window opens beside the app | 4 | fixed: release-only `windows_subsystem` + `CREATE_NO_WINDOW` on every spawn (§5) |
 | Fresh box: `cargo build` fails before Holt code | — | missing MSVC toolchain or `fxc.exe` (§10) |
 

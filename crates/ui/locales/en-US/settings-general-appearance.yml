@@ -63,6 +63,17 @@ settings_general_appearance:
         en-US: Play sound
       sound_description:
         en-US: Play the system notification sound with each banner.
+    updates:
+      title:
+        en-US: Updates
+      description:
+        en-US: Holt checks for new releases in the background; check on demand below, or download from the releases page.
+      row_title:
+        en-US: Version
+      check:
+        en-US: Check for Updates
+      checking:
+        en-US: Checking…
     model_rows:
       disabled:
         en-US: Disabled

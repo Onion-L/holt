@@ -240,7 +240,7 @@ jobs:
 
       # Release builds are GUI-subsystem with the icon embedded by
       # apps/holt/build.rs; there is no code-signing certificate yet, so
-      # the exe ships unsigned in a plain zip.
+      # the exe ships unsigned in a plain zip plus a per-user setup.
       - name: Build holt.exe
         run: cargo build --release -p holt
 
@@ -253,7 +253,27 @@ jobs:
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' |
             Select-Object -First 1).Matches[0].Groups[1].Value
-          Compress-Archive -Path target/release/holt.exe -DestinationPath "Holt-$version-x64-win.zip"
+          # holt-release.marker names a directory the Windows self-updater
+          # may swap into (crates/engine/src/update_platform.rs); it rides
+          # at the zip root beside the exe, which is exactly the layout
+          # the updater unpacks. Its content is informational — presence
+          # is the whole test.
+          $version | Set-Content -NoNewline holt-release.marker
+          Compress-Archive -Path target/release/holt.exe, holt-release.marker -DestinationPath "Holt-$version-x64-win.zip"
+
+      # The setup is the recommended install (scripts/holt-setup.iss); the
+      # choco version is pinned and bumped deliberately, the same posture
+      # as the SHA-pinned actions above. choco shims iscc onto PATH, so a
+      # later step invokes it by name.
+      - name: Install Inno Setup
+        run: choco install innosetup --version=6.7.1 -y
+
+      - name: Build setup installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          iscc /DVersion=$version /DArch=x64 scripts\holt-setup.iss
 
       - name: Upload asset
         shell: bash
@@ -263,7 +283,8 @@ jobs:
           VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
           gh release upload "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            "Holt-$VERSION-x64-win.zip"
+            "Holt-$VERSION-x64-win.zip" \
+            "Holt-$VERSION-x64-setup.exe"
 
   build-windows-arm64:
     needs: gate
@@ -287,7 +308,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # Same shape as the x64 job: unsigned GUI-subsystem exe in a zip.
+      # Same shape as the x64 job: unsigned GUI-subsystem exe in a zip
+      # plus a per-user setup — though the setup here is best-effort (see
+      # the Inno Setup step below).
       - name: Build holt.exe
         run: cargo build --release -p holt
 
@@ -300,7 +323,29 @@ jobs:
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' |
             Select-Object -First 1).Matches[0].Groups[1].Value
-          Compress-Archive -Path target/release/holt.exe -DestinationPath "Holt-$version-arm64-win.zip"
+          # Same marker, same purpose as the x64 job's zip.
+          $version | Set-Content -NoNewline holt-release.marker
+          Compress-Archive -Path target/release/holt.exe, holt-release.marker -DestinationPath "Holt-$version-arm64-win.zip"
+
+      # Inno Setup's choco package carries x86 binaries that must run on
+      # this arm image through emulation; when the install cannot happen
+      # the release simply carries no -arm64-setup.exe — the zip below
+      # still ships (it is the ARM64 install path), and the manifest and
+      # the download page cover only the assets that exist. Only the
+      # install is tolerated to miss: a successful install whose compile
+      # then fails still fails the job.
+      - name: Install Inno Setup
+        id: inno
+        continue-on-error: true
+        run: choco install innosetup --version=6.7.1 -y
+
+      - name: Build setup installer
+        if: steps.inno.outcome == 'success'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          iscc /DVersion=$version /DArch=arm64 scripts\holt-setup.iss
 
       - name: Upload asset
         shell: bash
@@ -308,9 +353,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          # The setup is optional on this arch (Inno Setup step above);
+          # the zip is the release's mandatory ARM64 asset.
+          assets=("Holt-$VERSION-arm64-win.zip")
+          if [[ -f "Holt-$VERSION-arm64-setup.exe" ]]; then
+            assets+=("Holt-$VERSION-arm64-setup.exe")
+          fi
           gh release upload "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            "Holt-$VERSION-arm64-win.zip"
+            "${assets[@]}"
 
   build-linux-x64:
     needs: gate
@@ -411,6 +462,33 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # The self-updater's digest source: every Holt-* asset that actually
+      # landed (releases may miss one — the ARM64 setup is best-effort),
+      # keyed by exact file name, which is how the engine looks a digest
+      # up. The manifest itself matches neither the pattern nor any
+      # download-page suffix, so it never digests or shadows itself.
+      # Uploaded before the flip below so a published release always
+      # carries its manifest; --clobber keeps a re-run of this job alone
+      # idempotent.
+      - name: Publish the update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir manifest-work
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --dir manifest-work --pattern 'Holt-*'
+          artifacts='{}'
+          for asset in manifest-work/Holt-*; do
+            digest="$(sha256sum "$asset" | cut -d' ' -f1)"
+            artifacts="$(jq --arg name "$(basename "$asset")" --arg digest "$digest" \
+              '.[$name] = $digest' <<<"$artifacts")"
+          done
+          jq -n --arg version "$VERSION" --argjson artifacts "$artifacts" \
+            '{version: $version, artifacts: $artifacts}' > manifest-work/manifest.json
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --clobber manifest-work/manifest.json
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -428,7 +506,9 @@ jobs:
 
   # Keep a failed attempt from leaving its draft release behind.
   cleanup:
-    needs: [build-macos-arm64, build-macos-x64, build-windows-x64, build-windows-arm64, build-linux-x64, build-linux-arm64]
+    # Includes `publish`: the manifest step there can fail after every arch
+    # landed, and that draft must not survive the run either.
+    needs: [build-macos-arm64, build-macos-x64, build-windows-x64, build-windows-arm64, build-linux-x64, build-linux-arm64, publish]
     if: failure() || cancelled()
     runs-on: ubuntu-24.04
     timeout-minutes: 10

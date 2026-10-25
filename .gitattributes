@@ -1,0 +1,4 @@
+# Inno Setup's tooling is Windows-native; the release workflow compiles
+# scripts/holt-setup.iss with iscc on a Windows runner, so that file
+# checks out with CRLF endings regardless of how git is configured there.
+*.iss text eol=crlf

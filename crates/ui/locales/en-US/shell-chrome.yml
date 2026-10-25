@@ -154,6 +154,14 @@ shell_chrome:
       en-US: Restart now
     failed_notice:
       en-US: "Update failed: %{error}"
+    body_unmanaged:
+      en-US: This copy of Holt is not managed by the updater — download the new version from the releases page and replace it by hand.
+    up_to_date_notice:
+      en-US: Holt is up to date
+    check_failed_notice:
+      en-US: "Update check failed: %{error}"
+    open_releases:
+      en-US: Open the releases page
   chat_link:
     copied:
       en-US: Holt Chat link copied

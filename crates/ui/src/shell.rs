@@ -449,6 +449,8 @@ pub struct Shell {
     skills_page: Option<Entity<crate::settings::skills::SkillsPage>>,
     mcp_page: Option<Entity<crate::settings::mcp::McpPage>>,
     general_page: Option<Entity<crate::settings::general::GeneralPage>>,
+    /// Update-check outcomes from the General page (dialog / notices).
+    general_sub: Option<Subscription>,
     usage_page: Option<Entity<crate::settings::usage::UsagePage>>,
     chat_manager_page: Option<Entity<ChatManagerPage>>,
     chat_manager_sub: Option<Subscription>,
@@ -844,6 +846,7 @@ impl Shell {
             providers_sub: None,
             skills_page: None,
             general_page: None,
+            general_sub: None,
             usage_page: None,
             chat_manager_page: None,
             chat_manager_sub: None,
@@ -1388,8 +1391,19 @@ impl Shell {
             SettingsSection::General => {
                 if self.general_page.is_none() {
                     let state = self.state.clone();
-                    self.general_page =
-                        Some(cx.new(|cx| crate::settings::general::GeneralPage::new(state, cx)));
+                    let page = cx.new(|cx| crate::settings::general::GeneralPage::new(state, cx));
+                    // Manual update checks land in the shell: the dialog
+                    // and the notice chips live here, not in the page.
+                    self.general_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell,
+                         _,
+                         event: &crate::settings::general::GeneralPageEvent,
+                         cx| {
+                            this.handle_general_page_event(event.clone(), cx);
+                        },
+                    ));
+                    self.general_page = Some(page);
                 }
                 match &self.general_page {
                     Some(page) => page.clone().into_any_element(),

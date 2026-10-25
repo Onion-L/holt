@@ -1275,22 +1275,30 @@ pub enum TerminalEvent {
 }
 
 /// The app's self-update posture (the `UpdateStatus` stream). `available`
-/// is set only when a newer release with an asset for this arch exists and
-/// the running binary is inside an `.app` bundle it can replace.
+/// is set only when a newer release with an asset for this arch exists
+/// (plus its manifest digest, where the platform requires one); an
+/// install that is not managed still reports availability — but
+/// `ApplyUpdate` refuses it, as `managed` says.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub current_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available: Option<String>,
+    /// Whether this install is one the engine can replace in place (an
+    /// `.app` bundle, a release-marked Windows directory, an AppImage).
+    /// Frames from an older engine decode as `false`.
+    #[serde(default)]
+    pub managed: bool,
     /// Where an `ApplyUpdate` stands; `Ready` holds until the process
-    /// restarts onto the new bundle.
+    /// restarts onto the new build.
     #[serde(default)]
     pub phase: UpdatePhase,
-    /// Bytes of the release DMG downloaded so far (`Downloading` only).
+    /// Bytes of the release archive downloaded so far (`Downloading`
+    /// only).
     #[serde(default)]
     pub downloaded: u64,
-    /// The DMG's size when the server reported one.
+    /// The archive's size when the server reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
     /// Why the last apply failed; cleared by the next one. A cancelled
@@ -1386,6 +1394,31 @@ mod tests {
         assert_eq!(value["worktree"]["repoPath"], "/repo");
         assert_eq!(value["worktree"]["base"], "main");
         assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), bound);
+    }
+
+    /// Update frames published before `managed` existed decode as `false`
+    /// (an unmanaged install — availability still reported, apply refused);
+    /// the field serializes camelCase and round-trips.
+    #[test]
+    fn update_managed_flag_is_additive() {
+        let legacy = json!({
+            "currentVersion": "0.6.2",
+            "phase": "idle",
+        });
+        let status: UpdateStatus = serde_json::from_value(legacy).unwrap();
+        assert_eq!(status.current_version, "0.6.2");
+        assert!(!status.managed);
+
+        let managed = UpdateStatus {
+            managed: true,
+            ..status
+        };
+        let value = serde_json::to_value(&managed).unwrap();
+        assert_eq!(value["managed"], true);
+        assert_eq!(
+            serde_json::from_value::<UpdateStatus>(value).unwrap(),
+            managed
+        );
     }
 
     #[test]

@@ -184,14 +184,16 @@ import DownloadController from '../components/DownloadController';
           <span class="osname">Windows</span>
           <span class="yours mono">your system</span>
           <span class="arches">
-            <select class="arch" data-arch-select aria-label="Windows architecture">
-            <option value="-x64-win.zip">64-bit</option>
-            <option value="-arm64-win.zip">ARM64</option>
+            <select class="arch" data-arch-select aria-label="Windows build">
+            <option value="-x64-setup.exe">Installer · 64-bit</option>
+            <option value="-arm64-setup.exe">Installer · ARM64</option>
+            <option value="-x64-win.zip">Zip · 64-bit</option>
+            <option value="-arm64-win.zip">Zip · ARM64</option>
             </select>
           </span>
         </div>
         <a class="dlbtn" data-download href="https://github.com/Onion-L/holt/releases/latest">Download Now</a>
-        <p class="note mono">zip · unsigned</p>
+        <p class="note mono">installer (recommended) · zip · unsigned</p>
       </div>
 
       <div class="os" data-platform="linux">

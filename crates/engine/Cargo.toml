@@ -80,6 +80,14 @@ windows-sys = { version = "0.52", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
 ] }
+# Self-update on Windows: reads the release zip (deflate entries only —
+# what the Release workflow packs). `deflate-flate2-zlib-rs` is the
+# pure-Rust backend (no C to cross-compile); bare `deflate-flate2` names
+# no backend at all, and the `deflate` feature's zopfli half is
+# write-side weight this read-only path never uses.
+zip = { version = "9.1", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
 
 [dev-dependencies]
 png = "0.18"
