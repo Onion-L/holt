@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use gpui::{
-    Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString, Window, div,
+    Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, Modifiers, SharedString, Window, div,
     prelude::*, px,
 };
 
@@ -30,11 +30,11 @@ pub enum RecordOutcome {
     Set(String),
 }
 
-pub fn record_key(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> RecordOutcome {
+pub fn record_key(key: &str, modifiers: Modifiers) -> RecordOutcome {
     if key.eq_ignore_ascii_case("escape") {
         return RecordOutcome::Cancelled;
     }
-    match combo_from_keystroke(ctrl, alt, shift, cmd, key) {
+    match combo_from_keystroke(modifiers, key) {
         Some(combo) => RecordOutcome::Set(combo),
         None => RecordOutcome::Ignored,
     }
@@ -87,15 +87,8 @@ impl ShortcutsPage {
         let Some(recording) = self.recording else {
             return;
         };
-        let mods = &event.keystroke.modifiers;
         let typed = typed_key_char(&event.keystroke.key, event.keystroke.key_char.as_deref());
-        match record_key(
-            &event.keystroke.key,
-            mods.control,
-            mods.alt,
-            mods.shift,
-            mods.platform,
-        ) {
+        match record_key(&event.keystroke.key, event.keystroke.modifiers) {
             RecordOutcome::Cancelled => {
                 self.recording = None;
                 cx.notify();
@@ -492,34 +485,73 @@ mod tests {
     #[test]
     fn recording_outcomes() {
         assert_eq!(
-            record_key("escape", false, false, false, false),
+            record_key("escape", Modifiers::default()),
             RecordOutcome::Cancelled
         );
         assert_eq!(
-            record_key("Escape", true, false, false, false),
+            record_key(
+                "Escape",
+                Modifiers {
+                    control: true,
+                    ..Default::default()
+                }
+            ),
             RecordOutcome::Cancelled
         );
         assert_eq!(
-            record_key("s", false, false, false, true),
+            record_key(
+                "s",
+                Modifiers {
+                    platform: true,
+                    ..Default::default()
+                }
+            ),
             RecordOutcome::Set("mod-s".into())
         );
         assert_eq!(
-            record_key("k", false, true, true, true),
+            record_key(
+                "k",
+                Modifiers {
+                    alt: true,
+                    shift: true,
+                    platform: true,
+                    ..Default::default()
+                }
+            ),
             RecordOutcome::Set("mod-alt-shift-k".into())
         );
         // macOS-only: elsewhere ctrl IS the primary and records as "mod".
         #[cfg(target_os = "macos")]
         assert_eq!(
-            record_key("tab", true, false, true, false),
+            record_key(
+                "tab",
+                Modifiers {
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                }
+            ),
             RecordOutcome::Set("ctrl-shift-tab".into())
         );
         // Bare modifiers stay recording.
         assert_eq!(
-            record_key("shift", false, false, true, false),
+            record_key(
+                "shift",
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                }
+            ),
             RecordOutcome::Ignored
         );
         assert_eq!(
-            record_key("ctrl", true, false, false, false),
+            record_key(
+                "ctrl",
+                Modifiers {
+                    control: true,
+                    ..Default::default()
+                }
+            ),
             RecordOutcome::Ignored
         );
     }
@@ -552,7 +584,13 @@ mod tests {
         // holt parity: a combo bound elsewhere is refused at record time (the
         // helper names the owner) — conflicts never persist into the keymap.
         let keymap = KeymapConfig::default();
-        let RecordOutcome::Set(combo) = record_key("b", false, false, false, true) else {
+        let RecordOutcome::Set(combo) = record_key(
+            "b",
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        ) else {
             panic!("expected Set");
         };
         // "mod-b" is now the LEFT sidebar's default, so re-recording it on the

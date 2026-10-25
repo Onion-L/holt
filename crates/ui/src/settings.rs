@@ -12,7 +12,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{App, Global, Task};
+use gpui::{App, Global, Modifiers, Task};
 use serde::{Deserialize, Serialize};
 
 pub mod appearance;
@@ -658,26 +658,20 @@ impl KeymapConfig {
 /// Build a combo string from a recorded keystroke. The primary modifier
 /// (cmd on macOS, ctrl elsewhere) becomes "mod"; bare modifier presses record
 /// nothing.
-pub fn combo_from_keystroke(
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    cmd: bool,
-    key: &str,
-) -> Option<String> {
-    combo_from_keystroke_on(cfg!(target_os = "macos"), ctrl, alt, shift, cmd, key)
+pub fn combo_from_keystroke(modifiers: Modifiers, key: &str) -> Option<String> {
+    combo_from_keystroke_on(cfg!(target_os = "macos"), modifiers, key)
 }
 
 /// [`combo_from_keystroke`] for an explicit platform — the ctrl spelling is
 /// platform-dependent, so both paths need to be exercisable from one machine.
-pub fn combo_from_keystroke_on(
-    mac: bool,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    cmd: bool,
-    key: &str,
-) -> Option<String> {
+pub fn combo_from_keystroke_on(mac: bool, modifiers: Modifiers, key: &str) -> Option<String> {
+    let Modifiers {
+        control: ctrl,
+        alt,
+        shift,
+        platform: cmd,
+        ..
+    } = modifiers;
     let key = key.trim().to_lowercase();
     if key.is_empty()
         || matches!(
@@ -1473,36 +1467,75 @@ mod tests {
             }
         };
         assert_eq!(
-            combo_from_keystroke(true, false, false, false, "s"),
+            combo_from_keystroke(
+                Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                "s"
+            ),
             Some(ctrl_combo("s"))
         );
         assert_eq!(
-            combo_from_keystroke(false, false, false, true, "s"),
+            combo_from_keystroke(
+                Modifiers {
+                    platform: true,
+                    ..Default::default()
+                },
+                "s"
+            ),
             Some("mod-s".into())
         );
         assert_eq!(
-            combo_from_keystroke(true, false, true, false, "tab"),
+            combo_from_keystroke(
+                Modifiers {
+                    control: true,
+                    shift: true,
+                    ..Default::default()
+                },
+                "tab"
+            ),
             Some(ctrl_combo("shift-tab"))
         );
         assert_eq!(
-            combo_from_keystroke(true, true, true, false, "K"),
+            combo_from_keystroke(
+                Modifiers {
+                    control: true,
+                    alt: true,
+                    shift: true,
+                    ..Default::default()
+                },
+                "K"
+            ),
             Some(ctrl_combo("alt-shift-k"))
         );
         // Plain keys record without modifiers (Esc is filtered by the caller).
         assert_eq!(
-            combo_from_keystroke(false, false, false, false, "f5"),
+            combo_from_keystroke(Modifiers::default(), "f5"),
             Some("f5".into())
         );
         // Bare modifier presses record nothing.
         assert_eq!(
-            combo_from_keystroke(true, false, false, false, "ctrl"),
+            combo_from_keystroke(
+                Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                "ctrl"
+            ),
             None
         );
         assert_eq!(
-            combo_from_keystroke(false, false, true, false, "shift"),
+            combo_from_keystroke(
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                "shift"
+            ),
             None
         );
-        assert_eq!(combo_from_keystroke(false, false, false, false, ""), None);
+        assert_eq!(combo_from_keystroke(Modifiers::default(), ""), None);
     }
 
     #[test]
@@ -1520,10 +1553,13 @@ mod tests {
                 let key = parts.pop().expect("a combo always ends in a key");
                 let recorded = combo_from_keystroke_on(
                     mac,
-                    parts.contains(&"ctrl"),
-                    parts.contains(&"alt"),
-                    parts.contains(&"shift"),
-                    parts.contains(&"cmd"),
+                    Modifiers {
+                        control: parts.contains(&"ctrl"),
+                        alt: parts.contains(&"alt"),
+                        shift: parts.contains(&"shift"),
+                        platform: parts.contains(&"cmd"),
+                        ..Default::default()
+                    },
                     key,
                 );
                 assert_eq!(
