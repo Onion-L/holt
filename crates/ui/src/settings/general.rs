@@ -11,7 +11,7 @@
 
 use gpui::{
     AnyElement, Context, Entity, EventEmitter, IntoElement, MouseButton, Render, SharedString,
-    Task, Window, div, prelude::*, px,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 use holt_proto::{GoalSettingsState, Model, Provider, TitleSettingsState, UpdateStatus};
 use holt_rpc::methods;
@@ -184,6 +184,9 @@ pub struct GeneralPage {
     /// A manual update check (`CheckUpdate`) is in flight: the button
     /// reads "Checking…" and stops taking clicks.
     update_checking: bool,
+    /// The updates row reads `AppState.update` (the engine's own version
+    /// report), so a watch frame has to repaint the page.
+    _observe: Subscription,
 }
 
 impl EventEmitter<GeneralPageEvent> for GeneralPage {}
@@ -191,6 +194,7 @@ impl EventEmitter<GeneralPageEvent> for GeneralPage {}
 impl GeneralPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let web_search = cx.new(|cx| web_search::WebSearchGroup::new(state.clone(), cx));
+        let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let mut page = Self {
             state,
             settings: Loadable::Idle,
@@ -213,6 +217,7 @@ impl GeneralPage {
             web_search,
             language_menu: Popup::default(),
             update_checking: false,
+            _observe: observe,
         };
         page.load(cx);
         page
@@ -589,6 +594,11 @@ impl GeneralPage {
     /// notice otherwise. The engine also publishes the same status on the
     /// UpdateStatus watch — the sidebar disc appears without this page.
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        // The render already drops the handler while a check runs; a
+        // second click in the same frame would still reach it.
+        if self.update_checking {
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             cx.emit(GeneralPageEvent::CheckFailed(
                 crate::state::engine_not_connected().into(),

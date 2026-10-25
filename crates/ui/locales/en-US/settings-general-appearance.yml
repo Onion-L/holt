@@ -67,7 +67,7 @@ settings_general_appearance:
       title:
         en-US: Updates
       description:
-        en-US: Holt checks for new releases in the background every 6 hours; check on demand below, or download from the releases page.
+        en-US: Holt checks for new releases in the background; check on demand below, or download from the releases page.
       row_title:
         en-US: Version
       check:

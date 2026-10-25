@@ -521,6 +521,14 @@ impl AppState {
         self.update = update;
     }
 
+    /// A `CheckUpdate` reply folded in without clobbering the download
+    /// phase: the reply is a snapshot taken when its round ended, which can
+    /// predate a `Downloading` frame the watch already delivered.
+    pub fn apply_update_check(&mut self, status: holt_proto::UpdateStatus) {
+        self.update.available = status.available;
+        self.update.managed = status.managed;
+    }
+
     /// One scheduled provider retry arrived for a chat's live Turn. Stored
     /// only when it belongs to the selected chat — a notice for a background
     /// chat must not flash its chip after the user switches to it late;

@@ -199,10 +199,8 @@ impl RpcService for EngineService {
             methods::DELETE_QUEUED_MESSAGE => self.delete_queued_message(params),
             methods::UPDATE_STATUS => Ok(Self::watch_value(self.updater.subscribe())),
             methods::CHECK_UPDATE => {
-                let status = self.updater.check_now().await;
-                let value =
-                    serde_json::to_value(status).map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&value)
+                let status = self.updater.check_now().await.map_err(RpcError::Failed)?;
+                RpcReply::value(&status)
             }
             methods::APPLY_UPDATE => {
                 self.updater.apply().await.map_err(RpcError::Failed)?;

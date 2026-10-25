@@ -220,8 +220,17 @@ pub(crate) fn swap_with_backup(target: &Path, staged: &Path, backup: &Path) -> R
     std::fs::rename(target, backup)
         .map_err(|e| format!("cannot replace {}: {e}", target.display()))?;
     if let Err(e) = std::fs::rename(staged, target) {
-        restore(backup, target);
-        return Err(format!("cannot replace {}: {e}", target.display()));
+        // The backup is the only launchable copy left at this point: put
+        // it back, and if even that fails say where it is — otherwise the
+        // error names a file that no longer exists.
+        return Err(match restore(backup, target) {
+            Ok(()) => format!("cannot replace {}: {e}", target.display()),
+            Err(failed) => format!(
+                "cannot replace {}: {e}; the previous file is kept as {} ({failed})",
+                target.display(),
+                backup.display()
+            ),
+        });
     }
     // Windows cannot delete the exe that is still running — the backup
     // may survive here until the next start's `cleanup_stale`.
@@ -231,8 +240,8 @@ pub(crate) fn swap_with_backup(target: &Path, staged: &Path, backup: &Path) -> R
 
 /// Best-effort rollback of a half-done swap: put the backup back.
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
-fn restore(backup: &Path, target: &Path) {
-    let _ = std::fs::rename(backup, target);
+fn restore(backup: &Path, target: &Path) -> Result<(), String> {
+    std::fs::rename(backup, target).map_err(|e| e.to_string())
 }
 
 /// Remove the previous update's leftovers: the old exe/AppImage that

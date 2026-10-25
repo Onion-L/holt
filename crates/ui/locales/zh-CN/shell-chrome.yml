@@ -160,6 +160,8 @@ shell_chrome:
       zh-CN: Holt 已是最新版本
     check_failed_notice:
       zh-CN: "检查更新失败：%{error}"
+    open_releases:
+      zh-CN: 前往发布页
   chat_link:
     copied:
       zh-CN: Holt 会话链接已复制

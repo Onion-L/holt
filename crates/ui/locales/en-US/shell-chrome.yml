@@ -160,6 +160,8 @@ shell_chrome:
       en-US: Holt is up to date
     check_failed_notice:
       en-US: "Update check failed: %{error}"
+    open_releases:
+      en-US: Open the releases page
   chat_link:
     copied:
       en-US: Holt Chat link copied

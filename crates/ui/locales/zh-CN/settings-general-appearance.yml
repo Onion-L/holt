@@ -67,7 +67,7 @@ settings_general_appearance:
       title:
         zh-CN: 更新
       description:
-        zh-CN: Holt 每 6 小时在后台检查新版本；可在此手动检查，也可前往发布页下载。
+        zh-CN: Holt 会在后台检查新版本；可在此手动检查，也可前往发布页下载。
       row_title:
         zh-CN: 版本
       check:

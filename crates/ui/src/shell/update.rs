@@ -18,6 +18,10 @@ const UPDATE_SWEEP: MotionSpec = MotionSpec::new(1400, EASE_IN_OUT);
 /// Width of the indeterminate bar's moving segment, as a track fraction.
 const SWEEP_WIDTH: f32 = 0.32;
 
+/// Where an install the updater cannot manage replaces itself by hand —
+/// the page the unmanaged dialog's body points at.
+const RELEASES_PAGE: &str = "https://github.com/Onion-L/holt/releases/latest";
+
 /// This dialog runs wider than the shared 360px `popover::dialog_card` —
 /// body copy and footer buttons cramped at the default (issue #24).
 const DIALOG_WIDTH: f32 = 420.0;
@@ -192,12 +196,14 @@ impl Shell {
 
         let body = match update.phase {
             // An unmanaged install still hears about a release, but the
-            // download would be refused by `ApplyUpdate` — say so and
-            // render no button that fails.
-            UpdatePhase::Idle if !update.managed => div().child(popover::dialog_body(
-                theme,
-                t!("shell_chrome.update.body_unmanaged"),
-            )),
+            // download would be refused by `ApplyUpdate` — say so, point at
+            // the releases page, and render no button that fails.
+            UpdatePhase::Idle if !update.managed => div()
+                .debug_selector(|| "update-unmanaged".into())
+                .child(popover::dialog_body(
+                    theme,
+                    t!("shell_chrome.update.body_unmanaged"),
+                )),
             UpdatePhase::Idle => div()
                 .flex()
                 .flex_col()
@@ -270,6 +276,21 @@ impl Shell {
             .justify_end()
             .gap(px(8.0))
             .map(|el| match update.phase {
+                // An unmanaged install cannot apply — no Download to click
+                // into a refusal, the releases page instead.
+                UpdatePhase::Idle if !update.managed => el
+                    .child(
+                        popover::btn_ghost(theme, &t!("shell_chrome.update.later"), "update-later")
+                            .id("update-later")
+                            .debug_selector(|| "update-later".into())
+                            .on_click(cx.listener(Self::hide_update_dialog)),
+                    )
+                    .child(
+                        popover::btn_primary(theme, &t!("shell_chrome.update.open_releases"))
+                            .id("update-releases")
+                            .debug_selector(|| "update-releases".into())
+                            .on_click(|_, _, cx| cx.open_url(RELEASES_PAGE)),
+                    ),
                 UpdatePhase::Idle => el
                     .child(
                         popover::btn_ghost(theme, &t!("shell_chrome.update.later"), "update-later")
@@ -277,23 +298,19 @@ impl Shell {
                             .debug_selector(|| "update-later".into())
                             .on_click(cx.listener(Self::hide_update_dialog)),
                     )
-                    // An unmanaged install cannot apply — no Download to
-                    // click into a refusal.
-                    .when(update.managed, |el| {
-                        el.child(
-                            popover::btn_primary(
-                                theme,
-                                &if update.error.is_some() {
-                                    t!("shell_chrome.update.try_again")
-                                } else {
-                                    t!("shell_chrome.update.download")
-                                },
-                            )
-                            .id("update-download")
-                            .debug_selector(|| "update-download".into())
-                            .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx))),
+                    .child(
+                        popover::btn_primary(
+                            theme,
+                            &if update.error.is_some() {
+                                t!("shell_chrome.update.try_again")
+                            } else {
+                                t!("shell_chrome.update.download")
+                            },
                         )
-                    }),
+                        .id("update-download")
+                        .debug_selector(|| "update-download".into())
+                        .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx))),
+                    ),
                 UpdatePhase::Downloading => el
                     .child(
                         popover::btn_ghost(
@@ -406,7 +423,7 @@ impl Shell {
     }
 
     /// A manual update check from the General settings page settled: a hit
-    /// opens the update dialog — echoing the engine's reply into
+    /// opens the update dialog — folding the engine's reply into
     /// `AppState` first, because the UpdateStatus watch frame carrying the
     /// same status may still be in flight and the dialog's render closes
     /// itself while `available` reads `None`; anything else reports with a
@@ -419,8 +436,10 @@ impl Shell {
         use crate::settings::general::GeneralPageEvent;
         match event {
             GeneralPageEvent::UpdateAvailable(status) => {
-                self.state
-                    .update(cx, |state, _| state.apply_update_status(status));
+                self.state.update(cx, |state, cx| {
+                    state.apply_update_check(status);
+                    cx.notify();
+                });
                 self.update_dialog = true;
                 cx.notify();
             }
@@ -585,8 +604,8 @@ mod tests {
     }
 
     /// An unmanaged install still hears about a release — but the dialog
-    /// says so in its own words and offers no Download that `ApplyUpdate`
-    /// would refuse.
+    /// says so in its own words, offers no Download that `ApplyUpdate`
+    /// would refuse, and points at the releases page instead.
     #[gpui::test]
     fn an_unmanaged_install_dialog_withholds_the_download(cx: &mut gpui::TestAppContext) {
         let shell = dialog_shell(cx, false);
@@ -596,8 +615,16 @@ mod tests {
             "the dialog opens for an unmanaged install"
         );
         assert!(
+            cx.debug_bounds("update-unmanaged").is_some(),
+            "the body explains why it cannot apply"
+        );
+        assert!(
             cx.debug_bounds("update-later").is_some(),
             "Later still dismisses"
+        );
+        assert!(
+            cx.debug_bounds("update-releases").is_some(),
+            "the manual path is one click away"
         );
         assert!(
             cx.debug_bounds("update-download").is_none(),
@@ -605,7 +632,8 @@ mod tests {
         );
     }
 
-    /// The managed install keeps the download button the flow needs.
+    /// The managed install keeps the download button the flow needs, and
+    /// has no reason to offer the manual path.
     #[gpui::test]
     fn a_managed_install_dialog_offers_the_download(cx: &mut gpui::TestAppContext) {
         let shell = dialog_shell(cx, true);
@@ -613,6 +641,14 @@ mod tests {
         assert!(
             cx.debug_bounds("update-download").is_some(),
             "a managed install can start the download"
+        );
+        assert!(
+            cx.debug_bounds("update-unmanaged").is_none(),
+            "the managed body is the normal one"
+        );
+        assert!(
+            cx.debug_bounds("update-releases").is_none(),
+            "no manual-download detour on a managed install"
         );
     }
 }

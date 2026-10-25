@@ -496,8 +496,11 @@ pub mod methods {
     pub const UPDATE_STATUS: &str = "UpdateStatus";
     /// Run one availability check right now and reply with the UpdateStatus
     /// after that round completes (the same state also publishes on the
-    /// UpdateStatus stream). A `HOLT_FAKE_UPDATE` debug install answers
-    /// immediately without checking.
+    /// UpdateStatus stream). A round that could not reach the release
+    /// metadata fails the call instead — an `available: null` reply alone
+    /// cannot tell "nothing newer" from "could not ask". A
+    /// `HOLT_FAKE_UPDATE` debug install answers immediately without
+    /// checking.
     pub const CHECK_UPDATE: &str = "CheckUpdate";
     /// Download + apply the newest release on the target device (managed
     /// installs only: the binary is replaced in place, and restarting
