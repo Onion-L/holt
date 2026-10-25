@@ -31,10 +31,11 @@ Two structural facts amplify all six:
   the engine integration suite is compiled whole except for one unix-gated
   module (§10), and the unit tests that need `cfg`-balanced fixtures skip
   their unix arm. Read the test counts, do not just read "ok".
-- **The repo has no `.gitattributes`**, and Windows checkouts commonly run
-  `core.autocrlf=true` (this survey's box does). Working-tree bytes can be
-  CRLF where macOS CI sees LF — any byte-exact fixture or comparison is
-  platform-sensitive before the code even runs.
+- **The repo's only `.gitattributes` pins `scripts/holt-setup.iss` to
+  CRLF** (Inno Setup's compiler); nothing else is declared, and Windows
+  checkouts commonly run `core.autocrlf=true` (this survey's box does).
+  Working-tree bytes can be CRLF where macOS CI sees LF — any byte-exact
+  fixture or comparison is platform-sensitive before the code even runs.
 
 ## 2. Class 1 — the path vocabulary
 
@@ -245,9 +246,9 @@ POSIX shells — cmd.exe takes no session flags
 
 ### 4.4 Line endings and code pages
 
-- With `core.autocrlf=true` and no `.gitattributes`, a Windows checkout of
-  *this repo* rewrites text files to CRLF (git says so on every `git add`
-  here). Engine test fixtures pin `core.autocrlf=false` at init
+- With `core.autocrlf=true` and no `.gitattributes` covering source, a Windows
+  checkout of *this repo* rewrites text files to CRLF (git says so on every
+  `git add` here). Engine test fixtures pin `core.autocrlf=false` at init
   (`common::init_repo`), so byte-exact assertions are hermetic; the runtime
   side is not — checkpoints snapshot exact workdir bytes and see CRLF where
   CI sees LF.
@@ -438,7 +439,7 @@ so nobody re-diagnoses its gate. What remains open:
 | MCP children get no login-PATH injection | `shell_env::login_path` None on Windows | by design (registry PATH); watch for minimal-PATH launchers |
 | OS dialogs cannot mix files and folders | `ui/file_dialog.rs` `prompt_for_files_and_dirs` | worked around (two sequential passes) |
 | cmd.exe output decodes in the OEM code page | `Shell::exec` lossy UTF-8 decode | open (set `CHCP 65001` or decode the page for non-ASCII fidelity) |
-| `core.autocrlf` CRLF vs byte-exact checkpoints | `git/checkpoints.rs` | open (no `.gitattributes`; tests that byte-compare working-tree fixtures are platform-sensitive) |
+| `core.autocrlf` CRLF vs byte-exact checkpoints | `git/checkpoints.rs` | open (only `*.iss` is pinned in `.gitattributes`; tests that byte-compare working-tree fixtures are platform-sensitive) |
 
 ## 10. Testing on Windows
 
