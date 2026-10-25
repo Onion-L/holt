@@ -1582,7 +1582,7 @@ impl ScheduledPage {
     /// A prompt-box toolbar chip with its dropdown mounted while `menu` is
     /// the open one. `align_end` right-aligns the card to the chip (trailing
     /// chips open leftward, staying inside the page).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn form_toolbar_chip(
         &self,
         theme: &Theme,

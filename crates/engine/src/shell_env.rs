@@ -212,6 +212,10 @@ fn passwd_shell() -> Option<String> {
         let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
         let mut storage = vec![0u8; 16384];
         let mut result = std::ptr::null_mut();
+        // SAFETY: `entry` and `storage` are writable buffers of the sizes the
+        // man page requires; on success `result` points into them (or is
+        // null on no-such-user) and `pw_shell` is checked non-null before
+        // the read, all within the buffers' lifetime.
         unsafe {
             if libc::getpwuid_r(
                 libc::getuid(),

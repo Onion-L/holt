@@ -724,6 +724,9 @@ fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
         }
         let from = CString::new(source.as_os_str().as_bytes())?;
         let to = CString::new(destination.as_os_str().as_bytes())?;
+        // SAFETY: both CStrings are NUL-terminated and outlive the call;
+        // `RENAME_EXCL` fails instead of replacing when the destination
+        // already exists.
         let rc = unsafe { renamex_np(from.as_ptr(), to.as_ptr(), RENAME_EXCL) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error());

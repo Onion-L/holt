@@ -236,7 +236,6 @@ pub fn get_grammar_tool_input(
 }
 
 /// Port of `appendGrammarToolInputJsonDelta`.
-#[allow(clippy::needless_pass_by_ref_mut)]
 pub fn append_grammar_tool_input_json_delta(
     buffer: &mut GrammarToolInputJsonBuffer,
     input_property: &str,

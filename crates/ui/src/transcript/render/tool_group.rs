@@ -891,7 +891,7 @@ fn subagent_tab_title(call: &ToolCall) -> SharedString {
 
 /// A plain (non-expandable) chip: a flat quiet row, plus the group guide rail
 /// when the chip lives under a collapsible header.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn tool_chip(
     tool: &ToolItem,
     identity: Option<AgentIdentity>,
@@ -937,7 +937,7 @@ fn tool_chip(
 /// slot). No accordion — an inline body would only repeat the subagent's own
 /// transcript. The group guide rail is omitted for agent-only rows (no
 /// collapse header for it to hang from).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn subagent_chip(
     tool: &ToolItem,
     identity: Option<AgentIdentity>,

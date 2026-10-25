@@ -5,7 +5,8 @@
 //! entry cap only keeps huge directories (node_modules) from flooding the
 //! transcript.
 
-use std::{path::PathBuf, sync::Arc};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use holt_core::{
@@ -72,7 +73,7 @@ subdirectory]",
 /// The listing body — one `read_dir`, inline (small blocking call). Entries
 /// classify through a target-following `is_dir`, so a symlinked directory
 /// lists as `name/`; a broken symlink lists as a plain name.
-fn run_list(dir: &PathBuf) -> Result<Listing, String> {
+fn run_list(dir: &Path) -> Result<Listing, String> {
     let reader =
         std::fs::read_dir(dir).map_err(|error| format!("directory cannot be listed: {error}"))?;
     let mut dirs: Vec<String> = Vec::new();

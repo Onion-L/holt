@@ -73,7 +73,7 @@ pub(crate) fn has_compactable_content(history: &[AgentMessage]) -> bool {
 
 /// Compact `history` through `stream_fn` when the upstream threshold rule
 /// fires (the automatic placements). Returns `None` when it does not.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn compact(
     history: &[AgentMessage],
     model: &Model,
@@ -102,7 +102,7 @@ pub(crate) async fn compact(
 /// custom messages become compaction entries whose embedded tail is empty
 /// — the messages that follow them in the flat list ARE the tail); the
 /// summarization itself operates on plain message vectors.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn compact_now(
     history: &[AgentMessage],
     model: &Model,
@@ -197,7 +197,7 @@ pub(crate) async fn compact_now(
 
 /// One summary request through the injected stream function — upstream
 /// `generate_summary`'s prompt and options, minus its model registry.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn summarize(
     messages_to_summarize: &[AgentMessage],
     previous_summary: Option<&str>,
@@ -229,7 +229,6 @@ async fn summarize(
 
 /// The split-turn prefix request — upstream `generate_turn_prefix_summary`
 /// through the same seam.
-#[allow(clippy::too_many_arguments)]
 async fn summarize_turn_prefix(
     messages: &[AgentMessage],
     model: &Model,
@@ -252,7 +251,7 @@ async fn summarize_turn_prefix(
 
 /// Run one summary completion and return its text. `max_tokens_factor`
 /// mirrors upstream: a fraction of the reserve, capped by the model.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn complete_summary(
     prompt: &str,
     model: &Model,

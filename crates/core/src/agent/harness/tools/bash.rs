@@ -151,7 +151,8 @@ pub fn create_bash_tool(
                         let pending = Arc::clone(&pending);
                         let notify = Arc::clone(&notify);
                         Arc::new(move |_chunk: &str, progress| {
-                            *latest.lock().unwrap() = Some(shell_capture_progress_result(progress));
+                            *latest.lock().expect("lock poisoned") =
+                                Some(shell_capture_progress_result(progress));
                             pending.store(true, std::sync::atomic::Ordering::SeqCst);
                             notify.notify_one();
                         })

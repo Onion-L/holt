@@ -440,6 +440,9 @@ impl Session {
                     .flatten()
                     .filter(|pid| *pid > 1)
                 {
+                    // SAFETY: both ids come from this terminal's own pty
+                    // leader and spawned child; `kill` only posts a signal,
+                    // and a group that already exited is an ignored error.
                     unsafe {
                         libc::kill(-group, libc::SIGKILL);
                     }
@@ -462,6 +465,8 @@ impl Drop for Terminals {
 fn kill_session_jobs(session: i32) {
     for pid in session_processes(session) {
         if pid != session {
+            // SAFETY: pids come from `session_processes`, all in this
+            // terminal's own session; `kill` only posts a signal.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
             }
@@ -479,6 +484,8 @@ fn has_session_jobs(session: i32) -> bool {
 #[cfg(unix)]
 fn session_processes(session: i32) -> Vec<i32> {
     #[cfg(target_os = "macos")]
+    // SAFETY: the buffer holds `count + 1024` pids — far above the system
+    // pid limit — and the return value truncates to what was written.
     let pids = unsafe {
         let count = libc::proc_listallpids(std::ptr::null_mut(), 0).max(0) as usize;
         let mut pids = vec![0i32; count + 1024];
@@ -501,6 +508,7 @@ fn session_processes(session: i32) -> Vec<i32> {
     pids.into_iter()
         // Job-control background groups share the shell's session, but may
         // not be either its foreground group or its process group.
+        // SAFETY: `getsid` only reads kernel process state.
         .filter(|pid| *pid > 1 && unsafe { libc::getsid(*pid) } == session)
         .collect()
 }

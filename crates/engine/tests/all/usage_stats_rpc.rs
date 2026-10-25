@@ -24,7 +24,7 @@ use tempfile::TempDir;
 
 /// One usage-record JSON line — the wire shape a ledger file carries.
 /// Token fields distinct per record so a mis-attribution stands out.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn record_line(
     kind: &str,
     provider: &str,

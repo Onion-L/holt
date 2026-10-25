@@ -78,7 +78,10 @@ struct Registry {
 #[cfg(not(test))]
 fn with_registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-    f(&mut REGISTRY.get_or_init(Default::default).lock().unwrap())
+    f(&mut REGISTRY
+        .get_or_init(Default::default)
+        .lock()
+        .expect("lock poisoned"))
 }
 
 /// Per test thread, so parallel tests syncing their own provider lists

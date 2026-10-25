@@ -534,13 +534,13 @@ struct CallbackServerInner {
 
 impl CallbackServerInner {
     fn finish(&self, code: Option<String>) {
-        let mut settled = self.settled.lock().unwrap();
+        let mut settled = self.settled.lock().expect("lock poisoned");
         if *settled {
             return;
         }
         *settled = true;
         self.shutdown.cancel();
-        if let Some(tx) = self.tx.lock().unwrap().take() {
+        if let Some(tx) = self.tx.lock().expect("lock poisoned").take() {
             let _ = tx.send(code);
         }
     }
@@ -556,7 +556,7 @@ pub struct CallbackServer {
 
 impl CallbackServer {
     async fn wait_for_code(&self) -> Option<String> {
-        let rx = self.rx.lock().unwrap().take();
+        let rx = self.rx.lock().expect("lock poisoned").take();
         match rx {
             Some(rx) => rx.await.unwrap_or(None),
             None => None,

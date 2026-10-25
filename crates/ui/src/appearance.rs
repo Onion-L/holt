@@ -311,6 +311,10 @@ fn sync_ns_appearance(mode: AppearanceMode) {
         AppearanceMode::Light => Some(c"NSAppearanceNameAqua"),
         AppearanceMode::Dark => Some(c"NSAppearanceNameDarkAqua"),
     };
+    // SAFETY: the literals are NUL-terminated static C strings that
+    // `stringWithUTF8String:` copies; the other selectors are documented
+    // AppKit class/instance methods, and `setAppearance:` accepts null to
+    // reset to system.
     unsafe {
         let appearance: *mut Object = match name {
             None => std::ptr::null_mut(),

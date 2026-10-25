@@ -956,7 +956,7 @@ impl InnerStreams {
             FauxResponseStep::Factory(factory) => factory(
                 context,
                 stream_options,
-                &self.state.lock().unwrap(),
+                &self.state.lock().expect("lock poisoned"),
                 request_model,
             )?,
         };
@@ -989,7 +989,7 @@ async fn run_deferred_fetch(
         model: Model,
         options: Option<SimpleStreamOptions>,
     }
-    #[allow(clippy::large_enum_variant)]
+    #[expect(clippy::large_enum_variant)]
     enum Outcome {
         Pending(Box<AssistantMessage>),
         NeedsResolve(NeedsResolveData),

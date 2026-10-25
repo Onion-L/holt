@@ -253,7 +253,7 @@ pub fn render_tree(
 /// block index (cache invalidation scope); `ix` the per-element discriminator.
 /// `mermaid` carries the resolved diagram image for a mermaid code block (the
 /// caller's store decides readiness; `None` renders the code block).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn render_block(
     block: &Block,
     top_ix: usize,
@@ -457,7 +457,7 @@ fn table_cell_ix(ix: usize, r: usize, c: usize) -> usize {
 /// the same algorithm as the web's. When even the floors no longer fit, the
 /// rows overflow the viewport and the table scrolls horizontally instead of
 /// crushing every column into per-character wrapping.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn render_table(
     header: &[Vec<InlineRun>],
     rows: &[Vec<Vec<InlineRun>>],
@@ -1111,7 +1111,7 @@ fn range_rects_with_positions(
     rects
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn text_element(
     runs: &[InlineRun],
     size: f32,
@@ -1136,7 +1136,7 @@ fn text_element(
         .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn render_code_block(
     language: Option<&str>,
     code: &str,

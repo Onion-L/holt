@@ -137,7 +137,7 @@ impl ImagesProvider for FactoryImagesProvider {
     }
 
     fn get_models(&self) -> Vec<ImagesModel> {
-        self.state.models.lock().unwrap().clone()
+        self.state.models.lock().expect("lock poisoned").clone()
     }
 
     fn refresh_models(&self) -> BoxFuture<'static, Result<(), ModelsError>> {
@@ -150,7 +150,7 @@ impl ImagesProvider for FactoryImagesProvider {
             // Share one in-flight fetch across concurrent callers; a fresh
             // call after completion fetches again.
             let shared = {
-                let mut inflight = state.inflight.lock().unwrap();
+                let mut inflight = state.inflight.lock().expect("lock poisoned");
                 if let Some(existing) = inflight.as_ref() {
                     existing.clone()
                 } else {
@@ -161,7 +161,7 @@ impl ImagesProvider for FactoryImagesProvider {
                         async move {
                             let result = match refresh().await {
                                 Ok(models) => {
-                                    *state.models.lock().unwrap() = models;
+                                    *state.models.lock().expect("lock poisoned") = models;
                                     Ok(())
                                 }
                                 Err(error) => Err(Arc::new(ModelsError::with_cause(
@@ -170,7 +170,7 @@ impl ImagesProvider for FactoryImagesProvider {
                                     &error,
                                 ))),
                             };
-                            *state.inflight.lock().unwrap() = None;
+                            *state.inflight.lock().expect("lock poisoned") = None;
                             result
                         }
                     };
@@ -231,19 +231,28 @@ impl ImagesModels {
     }
 
     pub fn delete_provider(&self, id: &str) {
-        self.providers.lock().unwrap().remove(id);
+        self.providers.lock().expect("lock poisoned").remove(id);
     }
 
     pub fn clear_providers(&self) {
-        self.providers.lock().unwrap().clear();
+        self.providers.lock().expect("lock poisoned").clear();
     }
 
     pub fn get_providers(&self) -> Vec<Arc<dyn ImagesProvider>> {
-        self.providers.lock().unwrap().values().cloned().collect()
+        self.providers
+            .lock()
+            .expect("lock poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub fn get_provider(&self, id: &str) -> Option<Arc<dyn ImagesProvider>> {
-        self.providers.lock().unwrap().get(id).cloned()
+        self.providers
+            .lock()
+            .expect("lock poisoned")
+            .get(id)
+            .cloned()
     }
 
     /// Sync read of last-known models from one provider or all providers.

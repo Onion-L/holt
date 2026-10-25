@@ -241,11 +241,11 @@ impl AnthropicOAuth {
                 };
                 match interaction.prompt(prompt).await {
                     Ok(input) => {
-                        manual_outcome.lock().unwrap().input = Some(input);
+                        manual_outcome.lock().expect("lock poisoned").input = Some(input);
                         server.cancel_wait();
                     }
                     Err(error) => {
-                        manual_outcome.lock().unwrap().error = Some(error.0);
+                        manual_outcome.lock().expect("lock poisoned").error = Some(error.0);
                         server.cancel_wait();
                     }
                 }
@@ -256,7 +256,7 @@ impl AnthropicOAuth {
             let result = server.wait_for_code().await;
             let mut code: Option<String> = None;
             let mut state: Option<String> = None;
-            if let Some(error) = manual_outcome.lock().unwrap().error.clone() {
+            if let Some(error) = manual_outcome.lock().expect("lock poisoned").error.clone() {
                 return Err(error);
             }
             if let Some((callback_code, callback_state)) = result
@@ -267,7 +267,7 @@ impl AnthropicOAuth {
             }
 
             if code.is_none() {
-                let manual_input = manual_outcome.lock().unwrap().input.clone();
+                let manual_input = manual_outcome.lock().expect("lock poisoned").input.clone();
                 if let Some(input) = manual_input {
                     let parsed = parse_authorization_input(&input);
                     if let Some(parsed_state) = &parsed.state
@@ -283,7 +283,7 @@ impl AnthropicOAuth {
             if code.is_none() {
                 let _ = manual_task.await;
                 let (manual_input, manual_error) = {
-                    let manual = manual_outcome.lock().unwrap();
+                    let manual = manual_outcome.lock().expect("lock poisoned");
                     (manual.input.clone(), manual.error.clone())
                 };
                 if let Some(error) = manual_error {
@@ -469,7 +469,7 @@ struct CallbackServerInner {
 impl CallbackServerInner {
     /// Port of `settleWait`: first settle wins.
     fn settle(&self, value: Option<(String, String)>) {
-        let mut wait = self.wait.lock().unwrap();
+        let mut wait = self.wait.lock().expect("lock poisoned");
         if wait.settled {
             return;
         }
@@ -506,7 +506,7 @@ impl CallbackServer {
     }
 
     async fn wait_for_code(&self) -> Option<(String, String)> {
-        let rx = self.rx.lock().unwrap().take();
+        let rx = self.rx.lock().expect("lock poisoned").take();
         match rx {
             Some(rx) => rx.await.unwrap_or(None),
             None => None,

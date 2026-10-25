@@ -230,7 +230,7 @@ fn build_request_headers(
 }
 
 /// Port of `buildParams`.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn build_params(
     model: &Model,
     context: &Context,

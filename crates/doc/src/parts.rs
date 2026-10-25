@@ -322,7 +322,7 @@ pub enum PlanApprovalVerdict {
 /// One rendered part of an assistant message.
 // Box-free by design: the doc type is cloned in folds, never hot, and
 // boxing would churn the serialized shape for no runtime win.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MessagePart {

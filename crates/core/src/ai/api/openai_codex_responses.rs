@@ -356,7 +356,7 @@ fn get_retry_after_delay_ms(headers: &[(String, String)], now_ms: i64) -> Option
 }
 
 /// Port of `buildRequestBody`.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn build_request_body(
     model: &Model,
     context: &Context,
@@ -674,7 +674,7 @@ fn codex_sse_event_stream(
                         if let Some(end_turn_value) = response.get("end_turn")
                             && end_turn_value.is_boolean()
                         {
-                            *end_turn.lock().unwrap() = end_turn_value.as_bool();
+                            *end_turn.lock().expect("lock poisoned") = end_turn_value.as_bool();
                         }
                         // Normalize unknown statuses to undefined.
                         if let Some(status) = response.get("status")
@@ -910,7 +910,8 @@ fn codex_websocket_event_stream(
                                     if let Some(end_turn_value) = response.get("end_turn")
                                         && end_turn_value.is_boolean()
                                     {
-                                        *end_turn.lock().unwrap() = end_turn_value.as_bool();
+                                        *end_turn.lock().expect("lock poisoned") =
+                                            end_turn_value.as_bool();
                                     }
                                     if let Some(status) = response.get("status")
                                         && !matches!(
@@ -1015,7 +1016,6 @@ fn codex_websocket_event_stream(
 }
 
 /// Port of the `stream` stream function (SSE transport).
-#[allow(clippy::too_many_lines)]
 pub fn stream(
     model: &Model,
     context: &Context,
@@ -1077,7 +1077,7 @@ pub fn stream(
 /// send the `response.create` frame (delta-only when a cached continuation
 /// matches), and feed the mapped events through the shared Responses
 /// processor, starting the message stream on the first event.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments)]
 async fn process_web_socket_stream(
     model: &Model,
     body: Value,
@@ -1187,7 +1187,7 @@ fn acquired_socket(
     Arc::clone(&acquired.socket)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn run_web_socket_request(
     model: &Model,
     socket: Arc<dyn crate::ai::api::openai_codex_websocket::WebSocketLike>,
@@ -1267,7 +1267,7 @@ async fn run_web_socket_request(
         Some(&stream_options),
     )
     .await;
-    if let Some(end_turn) = end_turn.lock().unwrap().take() {
+    if let Some(end_turn) = end_turn.lock().expect("lock poisoned").take() {
         output.end_turn = Some(end_turn);
     }
     processed.map_err(|message| {
@@ -1721,7 +1721,7 @@ async fn run_stream(
     let mapped = codex_sse_event_stream(response.body, signal, Arc::clone(&end_turn));
     let processed =
         process_responses_stream(mapped, output, producer, model, Some(&stream_options)).await;
-    if let Some(end_turn) = end_turn.lock().unwrap().take() {
+    if let Some(end_turn) = end_turn.lock().expect("lock poisoned").take() {
         output.end_turn = Some(end_turn);
     }
     processed?;

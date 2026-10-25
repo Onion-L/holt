@@ -453,7 +453,7 @@ enum CurrentBlock {
     Thinking(ThinkingContent),
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 async fn run_stream(
     model: &Model,
     context: &Context,

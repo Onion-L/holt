@@ -1059,7 +1059,7 @@ fn flatten_foundation(
 }
 
 // The 8 args are the import's parameter set; grouping them buys nothing.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn harden_foreground(
     source: &NormalizedTheme,
     report: &mut ImportReport,

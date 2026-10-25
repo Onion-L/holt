@@ -351,7 +351,7 @@ impl Queue {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn enqueue_inner(
         &mut self,
         request: RunRequest,

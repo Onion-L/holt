@@ -777,7 +777,6 @@ impl GeneralPage {
     /// The shared model picker: trigger button plus its anchored menu,
     /// parameterized by which record it edits. The menu lists the feature's
     /// default row first, then the catalog.
-    #[allow(clippy::too_many_arguments)]
     fn render_model_picker(
         &self,
         target: ModelTarget,

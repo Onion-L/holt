@@ -439,7 +439,6 @@ fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
 }
 
 /// Builds the request headers (port of `createClient`'s header assembly).
-#[allow(clippy::too_many_arguments)]
 fn build_request_headers(
     model: &Model,
     context: &Context,
@@ -832,7 +831,7 @@ fn normalize_tool_call_id_fn(
 }
 
 /// Port of `convertMessages`.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn convert_messages(
     model: &Model,
     context: &Context,
@@ -1364,7 +1363,7 @@ fn get_compat_cache_control(
 }
 
 /// Port of the thinking-format request-field switch in `buildParams`.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn apply_thinking_format(
     model: &Model,
     compat: &ResolvedCompletionsCompat,
@@ -1593,7 +1592,7 @@ fn add_cache_control_to_text_content(message: &mut Value, cache_control: &Value)
 }
 
 /// Port of `buildParams`.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn build_params(
     model: &Model,
     context: &Context,
@@ -1895,7 +1894,7 @@ fn error_raw_metadata(error: &str) -> Option<String> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 async fn run_stream(
     model: &Model,
     context: &Context,
@@ -2137,7 +2136,7 @@ pub(crate) fn error_stream(model: &Model, error: &str) -> AssistantMessageEventS
 
 /// Port of the per-chunk streaming body: text, reasoning fields, tool call
 /// deltas (function + custom grammar), and reasoning_details.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn process_chunk(
     chunk: &Value,
     model: &Model,
@@ -2423,7 +2422,7 @@ fn ensure_thinking_block(
     position
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn ensure_tool_call_block(
     output: &mut AssistantMessage,
     scratch: &mut StreamScratch,

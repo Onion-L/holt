@@ -107,7 +107,7 @@ fn cache() -> &'static Mutex<BackdropCache> {
 /// The cached backdrop for `path` under `dark` at `blur`, if decoded this
 /// session. Lookup refreshes recency.
 pub fn cached(path: &str, dark: bool, blur: f32) -> Option<Arc<LoadedImage>> {
-    let mut cache = cache().lock().unwrap();
+    let mut cache = cache().lock().expect("lock poisoned");
     let ix = cache
         .entries
         .iter()
@@ -135,7 +135,7 @@ pub fn is_supported_file(path: &Path) -> bool {
 /// session? The settings page surfaces this — a file that exists but will
 /// never paint.
 pub fn failed(path: &str, dark: bool, blur: f32) -> bool {
-    let cache = cache().lock().unwrap();
+    let cache = cache().lock().expect("lock poisoned");
     cache.failed.contains(&cache_key(path, dark, blur))
 }
 
@@ -145,7 +145,7 @@ pub fn failed(path: &str, dark: bool, blur: f32) -> bool {
 pub fn preload(path: &str, dark: bool, blur: f32, cx: &mut App) {
     let key = cache_key(path, dark, blur);
     {
-        let mut cache = cache().lock().unwrap();
+        let mut cache = cache().lock().expect("lock poisoned");
         if cache.pending.contains(&key)
             || cache.failed.contains(&key)
             || cache.entries.iter().any(|(known, _)| *known == key)
@@ -161,7 +161,7 @@ pub fn preload(path: &str, dark: bool, blur: f32, cx: &mut App) {
             .spawn(async move { load_file(expanded, dark, blur) })
             .await;
         cx.update(|cx| {
-            let mut cache = cache().lock().unwrap();
+            let mut cache = cache().lock().expect("lock poisoned");
             cache.pending.retain(|known| *known != key);
             match result {
                 Ok(loaded) => {

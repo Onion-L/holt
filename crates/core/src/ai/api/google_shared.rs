@@ -152,7 +152,7 @@ type Content = Value;
 
 /// Port of `convertMessages`: converts internal messages to Gemini
 /// Content[] format.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn convert_messages(model: &Model, context: &Context) -> Vec<Content> {
     let mut contents: Vec<Content> = Vec::new();
     let normalize_tool_call_id =

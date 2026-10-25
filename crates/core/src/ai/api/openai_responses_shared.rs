@@ -139,7 +139,7 @@ pub struct ConvertResponsesToolsOptions {
 }
 
 /// Port of `convertResponsesMessages`.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn convert_responses_messages(
     model: &Model,
     context: &Context,
@@ -587,7 +587,7 @@ fn map_stop_reason(
 /// The TypeScript original iterates an async event iterable; the Rust port
 /// takes a stream of `Result` items so provider adapters can surface mapping
 /// errors (the TS generator `throw` path) mid-stream.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub async fn process_responses_stream<S>(
     events: S,
     output: &mut AssistantMessage,
@@ -1334,7 +1334,7 @@ fn slot_has_custom_input(slots: &BTreeMap<u64, ResponsesOutputSlot>, index: u64)
     )
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn create_slot(
     slots: &mut BTreeMap<u64, ResponsesOutputSlot>,
     output_index: u64,
@@ -1475,7 +1475,6 @@ fn create_slot(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn finalize_response(
     response: Value,
     output: &mut AssistantMessage,

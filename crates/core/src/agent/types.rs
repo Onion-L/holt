@@ -457,7 +457,7 @@ pub struct AgentLoopConfig {
 
 /// Port of `AgentEvent`.
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum AgentEvent {
     AgentStart,
     AgentEnd {

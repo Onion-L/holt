@@ -46,6 +46,8 @@ impl InstanceLock {
             // well within the budget.
             let mut retries = 40u32; // × 25ms = 1s budget
             loop {
+                // SAFETY: `file` owns the fd for the loop's duration, and
+                // `flock` only changes that fd's lock state.
                 let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
                 if rc == 0 {
                     break;

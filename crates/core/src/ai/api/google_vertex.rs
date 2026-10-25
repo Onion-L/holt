@@ -345,7 +345,6 @@ pub fn build_params(
 }
 
 /// Builds the Vertex streaming request URL and headers.
-#[allow(clippy::too_many_arguments)]
 fn build_request(
     model: &Model,
     api_key: Option<&str>,
@@ -549,7 +548,7 @@ enum VertexBlock {
     Thinking(ThinkingContent),
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 async fn run_stream(
     model: &Model,
     context: &Context,

@@ -387,7 +387,7 @@ struct AnthropicRequestPlan {
 
 /// Port of `createClient` + the SDK's `messages.create(..., { stream: true })`
 /// request assembly.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn build_request_plan(
     model: &Model,
     api_key: Option<&str>,
@@ -635,7 +635,6 @@ fn convert_tool_result(
 }
 
 /// Port of `convertMessages`.
-#[allow(clippy::too_many_arguments)]
 fn convert_messages(
     transformed_messages: &[Message],
     is_oauth_token: bool,

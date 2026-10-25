@@ -25,6 +25,9 @@ pub(crate) fn install() {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
 
+    // SAFETY: every selector is a documented AppKit method; `dataWithBytes:`
+    // copies the static PNG bytes, and each returned pointer is null-checked
+    // before the next message. (A wrong selector aborts — see below.)
     unsafe {
         // `+[NSData dataWithBytes:length:]` copies the bytes, so the PNG can
         // stay in the binary's static data. NSImage has no class factory for

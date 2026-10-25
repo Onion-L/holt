@@ -121,7 +121,7 @@ pub fn resolve_spans(elements: &[(&str, &str)], a: (usize, usize), b: (usize, us
 
 /// Begin a drag anchored at `(key, ix)`; claims the global selection.
 pub fn begin(key: &str, ix: usize) {
-    *state().lock().unwrap() = Some(MdSelection {
+    *state().lock().expect("lock poisoned") = Some(MdSelection {
         anchor_key: key.to_string(),
         anchor_ix: ix,
         dragging: true,
@@ -138,7 +138,7 @@ pub fn begin_with_span(
     range: Range<usize>,
     copy: Option<(String, Range<usize>)>,
 ) {
-    *state().lock().unwrap() = Some(MdSelection {
+    *state().lock().expect("lock poisoned") = Some(MdSelection {
         anchor_key: key.to_string(),
         anchor_ix: range.start,
         dragging: true,
@@ -154,7 +154,7 @@ pub fn begin_with_span(
 
 /// The live drag's anchor, if `key` owns it: `(anchor byte offset)`.
 pub fn drag_anchor(key: &str) -> Option<usize> {
-    let guard = state().lock().unwrap();
+    let guard = state().lock().expect("lock poisoned");
     let sel = guard.as_ref()?;
     (sel.dragging && sel.anchor_key == key).then_some(sel.anchor_ix)
 }
@@ -176,7 +176,7 @@ pub fn is_dragging() -> bool {
 /// overlap preserves text that is no longer painted while allowing newly
 /// visible elements at the drag edge to join the selection.
 pub fn update_drag(elements: &[(&str, &str)], head: (usize, usize)) -> bool {
-    let mut guard = state().lock().unwrap();
+    let mut guard = state().lock().expect("lock poisoned");
     let Some(selection) = guard.as_mut().filter(|selection| selection.dragging) else {
         return false;
     };
@@ -245,7 +245,7 @@ fn extend_virtualized_drag(
 
 /// Replace the resolved spans (drag update). Returns true if they changed.
 pub fn update_spans(spans: Vec<Span>) -> bool {
-    let mut guard = state().lock().unwrap();
+    let mut guard = state().lock().expect("lock poisoned");
     let Some(sel) = guard.as_mut() else {
         return false;
     };
@@ -258,7 +258,7 @@ pub fn update_spans(spans: Vec<Span>) -> bool {
 
 /// End the drag for `key`'s claim; returns the joined text if non-empty.
 pub fn end_drag(key: &str) -> Option<String> {
-    let mut guard = state().lock().unwrap();
+    let mut guard = state().lock().expect("lock poisoned");
     let sel = guard.as_mut()?;
     if sel.anchor_key != key || !sel.dragging {
         return None;
@@ -274,7 +274,7 @@ pub fn end_drag(key: &str) -> Option<String> {
 /// End whichever drag is active, even when virtualization has removed the
 /// anchor element (and therefore its frame-scoped mouse-up listener).
 pub fn end_active_drag() -> Option<String> {
-    let mut guard = state().lock().unwrap();
+    let mut guard = state().lock().expect("lock poisoned");
     let sel = guard.as_mut()?;
     if !sel.dragging {
         return None;
@@ -290,7 +290,7 @@ pub fn end_active_drag() -> Option<String> {
 /// Clear if `key` owns a settled selection (a mouse-down landed outside the
 /// owner; the element the down landed IN claims right after). True if cleared.
 pub fn clear_if_owner(key: &str) -> bool {
-    let mut guard = state().lock().unwrap();
+    let mut guard = state().lock().expect("lock poisoned");
     if guard
         .as_ref()
         .is_some_and(|s| s.anchor_key == key && !s.dragging)
@@ -303,7 +303,7 @@ pub fn clear_if_owner(key: &str) -> bool {
 
 /// The wash range for `key` this frame (empty ⇒ nothing to paint).
 pub fn wash_range(key: &str) -> Option<Range<usize>> {
-    let guard = state().lock().unwrap();
+    let guard = state().lock().expect("lock poisoned");
     let sel = guard.as_ref()?;
     sel.spans
         .iter()
@@ -313,7 +313,7 @@ pub fn wash_range(key: &str) -> Option<Range<usize>> {
 
 /// The full selected text (Cmd+C), spans joined in document order.
 pub fn selected_text() -> Option<String> {
-    let guard = state().lock().unwrap();
+    let guard = state().lock().expect("lock poisoned");
     let sel = guard.as_ref()?;
     if sel.spans.iter().all(|s| s.range.is_empty()) {
         return None;
@@ -338,7 +338,7 @@ fn join_spans(spans: &[Span]) -> String {
 /// whose display text projects chips (called by the registry owner right
 /// after `update_drag`, while the frame's registry is still at hand).
 pub fn attach_copy_maps(maps: &std::collections::HashMap<String, CopyMap>) {
-    let mut guard = state().lock().unwrap();
+    let mut guard = state().lock().expect("lock poisoned");
     let Some(sel) = guard.as_mut() else {
         return;
     };

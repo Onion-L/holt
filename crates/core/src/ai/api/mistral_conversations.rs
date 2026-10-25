@@ -859,7 +859,6 @@ enum MistralBlock {
     Thinking(ThinkingContent),
 }
 
-#[allow(clippy::too_many_lines)]
 async fn run_stream(
     model: &Model,
     context: &Context,
@@ -1025,7 +1024,7 @@ pub fn stream_simple(
 
 /// Port of `consumeChatStream`: applies parsed events to the output and
 /// emits the streaming protocol events.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 async fn consume_chat_stream(
     model: &Model,
     output: &mut AssistantMessage,

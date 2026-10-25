@@ -30,7 +30,7 @@ pub fn calculate_context_tokens(usage: &Usage) -> u64 {
     }
 }
 
-fn safe_json_stringify(value: &impl serde::Serialize) -> String {
+fn safe_json_stringify(value: &(impl serde::Serialize + ?Sized)) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[unserializable]".to_string())
 }
 
@@ -163,7 +163,7 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> ContextUsageEstimate {
     }
 }
 
-fn estimate_tools_tokens(tools: Option<&Vec<Tool>>) -> u64 {
+fn estimate_tools_tokens(tools: Option<&[Tool]>) -> u64 {
     let Some(tools) = tools else {
         return 0;
     };
@@ -211,7 +211,7 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
         .as_ref()
         .map(|prompt| estimate_text_tokens(prompt))
         .unwrap_or_default()
-        + estimate_tools_tokens(context.tools.as_ref());
+        + estimate_tools_tokens(context.tools.as_deref());
 
     ContextUsageEstimate {
         tokens: estimate.tokens + prefix_tokens,

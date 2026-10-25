@@ -325,7 +325,7 @@ impl Shell {
     /// two, and source metadata below. Working uses the live thread glyph in
     /// the status corner. Click selects; right-click — or the hover "…" at
     /// the row's right-middle — opens the context menu.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn render_chat_row(
         &self,
         id: String,

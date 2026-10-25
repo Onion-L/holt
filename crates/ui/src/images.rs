@@ -146,7 +146,7 @@ pub fn observe<T: 'static>(cx: &mut gpui::Context<T>) {
         loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let refresh = {
-                let cache = cache().lock().unwrap();
+                let cache = cache().lock().expect("lock poisoned");
                 cache.map.iter().any(|(path, entry)| match entry {
                     CacheEntry::Loaded {
                         fingerprint: saved, ..
@@ -176,7 +176,7 @@ pub fn observe<T: 'static>(cx: &mut gpui::Context<T>) {
 /// [`begin_load`] means the caller should spawn the load now.
 pub fn snapshot(path: &str) -> Snapshot {
     let now = fingerprint(path);
-    let mut cache = cache().lock().unwrap();
+    let mut cache = cache().lock().expect("lock poisoned");
     cache.tick += 1;
     let tick = cache.tick;
     match cache.map.get_mut(path) {
@@ -224,7 +224,7 @@ pub fn snapshot(path: &str) -> Snapshot {
 /// Errored sources hand out a retry only after their backoff elapsed.
 pub fn begin_load(path: &str) -> bool {
     let now = fingerprint(path);
-    let mut cache = cache().lock().unwrap();
+    let mut cache = cache().lock().expect("lock poisoned");
     if cache
         .map
         .values()
@@ -287,7 +287,7 @@ pub fn store_loaded(path: &str, thumb: Thumb) {
         store_error(path, t!("pickers_dialogs.images.not_found"));
         return;
     };
-    let mut cache = cache().lock().unwrap();
+    let mut cache = cache().lock().expect("lock poisoned");
     cache.tick += 1;
     if matches!(cache.map.get(path), Some(CacheEntry::Loading { fingerprint, .. }) if *fingerprint != Some(fp))
     {
@@ -331,7 +331,7 @@ pub fn store_loaded(path: &str, thumb: Thumb) {
 }
 
 pub fn store_error(path: &str, cause: impl Into<gpui::SharedString>) {
-    let mut cache = cache().lock().unwrap();
+    let mut cache = cache().lock().expect("lock poisoned");
     let attempts = match cache.map.get(path) {
         Some(CacheEntry::Loading { attempts, .. }) => attempts + 1,
         Some(CacheEntry::Error { attempts, .. }) => *attempts,
@@ -350,14 +350,18 @@ pub fn store_error(path: &str, cause: impl Into<gpui::SharedString>) {
 /// Release gpui's decoded sprite tiles for evicted thumbnails (see
 /// [`drop_image`]). Cheap when nothing was evicted.
 pub fn flush_evicted(mut window: Option<&mut gpui::Window>, cx: &mut App) {
-    let evicted = std::mem::take(&mut cache().lock().unwrap().pending_free);
+    let evicted = std::mem::take(&mut cache().lock().expect("lock poisoned").pending_free);
     for image in evicted {
         cx.drop_image(image, window.as_deref_mut());
     }
 }
 
 pub fn discard(image: Arc<RenderImage>) {
-    cache().lock().unwrap().pending_free.push(image);
+    cache()
+        .lock()
+        .expect("lock poisoned")
+        .pending_free
+        .push(image);
 }
 
 // ---------------------------------------------------------------------------

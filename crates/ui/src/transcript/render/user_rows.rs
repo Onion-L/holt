@@ -13,7 +13,7 @@ impl Transcript {
     /// reveals the exact `<skill>` block the model received, with the
     /// source file one click away. Collapsing tweens the measured height
     /// to zero like the tool-group folds.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn render_skill_invocation(
         &mut self,
         row_id: &SharedString,
@@ -181,7 +181,7 @@ impl Transcript {
     /// missing piece — never a bubble. Expanding shows the exact prompt the
     /// model received; collapsing tweens like the other folds. `footer` is
     /// the previous reply's strip the row took over, drawn at its right edge.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn render_goal_round(
         &mut self,
         row_id: &SharedString,
@@ -473,7 +473,6 @@ impl Transcript {
     /// invocations keep the raw mention text inline instead (ADR-skill-invocation-is-an-inline-mention).
     /// The `<skill>` block itself rides the AGENT entry's opening chip —
     /// this bubble only records what the user did.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_user_skill(
         &mut self,
         row_id: &SharedString,

@@ -91,6 +91,8 @@ fn is_ours(record: &Record) -> bool {
 
 #[cfg(target_os = "macos")]
 fn start_time(pid: i32) -> Option<(i64, i64)> {
+    // SAFETY: `proc_bsdinfo` is a POD struct with no pointers, so an
+    // all-zero instance is valid until `proc_pidinfo` overwrites it.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     // SAFETY: `info` is a writable buffer of exactly `size` bytes.

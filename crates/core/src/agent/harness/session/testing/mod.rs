@@ -49,7 +49,6 @@ use crate::ai::types::{
 pub struct SessionBackendConformanceCase {
     pub group: &'static str,
     pub name: &'static str,
-    #[allow(clippy::type_complexity)]
     pub run: Box<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
 }
 
@@ -2057,7 +2056,10 @@ pub fn create_session_backend_conformance(
                 let unique_seqs: std::collections::HashSet<u64> =
                     entries.iter().map(|entry| entry.seq()).collect();
                 assert_eq!(unique_seqs.len(), entries.len());
-                assert_eq!(*completion_order.lock().unwrap(), commit_order);
+                assert_eq!(
+                    *completion_order.lock().expect("lock poisoned"),
+                    commit_order
+                );
                 let concurrent_ids: std::collections::HashSet<&str> =
                     entries.iter().map(|entry| entry.id()).collect();
                 let log = session.get_log(LogOptions::default()).await.expect("log");

@@ -190,7 +190,7 @@ fn target_header(targets: &[ProviderRef], theme: &Theme) -> gpui::Div {
 }
 
 impl Transcript {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn render_model_proposal_card(
         &mut self,
         row_id: &SharedString,
@@ -372,7 +372,7 @@ impl Transcript {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn render_provider_choice_card(
         &mut self,
         row_id: &SharedString,

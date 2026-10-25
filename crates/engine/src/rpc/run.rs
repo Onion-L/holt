@@ -427,7 +427,7 @@ impl EngineService {
     /// resolve here too (ADR-skill-invocation-is-an-inline-mention): every resolved mention's `<skill>` block
     /// is prepended to the prompt and seeded as the head of the run's own
     /// entry.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) async fn start_turn(
         &self,
         chat_id: &str,

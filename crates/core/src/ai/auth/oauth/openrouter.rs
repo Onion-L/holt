@@ -412,7 +412,11 @@ impl OpenRouterOAuth {
         let outcome = self
             .run_login(&interaction, &signal, &pkce, &callback)
             .await;
-        callback.manual_abort.lock().unwrap().cancel();
+        callback
+            .manual_abort
+            .lock()
+            .expect("lock poisoned")
+            .cancel();
         callback.close();
         outcome
     }
@@ -424,7 +428,7 @@ impl OpenRouterOAuth {
         pkce: &crate::ai::auth::oauth::pkce::PkcePair,
         callback: &CallbackServer,
     ) -> Result<OAuthCredential, String> {
-        let manual_abort = callback.manual_abort.lock().unwrap().clone();
+        let manual_abort = callback.manual_abort.lock().expect("lock poisoned").clone();
         let manual_outcome: Arc<Mutex<ManualOutcome>> = Arc::new(Mutex::new(ManualOutcome {
             input: None,
             error: None,
@@ -472,11 +476,11 @@ impl OpenRouterOAuth {
                 };
                 match interaction.prompt(prompt).await {
                     Ok(input) => {
-                        manual_outcome.lock().unwrap().input = Some(input);
+                        manual_outcome.lock().expect("lock poisoned").input = Some(input);
                         callback.cancel_wait();
                     }
                     Err(error) => {
-                        manual_outcome.lock().unwrap().error = Some(error.0);
+                        manual_outcome.lock().expect("lock poisoned").error = Some(error.0);
                         callback.cancel_wait();
                     }
                 }
@@ -487,7 +491,7 @@ impl OpenRouterOAuth {
             Ok(result) => result,
             Err(message) => return Err(message),
         };
-        if let Some(error) = manual_outcome.lock().unwrap().error.clone() {
+        if let Some(error) = manual_outcome.lock().expect("lock poisoned").error.clone() {
             return Err(error);
         }
         if let Some(credential) = result {
@@ -497,7 +501,7 @@ impl OpenRouterOAuth {
         // No callback claimed the exchange: fall through to manual entry.
         let _ = manual_task.await;
         let (manual_input, manual_error) = {
-            let manual = manual_outcome.lock().unwrap();
+            let manual = manual_outcome.lock().expect("lock poisoned");
             (manual.input.clone(), manual.error.clone())
         };
         if let Some(error) = manual_error {
@@ -536,20 +540,20 @@ struct CallbackServerInner {
 
 impl CallbackServerInner {
     fn claimed(&self) -> bool {
-        self.state.lock().unwrap().claimed
+        self.state.lock().expect("lock poisoned").claimed
     }
 
     fn settled(&self) -> bool {
-        self.state.lock().unwrap().settled
+        self.state.lock().expect("lock poisoned").settled
     }
 
     fn set_claimed(&self) {
-        self.state.lock().unwrap().claimed = true;
+        self.state.lock().expect("lock poisoned").claimed = true;
     }
 
     /// Port of `finish`: settles the wait exactly once and stops the server.
     fn finish(&self, result: Result<Option<OAuthCredential>, String>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("lock poisoned");
         if state.settled {
             return;
         }
@@ -574,7 +578,7 @@ type CredentialRx = oneshot::Receiver<Result<Option<OAuthCredential>, String>>;
 
 impl CallbackServer {
     fn clone_handle(&self) -> Self {
-        let manual_abort = self.manual_abort.lock().unwrap().clone();
+        let manual_abort = self.manual_abort.lock().expect("lock poisoned").clone();
         Self {
             inner: Arc::clone(&self.inner),
             callback_url: self.callback_url.clone(),
@@ -600,7 +604,7 @@ impl CallbackServer {
     /// exchange, or with `None` once [`CallbackServer::cancel_wait`] hands
     /// the login over to manual code entry.
     pub async fn wait_for_credential(&self) -> Result<Option<OAuthCredential>, String> {
-        let rx = self.credential_rx.lock().unwrap().take();
+        let rx = self.credential_rx.lock().expect("lock poisoned").take();
         match rx {
             Some(rx) => rx.await.map_err(|_| "callback server closed".to_string())?,
             None => Err("callback server closed".to_string()),

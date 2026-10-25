@@ -102,6 +102,8 @@ fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> 
             .truncate(false)
             .open(&path)
             .ok()?;
+        // SAFETY: `existing` owns the fd for the call; `flock` only changes
+        // that fd's lock state.
         let rc = unsafe { libc::flock(existing.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc != 0 {
             // A live process owns the canonical log — leave it alone.
@@ -118,6 +120,8 @@ fn open_log_file_in(dir: &std::path::Path, mode: &str) -> Option<std::fs::File> 
             let _ = std::fs::rename(&path, dir.join(format!("holt-{mode}.log.old")));
         }
         let file = std::fs::File::create(&path).ok()?;
+        // SAFETY: `file` owns the fd and outlives every later log write;
+        // the lock is held until process exit.
         unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         sweep_stale_pid_logs(dir, mode);
         Some(file)

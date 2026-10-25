@@ -2,7 +2,7 @@
 
 // `compaction::compaction` mirrors the TypeScript `compaction.ts` module name.
 pub mod branch_summarization;
-#[allow(clippy::module_inception)]
+#[expect(clippy::module_inception)]
 pub mod compaction;
 pub mod utils;
 

@@ -23,12 +23,12 @@ impl Server {
     /// The request heads received so far. Tests use this to pin the
     /// method, target, and headers a tool sends.
     pub(crate) fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+        self.requests.lock().expect("lock poisoned").clone()
     }
 
     /// The request bodies received so far, aligned with [`Server::requests`].
     pub(crate) fn bodies(&self) -> Vec<Vec<u8>> {
-        self.bodies.lock().unwrap().clone()
+        self.bodies.lock().expect("lock poisoned").clone()
     }
 }
 
@@ -77,8 +77,11 @@ where
                 };
                 let head = String::from_utf8_lossy(&request[..head_end]).into_owned();
                 let body = request[head_end..].to_vec();
-                recorded.lock().unwrap().push(head.clone());
-                recorded_bodies.lock().unwrap().push(body.clone());
+                recorded.lock().expect("lock poisoned").push(head.clone());
+                recorded_bodies
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(body.clone());
                 let target = head.split_whitespace().nth(1).unwrap_or("/").to_string();
                 let response = respond(&target, &body);
                 if response.is_empty() {

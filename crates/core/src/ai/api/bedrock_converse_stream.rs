@@ -2148,7 +2148,7 @@ mod tests {
 
     // The env guard intentionally spans the await: the remote-credential
     // chain reads ambient env, so ambient-env tests must not interleave.
-    #[allow(clippy::await_holding_lock)]
+    #[expect(clippy::await_holding_lock)]
     #[tokio::test]
     async fn web_identity_credentials_feed_the_sigv4_wire_auth() {
         let _guard = env_lock();
@@ -2189,7 +2189,7 @@ mod tests {
         let _ = std::fs::remove_file(&token_file);
     }
 
-    #[allow(clippy::await_holding_lock)]
+    #[expect(clippy::await_holding_lock)]
     #[tokio::test]
     async fn static_env_keys_win_over_web_identity() {
         let _guard = env_lock();
@@ -2234,7 +2234,7 @@ mod tests {
         let _ = std::fs::remove_file(&token_file);
     }
 
-    #[allow(clippy::await_holding_lock)]
+    #[expect(clippy::await_holding_lock)]
     #[tokio::test]
     async fn ecs_container_credentials_feed_the_sigv4_wire_auth() {
         let _guard = env_lock();

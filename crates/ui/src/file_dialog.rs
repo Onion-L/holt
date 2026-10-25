@@ -140,11 +140,19 @@ fn pick_file_with_panel(extensions: &[&str]) -> Option<PathBuf> {
 
     fn ns_string(value: &str) -> *mut Object {
         match CString::new(value) {
+            // SAFETY: `c` is NUL-terminated and outlives the call;
+            // `stringWithUTF8String:` copies the bytes into an autoreleased
+            // NSString that the caller immediately hands to `addObject:`.
             Ok(c) => unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] },
             Err(_) => std::ptr::null_mut(),
         }
     }
 
+    // SAFETY: all selectors are documented NSOpenPanel/NSString methods,
+    // arguments are bools or objects created above, and every pointer the
+    // panel returns is null-checked before use; `UTF8String`'s buffer is
+    // copied out via `CStr::to_string_lossy` before the next release-pool
+    // drain.
     unsafe {
         let panel: *mut Object = msg_send![class!(NSOpenPanel), openPanel];
         if panel.is_null() {

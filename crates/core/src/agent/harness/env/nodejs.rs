@@ -468,6 +468,8 @@ fn get_shell_env(
 /// the process itself.
 fn kill_process_tree(pid: u32) {
     #[cfg(unix)]
+    // SAFETY: `pid` is the spawned child's id; `kill` only posts a signal,
+    // and an already-dead group or pid comes back as an error we ignore.
     unsafe {
         let pid = pid as i32;
         if libc::kill(-pid, libc::SIGKILL) == -1 && libc::kill(pid, libc::SIGKILL) == -1 {
