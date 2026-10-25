@@ -494,8 +494,9 @@ pub mod methods {
     // Updates (ControlRpc, relay-forwardable — a device reports/applies its own
     // binary's update). Stream: current UpdateStatus, then every change.
     pub const UPDATE_STATUS: &str = "UpdateStatus";
-    /// Download + apply the newest release on the target device (symlink-managed
-    /// installs; the service restart is scheduled after the reply flushes).
+    /// Download + apply the newest release on the target device (managed
+    /// installs only: the binary is replaced in place, and restarting
+    /// onto it is the UI's job).
     pub const APPLY_UPDATE: &str = "ApplyUpdate";
     /// Abort an `ApplyUpdate` still downloading; a no-op once it installs.
     pub const CANCEL_UPDATE: &str = "CancelUpdate";

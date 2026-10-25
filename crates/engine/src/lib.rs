@@ -75,6 +75,7 @@ mod turn_changes;
 mod turn_events;
 mod turn_restore;
 mod update;
+mod update_platform;
 mod usage;
 mod usage_stats;
 mod web_search_settings;

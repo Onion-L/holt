@@ -402,12 +402,14 @@ must name a face present on Windows 10 or embed one.
   certificate store**: corporate intercept roots that are installed for the
   user just work; ones that aren't fail with chain errors macOS CI never
   saw.
-- Self-update is macOS-only end to end: `update.rs` `bundle_path` requires
-  an `.app` bundle layout (returns `None` on Windows, so the check loop
-  never even starts), the swap shells out to `hdiutil`/`codesign`/`ditto`,
-  and asset names are `.dmg`s. The site already ships a per-platform
-  download page (commit d351cb7) — a Windows update path (replace-on-restart
-  pattern) is an open gap, not a regression.
+- Self-update's engine side is cross-platform (issue #61:
+  `update.rs` + `update_platform.rs`): the macOS arm keeps the
+  `hdiutil`/`codesign`/`ditto` chain; Windows and Linux stage the
+  verified download beside the running binary and swap it in place, and
+  fail closed unless the release carries a `manifest.json` with
+  per-asset sha256s. The remaining open piece is release-side: the
+  Release workflow publishing that manifest (and the Windows setup
+  install that drops the marker file).
 
 ## 9. Known-open Windows gaps (do not re-diagnose these)
 
@@ -419,7 +421,7 @@ settings pickers, and the console-window pair. What remains open:
 | Gap | Where | Status |
 | --- | --- | --- |
 | Trash unavailable | `trash.rs` | open (macOS-only impl; needs IFileOperation) |
-| Self-update unavailable | `update.rs` | open (macOS-only impl; needs a Windows replace-on-restart path) |
+| Self-update unavailable | `update.rs`, `update_platform.rs` | engine side cross-platform (#61); blocked on release-side `manifest.json` publishing + the setup install |
 | Terminal `has_running_jobs` always false | `terminals.rs` unix-only session scan | open (documented on terminals page) |
 | `holt://` scheme not registered | gpui_windows `register_url_scheme` no-op | open |
 | Credential files not hardened (no ACLs) | `credentials.rs`, `mcp/config.rs`, `provider_*.rs` | unix-only 0600 |

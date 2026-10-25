@@ -1275,8 +1275,10 @@ pub enum TerminalEvent {
 }
 
 /// The app's self-update posture (the `UpdateStatus` stream). `available`
-/// is set only when a newer release with an asset for this arch exists and
-/// the running binary is inside an `.app` bundle it can replace.
+/// is set only when a newer release with an asset for this arch exists
+/// (plus its manifest digest, where the platform requires one); applying
+/// it additionally needs a managed install the engine can replace (an
+/// `.app` bundle, a release-marked Windows directory, an AppImage).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
@@ -1284,13 +1286,14 @@ pub struct UpdateStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available: Option<String>,
     /// Where an `ApplyUpdate` stands; `Ready` holds until the process
-    /// restarts onto the new bundle.
+    /// restarts onto the new build.
     #[serde(default)]
     pub phase: UpdatePhase,
-    /// Bytes of the release DMG downloaded so far (`Downloading` only).
+    /// Bytes of the release archive downloaded so far (`Downloading`
+    /// only).
     #[serde(default)]
     pub downloaded: u64,
-    /// The DMG's size when the server reported one.
+    /// The archive's size when the server reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
     /// Why the last apply failed; cleared by the next one. A cancelled
