@@ -10,8 +10,8 @@ import { detectArch, detectPlatform, isMobile } from './detect';
 //  - points each Download button at the selected asset, and takes the whole
 //    row's action away when the release carries no build for it.
 // A selector option's value IS its asset suffix (`-arm64.dmg`,
-// `-x64-win.zip`, `-x64.AppImage`), so shipping another format means adding
-// an option to the markup and nothing else.
+// `-x64-win.zip`, `-x64-setup.exe`, `-x64.AppImage`), so shipping another
+// format means adding an option to the markup and nothing else.
 
 type Asset = { name: string; size: number; browser_download_url: string };
 type Release = { tag_name: string; published_at: string; assets: Asset[] };

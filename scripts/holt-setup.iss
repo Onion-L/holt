@@ -64,5 +64,8 @@ begin
 end;
 
 [UninstallDelete]
-; Not installed by [Files], so the uninstaller needs to be told.
+; Not installed by [Files], so the uninstaller needs to be told. The
+; `.old`/`.incoming` pair is the self-updater's staging beside the exe.
 Type: files; Name: "{app}\holt-release.marker"
+Type: files; Name: "{app}\holt.exe.old"
+Type: files; Name: "{app}\holt.exe.incoming"
