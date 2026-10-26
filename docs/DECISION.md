@@ -29,7 +29,7 @@ in the same commit.
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
-| [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
+| [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [agent-schedules-routines-through-a-tool](#agent-schedules-routines-through-a-tool) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
 | [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -384,6 +384,22 @@ so it is restart-safe by construction.
 `032c8ac`. Restore writes a record's old content back by plain file I/O —
 no Git — gated per file on the disk still hashing to the record. A file
 that moved on is refused, never merged.
+
+## agent-schedules-routines-through-a-tool
+
+Main-chat Turns mount `schedule_routine`; the agent supplies a self-contained
+prompt and exactly one of `delayMinutes`, `at`, or `cron`, while the current
+Chat supplies the model, permission mode, and Space. Relative delays use the
+engine clock and persist as UTC instants so DST transitions cannot move
+them. Creation is a mutating tool under the ordinary permission gate, and
+the structured `ScheduleRoutine` transcript keeps the name, schedule, and
+prompt visible to the approver. Agent ids derive from `(chatId, toolCallId)`
+and return the first committed Routine on retry; creation holds the same
+registry lock as Space deletion so it cannot leave an active Routine behind
+a deleted Space. Rejected: exposing the raw RPC payload (the model would
+invent config and do time math), Bash timer scripts (lifetime, visibility,
+and recovery), an untyped chip (the approval loses its subject), and
+unkeyed creation (a crash can duplicate a committed task).
 
 ## routines-fire-in-process-and-coalesce-missed-fires
 

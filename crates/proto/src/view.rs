@@ -509,6 +509,9 @@ fn tool_chip_content_raw(call: &crate::ToolCall, cwd: Option<&str>) -> (&'static
             let done = items.iter().filter(|i| i.done).count();
             ("Todo", format!("{done}/{} done", items.len()))
         }
+        ToolCall::ScheduleRoutine { name, schedule, .. } => {
+            ("Schedule", format!("{name} · {schedule}"))
+        }
         ToolCall::Mcp { server, tool, .. } => {
             // "dashboard-icons" reads as "DashboardIcons" — the raw
             // two-level name stays in the expandable detail.
@@ -577,7 +580,9 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
             }
             ToolCall::WebFetch { .. } => fetches += 1,
             ToolCall::Todo { .. } => todos += 1,
-            ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => other += 1,
+            ToolCall::ScheduleRoutine { .. } | ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => {
+                other += 1
+            }
         }
     }
     let mut segments: Vec<String> = Vec::new();

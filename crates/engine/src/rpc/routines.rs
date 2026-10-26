@@ -3,15 +3,17 @@
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use holt_proto::{
-    Chat, ChatConfig, Routine, RoutineCheckout, RoutinePause, RoutineRun, RoutineRunMarker,
-    RunOutcome, TitleSource, WorktreeSpec,
+    Chat, ChatConfig, RoutineCheckout, RoutinePause, RoutineRun, RoutineRunMarker, RunOutcome,
+    TitleSource, WorktreeSpec,
 };
 use holt_rpc::{RpcError, RpcReply};
 use serde::Deserialize;
 
 use super::required_string;
 use crate::EngineService;
-use crate::routines::{Schedule, local_time_zone, next_after, parse_schedule, push_run};
+use crate::routines::{
+    RoutineDraft, Schedule, next_after, parse_schedule, push_run, time_zone_or_local,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,19 +32,6 @@ struct RoutineParams {
     checkout: RoutineCheckout,
 }
 
-/// A Routine's configuration, validated: everything but its identity,
-/// pause state, and run history.
-struct RoutineConfig {
-    name: String,
-    space_id: String,
-    prompt: String,
-    cron: String,
-    at: Option<NaiveDateTime>,
-    time_zone: String,
-    config: ChatConfig,
-    checkout: RoutineCheckout,
-}
-
 /// How many upcoming fires the schedule preview lists.
 const PREVIEW_FIRES: usize = 3;
 
@@ -56,28 +45,8 @@ pub(crate) struct Fire {
 
 impl EngineService {
     pub(super) fn create_routine(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        let config = self.routine_config(params)?;
-        let routine = Routine {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: config.name,
-            space_id: config.space_id,
-            prompt: config.prompt,
-            cron: config.cron,
-            at: config.at,
-            time_zone: config.time_zone,
-            config: config.config,
-            checkout: config.checkout,
-            paused: None,
-            created_at: self.clock.now(),
-            last_fired_at: None,
-            runs: Vec::new(),
-        };
-        let reply = routine.clone();
-        self.routines.update(|routines| {
-            routines.push(routine);
-            Ok(())
-        })?;
-        RpcReply::value(&reply)
+        let routine = self.routines.create(self.routine_config(params)?)?;
+        RpcReply::value(&routine)
     }
 
     /// Replace a Routine's configuration. Run records and pause state stay;
@@ -85,8 +54,8 @@ impl EngineService {
     /// makes up fires that passed before the edit.
     pub(super) fn update_routine(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let id = required_string(&params, "routineId")?.to_string();
-        let config = self.routine_config(params)?;
         let now = self.clock.now();
+        let config = self.routine_config(params)?.validate(now)?;
         let reply = self.routines.update(|routines| {
             let routine = routines
                 .iter_mut()
@@ -168,32 +137,20 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({ "timeZone": time_zone, "fires": fires }))
     }
 
-    fn routine_config(&self, params: serde_json::Value) -> Result<RoutineConfig, RpcError> {
+    fn routine_config(&self, params: serde_json::Value) -> Result<RoutineDraft, RpcError> {
         let params: RoutineParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
-        let name = params.name.trim();
-        if name.is_empty() {
-            return Err(RpcError::BadParams("name must not be empty".into()));
-        }
-        if params.prompt.trim().is_empty() {
-            return Err(RpcError::BadParams("prompt must not be empty".into()));
-        }
-        let time_zone = time_zone_or_local(params.time_zone);
-        if let Schedule::Once(at, _) = parse_schedule(&params.cron, params.at, &time_zone)?
-            && at <= self.clock.now()
-        {
-            return Err(RpcError::BadParams("that time has passed".into()));
-        }
         if !self.space_exists(&params.space_id) {
             return Err(RpcError::BadParams("unknown space".into()));
         }
-        Ok(RoutineConfig {
-            name: name.to_string(),
+        Ok(RoutineDraft {
+            id: None,
+            name: params.name,
             space_id: params.space_id,
             prompt: params.prompt,
-            cron: params.cron.trim().to_string(),
+            cron: params.cron,
             at: params.at,
-            time_zone,
+            time_zone: params.time_zone.unwrap_or_default(),
             config: params.config,
             checkout: params.checkout,
         })
@@ -500,13 +457,6 @@ impl EngineService {
     fn space_exists(&self, space_id: &str) -> bool {
         self.routine_space(space_id).is_some()
     }
-}
-
-/// A requested time zone, or the device's when none is given.
-fn time_zone_or_local(time_zone: Option<String>) -> String {
-    time_zone
-        .filter(|zone| !zone.trim().is_empty())
-        .map_or_else(local_time_zone, |zone| zone.trim().to_string())
 }
 
 #[cfg(test)]

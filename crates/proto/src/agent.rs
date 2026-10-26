@@ -639,6 +639,13 @@ pub enum ToolCall {
         #[serde(default)]
         items: Vec<TodoItem>,
     },
+    /// Agent-created Routine scheduling; all three fields survive the
+    /// transcript's render-only sanitize pass so the approver sees the task.
+    ScheduleRoutine {
+        name: String,
+        schedule: String,
+        prompt: String,
+    },
     Mcp {
         server: String,
         tool: String,

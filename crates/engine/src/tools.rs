@@ -7,13 +7,14 @@
 //! [`web_fetch`], and web search behind the user-configured [`SearchBackend`]
 //! (ADR-web-tools-full-text-ungated-pluggable-search) in [`web_search`] — plus the question card's `ask_user` tool
 //! (ADR-ask-user-is-a-question-card) in [`ask_user`] and the Turn task list's `todo` tool
-//! (issue #47) in [`todo`].
+//! (issue #47) in [`todo`], plus main-chat Routine creation in [`schedule_routine`].
 
 pub(crate) mod ask_user;
 mod grep;
 mod ls;
 pub(crate) mod model_setup;
 mod read_chat;
+pub(crate) mod schedule_routine;
 pub(crate) mod submit_plan;
 #[cfg(test)]
 pub(crate) mod test_http;
@@ -1382,6 +1383,7 @@ pub(crate) use model_setup::create_choose_provider_tool;
 pub(crate) use model_setup::create_model_proposal_tool;
 pub(crate) use model_setup::create_request_provider_key_tool;
 pub(crate) use read_chat::create_read_chat_tool;
+pub(crate) use schedule_routine::create_schedule_routine_tool;
 pub(crate) use todo::create_todo_tool;
 pub use web_search::{SearchBackend, SearchHit, SearchResults};
 

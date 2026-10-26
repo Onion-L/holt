@@ -43,6 +43,7 @@ mod queue_commands_rpc;
 mod read_chat_rpc;
 mod resume_rpc;
 mod routines_rpc;
+mod schedule_routine_rpc;
 mod scripted_provider;
 mod search_files_rpc;
 mod skills_rpc;

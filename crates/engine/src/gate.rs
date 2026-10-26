@@ -1,6 +1,6 @@
 //! The permission gate (ADR-permission-modes-gate-mutations-no-os-sandbox): the confirm-changes gatekeeper wired
 //! through the agent loop's before-tool-call hook. Every mutating tool
-//! call (write, edit, bash) pauses the Turn behind a pending Approval the
+//! call (write, edit, bash, schedule_routine) pauses the Turn behind a pending Approval the
 //! UI resolves over the `ResolveApproval` RPC; denials settle as error
 //! tool results the model reads, and interrupt cancels the wait. Reads
 //! and content search are never gated, and full-access never reaches this
@@ -26,7 +26,7 @@ use crate::agent::ChatRuntime;
 /// `mcp__`-prefixed call is presumed mutating — never trusting a server's
 /// own hints about itself.
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
-    matches!(name, "write" | "edit" | "bash") || name.starts_with("mcp__")
+    matches!(name, "write" | "edit" | "bash" | "schedule_routine") || name.starts_with("mcp__")
 }
 
 /// Tools whose calls always meet the HUMAN gatekeeper, whatever the chat's
@@ -46,8 +46,8 @@ pub(crate) const STANDARD_DENIAL: &str = "The user denied this operation.";
 /// One chat's always-allow grants (ADR-permission-modes-gate-mutations-no-os-sandbox): in-memory, session-scoped,
 /// never persisted — cleared on restart. Bash grants match by word prefix
 /// on the command (extension by plain arguments only), write/edit grants by
-/// exact resolved file path, and MCP grants
-/// by the exact two-level `mcp__server__tool` name — nothing broader
+/// exact resolved file path, MCP grants by the exact two-level
+/// `mcp__server__tool` name, and Routine creation by the exact `schedule_routine` tool name — nothing broader
 /// (ADR-mcp-servers-join-as-engine-clients-behind-the-gate: no server-wide grants). Checked BEFORE the gatekeeper, so
 /// they hold across mode switches.
 #[derive(Default)]
@@ -55,12 +55,13 @@ pub(crate) struct GateGrants {
     bash_prefixes: Vec<String>,
     file_paths: Vec<String>,
     mcp_tools: Vec<String>,
+    schedule_routine: bool,
 }
 
 impl GateGrants {
     /// Record what an always-allow verdict granted: the command's text for
-    /// bash, the resolved absolute path for write/edit, and the exact
-    /// tool name for MCP.
+    /// bash, the resolved absolute path for write/edit, and the exact tool
+    /// name for MCP and Routine creation.
     pub(crate) fn record(&mut self, tool: &str, arguments: &serde_json::Value, cwd: &str) {
         if tool.starts_with("mcp__") {
             if !self.mcp_tools.iter().any(|name| name == tool) {
@@ -84,6 +85,7 @@ impl GateGrants {
                     self.file_paths.push(path);
                 }
             }
+            "schedule_routine" => self.schedule_routine = true,
             _ => {}
         }
     }
@@ -108,6 +110,7 @@ impl GateGrants {
                         .iter()
                         .any(|allowed| file_path_matches(allowed, &resolved))
                 }),
+            "schedule_routine" => self.schedule_routine,
             _ => false,
         }
     }
@@ -841,10 +844,33 @@ mod tests {
             bash_prefixes,
             file_paths,
             mcp_tools,
+            schedule_routine,
         } = grants;
         assert_eq!(bash_prefixes, ["cargo test"]);
         assert_eq!(file_paths, [format!("{root}/src/a.rs")]);
         assert!(mcp_tools.is_empty());
+        assert!(!schedule_routine);
+    }
+
+    #[test]
+    fn routine_grants_cover_only_routine_creation() {
+        let mut grants = GateGrants::default();
+        assert!(!grants.passes("schedule_routine", &serde_json::json!({}), "/repo"));
+        grants.record(
+            "schedule_routine",
+            &serde_json::json!({ "name": "Check issues" }),
+            "/repo",
+        );
+        assert!(grants.passes(
+            "schedule_routine",
+            &serde_json::json!({ "name": "Another routine" }),
+            "/repo"
+        ));
+        assert!(!grants.passes(
+            "write",
+            &serde_json::json!({ "path": "routine.rs" }),
+            "/repo"
+        ));
     }
 
     #[test]
@@ -928,6 +954,7 @@ mod tests {
         assert!(is_mutating_tool("write"));
         assert!(is_mutating_tool("edit"));
         assert!(is_mutating_tool("bash"));
+        assert!(is_mutating_tool("schedule_routine"));
         assert!(!is_mutating_tool("read"));
         assert!(!is_mutating_tool("grep"));
         // The web tools are read-tier (ADR-web-tools-full-text-ungated-pluggable-search): fetch reads a page and
