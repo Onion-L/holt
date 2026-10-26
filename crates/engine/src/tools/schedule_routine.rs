@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     agent::AgentRuntime,
-    routines::{RoutineDraft, Routines, next_fire, time_zone_or_local},
+    routines::{RoutineDraft, Routines, local_time_zone, next_fire, time_zone_or_local},
 };
 
 const DESCRIPTION: &str = "Create a Holt Routine for a task that must happen later or recur. Use this \
@@ -27,9 +27,28 @@ self-contained because the Routine starts a fresh Chat without this conversation
 necessary instruction, repository, issue, and URL. The new Routine inherits the current Chat's model, \
 permission mode, and Space. Choose exactly one schedule: `delayMinutes` for relative requests such \
 as 'in two hours' (stored as an absolute UTC instant), `at` for one local wall-clock time in \
-`timeZone`, or `cron` for recurrence. `timeZone` is an IANA name and defaults to the device zone. \
-The tool returns the persisted routine \
+`timeZone`, or `cron` for recurrence. `timeZone` is an IANA name; omit it unless the user names a \
+different zone. The tool returns the persisted routine \
 id and its actual nextFireAt; relay that time in your answer.";
+
+/// The description states the device zone and the Turn-start local time:
+/// nothing else tells the model either (the system prompt carries neither),
+/// so without them a wall-clock request resolves against a guessed zone —
+/// typically UTC — and fires at the wrong hour.
+fn description(device_zone: &str, now: DateTime<Utc>) -> String {
+    let local = device_zone
+        .parse::<chrono_tz::Tz>()
+        .map(|zone| {
+            now.with_timezone(&zone)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| format!("{} UTC", now.format("%Y-%m-%d %H:%M")));
+    format!(
+        "{DESCRIPTION} The device time zone is {device_zone} and the local time now is {local}; \
+resolve 'today' and 'tomorrow' against it."
+    )
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -162,7 +181,7 @@ pub(crate) fn create_schedule_routine_tool(
     AgentTool {
         name: "schedule_routine".into(),
         label: "Schedule Routine".into(),
-        description: DESCRIPTION.into(),
+        description: description(&local_time_zone(), routines.now()),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -189,7 +208,7 @@ pub(crate) fn create_schedule_routine_tool(
                 },
                 "timeZone": {
                     "type": "string",
-                    "description": "An IANA time zone such as Asia/Shanghai; defaults to the device zone"
+                    "description": "An IANA time zone such as Asia/Shanghai; omit unless the user explicitly names another zone"
                 }
             },
             "required": ["name", "prompt"],
@@ -292,6 +311,16 @@ mod tests {
         .unwrap();
         assert_eq!(recurring.cron, "0 9 * * *");
         assert!(recurring.at.is_none());
+    }
+
+    #[test]
+    fn the_description_states_the_device_zone_and_local_time() {
+        let text = description("Asia/Shanghai", now());
+        assert!(text.contains("device time zone is Asia/Shanghai"), "{text}");
+        // 09:00Z is 17:00 in Asia/Shanghai — the model reads local, not UTC.
+        assert!(text.contains("2026-10-07 17:00"), "{text}");
+        let unreadable = description("Not/AZone", now());
+        assert!(unreadable.contains("UTC"), "{unreadable}");
     }
 
     #[test]
