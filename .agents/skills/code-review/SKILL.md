@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Adversarial dual-axis code review skill: audit changes comprehensively across both the Problem Axis (did it genuinely solve the issue?) and the Implementation Axis (is the code sound, safe, and architecturally compliant?). Use when asked to review code, check a PR diff, or verify changes before merging."
+description: "Review code, a PR diff, or pending changes before merging."
 ---
 
 # Code Review (Dual-Axis)

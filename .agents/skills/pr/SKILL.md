@@ -1,6 +1,6 @@
 ---
 name: pr
-description: "Open and manage pull requests on the project's GitHub repo via the `gh` CLI: branch push, PR creation, checks, and merge. Use when the user asks to open/create/submit a PR, check PR or CI status, or merge a PR. For code and spec review, see the `code-review` skill. Releases are NOT done via PR — they follow the tag workflow in AGENTS.md."
+description: "Open a PR, check CI, or merge. Not for review (`code-review`) or releases (tag flow)."
 ---
 
 # GitHub PR

@@ -1,6 +1,6 @@
 ---
 name: issue
-description: "File, read, and manage issues on the project's GitHub repo via the `gh` CLI — the project's only issue tracker. Use when the user asks to open/report/file/record an issue, or check or search issues."
+description: "Open, read, search, or update GitHub issues via `gh`. For bug reports, feature requests, roadmap items."
 ---
 
 # GitHub Issue
