@@ -396,10 +396,14 @@ the structured `ScheduleRoutine` transcript keeps the name, schedule, and
 prompt visible to the approver. Agent ids derive from `(chatId, toolCallId)`
 and return the first committed Routine on retry; creation holds the same
 registry lock as Space deletion so it cannot leave an active Routine behind
-a deleted Space. Rejected: exposing the raw RPC payload (the model would
+a deleted Space. The description embeds the device zone and the Turn-start
+local time — the system prompt carries neither, so an omitted zone falls
+back correctly but a guessed one fires at the wrong hour, and the engine
+cannot tell a guess from a user-named foreign zone. Rejected: exposing the raw RPC payload (the model would
 invent config and do time math), Bash timer scripts (lifetime, visibility,
-and recovery), an untyped chip (the approval loses its subject), and
-unkeyed creation (a crash can duplicate a committed task).
+and recovery), an untyped chip (the approval loses its subject),
+unkeyed creation (a crash can duplicate a committed task), and engine-side
+zone coercion (a user may legitimately schedule in a foreign zone).
 
 ## routines-fire-in-process-and-coalesce-missed-fires
 
