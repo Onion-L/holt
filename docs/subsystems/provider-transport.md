@@ -27,6 +27,7 @@ Not here: the mode that *changes* the catalog from inside a chat (see modes); wh
 ## Constraints, state, and failure behavior
 
 - **The overlay file is the user's**: Holt never rewrites it, tightens a broad mode to `0600`, and prefers falling back to the compiled catalog over failing boot. It holds no secret, but it decides which host the key is sent to — that is why the mode is pinned.
+- **Plaintext http is loopback-only on the catalog layer**: the compiled catalog, the overlay, and model records under catalog ids require https. A user-defined provider is an explicit endpoint choice (ADR-custom-providers-accept-plaintext-http): its definition and the records filed under it accept plain `http` to any host. Boot drops definitions that shadow a catalog id or whose map key differs from their inner id before validating records; live custom lookups also exclude catalog ids, so an inert definition cannot redirect probe or key targets. A planned endpoint still faces the probe's SSRF gate until the definition is stored.
 - **A complete record replaces, never merges**: per-field patching is not expressible in either file — records are whole.
 - **Hiding is cosmetic**: a hidden model leaves listings only; resolution keeps working so a configured chat never breaks.
 - **The probe's verdicts are honest about what they cannot prove**: only a 401/403 indicts the key; a transport failure accuses nobody.

@@ -299,12 +299,14 @@ impl LocalEngine {
             runtime.remove_chat(chat_id);
         }
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
-        let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
         // The provider store is read once per boot: the file is written only
         // when missing, then overlaid on the compiled catalog. Provider
         // listing, model listing, resolution, and the request path all answer
-        // from the merge, so a file edit needs a restart.
+        // from the merge, so a file edit needs a restart. The settings load
+        // reads it too: a stored definition shadowing a catalog id is dropped
+        // before it can grant the plaintext-http allowance on the way in.
         let catalog = provider_store::load(&config.data_dir);
+        let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir, &catalog)?);
         let providers = Arc::new(ProviderAdapter::new(
             credentials,
             provider_settings,
@@ -1085,8 +1087,9 @@ mod tests {
     fn provider_catalog_uses_provider_qualified_model_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(HoltCredentialStore::load(dir.path()).unwrap());
-        let settings = Arc::new(ProviderSettingsStore::load(dir.path()).unwrap());
-        let adapter = ProviderAdapter::new(store, settings, provider_store::load(dir.path()));
+        let catalog = provider_store::load(dir.path());
+        let settings = Arc::new(ProviderSettingsStore::load(dir.path(), &catalog).unwrap());
+        let adapter = ProviderAdapter::new(store, settings, catalog);
         let models = adapter.models_for("openai");
         assert!(!models.is_empty());
         assert!(models.iter().all(|model| model.id.contains('/')));

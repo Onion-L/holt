@@ -50,6 +50,7 @@ const VERSION: u32 = 1;
 /// The merged catalog: the compiled baseline with the file's valid entries
 /// overlaid. Built once at boot; everything provider-shaped in the engine
 /// reads it.
+#[derive(Default)]
 pub(crate) struct Catalog {
     providers: Vec<CatalogProvider>,
 }
@@ -61,6 +62,10 @@ impl Catalog {
 
     pub(crate) fn get(&self, id: &str) -> Option<&CatalogProvider> {
         self.providers.iter().find(|provider| provider.id == id)
+    }
+
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.get(id).is_some()
     }
 
     /// The provider's merged model list; empty for an unknown id.
@@ -311,7 +316,7 @@ fn merge(entries: Vec<serde_json::Value>) -> Catalog {
         if file
             .base_url
             .as_deref()
-            .is_some_and(|url| !http_base_url(url))
+            .is_some_and(|url| !http_base_url(url, false))
         {
             tracing::warn!(
                 target: "holt::engine",
@@ -369,7 +374,7 @@ fn merge_models(
                 "dropping a provider-store model: {reason}"
             );
         };
-        if let Some(reason) = model_record_problem(provider_id, &model) {
+        if let Some(reason) = model_record_problem(provider_id, &model, false) {
             drop(reason);
             continue;
         }
@@ -394,7 +399,15 @@ fn merge_models(
 /// the provider-store merge and the live settings sections: a record that
 /// breaks one is dropped with this reason, never a boot failure. Returns
 /// `None` when the record is servable.
-pub(crate) fn model_record_problem(provider_id: &str, model: &CoreModel) -> Option<&'static str> {
+///
+/// `allow_plain_http` is the parent's transport policy: a user-defined
+/// provider opts into plaintext http for itself and the records filed
+/// under it; the built-in catalog layer stays https-or-loopback.
+pub(crate) fn model_record_problem(
+    provider_id: &str,
+    model: &CoreModel,
+    allow_plain_http: bool,
+) -> Option<&'static str> {
     if model.id.trim().is_empty() {
         return Some("its id is blank");
     }
@@ -407,8 +420,12 @@ pub(crate) fn model_record_problem(provider_id: &str, model: &CoreModel) -> Opti
     if !cost_is_valid(&model.cost) {
         return Some("its cost rates are not finite and non-negative");
     }
-    if !http_base_url(&model.base_url) {
-        return Some("its baseUrl is not https (plaintext http is loopback-only)");
+    if !http_base_url(&model.base_url, allow_plain_http) {
+        return Some(if allow_plain_http {
+            "its baseUrl is not a usable http(s) URL"
+        } else {
+            "its baseUrl is not https (plaintext http is loopback-only)"
+        });
     }
     if compat::get_api_provider(&model.api).is_none() {
         return Some("its api dialect is not registered");
@@ -417,10 +434,14 @@ pub(crate) fn model_record_problem(provider_id: &str, model: &CoreModel) -> Opti
 }
 
 /// `baseUrl` is concatenated into request URLs, so it must be a usable
-/// https endpoint — plaintext `http` would send the API key and the
+/// endpoint and never carry credentials in the URL itself. For the
+/// built-in catalog layer (compiled, overlay, and model records under
+/// catalog ids) plaintext `http` would send the API key and the
 /// conversation in the clear, so it is allowed only for loopback hosts
-/// (local model servers), and credentials never ride the URL itself.
-pub(crate) fn http_base_url(url: &str) -> bool {
+/// (local model servers). A user-defined provider is an explicit user
+/// choice of endpoint, so its definition — and the model records filed
+/// under it — accept plaintext http to any host.
+pub(crate) fn http_base_url(url: &str, allow_plain_http: bool) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
@@ -429,16 +450,25 @@ pub(crate) fn http_base_url(url: &str) -> bool {
     }
     match parsed.scheme() {
         "https" => true,
-        "http" => parsed
-            .host_str()
-            .map(|host| host.trim_matches(|character| character == '[' || character == ']'))
-            .is_some_and(|host| {
-                host.parse::<std::net::IpAddr>()
-                    .map(|ip| ip.is_loopback())
-                    .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"))
-            }),
+        "http" => allow_plain_http || is_loopback_host(parsed.host_str()),
         _ => false,
     }
+}
+
+/// The plaintext-http allowance belongs to a live user-defined provider: one
+/// that no catalog entry claims. A definition shadowing a catalog id is inert
+/// everywhere else, so it must not relax the catalog rule either.
+pub(crate) fn plaintext_http_allowed(is_catalog_id: bool, is_defined: bool) -> bool {
+    !is_catalog_id && is_defined
+}
+
+fn is_loopback_host(host: Option<&str>) -> bool {
+    host.map(|host| host.trim_matches(|character| character == '[' || character == ']'))
+        .is_some_and(|host| {
+            host.parse::<std::net::IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"))
+        })
 }
 
 /// Cost rates are what the usage ledger bills, so every rate — flat and per
@@ -648,18 +678,27 @@ mod tests {
     }
 
     #[test]
-    fn plaintext_http_base_urls_are_loopback_only() {
-        assert!(http_base_url("https://api.example.com/v1"));
-        assert!(http_base_url("http://localhost:11434/v1"));
-        assert!(http_base_url("http://127.0.0.1:8080"));
-        assert!(http_base_url("http://[::1]:8080/v1"));
-        assert!(!http_base_url("http://api.example.com/v1"));
-        assert!(!http_base_url("http://192.168.1.10:11434"));
-        assert!(!http_base_url("http://10.0.0.5/v1"));
-        assert!(!http_base_url("https://user:secret@example.com/v1"));
-        assert!(!http_base_url("ftp://example.com"));
-        assert!(!http_base_url("http://"));
-        assert!(!http_base_url("not-a-url"));
+    fn plaintext_http_base_urls_are_loopback_only_for_the_catalog() {
+        // The catalog layer's rule: https anywhere, plaintext http only
+        // on loopback.
+        assert!(http_base_url("https://api.example.com/v1", false));
+        assert!(http_base_url("http://localhost:11434/v1", false));
+        assert!(http_base_url("http://127.0.0.1:8080", false));
+        assert!(http_base_url("http://[::1]:8080/v1", false));
+        assert!(!http_base_url("http://api.example.com/v1", false));
+        assert!(!http_base_url("http://192.168.1.10:11434", false));
+        assert!(!http_base_url("http://10.0.0.5/v1", false));
+        assert!(!http_base_url("https://user:secret@example.com/v1", false));
+        assert!(!http_base_url("ftp://example.com", false));
+        assert!(!http_base_url("http://", false));
+        assert!(!http_base_url("not-a-url", false));
+        // The custom-provider opt-in: plaintext http to any host, the
+        // URL-shape rules unchanged.
+        assert!(http_base_url("http://192.168.1.10:11434/v1", true));
+        assert!(http_base_url("http://api.example.com/v1", true));
+        assert!(!http_base_url("https://user:secret@example.com/v1", true));
+        assert!(!http_base_url("ftp://example.com", true));
+        assert!(!http_base_url("not-a-url", true));
     }
 
     #[test]

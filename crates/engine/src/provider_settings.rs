@@ -69,8 +69,8 @@ pub(crate) fn custom_provider_problem(provider: &CustomProvider) -> Option<&'sta
     if provider.name.trim().is_empty() {
         return Some("its name is blank");
     }
-    if !provider_store::http_base_url(&provider.base_url) {
-        return Some("its baseUrl is not https (plaintext http is loopback-only)");
+    if !provider_store::http_base_url(&provider.base_url, true) {
+        return Some("its baseUrl is not a usable http(s) URL");
     }
     if compat::get_api_provider(&provider.default_api).is_none() {
         return Some("its default api dialect is not registered");
@@ -88,7 +88,12 @@ pub struct ProviderSettingsStore {
 }
 
 impl ProviderSettingsStore {
-    pub fn load(data_dir: &Path) -> Result<Self, EngineError> {
+    /// `catalog` is the boot merge: definitions shadowing a catalog id are
+    /// dropped before they can grant the plaintext-http allowance.
+    pub(crate) fn load(
+        data_dir: &Path,
+        catalog: &provider_store::Catalog,
+    ) -> Result<Self, EngineError> {
         let path = data_dir.join(FILE_NAME);
         // The file can carry model-record header values, so an existing
         // broader mode is tightened like the credential store's (a failed
@@ -111,7 +116,7 @@ impl ProviderSettingsStore {
             Err(error) => return Err(error.into()),
         };
         let mut settings = settings;
-        sanitize(&mut settings);
+        sanitize(&mut settings, catalog);
         Ok(Self {
             path,
             settings: Arc::new(RwLock::new(settings)),
@@ -144,7 +149,9 @@ impl ProviderSettingsStore {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .custom_providers
-            .values()
+            .iter()
+            .filter(|(id, provider)| id.as_str() == provider.id.as_str())
+            .map(|(_, provider)| provider)
             .cloned()
             .collect()
     }
@@ -155,6 +162,7 @@ impl ProviderSettingsStore {
             .unwrap_or_else(|error| error.into_inner())
             .custom_providers
             .get(provider_id)
+            .filter(|provider| provider.id.as_str() == provider_id)
             .cloned()
     }
 
@@ -469,10 +477,36 @@ fn ensure_private_permissions(_path: &Path, _metadata: &std::fs::Metadata) {}
 /// hand-edited entry that fails its checks is dropped with a log line while
 /// the rest of the file still applies — an unparsable file remains the only
 /// thing that fails the boot gate.
-fn sanitize(settings: &mut StoredSettings) {
+fn sanitize(settings: &mut StoredSettings, catalog: &provider_store::Catalog) {
+    // Custom providers first: a surviving definition is what lets the
+    // records filed under it carry a plaintext-http baseUrl.
+    settings.custom_providers.retain(|id, provider| {
+        let problem = if id != &provider.id {
+            Some("its map key does not match its id")
+        } else if catalog.contains(id) {
+            Some("its id shadows a catalog provider")
+        } else {
+            custom_provider_problem(provider)
+        };
+        match problem {
+            None => true,
+            Some(reason) => {
+                tracing::warn!(
+                    target: "holt::engine",
+                    provider = id,
+                    "dropping a provider-settings custom provider: {reason}"
+                );
+                false
+            }
+        }
+    });
     settings.model_records.retain(|provider_id, records| {
+        let allow_plain_http = provider_store::plaintext_http_allowed(
+            catalog.contains(provider_id),
+            settings.custom_providers.contains_key(provider_id),
+        );
         records.retain(|model_id, record| {
-            match provider_store::model_record_problem(provider_id, record) {
+            match provider_store::model_record_problem(provider_id, record, allow_plain_http) {
                 None => true,
                 Some(reason) => {
                     tracing::warn!(
@@ -487,19 +521,6 @@ fn sanitize(settings: &mut StoredSettings) {
         });
         !records.is_empty()
     });
-    settings
-        .custom_providers
-        .retain(|id, provider| match custom_provider_problem(provider) {
-            None => true,
-            Some(reason) => {
-                tracing::warn!(
-                    target: "holt::engine",
-                    provider = id,
-                    "dropping a provider-settings custom provider: {reason}"
-                );
-                false
-            }
-        });
     settings.hidden_models.retain(|_, models| {
         models.retain(|model_id| !model_id.trim().is_empty());
         !models.is_empty()
@@ -549,7 +570,8 @@ mod tests {
         )
         .unwrap();
 
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
     }
 
@@ -564,7 +586,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
 
         // Unknown provider / builtin id: a no-op that reports false.
         assert!(
@@ -586,7 +609,8 @@ mod tests {
         assert!(settings.remove_custom_model("openai", "gpt-other").unwrap());
         assert!(settings.custom_models_for("openai").is_empty());
 
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert!(restored.custom_models_for("openai").is_empty());
     }
 
@@ -595,7 +619,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(FILE_NAME);
         std::fs::write(&path, "{broken").unwrap();
-        assert!(ProviderSettingsStore::load(dir.path()).is_err());
+        assert!(
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).is_err()
+        );
         assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken");
     }
 
@@ -603,14 +629,16 @@ mod tests {
     fn empty_settings_file_loads_as_fresh() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE_NAME), b"").unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert!(settings.custom_models_for("openai").is_empty());
 
         // The store keeps working: a later write persists over the empty file.
         let mut hidden = BTreeSet::new();
         hidden.insert("gpt-5.4".to_string());
         settings.set_hidden_models("openai", hidden).unwrap();
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert_eq!(restored.hidden_models_for("openai"), vec!["gpt-5.4"]);
     }
 
@@ -627,7 +655,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         settings
             .upsert_model_record(
                 "openai",
@@ -644,7 +673,8 @@ mod tests {
         hidden.insert("gpt-5.4".to_string());
         settings.set_hidden_models("openai", hidden).unwrap();
 
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
         assert_eq!(
             restored
@@ -676,7 +706,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let legacy = ProviderSettingsStore::load(dir.path()).unwrap();
+        let legacy =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert_eq!(legacy.custom_models_for("openai"), vec!["gpt-custom"]);
         assert!(legacy.model_records_for("openai").is_empty());
         legacy
@@ -685,7 +716,8 @@ mod tests {
                 record("openai", "gpt-record", "https://openai.example/v1"),
             )
             .unwrap();
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
         assert_eq!(restored.model_records_for("openai").len(), 1);
     }
@@ -704,6 +736,15 @@ mod tests {
                         "bad-http": record("openai", "bad-http", "http://remote.example/v1"),
                         "local": record("openai", "local", "http://127.0.0.1:8080/v1"),
                         "wrong-parent": record("anthropic", "wrong-parent", "https://openai.example/v1")
+                    },
+                    "http-gateway": {
+                        "remote": record("http-gateway", "remote", "http://remote.example/v1")
+                    },
+                    "bad-gateway": {
+                        "orphan": record("bad-gateway", "orphan", "http://remote.example/v1")
+                    },
+                    "alias-gateway": {
+                        "remote": record("alias-gateway", "remote", "http://remote.example/v1")
                     }
                 },
                 "customProviders": {
@@ -725,6 +766,18 @@ mod tests {
                         "name": "Plaintext",
                         "baseUrl": "http://remote.example/v1",
                         "defaultApi": "openai-completions"
+                    },
+                    "openai": {
+                        "id": "openai",
+                        "name": "Shadow",
+                        "baseUrl": "http://shadow.example/v1",
+                        "defaultApi": "openai-completions"
+                    },
+                    "alias-gateway": {
+                        "id": "other-gateway",
+                        "name": "Mismatched",
+                        "baseUrl": "http://remote.example/v1",
+                        "defaultApi": "openai-completions"
                     }
                 },
                 "hiddenModels": { "openai": ["gpt-5.4", ""] }
@@ -732,17 +785,29 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let catalog = provider_store::load(dir.path());
+        let settings = ProviderSettingsStore::load(dir.path(), &catalog).unwrap();
         // Blank legacy ids stay: the loader keeps the section whole.
         assert_eq!(settings.custom_models_for("openai").len(), 2);
         let records = settings.model_records_for("openai");
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id, "good");
-        // Loopback http survives; the remote plaintext one does not.
+        assert!(records.iter().all(|record| record.id != "bad-http"));
+        // Loopback http survives; the remote plaintext one under a
+        // built-in id does not. Shadowing and key-mismatched definitions
+        // are dropped before they can grant an allowance.
         assert!(settings.custom_provider("good-gateway").is_some());
         assert!(settings.custom_provider("local-gateway").is_some());
         assert!(settings.custom_provider("bad-gateway").is_none());
-        assert!(settings.custom_provider("http-gateway").is_none());
+        assert!(settings.custom_provider("openai").is_none());
+        assert!(settings.custom_provider("alias-gateway").is_none());
+        assert!(settings.model_records_for("alias-gateway").is_empty());
+        // A custom provider opts into plaintext http for itself and the
+        // records filed under it; the dropped definition takes its
+        // records with it.
+        assert!(settings.custom_provider("http-gateway").is_some());
+        assert_eq!(settings.model_records_for("http-gateway").len(), 1);
+        assert!(settings.model_records_for("bad-gateway").is_empty());
         assert_eq!(settings.hidden_models_for("openai"), vec!["gpt-5.4"]);
     }
 
@@ -757,7 +822,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         settings
             .upsert_model_record(
                 "openai",
@@ -781,14 +847,16 @@ mod tests {
 
         settings.reset_all().unwrap();
         assert!(settings.custom_provider("acme").is_none());
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert!(restored.custom_providers().is_empty());
     }
 
     #[test]
     fn custom_provider_logos_follow_the_definition() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#;
         assert!(
             settings.set_custom_provider_logo("openai", svg).is_err(),
@@ -824,7 +892,8 @@ mod tests {
     #[test]
     fn removing_records_and_providers_prunes_empty_sections() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         settings
             .upsert_model_record("acme", record("acme", "acme-1", "https://acme.example/v1"))
             .unwrap();
@@ -851,7 +920,8 @@ mod tests {
     #[test]
     fn removing_a_custom_provider_drops_every_entry_filed_under_it() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         settings
             .upsert_custom_provider(custom_provider("acme"))
             .unwrap();
@@ -877,7 +947,8 @@ mod tests {
         assert!(settings.model_records_for("acme").is_empty());
         assert!(settings.hidden_models_for("acme").is_empty());
 
-        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        let restored =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert!(restored.custom_provider("acme").is_none());
         assert!(restored.model_records_for("acme").is_empty());
         // Other providers keep their entries.
@@ -887,7 +958,8 @@ mod tests {
     #[test]
     fn removing_a_record_also_prunes_its_hidden_id() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         settings
             .upsert_model_record("acme", record("acme", "acme-1", "https://acme.example/v1"))
             .unwrap();
@@ -903,7 +975,8 @@ mod tests {
     fn the_settings_file_is_private_and_a_broader_mode_is_tightened_on_load() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let settings =
+            ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         settings
             .upsert_model_record("acme", record("acme", "acme-1", "https://acme.example/v1"))
             .unwrap();
@@ -915,7 +988,7 @@ mod tests {
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         drop(settings);
-        ProviderSettingsStore::load(dir.path()).unwrap();
+        ProviderSettingsStore::load(dir.path(), &provider_store::Catalog::default()).unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600

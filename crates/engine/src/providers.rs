@@ -161,7 +161,7 @@ impl ProviderAdapter {
     /// `SaveModelRecord` records that omit `baseUrl` inherit this, so the
     /// Settings "add a model" flow never re-asks for the shared endpoint.
     pub(crate) fn default_base_url(&self, provider_id: &str) -> Option<String> {
-        if let Some(provider) = self.settings.custom_provider(provider_id) {
+        if let Some(provider) = self.custom_provider(provider_id) {
             return Some(provider.base_url);
         }
         let provider = self.catalog.get(provider_id)?;
@@ -184,8 +184,19 @@ impl ProviderAdapter {
         eligible_providers(&self.catalog)
             .iter()
             .any(|provider| provider.id == provider_id)
-            || (self.catalog.get(provider_id).is_none()
-                && self.settings.custom_provider(provider_id).is_some())
+            || self.custom_provider(provider_id).is_some()
+    }
+
+    /// The live user-defined definition for an id. A definition shadowing a
+    /// catalog id is not a custom provider anywhere in the engine.
+    pub(crate) fn custom_provider(
+        &self,
+        provider_id: &str,
+    ) -> Option<crate::provider_settings::CustomProvider> {
+        if self.catalog.contains(provider_id) {
+            return None;
+        }
+        self.settings.custom_provider(provider_id)
     }
 
     /// Write-path validation for a live model record: the provider must be
@@ -196,12 +207,13 @@ impl ProviderAdapter {
         provider_id: &str,
         record: &CoreModel,
     ) -> Result<(), String> {
-        if self.catalog.get(provider_id).is_none()
-            && self.settings.custom_provider(provider_id).is_none()
-        {
+        let is_custom = self.custom_provider(provider_id).is_some();
+        if self.catalog.get(provider_id).is_none() && !is_custom {
             return Err("unknown provider".into());
         }
-        if let Some(problem) = crate::provider_store::model_record_problem(provider_id, record) {
+        if let Some(problem) =
+            crate::provider_store::model_record_problem(provider_id, record, is_custom)
+        {
             return Err(format!("model record is not servable: {problem}"));
         }
         Ok(())
@@ -226,8 +238,7 @@ impl ProviderAdapter {
     /// (compiled or overlaid) or a user-defined provider? Live records and
     /// the model-setup tools key off this.
     pub(crate) fn provider_known(&self, provider_id: &str) -> bool {
-        self.catalog.get(provider_id).is_some()
-            || self.settings.custom_provider(provider_id).is_some()
+        self.catalog.get(provider_id).is_some() || self.custom_provider(provider_id).is_some()
     }
 
     pub(crate) fn catalog_has_provider(&self, provider_id: &str) -> bool {
@@ -462,10 +473,13 @@ mod tests {
     use std::path::Path;
 
     fn adapter(data_dir: &Path) -> ProviderAdapter {
+        let catalog = crate::provider_store::load(data_dir);
         ProviderAdapter::new(
             Arc::new(crate::credentials::HoltCredentialStore::load(data_dir).unwrap()),
-            Arc::new(crate::provider_settings::ProviderSettingsStore::load(data_dir).unwrap()),
-            crate::provider_store::load(data_dir),
+            Arc::new(
+                crate::provider_settings::ProviderSettingsStore::load(data_dir, &catalog).unwrap(),
+            ),
+            catalog,
         )
     }
 
@@ -662,6 +676,43 @@ mod tests {
             .count();
         assert_eq!(openai_rows, 1);
         assert!(rows.iter().all(|row| row.name != "Hostile Twin"));
+        assert!(adapter.custom_provider("openai").is_none());
+        assert_ne!(
+            adapter.default_base_url("openai").as_deref(),
+            Some("https://evil.example/v1")
+        );
+    }
+
+    #[test]
+    fn a_custom_provider_opts_into_plaintext_http_for_its_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = adapter(dir.path());
+        let provider = CustomProvider {
+            id: "lan-gateway".to_string(),
+            name: "LAN Gateway".to_string(),
+            base_url: "http://192.168.1.10:11434/v1".to_string(),
+            default_api: "openai-completions".to_string(),
+        };
+        adapter.validate_custom_provider(&provider).unwrap();
+        adapter.settings.upsert_custom_provider(provider).unwrap();
+
+        let http_record = record("lan-gateway", "lan-1", "http://192.168.1.10:11434/v1");
+        adapter
+            .validate_model_record("lan-gateway", &http_record)
+            .unwrap();
+        adapter
+            .settings
+            .upsert_model_record("lan-gateway", http_record)
+            .unwrap();
+        let resolved = adapter
+            .resolve_model("lan-gateway", "lan-gateway/lan-1")
+            .unwrap();
+        assert_eq!(resolved.base_url, "http://192.168.1.10:11434/v1");
+
+        // The same baseUrl under a built-in id stays refused: the opt-in
+        // belongs to the definition, not the record.
+        let builtin = record("openai", "gpt-http", "http://192.168.1.10:11434/v1");
+        assert!(adapter.validate_model_record("openai", &builtin).is_err());
     }
 
     #[test]

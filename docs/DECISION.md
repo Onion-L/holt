@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -259,6 +259,25 @@ normal chats' catalog-write capability is nil.
 programmatic writes touch only the live layer. Rejected: the tool writing
 `provider-store.json` — restart-gated, the first programmatic writer of a
 0600 user-owned file, and it worsens the snapshot-freeze problem.
+
+## custom-providers-accept-plaintext-http
+
+A user-defined provider's `baseUrl` may be plaintext `http` to any host,
+and the model records filed under it inherit that allowance; the built-in
+catalog layer (compiled catalog, `provider-store.json` overlay, and records
+under catalog ids) stays https-or-loopback. The definition is an explicit
+user choice of endpoint — an intranet gateway is a first-class case — and
+the key travels whatever endpoint the definition or a record filed under it
+names: both are the provider the user opted into, so the allowance belongs
+to the provider, not to one host. Boot drops a definition that shadows a
+catalog id or whose map key differs from its inner id, before model records
+inherit any allowance; live custom lookups exclude catalog ids as well, so
+an inert definition cannot redirect probe or key targets. Rejected:
+relaxing the catalog layer too (its ids promise safe defaults, and an
+accidental plaintext edit there should fail, not leak), and an
+`allowInsecure` flag on definitions (config nobody asked for — picking the
+`http` URL *is* the opt-in). The URL-shape rules stay for both layers:
+usable http(s) endpoints, never credentials in the URL.
 
 ## foreign-thinking-is-dropped-not-replayed-as-text
 

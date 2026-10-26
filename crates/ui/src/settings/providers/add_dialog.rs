@@ -261,30 +261,14 @@ pub(super) fn manual_tab(
 }
 
 /// Client-side checks for a new custom provider — the quick feedback before
-/// the engine's authoritative validation replies.
-/// Plaintext http would carry the key and the conversation in the clear,
-/// so the form mirrors the engine's rule: http is for local servers only.
+/// the engine's authoritative validation replies. A custom provider is an
+/// explicit user choice of endpoint, so both schemes pass here; the engine
+/// still rejects URLs that are not usable http(s) endpoints.
 pub(super) fn base_url_problem(base_url: &str) -> Option<String> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
         return Some(
             t!("settings_providers_usage.providers.add_dialog.error_base_url_scheme").into_owned(),
         );
-    }
-    if let Some(rest) = base_url.strip_prefix("http://") {
-        let host = rest.split(['/', '?']).next().unwrap_or_default();
-        let host = host.rsplit_once(':').map_or(host, |(host, _)| host);
-        let host = host.trim_matches(|character| character == '[' || character == ']');
-        let loopback = host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<std::net::IpAddr>()
-                .map(|ip| ip.is_loopback())
-                .unwrap_or(false);
-        if !loopback {
-            return Some(
-                t!("settings_providers_usage.providers.add_dialog.error_plaintext_http")
-                    .into_owned(),
-            );
-        }
     }
     None
 }
@@ -497,6 +481,12 @@ mod tests {
         assert!(new_provider_problem("acme", "https://x.example", "").is_some());
         assert!(
             new_provider_problem("acme", "https://x.example/v1", "openai-completions").is_none()
+        );
+        // A custom provider is an explicit endpoint choice: plaintext http
+        // to any host passes the form.
+        assert!(
+            new_provider_problem("acme", "http://192.168.1.10:11434/v1", "openai-completions")
+                .is_none()
         );
     }
 

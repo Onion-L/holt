@@ -238,8 +238,6 @@ settings_providers_usage:
         zh-CN: API 密钥（可选）
       error_base_url_scheme:
         zh-CN: Base URL 必须以 http:// 或 https:// 开头
-      error_plaintext_http:
-        zh-CN: 只有 localhost 端点允许使用明文 http
       error_id_required:
         zh-CN: 必须填写提供商 ID
       error_id_slash:

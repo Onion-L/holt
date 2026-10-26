@@ -485,10 +485,12 @@ impl EngineService {
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
         let provider = required_string(&params, "providerId")?;
-        self.providers
-            .settings
-            .remove_custom_provider(provider)
-            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        if self.providers.custom_provider(provider).is_some() {
+            self.providers
+                .settings
+                .remove_custom_provider(provider)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
         self.refresh_catalog_windows();
         RpcReply::value(&serde_json::json!({}))
     }

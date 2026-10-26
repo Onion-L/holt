@@ -238,8 +238,6 @@ settings_providers_usage:
         en-US: API key (optional)
       error_base_url_scheme:
         en-US: Base URL must start with http:// or https://
-      error_plaintext_http:
-        en-US: Plaintext http is allowed only for localhost endpoints
       error_id_required:
         en-US: Provider id is required
       error_id_slash:

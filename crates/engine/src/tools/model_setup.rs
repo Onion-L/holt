@@ -532,7 +532,17 @@ pub(crate) fn build_proposal(
                          upsert_custom_provider in the same proposal"
                     ));
                 }
-                if let Some(problem) = provider_store::model_record_problem(provider_id, record) {
+                // A record filed under a user-defined provider — stored or
+                // defined later in this same batch — rides that
+                // definition's plaintext-http allowance.
+                let allow_plain_http = provider_store::plaintext_http_allowed(
+                    providers.catalog_has_provider(provider_id),
+                    providers.custom_provider(provider_id).is_some()
+                        || planned.contains(provider_id.as_str()),
+                );
+                if let Some(problem) =
+                    provider_store::model_record_problem(provider_id, record, allow_plain_http)
+                {
                     return Err(format!(
                         "record {}/{} is not servable: {problem}",
                         provider_id, record.id
@@ -590,7 +600,7 @@ pub(crate) fn build_proposal(
                 providers_touched.insert(provider.id.clone());
             }
             CatalogChange::RemoveCustomProvider { provider_id } => {
-                if providers.settings.custom_provider(provider_id).is_none() {
+                if providers.custom_provider(provider_id).is_none() {
                     lines.push(format!("= provider {provider_id}: no definition to remove"));
                     no_ops += 1;
                 } else {
@@ -774,7 +784,15 @@ pub(crate) fn apply_changes(
                 {
                     return Err(ApplyError::Other(format!("unknown provider {provider_id}")));
                 }
-                if let Some(problem) = provider_store::model_record_problem(provider_id, record) {
+                // Only a user-defined parent (stored, or defined earlier in
+                // this batch) opts the record into plaintext http.
+                let allow_plain_http = provider_store::plaintext_http_allowed(
+                    providers.catalog_has_provider(provider_id),
+                    next.custom_providers.contains_key(provider_id),
+                );
+                if let Some(problem) =
+                    provider_store::model_record_problem(provider_id, record, allow_plain_http)
+                {
                     return Err(ApplyError::Other(format!(
                         "record {}/{}: {problem}",
                         provider_id, record.id
@@ -800,7 +818,16 @@ pub(crate) fn apply_changes(
                     .insert(provider.id.clone(), provider.clone());
             }
             CatalogChange::RemoveCustomProvider { provider_id } => {
-                next.remove_provider_entries(provider_id);
+                // A removal that was a no-op at proposal time must not clear
+                // same-id catalog settings when the batch contains other changes.
+                let live_custom = !providers.catalog_has_provider(provider_id)
+                    && next
+                        .custom_providers
+                        .get(provider_id)
+                        .is_some_and(|provider| provider.id == *provider_id);
+                if live_custom {
+                    next.remove_provider_entries(provider_id);
+                }
             }
             CatalogChange::RemoveModelRecord {
                 provider_id,
@@ -992,7 +1019,7 @@ pub(crate) fn probe_target(
     providers: &ProviderAdapter,
     provider_id: &str,
 ) -> Option<(String, String)> {
-    if let Some(provider) = providers.settings.custom_provider(provider_id) {
+    if let Some(provider) = providers.custom_provider(provider_id) {
         return Some((provider.base_url, provider.default_api));
     }
     let first = providers.models_for(provider_id).first()?.clone();
@@ -1710,7 +1737,7 @@ async fn known_key_target(
     chat: &ChatRuntime,
     provider_id: &str,
 ) -> Option<PendingKeyRequest> {
-    if let Some(provider) = providers.settings.custom_provider(provider_id) {
+    if let Some(provider) = providers.custom_provider(provider_id) {
         return Some(PendingKeyRequest {
             provider_id: provider_id.to_string(),
             provider_name: provider.name,
@@ -1798,7 +1825,7 @@ key card in the conversation. Call this as soon as the provider's docs say reque
 key, or when a `model_proposal` probe fails with HTTP 401/403 — NEVER ask the user to paste \
 a key in chat. Parameters: `providerId`, and `provider` (the draft {id, name, baseUrl, \
 defaultApi} from its docs) when the provider is in neither the catalog nor a proposal yet — \
-the draft's baseUrl must be a public https endpoint. The card collects the key locally and \
+the draft's baseUrl must be a public http(s) endpoint. The card collects the key locally and \
 saves it to the credential store; the key is never sent to you. After calling, tell the user \
 to enter the key in the card and STOP your turn. Your next user message reports the \
 outcome: 'API key saved for …' means re-run the probe with `probe: true` (inquiry mode — \
@@ -2087,10 +2114,13 @@ mod tests {
     }
 
     fn adapter(data_dir: &std::path::Path) -> ProviderAdapter {
+        let catalog = crate::provider_store::load(data_dir);
         ProviderAdapter::new(
             Arc::new(crate::credentials::HoltCredentialStore::load(data_dir).unwrap()),
-            Arc::new(crate::provider_settings::ProviderSettingsStore::load(data_dir).unwrap()),
-            crate::provider_store::load(data_dir),
+            Arc::new(
+                crate::provider_settings::ProviderSettingsStore::load(data_dir, &catalog).unwrap(),
+            ),
+            catalog,
         )
     }
 
@@ -2482,6 +2512,78 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_defined_custom_provider_opts_its_record_into_plaintext_http() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let provider = CustomProvider {
+            id: "lan".to_string(),
+            name: "LAN Gateway".to_string(),
+            base_url: "http://192.168.1.10:11434/v1".to_string(),
+            default_api: "openai-completions".to_string(),
+        };
+        let changes = vec![
+            CatalogChange::UpsertCustomProvider { provider },
+            change("lan", "lan-1", "http://192.168.1.10:11434/v1"),
+        ];
+        let ProposalOutcome::Changes { .. } = build_proposal(&providers, &changes).unwrap() else {
+            panic!("expected a change");
+        };
+        apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
+        assert!(providers.has_model("lan", "lan-1"));
+        assert_eq!(
+            providers
+                .resolve_model("lan", "lan/lan-1")
+                .unwrap()
+                .base_url,
+            "http://192.168.1.10:11434/v1"
+        );
+
+        // The same endpoint under a built-in id stays refused.
+        let changes = vec![change("openai", "gpt-http", "http://192.168.1.10:11434/v1")];
+        assert!(build_proposal(&providers, &changes).is_err());
+    }
+
+    #[test]
+    fn removing_a_shadow_provider_does_not_clear_catalog_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        providers
+            .settings
+            .upsert_model_record(
+                "openai",
+                record("openai", "existing", "https://openai.example/v1"),
+            )
+            .unwrap();
+        providers
+            .settings
+            .upsert_custom_provider(CustomProvider {
+                id: "openai".into(),
+                name: "Shadow".into(),
+                base_url: "http://192.168.1.10:11434/v1".into(),
+                default_api: "openai-completions".into(),
+            })
+            .unwrap();
+        let changes = vec![
+            CatalogChange::RemoveCustomProvider {
+                provider_id: "openai".into(),
+            },
+            change("openai", "added", "https://openai.example/v1"),
+        ];
+        let ProposalOutcome::Changes { lines, .. } = build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected the record addition to remain a change");
+        };
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("no definition to remove"))
+        );
+        apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
+        assert!(providers.has_model("openai", "existing"));
+        assert!(providers.has_model("openai", "added"));
+    }
+
+    #[test]
     fn hidden_changes_diff_both_directions() {
         let dir = tempfile::tempdir().unwrap();
         let providers = adapter(dir.path());
@@ -2763,14 +2865,47 @@ mod tests {
         .unwrap();
         assert_eq!(ok.id, "acme");
         assert!(parse_draft(&serde_json::json!({ "provider": { "id": "acme" } })).is_err());
+        // Plaintext http off loopback is a valid user choice — the draft
+        // parses; the public-host SSRF gate still runs where the draft is
+        // probed. Non-http schemes stay refused.
+        let http_draft = parse_draft(&serde_json::json!({ "provider": {
+            "id": "acme", "name": "Acme", "baseUrl": "http://acme.example/v1",
+            "defaultApi": "openai-completions",
+        }}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(http_draft.base_url, "http://acme.example/v1");
         assert!(
             parse_draft(&serde_json::json!({ "provider": {
-                "id": "acme", "name": "Acme", "baseUrl": "http://acme.example/v1",
+                "id": "acme", "name": "Acme", "baseUrl": "ftp://acme.example/v1",
                 "defaultApi": "openai-completions",
             }}))
             .is_err(),
-            "plaintext http off loopback"
+            "non-http schemes stay refused"
         );
+    }
+
+    #[tokio::test]
+    async fn a_shadow_definition_cannot_redirect_probe_or_key_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let shadow = "http://192.168.1.10:11434/v1";
+        providers
+            .settings
+            .upsert_custom_provider(CustomProvider {
+                id: "openai".into(),
+                name: "Shadow".into(),
+                base_url: shadow.into(),
+                default_api: "openai-completions".into(),
+            })
+            .unwrap();
+
+        let (probe_url, _) = probe_target(&providers, "openai").unwrap();
+        assert_ne!(probe_url, shadow);
+        let request = key_request_target(&providers, &ChatRuntime::new(), "openai", None)
+            .await
+            .unwrap();
+        assert_ne!(request.destination, shadow);
     }
 
     #[tokio::test]
@@ -2789,11 +2924,11 @@ mod tests {
             &providers,
             &chat,
             "acme",
-            Some(draft("acme", "https://8.8.8.8/v1")),
+            Some(draft("acme", "http://8.8.8.8/v1")),
         )
         .await
         .unwrap();
-        assert_eq!(request.destination, "https://8.8.8.8/v1");
+        assert_eq!(request.destination, "http://8.8.8.8/v1");
         assert_eq!(request.provider_name, "acme draft");
         // A loopback draft is refused by the public-host gate.
         assert!(

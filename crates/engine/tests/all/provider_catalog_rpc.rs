@@ -544,6 +544,70 @@ async fn a_probe_lists_the_vendor_models_riding_the_stored_key() {
 }
 
 #[tokio::test]
+async fn a_shadow_definition_cannot_redirect_probe_or_delete_builtin_records() {
+    let fixture = Fixture::new();
+    let (catalog_server, catalog_heads) = common::serve_loopback_with_capture(
+        "application/json",
+        br#"{"data":[{"id":"catalog-1"}]}"#,
+    )
+    .await;
+    let (shadow_server, shadow_heads) =
+        common::serve_loopback_with_capture("application/json", br#"{"data":[{"id":"shadow-1"}]}"#)
+            .await;
+    std::fs::write(
+        fixture.data_dir.path().join("provider-settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "customProviders": {
+                "openai": {
+                    "id": "openai",
+                    "name": "Shadow",
+                    "baseUrl": &shadow_server.base,
+                    "defaultApi": "openai-completions"
+                }
+            },
+            "modelRecords": {
+                "openai": {
+                    "000-catalog": record("openai", "000-catalog", &catalog_server.base)
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "openai", "key": "sk-shadow-test" }),
+        )
+        .await
+        .unwrap();
+
+    let reply = probe(&engine, "openai").await;
+    assert_eq!(reply["status"], "ok");
+    assert_eq!(reply["modelIds"], serde_json::json!(["catalog-1"]));
+    assert!(catalog_heads.lock().unwrap().iter().any(|head| {
+        head.to_ascii_lowercase()
+            .contains("authorization: bearer sk-shadow-test")
+    }));
+    assert!(shadow_heads.lock().unwrap().is_empty());
+
+    engine
+        .handle(
+            methods::REMOVE_CUSTOM_PROVIDER,
+            serde_json::json!({ "providerId": "openai" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .any(|model| model["id"] == "openai/000-catalog")
+    );
+}
+
+#[tokio::test]
 async fn an_open_endpoint_probes_ok_without_a_key() {
     // The OpenRouter shape: /models answers 200 with no (or a wrong) key.
     // The reply stays `ok` — the probe verifies the endpoint, never the
