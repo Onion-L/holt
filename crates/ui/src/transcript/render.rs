@@ -1854,6 +1854,7 @@ fn tool_icon_path(call: &ToolCall) -> &'static str {
         ToolCall::ListDir { .. } | ToolCall::Glob { .. } => crate::icons::FOLDER_WITH_FILES,
         ToolCall::WebFetch { .. } | ToolCall::WebSearch { .. } => crate::icons::GLOBAL,
         ToolCall::Todo { .. } => crate::icons::CHECKLIST,
+        ToolCall::ScheduleRoutine { .. } => crate::icons::CLOCK_CIRCLE,
         call if is_agent_call(call) => crate::icons::BOT,
         ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => crate::icons::WIDGET,
     }

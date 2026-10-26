@@ -104,6 +104,28 @@ fn decode_tool_call(
                 })
                 .unwrap_or_default(),
         },
+        "schedule_routine" => {
+            let zone = arg("timeZone")
+                .map(|zone| format!(" ({zone})"))
+                .unwrap_or_default();
+            let schedule = if let Some(minutes) = arguments
+                .get("delayMinutes")
+                .and_then(serde_json::Value::as_i64)
+            {
+                format!("in {minutes} minutes")
+            } else if let Some(at) = arg("at") {
+                format!("at {at}{zone}")
+            } else if let Some(cron) = arg("cron") {
+                format!("cron {cron}{zone}")
+            } else {
+                "invalid schedule".into()
+            };
+            TranscriptToolCall::ScheduleRoutine {
+                name: arg("name").unwrap_or_default(),
+                schedule,
+                prompt: arg("prompt").unwrap_or_default(),
+            }
+        }
         // MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate) decode onto the structured Mcp chip: the
         // two-level name splits at the first `__` after the prefix, the
         // input rides verbatim. A server name containing `__` would
@@ -800,6 +822,21 @@ mod tests {
             )),
             TranscriptToolCall::WebSearch {
                 query: "holt".into(),
+            }
+        );
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "schedule_routine",
+                serde_json::json!({
+                    "name": "Check issues",
+                    "prompt": "Read the open issues and summarize them",
+                    "delayMinutes": 120
+                })
+            )),
+            TranscriptToolCall::ScheduleRoutine {
+                name: "Check issues".into(),
+                schedule: "in 120 minutes".into(),
+                prompt: "Read the open issues and summarize them".into(),
             }
         );
         // Unknown tools degrade to a named chip, input intact (the policy

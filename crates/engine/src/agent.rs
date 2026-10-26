@@ -2086,6 +2086,13 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         // MCP policy: subagent, planning, and Provider Mode Turns keep
         // their curated toolsets (this branch already excludes all three).
         tools.push(crate::tools::create_todo_tool());
+        if let Some(routines) = runtime.routines.get().cloned() {
+            tools.push(crate::tools::create_schedule_routine_tool(
+                runtime.clone(),
+                routines,
+                chat_id.clone(),
+            ));
+        }
     }
     // The MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the Turn-start snapshot — every enabled
     // server's tools join the toolset as `mcp__<server>__<tool>` agent

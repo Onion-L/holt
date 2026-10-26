@@ -177,6 +177,11 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
             .map(|i| format!("{} {}", if i.done { "[x]" } else { "[ ]" }, i.text))
             .collect::<Vec<_>>()
             .join("\n"),
+        ToolCall::ScheduleRoutine {
+            name,
+            schedule,
+            prompt,
+        } => format!("{name}\n{schedule}\n\n{prompt}"),
         ToolCall::Mcp {
             server,
             tool,

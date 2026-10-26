@@ -920,9 +920,9 @@ pub fn sidecar_payload(event: &AgentEvent) -> Option<SidecarPayload> {
 
 /// Render-only privacy policy — strip heavy/sensitive tool inputs before a call enters the doc.
 ///
-/// Keeps: command / path / pattern / url / query / todo items / server+tool names,
-/// and a subagent spawn's model/type (see [`spawn_badge`] — a couple of short
-/// identifiers the chip names the child by).
+/// Keeps: command / path / pattern / url / query / todo items / routine name,
+/// schedule and prompt / server+tool names, plus a subagent spawn's model/type
+/// (see [`spawn_badge`] — a couple of short identifiers the chip names the child by).
 /// Drops: WriteFile content, EditFile old/new strings, WebFetch prompt, Mcp/Unknown input.
 /// Full inputs remain only in the host's local run journal. Idempotent.
 pub fn sanitize_tool_call(call: &ToolCall) -> ToolCall {

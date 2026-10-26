@@ -10,11 +10,13 @@ use std::sync::Mutex;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use croner::Cron;
-use holt_proto::{ROUTINE_RUN_LIMIT, Routine, RoutineRun, RoutineView, RunOutcome};
+use holt_proto::{
+    ChatConfig, ROUTINE_RUN_LIMIT, Routine, RoutineCheckout, RoutineRun, RoutineView, RunOutcome,
+};
 use holt_rpc::RpcError;
 use tokio::sync::watch;
 
-use crate::EngineError;
+use crate::{Clock, EngineError};
 
 const FILE_NAME: &str = "routines.json";
 
@@ -22,10 +24,11 @@ pub(crate) struct Routines {
     path: PathBuf,
     state: Mutex<Vec<Routine>>,
     tx: watch::Sender<serde_json::Value>,
+    clock: Clock,
 }
 
 impl Routines {
-    pub fn load(data_dir: &Path) -> Result<Self, EngineError> {
+    pub fn load(data_dir: &Path, clock: Clock) -> Result<Self, EngineError> {
         let path = data_dir.join(FILE_NAME);
         let mut routines: Vec<Routine> = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
@@ -50,6 +53,7 @@ impl Routines {
             path,
             state: Mutex::new(Vec::new()),
             tx,
+            clock,
         };
         if interrupted {
             store.persist(&routines)?;
@@ -61,6 +65,44 @@ impl Routines {
     /// The current `Vec<RoutineView>` as served by `ListRoutines`.
     pub fn views(&self) -> serde_json::Value {
         self.tx.borrow().clone()
+    }
+
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        self.clock.now()
+    }
+
+    /// Create and persist one validated Routine. The list watch that wakes
+    /// the scheduler is published only after the write succeeds.
+    pub(crate) fn create(&self, draft: RoutineDraft) -> Result<Routine, RpcError> {
+        let now = self.clock.now();
+        self.update(|routines| {
+            // Agent tool calls carry deterministic ids so retrying the same
+            // call after a crash returns the first committed Routine, even
+            // after its one-shot fire time has passed.
+            if let Some(id) = draft.id.as_deref()
+                && let Some(existing) = routines.iter().find(|routine| routine.id == id)
+            {
+                return Ok(existing.clone());
+            }
+            let draft = draft.validate(now)?;
+            let routine = Routine {
+                id: draft.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                name: draft.name,
+                space_id: draft.space_id,
+                prompt: draft.prompt,
+                cron: draft.cron,
+                at: draft.at,
+                time_zone: draft.time_zone,
+                config: draft.config,
+                checkout: draft.checkout,
+                paused: None,
+                created_at: now,
+                last_fired_at: None,
+                runs: Vec::new(),
+            };
+            routines.push(routine.clone());
+            Ok(routine)
+        })
     }
 
     pub fn get(&self, id: &str) -> Option<Routine> {
@@ -165,10 +207,54 @@ pub(crate) fn push_run(routine: &mut Routine, run: RoutineRun) {
     routine.runs.truncate(ROUTINE_RUN_LIMIT);
 }
 
+/// A Routine's configuration before identity, pause state, and run history.
+pub(crate) struct RoutineDraft {
+    pub(crate) id: Option<String>,
+    pub(crate) name: String,
+    pub(crate) space_id: String,
+    pub(crate) prompt: String,
+    pub(crate) cron: String,
+    pub(crate) at: Option<NaiveDateTime>,
+    pub(crate) time_zone: String,
+    pub(crate) config: ChatConfig,
+    pub(crate) checkout: RoutineCheckout,
+}
+
+impl RoutineDraft {
+    pub(crate) fn validate(mut self, now: DateTime<Utc>) -> Result<Self, RpcError> {
+        self.name = self.name.trim().to_string();
+        if self.name.is_empty() {
+            return Err(RpcError::BadParams("name must not be empty".into()));
+        }
+        if self.prompt.trim().is_empty() {
+            return Err(RpcError::BadParams("prompt must not be empty".into()));
+        }
+        self.cron = self.cron.trim().to_string();
+        if self.time_zone.trim().is_empty() {
+            self.time_zone = local_time_zone();
+        } else {
+            self.time_zone = self.time_zone.trim().to_string();
+        }
+        if let Schedule::Once(at, _) = parse_schedule(&self.cron, self.at, &self.time_zone)?
+            && at <= now
+        {
+            return Err(RpcError::BadParams("that time has passed".into()));
+        }
+        Ok(self)
+    }
+}
+
 /// The local IANA time zone, falling back to UTC when the system cannot
 /// name one.
 pub(crate) fn local_time_zone() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string())
+}
+
+/// A requested time zone, or the device's when none is given.
+pub(crate) fn time_zone_or_local(time_zone: Option<String>) -> String {
+    time_zone
+        .filter(|zone| !zone.trim().is_empty())
+        .map_or_else(local_time_zone, |zone| zone.trim().to_string())
 }
 
 /// A Routine's schedule, read in its zone.
@@ -294,6 +380,32 @@ mod tests {
 
     fn at(time: &str) -> DateTime<Utc> {
         time.parse().unwrap()
+    }
+
+    fn agent_draft() -> RoutineDraft {
+        RoutineDraft {
+            id: Some("agent-chat-1-call-1".into()),
+            name: "Check issues".into(),
+            space_id: "space-1".into(),
+            prompt: "Check the issues".into(),
+            cron: String::new(),
+            at: Some("2026-10-07T10:00:00".parse().unwrap()),
+            time_zone: "UTC".into(),
+            config: routine("0 * * * *").config,
+            checkout: RoutineCheckout::MainCheckout,
+        }
+    }
+
+    #[test]
+    fn agent_creation_is_idempotent_even_after_the_fire_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Clock::manual(at("2026-10-07T09:00:00Z"));
+        let store = Routines::load(dir.path(), clock.clone()).unwrap();
+        let first = store.create(agent_draft()).unwrap();
+        clock.set(at("2026-10-08T09:00:00Z"));
+        let second = store.create(agent_draft()).unwrap();
+        assert_eq!(first.id, second.id);
+        assert_eq!(store.list().len(), 1);
     }
 
     #[test]

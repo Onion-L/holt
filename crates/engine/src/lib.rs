@@ -318,7 +318,10 @@ impl LocalEngine {
         let goal_settings = goal_settings::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
-        let routines = Arc::new(routines::Routines::load(&config.data_dir)?);
+        let routines = Arc::new(routines::Routines::load(
+            &config.data_dir,
+            config.clock.clone().unwrap_or_default(),
+        )?);
         let _ = runtime.routines.set(routines.clone());
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
