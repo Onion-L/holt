@@ -1869,6 +1869,19 @@ enum ChipTrail {
     OpenArrow,
 }
 
+fn subagent_avatar_mood(tool: &ToolItem) -> AvatarMood {
+    if tool.is_error
+        || (tool.subagent_ref.is_some()
+            && matches!(tool.subagent_status, Some(SubagentStatus::Failed)))
+    {
+        AvatarMood::Failed
+    } else if matches!(tool.subagent_status, Some(SubagentStatus::Running)) || !tool.resolved {
+        AvatarMood::Running
+    } else {
+        AvatarMood::Done
+    }
+}
+
 /// The chip's content row: bare icon + label + detail line (+ inline trailing
 /// affordance when the chip expands or links out). Shared between the plain
 /// chip, the header of an expandable chip, and the spawn link chip. Flat by
@@ -1916,20 +1929,9 @@ fn chip_header_row(
     } else {
         theme.text_muted
     };
-    let avatar = identity.as_ref().map(|identity| {
-        // Running from first paint (call unresolved, ref not yet stamped)
-        // through the eager-done window (ref stamped, status Running); the
-        // status wins once it lands. Legacy docs carry no status: settled
-        // chips read as Done.
-        let mood = if failed {
-            AvatarMood::Failed
-        } else if matches!(tool.subagent_status, Some(SubagentStatus::Running)) || !tool.resolved {
-            AvatarMood::Running
-        } else {
-            AvatarMood::Done
-        };
-        agent_avatar(identity, mood, view, cx)
-    });
+    let avatar = identity
+        .as_ref()
+        .map(|identity| agent_avatar(identity, subagent_avatar_mood(tool), view, cx));
     div()
         .h(px(CHIP_HEIGHT))
         .w_full()

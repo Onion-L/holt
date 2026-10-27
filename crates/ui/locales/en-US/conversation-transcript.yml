@@ -99,6 +99,9 @@ conversation_transcript:
       en-US: "… %{count} more lines"
     subagent:
       en-US: Subagent
+    subagent_fanout:
+      more:
+        en-US: "+ %{count} more subagents"
   turn_card:
     edited_files:
       one:

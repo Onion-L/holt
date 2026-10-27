@@ -3,9 +3,243 @@
 //! spawn chips, and their tab-strip titles. `render_row` delegates whole
 //! ToolGroup rows here.
 
+use super::super::model::is_agent_tool;
 use super::*;
 
+const SUBAGENT_HEADER_AVATARS: usize = 5;
+const SUBAGENT_HEADER_AVATAR_SIZE: f32 = 22.0;
+const SUBAGENT_HEADER_AVATAR_OVERLAP: f32 = 3.0;
+
+fn subagent_header_order(tools: &[ToolItem]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..tools.len()).collect();
+    // Keep active work visible in the five-face summary. The sort is stable,
+    // so each lifecycle group retains transcript order.
+    indices.sort_by_key(|ix| {
+        let tool = &tools[*ix];
+        if matches!(tool.subagent_status, Some(SubagentStatus::Running))
+            || (!tool.resolved && tool.subagent_ref.is_some())
+        {
+            0
+        } else if !tool.resolved && tool.subagent_ref.is_none() {
+            1
+        } else {
+            2
+        }
+    });
+    indices
+}
+
 impl Transcript {
+    fn render_subagent_fanout(
+        &mut self,
+        row_id: &SharedString,
+        tools: &Arc<Vec<ToolItem>>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chip_cwd = self
+            .chat_id
+            .as_deref()
+            .and_then(|id| self.state.read(cx).chat_row(id).and_then(|c| c.cwd.clone()));
+        let identities: Vec<Option<AgentIdentity>> = tools
+            .iter()
+            .map(|tool| {
+                self.agent_identities
+                    .identity_for(tool.call_id.as_deref(), tool.subagent_ref.as_deref())
+            })
+            .collect();
+        let order = subagent_header_order(tools);
+        let names = order
+            .iter()
+            .take(SUBAGENT_HEADER_AVATARS)
+            .map(|ix| {
+                identities[*ix]
+                    .as_ref()
+                    .map(|identity| identity.name.to_string())
+                    .unwrap_or_else(|| subagent_tab_title(&tools[*ix].call).to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remaining = tools.len().saturating_sub(SUBAGENT_HEADER_AVATARS);
+        let face_count = order.len().min(SUBAGENT_HEADER_AVATARS);
+        let faces_width = 8.0 + face_count as f32 * SUBAGENT_HEADER_AVATAR_SIZE
+            - face_count.saturating_sub(1) as f32 * SUBAGENT_HEADER_AVATAR_OVERLAP;
+        let key = SharedString::from(format!("{row_id}#agents-fanout"));
+        let mut fold = self.folds.get(&key).copied().unwrap_or_default();
+        let open = fold.open.unwrap_or(false);
+        let open_height = tools.len() as f32 * CHIP_HEIGHT;
+        let target = if open { open_height } else { 0.0 };
+        let animating = fold.epoch > 0
+            && fold
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
+        fold.last_target = target;
+        self.folds.insert(key.clone(), fold);
+        let toggle_id = key.clone();
+        let header = div()
+            .id(key.clone())
+            .debug_selector(|| "subagent-fanout".to_string())
+            .h(px(CHIP_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(crate::theme::ink(0.04)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_fold(toggle_id.clone(), open_height, false);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .relative()
+                    .h(px(CHIP_HEIGHT))
+                    .w(px(faces_width))
+                    .flex_none()
+                    .debug_selector(|| "subagent-fanout-faces".to_string())
+                    .children(order.iter().take(SUBAGENT_HEADER_AVATARS).enumerate().map(
+                        |(position, ix)| {
+                            let tool = &tools[*ix];
+                            div()
+                                .absolute()
+                                .left(px(4.0
+                                    + position as f32
+                                        * (SUBAGENT_HEADER_AVATAR_SIZE
+                                            - SUBAGENT_HEADER_AVATAR_OVERLAP)))
+                                .top(px((CHIP_HEIGHT - SUBAGENT_HEADER_AVATAR_SIZE) / 2.0))
+                                .size(px(SUBAGENT_HEADER_AVATAR_SIZE))
+                                .debug_selector(move || format!("subagent-fanout-face-{position}"))
+                                .when_some(identities[*ix].as_ref(), |face, identity| {
+                                    face.child(agent_avatar(
+                                        identity,
+                                        subagent_avatar_mood(tool),
+                                        cx.entity_id(),
+                                        cx,
+                                    ))
+                                })
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .ml(px(8.0))
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .debug_selector(|| "subagent-fanout-names".to_string())
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(names)),
+            )
+            .when(remaining > 0, |row| {
+                row.child(
+                    div()
+                        .ml(px(8.0))
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(
+                            t!(
+                                "conversation_transcript.tool.subagent_fanout.more",
+                                count = remaining
+                            )
+                            .into_owned(),
+                        )),
+                )
+            })
+            .child(
+                div()
+                    .px(px(8.0))
+                    .flex_none()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from(if open { "▾" } else { "▸" })),
+            );
+        let rows = div()
+            .flex()
+            .flex_col()
+            .children(tools.iter().enumerate().map(|(ix, tool)| {
+                let identity = identities[ix].clone();
+                let chip = if let Some(doc_id) = tool.subagent_ref.clone() {
+                    let chat_id = self.chat_id.clone().unwrap_or_default();
+                    let title = subagent_tab_title(&tool.call);
+                    let frozen = matches!(
+                        tool.subagent_status,
+                        Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                    );
+                    subagent_chip(
+                        tool,
+                        identity,
+                        SharedString::from(format!("{row_id}#fanout-s{ix}")),
+                        cx.listener(move |_, _, _, cx| {
+                            cx.emit(TranscriptEvent::OpenSubagent {
+                                chat_id: chat_id.clone(),
+                                doc_id: doc_id.to_string(),
+                                title: title.to_string(),
+                                frozen,
+                            });
+                        }),
+                        false,
+                        theme,
+                        cx.entity_id(),
+                        chip_cwd.as_deref(),
+                        cx,
+                    )
+                } else {
+                    tool_chip(
+                        tool,
+                        identity,
+                        false,
+                        (SharedString::from(format!("{row_id}#fanout-r{ix}")), None),
+                        theme,
+                        cx.entity_id(),
+                        chip_cwd.as_deref(),
+                        cx,
+                    )
+                };
+                div()
+                    .h(px(CHIP_HEIGHT))
+                    .w_full()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .debug_selector(|| format!("subagent-fanout-row-{ix}"))
+                    .child(chip)
+                    .into_any_element()
+            }));
+        let body: AnyElement = if animating {
+            let from = fold.from;
+            div()
+                .overflow_hidden()
+                .debug_selector(|| "subagent-fanout-body".to_string())
+                .child(rows)
+                .with_animation(
+                    SharedString::from(format!("{key}-tween{}", fold.epoch)),
+                    RESIZE.animation(),
+                    move |el, t| el.h(px(motion::lerp(from, target, t))),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .overflow_hidden()
+                .debug_selector(|| "subagent-fanout-body".to_string())
+                .h(px(target))
+                .child(rows)
+                .into_any_element()
+        };
+        div()
+            .w_full()
+            .pt(px(CHIPS_TOP_PAD))
+            .flex()
+            .flex_col()
+            .font_family(theme.font_sans_fixed.clone())
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
     fn tool_diff_highlight_for(
         &mut self,
         row_id: &SharedString,
@@ -51,6 +285,9 @@ impl Transcript {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if !tools.is_empty() && tools.iter().all(is_agent_tool) {
+            return self.render_subagent_fanout(row_id, tools, theme, cx);
+        }
         let mut fold = self.folds.get(row_id).copied().unwrap_or_default();
         // Path-bearing chip details render cwd-relative when the path is under
         // the chat's working directory (the absolute prefix is noise in a
@@ -968,7 +1205,8 @@ fn subagent_chip(
         })
         .child(
             div()
-                .id(id)
+                .id(id.clone())
+                .debug_selector(move || format!("subagent-chip-{id}"))
                 .when(rail, |el| el.ml(px(12.0)))
                 .min_w_0()
                 .flex_1()
@@ -996,6 +1234,53 @@ fn subagent_chip(
 mod tests {
     use super::*;
     use holt_proto::view::tool_chip_content;
+
+    fn agent(ix: usize, status: Option<SubagentStatus>, resolved: bool, has_ref: bool) -> ToolItem {
+        ToolItem {
+            call: ToolCall::Unknown {
+                name: format!("Agent: task {ix}"),
+                input: None,
+            },
+            call_id: Some(SharedString::from(format!("call-{ix}"))),
+            is_error: status == Some(SubagentStatus::Failed),
+            resolved,
+            detail: None,
+            invocation: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            subagent_ref: has_ref.then(|| SharedString::from(format!("chat--sub--{ix}"))),
+            subagent_status: status,
+            subagent_tail: None,
+            subagent_usage: None,
+            is_thought: false,
+            gate: None,
+        }
+    }
+
+    #[test]
+    fn fanout_header_shows_five_active_faces_then_overflow() {
+        let mut tools = Vec::new();
+        for ix in 0..30 {
+            let (status, resolved, has_ref) = match ix {
+                0..=15 => (Some(SubagentStatus::Done), true, true),
+                16 | 17 => (Some(SubagentStatus::Failed), true, true),
+                18..=25 => (Some(SubagentStatus::Running), true, true),
+                _ => (None, false, false),
+            };
+            tools.push(agent(ix, status, resolved, has_ref));
+        }
+        let order = subagent_header_order(&tools);
+        assert_eq!(&order[..SUBAGENT_HEADER_AVATARS], &[18, 19, 20, 21, 22]);
+        assert_eq!(&order[8..12], &[26, 27, 28, 29]);
+        assert_eq!(tools.len().saturating_sub(SUBAGENT_HEADER_AVATARS), 25);
+
+        let settled: Vec<ToolItem> = (0..5)
+            .map(|ix| agent(ix, Some(SubagentStatus::Done), true, true))
+            .collect();
+        assert_eq!(subagent_header_order(&settled), [0, 1, 2, 3, 4]);
+        assert_eq!(settled.len().saturating_sub(SUBAGENT_HEADER_AVATARS), 0);
+    }
 
     #[test]
     fn subagent_tab_titles() {

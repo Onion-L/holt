@@ -101,8 +101,8 @@ pub(super) fn is_spawn_link(item: &ToolItem) -> bool {
     is_agent_call(&item.call) && item.subagent_ref.is_some()
 }
 
-/// Ordinary tool groups fold behind a summary header; agent/spawn chips
-/// render as their own always-open row.
+/// Ordinary tool groups fold behind a summary header; agent-only groups use
+/// the renderer's one-line expandable fan-out row.
 pub(super) fn tool_group_collapses(tools: &[ToolItem]) -> bool {
     tools.iter().any(|t| !is_agent_tool(t))
 }
