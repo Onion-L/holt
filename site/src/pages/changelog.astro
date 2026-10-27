@@ -127,11 +127,38 @@ import ChangelogController from '../components/ChangelogController';
 <div class="wrap">
   <ol class="vers">
 
+    <li class="ver" id="v0.6.3">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.6.3">0.6.3</a>
+        <span class="vdate mono">Oct 27, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Holt updates itself on Windows and Linux — a digest-verified manifest drives the update: Windows ships as a signed setup installer alongside the zip, Linux swaps its AppImage in place, and a failed apply cleans up its staged file; macOS keeps its existing updater</li>
+            <li>A Check for Updates action in Settings → General runs the check on demand, and a check that cannot reach the release reports the failure instead of answering "up to date"; a transient blip no longer withdraws an update a previous round found</li>
+            <li>Agents can schedule routines — the agent sets a routine up itself, stamped with the device's time zone and local time</li>
+            <li>Custom providers may use plaintext <code>http</code>, so a local model server on <code>localhost</code> works without TLS</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>The retry chip counts down to the retry instead of sitting static</li>
+            <li>Bare URLs end at CJK and full-width punctuation, so a Chinese sentence around a link no longer swallows the closing text into the URL</li>
+            <li>Usage bars use square corners like the rest of the panel</li>
+            <li>The download page keeps a Windows ARM64 visitor on the native zip when the release carries no ARM64 setup, instead of falling back to the emulated x64 installer</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.6.2">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.6.2">0.6.2</a>
         <span class="vdate mono">Oct 24, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">

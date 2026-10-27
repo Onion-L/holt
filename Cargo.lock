@@ -3342,7 +3342,7 @@ dependencies = [
 
 [[package]]
 name = "holt"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "holt-engine",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "holt-doc"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "chrono",
  "holt-proto",
@@ -3399,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "holt-engine"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -3444,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "holt-proto"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "chrono",
  "serde",
@@ -3455,7 +3455,7 @@ dependencies = [
 
 [[package]]
 name = "holt-rpc"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "async-trait",
  "futures",
@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "holt-runner"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "futures",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "holt-syntax"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "thiserror 2.0.21",
  "tree-sitter",
@@ -3516,7 +3516,7 @@ dependencies = [
 
 [[package]]
 name = "holt-theme"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "holt-ui"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

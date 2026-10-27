@@ -16,7 +16,7 @@ members = [
 exclude = ["third_party/gpui"]
 
 [workspace.package]
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 license = "GPL-3.0"
 publish = false
