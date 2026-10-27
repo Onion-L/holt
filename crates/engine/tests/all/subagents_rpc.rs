@@ -282,7 +282,7 @@ async fn interrupt_cancels_child_approval_and_restart_does_not_resume_it() {
 }
 
 #[tokio::test]
-async fn concurrent_children_are_limited_and_a_failure_does_not_cancel_siblings() {
+async fn concurrent_children_are_all_admitted_and_a_failure_does_not_cancel_siblings() {
     let fixture = Fixture::new();
     let gates: Vec<_> = (0..4)
         .map(|_| Arc::new(tokio::sync::Notify::new()))
@@ -304,15 +304,11 @@ async fn concurrent_children_are_limited_and_a_failure_does_not_cancel_siblings(
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Investigate in parallel").await;
-    common::wait_for_requests(&provider, 5).await;
-    assert_eq!(
-        provider.requests().len(),
-        5,
-        "fifth child must wait for a slot"
-    );
-    gates[0].notify_one();
+    // Five children sit under the eight-slot cap, so all five are admitted
+    // at once while the gated four still hold — parent plus five child
+    // requests — and the failing sibling never disturbs the rest.
     common::wait_for_requests(&provider, 6).await;
-    for gate in &gates[1..] {
+    for gate in gates.iter() {
         gate.notify_one();
     }
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
@@ -333,27 +329,58 @@ async fn concurrent_children_are_limited_and_a_failure_does_not_cancel_siblings(
 }
 
 #[tokio::test]
-async fn ninth_child_is_rejected_without_a_provider_request() {
+async fn the_ninth_concurrent_child_waits_for_a_free_slot_but_every_spawn_runs() {
     let fixture = Fixture::new();
+    let gates: Vec<_> = (0..8)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
     let mut script = vec![ScriptedReply::ToolCalls(
         (0..9)
             .map(|i| common::tool_call(&format!("spawn-{i}"), "Agent", brief("explorer")))
             .collect(),
     )];
-    script.extend((0..8).map(|_| ScriptedReply::text("Child done")));
+    script.extend(
+        gates
+            .iter()
+            .map(|g| ScriptedReply::gated(g.clone(), "Child done")),
+    );
+    script.push(ScriptedReply::text("Child nine done"));
     script.push(ScriptedReply::text("Parent done"));
     let provider = ScriptedProvider::new(script);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate nine").await;
+    // Eight slots admit eight children; the ninth waits — the budget bounds
+    // concurrency, not how many children the Turn may create.
+    common::wait_for_requests(&provider, 9).await;
+    assert_eq!(
+        provider.requests().len(),
+        9,
+        "ninth child must wait for a free slot"
+    );
+    gates[0].notify_one();
+    common::wait_for_requests(&provider, 10).await;
+    for gate in &gates[1..] {
+        gate.notify_one();
+    }
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
-    assert_eq!(requests.len(), 10);
+    assert_eq!(requests.len(), 11);
+    let results: Vec<_> = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolResult(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 9);
     assert!(
-        requests.last().unwrap().messages.iter().any(
-            |m| matches!(m, Message::ToolResult(r) if r.tool_call_id == "spawn-8" && r.is_error)
-        )
+        results.iter().all(|r| !r.is_error),
+        "no per-Turn budget: every spawn in the Turn runs"
     );
 }
 
@@ -643,13 +670,13 @@ async fn steer_waits_for_child_cleanup_before_starting_the_next_turn() {
 }
 
 #[tokio::test]
-async fn concurrency_limit_is_shared_between_parent_chats() {
+async fn the_concurrency_budget_is_shared_between_parent_chats() {
     let fixture = Fixture::new();
-    let gates: Vec<_> = (0..4)
+    let gates: Vec<_> = (0..8)
         .map(|_| Arc::new(tokio::sync::Notify::new()))
         .collect();
     let mut script = vec![ScriptedReply::ToolCalls(
-        (0..4)
+        (0..8)
             .map(|i| common::tool_call(&format!("spawn-{i}"), "Agent", brief("explorer")))
             .collect(),
     )];
@@ -667,16 +694,22 @@ async fn concurrency_limit_is_shared_between_parent_chats() {
     common::setup_chat(&engine, "chat-1").await;
     common::setup_chat(&engine, "chat-2").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate four").await;
-    common::wait_for_requests(&provider, 5).await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate eight").await;
+    common::wait_for_requests(&provider, 9).await;
     common::run_prompt(&engine, "chat-2", &fixture.cwd(), "Delegate one").await;
-    common::wait_for_requests(&provider, 6).await;
-    assert_eq!(provider.requests().len(), 6);
+    // Only chat-2's parent request fires: chat-1's eight children hold every
+    // slot, so its child waits — the budget is Holt-wide, not per chat.
+    common::wait_for_requests(&provider, 10).await;
+    assert_eq!(
+        provider.requests().len(),
+        10,
+        "chat-2's child must wait while chat-1 holds all eight slots"
+    );
     gates[0].notify_one();
-    common::wait_for_requests(&provider, 8).await;
+    common::wait_for_requests(&provider, 12).await;
     for gate in &gates[1..] {
         gate.notify_one();
     }
-    common::wait_for_requests(&provider, 9).await;
+    common::wait_for_requests(&provider, 13).await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 }
