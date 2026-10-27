@@ -99,6 +99,9 @@ conversation_transcript:
       zh-CN: "… 还有 %{count} 行"
     subagent:
       zh-CN: Subagent
+    subagent_fanout:
+      more:
+        zh-CN: "还有 %{count} 个 subagent"
   turn_card:
     edited_files:
       one:
