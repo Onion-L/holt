@@ -10,7 +10,7 @@ Not here: the run loop a child executes (see run-loop — a child is one `run_ag
 | --- | --- | --- |
 | Roles | Two fixed roles inheriting the parent Turn's model, reasoning level, working directory, and permission mode. **Explorer** keeps the read-only set (`ls`, `read`, `grep`, `read_chat`, `web_fetch`, plus `web_search` only when the parent Turn resolved a backend); **Worker** adds `write`, `edit`, `bash`. Neither delegates | [`crates/engine/src/subagents.rs`](../../crates/engine/src/subagents.rs) (`system_prompt`) |
 | Briefing | Each child starts with independent History, a task brief, applicable ancestor `AGENTS.md` instructions, and a fresh skills listing | `subagents.rs`, `agent.rs` |
-| Concurrency | An engine-wide semaphore admits four running children; a parent Turn may create eight in total. No fixed request-count or total-runtime cap | `subagents.rs` (`Semaphore(4)`, `MAX_CHILDREN_PER_TURN`) |
+| Concurrency | An engine-wide semaphore admits eight running children, shared across every chat; a parent Turn may create any number (waves of children — the orchestrator shape). No fixed request-count or total-runtime cap | `subagents.rs` (`MAX_RUNNING_CHILDREN`) |
 | Cancellation | Descends from the parent Turn — Stop and Steer wait for child cleanup before the next Turn. A child failure returns an error and partial output without cancelling siblings | `subagents.rs` |
 | Child documents | `{parentChatId}--sub--{uuid}` identities with independent transcript and History files under `subagents/<parentChatId>/`; they reuse the transcript runtime and event folding but never join the chat registry, session list, or queue consumer. The child's queue is unused and never persisted | `subagents.rs`, [`store.rs`](../../crates/engine/src/store.rs) |
 | Result handoff | Only the final summary enters parent History, bounded to 12,000 tokens measured with the shared o200k tokenizer — a stable output budget, not a claim about any provider's billing tokenizer. The full final output persists under the child's `results/` directory; truncation carries an explicit notice and an absolute path usable by `read`. The independent transcript retains the intermediate work | `subagents.rs` (`RESULT_TOKENS`) |
@@ -39,4 +39,4 @@ cargo test -p holt-engine subagent
 cargo test -p holt-engine --test all subagent
 ```
 
-The suites cover role toolsets and briefing, the semaphore and per-Turn caps, cancellation descent and sibling isolation, doc-id minting and persistence layout, the bounded summary with its truncation notice and results file, recovery-as-aborted, and parent-side projection of child approvals.
+The suites cover role toolsets and briefing, the eight-slot concurrency cap and its Holt-wide sharing, cancellation descent and sibling isolation, doc-id minting and persistence layout, the bounded summary with its truncation notice and results file, recovery-as-aborted, and parent-side projection of child approvals.

@@ -4,10 +4,7 @@ use std::{
     collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use futures::FutureExt as _;
@@ -25,7 +22,11 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{AgentRun, AgentRuntime, ChatRuntime};
 
 const RESULT_TOKENS: usize = 12_000;
-const MAX_CHILDREN_PER_TURN: usize = 8;
+/// How many children may run at once, Holt-wide: the admission cap that
+/// keeps a burst of spawns from tripping provider rate limits. A Turn may
+/// create any number of children — the budget bounds concurrency, not
+/// total, so an orchestrating Turn can run waves of children.
+const MAX_RUNNING_CHILDREN: usize = 8;
 
 pub(crate) async fn system_prompt(
     role: &str,
@@ -78,7 +79,7 @@ impl Default for Subagents {
     fn default() -> Self {
         Self {
             children: Mutex::new(HashMap::new()),
-            slots: Arc::new(Semaphore::new(4)),
+            slots: Arc::new(Semaphore::new(MAX_RUNNING_CHILDREN)),
         }
     }
 }
@@ -275,30 +276,10 @@ pub(crate) struct Delegation {
     pub(crate) cancel: CancellationToken,
 }
 
-/// The per-Turn Agent-call budget gate. The counter is mounted with the tool
-/// (once per Turn), so every call consumes a slot — including calls made from
-/// later assistant messages of the same Turn; the message states that
-/// granularity and the used/limit counts so the model can budget the rest of
-/// its run.
-fn claim_child_slot(count: &AtomicUsize) -> Result<(), String> {
-    match count.try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-        (n < MAX_CHILDREN_PER_TURN).then_some(n + 1)
-    }) {
-        Ok(_) => Ok(()),
-        Err(used) => Err(format!(
-            "Your run has used all {MAX_CHILDREN_PER_TURN} subagent slots \
-             ({used}/{MAX_CHILDREN_PER_TURN}) — the budget counts every Agent \
-             call for the whole Turn, not per assistant message. Complete the \
-             remaining work yourself."
-        )),
-    }
-}
-
 pub(crate) fn tool(delegation: Delegation) -> AgentTool {
-    let count = Arc::new(AtomicUsize::new(0));
     AgentTool {
         name: "Agent".into(), label: "Delegate".into(),
-        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work. This foreground call waits and returns only the final summary; inspect the full result file if truncated. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children per Turn, four running across Holt, and children cannot delegate.".into(),
+        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work. This foreground call waits and returns only the final summary; inspect the full result file if truncated. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children run at once across Holt (later calls wait for a free slot); a Turn may create any number of children; children cannot delegate.".into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {
                 "subagent_type": {"type": "string", "enum": ["explorer", "worker"]},
@@ -309,13 +290,9 @@ pub(crate) fn tool(delegation: Delegation) -> AgentTool {
         constrained_sampling: None, prepare_arguments: None, execution_mode: None,
         execute: Arc::new(move |id, args, _, _| {
             let delegation = delegation.clone();
-            let count = count.clone();
             let id = id.to_owned();
             let args = args.clone();
-            Box::pin(async move {
-                claim_child_slot(&count)?;
-                execute(delegation, id, args).await
-            })
+            Box::pin(async move { execute(delegation, id, args).await })
         }),
     }
 }
@@ -709,25 +686,6 @@ mod tests {
 
         let worker = system_prompt("worker", "/tmp/holt", &catalog, false).await;
         assert!(worker.contains("ls, read, grep, read_chat, web_fetch, write, edit, and bash;"));
-    }
-
-    #[test]
-    fn child_budget_counts_every_call_in_the_turn_and_reports_usage() {
-        let count = AtomicUsize::new(0);
-        for _ in 0..MAX_CHILDREN_PER_TURN {
-            claim_child_slot(&count).expect("within budget");
-        }
-        let error = claim_child_slot(&count).expect_err("budget exhausted");
-        assert!(
-            error.contains(&format!(
-                "({MAX_CHILDREN_PER_TURN}/{MAX_CHILDREN_PER_TURN})"
-            )),
-            "message must report the used/limit counts: {error}"
-        );
-        assert!(
-            error.contains("not per assistant message"),
-            "message must state the counting granularity: {error}"
-        );
     }
 
     #[test]
