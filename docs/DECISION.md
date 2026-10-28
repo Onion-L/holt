@@ -710,7 +710,7 @@ constraint on unsigned assets — the argument recorded in
 
 ## agent-fan-out-is-one-call-with-display-only-item-parts
 
-`SHA_PENDING`. Wide delegation is the `Agent` tool with `items`: one
+`f52da36`. Wide delegation is the `Agent` tool with `items`: one
 model-written call fans a templated brief over N children, so fan-out
 width is no longer bounded by the parent's output tokens. The engine
 inserts one display-only spawn part per item (`{callId}#item-{n}`)
