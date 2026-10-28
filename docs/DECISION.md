@@ -25,7 +25,7 @@ in the same commit.
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
-| [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) |
+| [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
@@ -707,3 +707,22 @@ two-step swap and the `.old` leftover cleaned at next start); and
 trusting GitHub's TLS alone with no digest binding (no integrity
 constraint on unsigned assets — the argument recorded in
 `self-update-trust-is-per-platform`).
+
+## agent-fan-out-is-one-call-with-display-only-item-parts
+
+`SHA_PENDING`. Wide delegation is the `Agent` tool with `items`: one
+model-written call fans a templated brief over N children, so fan-out
+width is no longer bounded by the parent's output tokens. The engine
+inserts one display-only spawn part per item (`{callId}#item-{n}`)
+after the call's own part, and the UI draws those in its place.
+Structured results go through a `submit_result` tool whose parameters
+are the requested schema, and `result_mode: "file"` keeps results out
+of parent History. A Turn's children share an uncached-token budget
+checked at admission. Still foreground: the call waits for every child.
+Rejected: a separate `AgentBatch` tool (a second spawn genus for the
+UI, usage booking, and approval projection to learn); one part
+carrying N subagent refs (a doc-format change for every reader, where
+display parts already exist as a pattern — child approval copies);
+parsing a JSON final message instead of a submit tool (no
+validate-and-retry loop); and bringing back a per-Turn child count
+(a count bounds neither spend nor runaway cost — tokens do).

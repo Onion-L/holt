@@ -107,6 +107,8 @@ conversation_transcript:
           zh-CN: "%{count} 个 subagent"
       running:
         zh-CN: "%{count} 个运行中"
+      queued:
+        zh-CN: "%{count} 个排队中"
       done:
         zh-CN: "%{count} 个完成"
       failed:

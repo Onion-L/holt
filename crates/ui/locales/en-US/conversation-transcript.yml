@@ -107,6 +107,8 @@ conversation_transcript:
           en-US: "%{count} subagents"
       running:
         en-US: "%{count} running"
+      queued:
+        en-US: "%{count} queued"
       done:
         en-US: "%{count} done"
       failed:

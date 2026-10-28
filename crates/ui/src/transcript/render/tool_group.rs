@@ -10,12 +10,20 @@ const SUBAGENT_HEADER_AVATARS: usize = 5;
 const SUBAGENT_HEADER_AVATAR_SIZE: f32 = 22.0;
 const SUBAGENT_HEADER_AVATAR_GAP: f32 = 4.0;
 
-/// "30 subagents · 8 running · 2 failed" — lifecycle counts by the same
-/// mood the faces wear, zero buckets omitted.
+/// "30 subagents · 8 running · 12 queued · 2 failed" — lifecycle counts by
+/// the same mood the faces wear, with children still waiting for a slot
+/// (unresolved, never bound to a doc) split out; zero buckets omitted.
 fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
-    let (mut running, mut done, mut failed) = (0, 0, 0);
+    let (mut running, mut queued, mut done, mut failed) = (0, 0, 0, 0);
     for tool in tools {
         match subagent_avatar_mood(tool) {
+            AvatarMood::Running
+                if !tool.resolved
+                    && tool.subagent_ref.is_none()
+                    && tool.subagent_status.is_none() =>
+            {
+                queued += 1
+            }
             AvatarMood::Running => running += 1,
             AvatarMood::Done => done += 1,
             AvatarMood::Failed => failed += 1,
@@ -37,6 +45,10 @@ fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
         (
             running,
             "conversation_transcript.tool.subagent_fanout.running",
+        ),
+        (
+            queued,
+            "conversation_transcript.tool.subagent_fanout.queued",
         ),
         (
             failed,
@@ -1293,7 +1305,7 @@ mod tests {
         assert_eq!(&order[8..12], &[26, 27, 28, 29]);
         assert_eq!(
             subagent_fanout_summary(&tools),
-            "30 subagents · 12 running · 2 failed · 16 done"
+            "30 subagents · 8 running · 4 queued · 2 failed · 16 done"
         );
 
         let settled: Vec<ToolItem> = (0..5)

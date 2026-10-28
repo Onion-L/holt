@@ -4,7 +4,10 @@ use std::{
     collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use futures::FutureExt as _;
@@ -27,12 +30,19 @@ const RESULT_TOKENS: usize = 12_000;
 /// create any number of children — the budget bounds concurrency, not
 /// total, so an orchestrating Turn can run waves of children.
 const MAX_RUNNING_CHILDREN: usize = 8;
+/// Uncached tokens (input + output + cache writes) a Turn's children may
+/// spend before further spawns are refused — the runaway guard now that a
+/// Turn may create any number of children. Cache reads are left out: they
+/// dominate a long child's gross total yet cost a fraction, so the budget
+/// tracks spend rather than context replay.
+const TURN_TOKEN_BUDGET: u64 = 20_000_000;
 
 pub(crate) async fn system_prompt(
     role: &str,
     cwd: &str,
     catalog: &crate::skills::Catalog,
     web_search: bool,
+    structured: bool,
 ) -> String {
     // The surface `run_agent_command` actually mounts for a child: the
     // read-only set both roles share — `web_search` only when the parent
@@ -64,6 +74,13 @@ Use read_chat immediately when the Task brief asks about a complete Holt Chat li
 When finished, return a concise final summary of findings or changes, verification, unresolved issues, and useful file references. \
 Do not include raw logs or your entire investigation. Report blockers and partial work honestly."
     );
+    if structured {
+        prompt.push_str(
+            " Your delegator requires a structured result: when finished, call submit_result once with it \
+(its parameters define the shape, and it is your final report — put blockers and partial work there too). \
+The run ends on that call; a plain-text summary is not accepted.",
+        );
+    }
     crate::agent::append_workspace_instructions(&mut prompt, cwd).await;
     prompt.push_str("\n\n");
     prompt.push_str(&crate::skills::skills_block(&catalog.winners));
@@ -141,6 +158,9 @@ pub(crate) struct ChildLink {
     pub(crate) role: String,
     label: String,
     status: Mutex<SubagentStatus>,
+    /// Present when the delegator asked for a structured result: the child
+    /// mounts `submit_result` and finishes through it.
+    pub(crate) output: Option<Arc<StructuredOutput>>,
 }
 
 impl ChildLink {
@@ -274,17 +294,32 @@ pub(crate) struct Delegation {
     pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     pub(crate) stream_fn: StreamFn,
     pub(crate) cancel: CancellationToken,
+    /// Uncached tokens this Turn's children have spent (see
+    /// [`TURN_TOKEN_BUDGET`]); one counter per mounted tool, so per Turn.
+    pub(crate) spent: Arc<AtomicU64>,
 }
 
 pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     AgentTool {
         name: "Agent".into(), label: "Delegate".into(),
-        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work. This foreground call waits and returns only the final summary; inspect the full result file if truncated. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children run at once across Holt (later calls wait for a free slot); a Turn may create any number of children; children cannot delegate.".into(),
+        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work, or pass `items` to fan one brief out over many inputs in a single call. This foreground call waits for every child it started. Pass `output_schema` when you will combine results programmatically or across many children — each child then returns JSON matching it. Use `result_mode: \"file\"` for wide fan-outs so results stay out of your context until you read the result file. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children run at once across Holt (later children wait for a free slot); a Turn may create any number of children until its subagent token budget is spent; children cannot delegate.".into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {
                 "subagent_type": {"type": "string", "enum": ["explorer", "worker"]},
                 "description": {"type": "string", "minLength": 1, "maxLength": 120},
-                "prompt": {"type": "string", "minLength": 1}
+                "prompt": {"type": "string", "minLength": 1},
+                "items": {
+                    "type": "array", "minItems": 1,
+                    "description": "Fan out: one child per item, all running the same brief. `{{item}}` (the item; non-strings as JSON) and `{{index}}` (0-based) are filled into description and prompt; a prompt without `{{item}}` gets the item appended. Returns one JSON Lines record per item, in item order."
+                },
+                "output_schema": {
+                    "type": "object",
+                    "description": "A JSON Schema with type \"object\" the child's result must match. The child submits it through a submit_result tool, and the result returns as that JSON instead of a prose summary."
+                },
+                "result_mode": {
+                    "type": "string", "enum": ["inline", "file"],
+                    "description": "inline (default): the result text, bounded to 12,000 tokens. file: only status and the result file path — read the file when you need it."
+                }
             }, "required": ["subagent_type", "description", "prompt"], "additionalProperties": false
         }),
         constrained_sampling: None, prepare_arguments: None, execution_mode: None,
@@ -297,6 +332,113 @@ pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     }
 }
 
+/// A child's structured-result contract: the schema its `submit_result` tool
+/// takes as parameters (core validates every call against it), and the slot
+/// the accepted call fills.
+pub(crate) struct StructuredOutput {
+    schema: serde_json::Value,
+    value: Mutex<Option<serde_json::Value>>,
+}
+
+/// The tool a child with an `output_schema` finishes through. A successful
+/// call terminates the child's run — the submitted object IS its result.
+pub(crate) fn submit_result_tool(output: Arc<StructuredOutput>) -> AgentTool {
+    AgentTool {
+        name: "submit_result".into(),
+        label: "Submit result".into(),
+        description: "Submit your final result. The parameters are the shape your delegator requires. Call it once when finished; the run ends on a successful call.".into(),
+        parameters: output.schema.clone(),
+        constrained_sampling: None,
+        prepare_arguments: None,
+        execution_mode: None,
+        execute: Arc::new(move |_, args, _, _| {
+            let output = output.clone();
+            let args = args.clone();
+            Box::pin(async move {
+                *output.value.lock().unwrap_or_else(|e| e.into_inner()) = Some(args);
+                Ok(AgentToolResult {
+                    content: vec![BlockContent::Text(TextContent {
+                        text: "Result recorded.".into(),
+                        ..Default::default()
+                    })],
+                    terminate: Some(true),
+                    ..Default::default()
+                })
+            })
+        }),
+    }
+}
+
+struct Request {
+    role: String,
+    description: String,
+    prompt: String,
+    items: Option<Vec<serde_json::Value>>,
+    schema: Option<serde_json::Value>,
+    file_mode: bool,
+}
+
+fn parse_request(args: &serde_json::Value) -> Result<Request, String> {
+    let role = args["subagent_type"]
+        .as_str()
+        .filter(|s| matches!(*s, "explorer" | "worker"))
+        .ok_or("Invalid subagent type")?
+        .to_string();
+    let description = args["description"]
+        .as_str()
+        .ok_or("description is required")?
+        .to_string();
+    let prompt = args["prompt"]
+        .as_str()
+        .ok_or("prompt is required")?
+        .to_string();
+    let items = match args.get("items") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(items)) if !items.is_empty() => Some(items.clone()),
+        Some(_) => return Err("items must be a non-empty array".into()),
+    };
+    let schema = match args.get("output_schema") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(schema) if schema["type"] == "object" => Some(schema.clone()),
+        Some(_) => return Err("output_schema must be a JSON Schema with type \"object\"".into()),
+    };
+    let file_mode = match args.get("result_mode").and_then(|m| m.as_str()) {
+        None | Some("inline") => false,
+        Some("file") => true,
+        Some(_) => return Err("result_mode must be \"inline\" or \"file\"".into()),
+    };
+    Ok(Request {
+        role,
+        description,
+        prompt,
+        items,
+        schema,
+        file_mode,
+    })
+}
+
+/// One child to run: the transcript part it stamps (the `Agent` call
+/// itself, or a fan-out's display part), and its brief.
+struct ChildTask {
+    part_id: String,
+    role: String,
+    label: String,
+    prompt: String,
+    schema: Option<serde_json::Value>,
+}
+
+/// A child that ran (successfully or not) and left a result file.
+struct ChildOutcome {
+    doc_id: String,
+    ok: bool,
+    /// The final text — or, for a structured child, its result as JSON —
+    /// prefixed with the failure reason when `ok` is false.
+    text: String,
+    structured: Option<serde_json::Value>,
+    path: PathBuf,
+    usage: Usage,
+}
+
 async fn execute(
     d: Delegation,
     tool_id: String,
@@ -305,35 +447,332 @@ async fn execute(
     if !crate::store::id_is_path_safe(&d.parent.chat_id) || d.parent.chat_id.contains("--sub--") {
         return Err("Invalid parent chat id for delegation".into());
     }
-    let role = args["subagent_type"]
-        .as_str()
-        .filter(|s| matches!(*s, "explorer" | "worker"))
-        .ok_or("Invalid subagent type")?
-        .to_string();
-    let label = args["description"]
-        .as_str()
-        .ok_or("description is required")?
-        .to_string();
-    let prompt = args["prompt"]
-        .as_str()
-        .ok_or("prompt is required")?
-        .to_string();
+    let mut request = parse_request(&args)?;
+    if let Some(items) = request.items.take() {
+        return execute_fanout(d, tool_id, request, items).await;
+    }
+    let outcome = run_child(
+        &d,
+        ChildTask {
+            part_id: tool_id,
+            role: request.role,
+            label: request.description,
+            prompt: request.prompt,
+            schema: request.schema,
+        },
+    )
+    .await?;
+    let content = if request.file_mode {
+        let status = if outcome.ok { "done" } else { "failed" };
+        let mut note = format!(
+            "Subagent {status}. Result file: {}",
+            crate::tools::addressed_canonical(&outcome.path)
+        );
+        if !outcome.ok {
+            note.push('\n');
+            note.push_str(outcome.text.lines().next().unwrap_or_default());
+        }
+        note
+    } else {
+        bounded_result(&outcome.text, &outcome.path)?
+    };
+    Ok(AgentToolResult {
+        content: vec![BlockContent::Text(TextContent {
+            text: content,
+            ..Default::default()
+        })],
+        details: serde_json::json!({"subagentRef": outcome.doc_id, "failed": !outcome.ok, "resultPath": crate::tools::addressed_canonical(&outcome.path), "model": d.model.id, "usage": outcome.usage}),
+        usage: Some(outcome.usage),
+        ..Default::default()
+    })
+}
+
+/// `{{index}}` and `{{item}}` filled from one fan-out item; strings fill
+/// bare, anything else as compact JSON.
+fn fill(template: &str, index: usize, item: &serde_json::Value) -> String {
+    let item = match item {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    template
+        .replace("{{index}}", &index.to_string())
+        .replace("{{item}}", &item)
+}
+
+fn fanout_task(
+    request: &Request,
+    container: &str,
+    index: usize,
+    item: &serde_json::Value,
+) -> ChildTask {
+    let mut prompt = fill(&request.prompt, index, item);
+    if !request.prompt.contains("{{item}}") {
+        prompt.push_str("\n\nItem:\n");
+        prompt.push_str(&fill("{{item}}", index, item));
+    }
+    let mut label = fill(&request.description, index, item);
+    if label == request.description {
+        label.push_str(&format!(" #{index}"));
+    }
+    ChildTask {
+        part_id: format!("{container}#item-{index}"),
+        role: request.role.clone(),
+        label: label.chars().take(120).collect(),
+        prompt,
+        schema: request.schema.clone(),
+    }
+}
+
+/// The fan-out: one `Agent` call, one child per item. Each child gets a
+/// display-only spawn part right after the call's own chip (ids
+/// `{call}#item-{index}` — the UI shows these in place of the container),
+/// so a wide fan-out reads as N chips without N model-written calls. The
+/// result is a JSON Lines file in item order.
+async fn execute_fanout(
+    d: Delegation,
+    tool_id: String,
+    request: Request,
+    items: Vec<serde_json::Value>,
+) -> Result<AgentToolResult, String> {
+    let tasks: Vec<ChildTask> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| fanout_task(&request, &tool_id, index, item))
+        .collect();
+    insert_fanout_parts(&d, &tool_id, &tasks);
+    let outcomes = futures::future::join_all(tasks.into_iter().map(|task| {
+        let d = &d;
+        async move {
+            let part_id = task.part_id.clone();
+            let outcome = run_child(d, task).await;
+            settle_fanout_part(d, &part_id, &outcome);
+            outcome
+        }
+    }))
+    .await;
+
+    let mut records = String::new();
+    let mut usage = Usage::default();
+    let mut failed = Vec::new();
+    for (index, (item, outcome)) in items.iter().zip(&outcomes).enumerate() {
+        let record = match outcome {
+            Ok(outcome) => {
+                add_usage(&mut usage, &outcome.usage);
+                if outcome.ok {
+                    serde_json::json!({
+                        "index": index, "item": item, "status": "done",
+                        "subagent": outcome.doc_id,
+                        "result": outcome.structured.clone()
+                            .unwrap_or_else(|| outcome.text.clone().into()),
+                    })
+                } else {
+                    failed.push(index);
+                    serde_json::json!({
+                        "index": index, "item": item, "status": "failed",
+                        "subagent": outcome.doc_id, "error": outcome.text,
+                    })
+                }
+            }
+            Err(error) => {
+                failed.push(index);
+                serde_json::json!({"index": index, "item": item, "status": "failed", "error": error})
+            }
+        };
+        records.push_str(&record.to_string());
+        records.push('\n');
+    }
+    let path = directory(&d.runtime.data_dir, &d.parent.chat_id)
+        .join("results")
+        .join(format!("fanout-{}.jsonl", uuid::Uuid::new_v4()));
+    {
+        let _persistence = d
+            .parent
+            .persistence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if d.parent.is_removed() {
+            return Err("Parent chat was removed".into());
+        }
+        write_result(&path, &records).map_err(|e| e.to_string())?;
+    }
+    let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    let done = items.len() - failed.len();
+    let mut header = format!(
+        "{} subagents: {done} done, {} failed",
+        items.len(),
+        failed.len()
+    );
+    if !failed.is_empty() {
+        let shown: Vec<String> = failed.iter().take(20).map(usize::to_string).collect();
+        let more = if failed.len() > 20 { ", …" } else { "" };
+        header.push_str(&format!(" (items {}{more})", shown.join(", ")));
+    }
+    header.push_str(&format!(
+        ". Results: {} — JSON Lines in item order with index, item, status, subagent, and result or error.",
+        crate::tools::addressed_canonical(&path)
+    ));
+    let content = if request.file_mode {
+        header
+    } else {
+        bounded_result(&format!("{header}\n{records}"), &path)?
+    };
+    Ok(AgentToolResult {
+        content: vec![BlockContent::Text(TextContent {
+            text: content,
+            ..Default::default()
+        })],
+        details: serde_json::json!({"failed": done == 0, "resultPath": crate::tools::addressed_canonical(&path), "model": d.model.id, "usage": usage, "fanout": items.len()}),
+        usage: Some(usage),
+        ..Default::default()
+    })
+}
+
+fn fanout_part(task: &ChildTask) -> MessagePart {
+    MessagePart::Tool {
+        id: task.part_id.clone(),
+        call: holt_proto::ToolCall::Unknown {
+            name: format!("Agent: {}", task.label),
+            input: None,
+        },
+        is_error: false,
+        resolved: false,
+        output: None,
+        diff: None,
+        output_ref: None,
+        output_bytes: None,
+        diff_ref: None,
+        diff_stats: None,
+        subagent_ref: None,
+        subagent_status: None,
+        subagent_tail: None,
+        subagent_usage: None,
+        gate: None,
+    }
+}
+
+/// Land every fan-out child's chip at once, queued (unresolved, no ref),
+/// right after the container call — the way approval copies join the
+/// parent's parts: display-only, never in History.
+fn insert_fanout_parts(d: &Delegation, container: &str, tasks: &[ChildTask]) {
+    let parts: Vec<MessagePart> = tasks.iter().map(fanout_part).collect();
+    let insert = |list: &mut Vec<MessagePart>| {
+        let at = list
+            .iter()
+            .position(|p| matches!(p, MessagePart::Tool { id, .. } if id == container))
+            .map_or(list.len(), |ix| ix + 1);
+        list.splice(at..at, parts.iter().cloned());
+    };
+    insert(&mut d.parent_parts.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some(entry) = d
+        .parent
+        .transcript
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter_mut()
+        .find(|e| e.id == d.parent_entry)
+    {
+        insert(&mut entry.parts);
+    }
+    if !d.parent.is_removed() {
+        d.parent.persist_entry(&d.parent_entry);
+    }
+}
+
+/// A fan-out child settled: its display part takes the role the `Agent`
+/// call's own tool result plays for a single spawn.
+fn settle_fanout_part(d: &Delegation, part_id: &str, outcome: &Result<ChildOutcome, String>) {
+    let (failed, total) = match outcome {
+        Ok(outcome) => (
+            !outcome.ok,
+            Some(crate::usage::gross_tokens(&outcome.usage)),
+        ),
+        Err(_) => (true, None),
+    };
+    let settle = |list: &mut Vec<MessagePart>| {
+        for part in list.iter_mut() {
+            if let MessagePart::Tool {
+                id,
+                resolved,
+                is_error,
+                subagent_status,
+                subagent_usage,
+                ..
+            } = part
+                && id == part_id
+            {
+                *resolved = true;
+                *is_error = failed;
+                *subagent_status = Some(if failed {
+                    SubagentStatus::Failed
+                } else {
+                    SubagentStatus::Done
+                });
+                *subagent_usage = total;
+            }
+        }
+    };
+    settle(&mut d.parent_parts.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some(entry) = d
+        .parent
+        .transcript
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter_mut()
+        .find(|e| e.id == d.parent_entry)
+    {
+        settle(&mut entry.parts);
+    }
+    if !d.parent.is_removed() {
+        d.parent.persist_entry(&d.parent_entry);
+    }
+}
+
+/// The tokens a child's run counts against its Turn's budget.
+fn budget_tokens(usage: &Usage) -> u64 {
+    usage.input + usage.output + usage.cache_write
+}
+
+async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, String> {
+    let ChildTask {
+        part_id,
+        role,
+        label,
+        prompt,
+        schema,
+    } = task;
     let cancel = d.cancel.child_token();
     let permit = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err("Subagent interrupted before starting".into()),
         permit = d.runtime.subagents.slots.clone().acquire_owned() => permit.map_err(|e| e.to_string())?,
     };
+    // Checked at admission, after the slot wait, so it reads what every
+    // child settled while this one queued. In-flight children are never cut
+    // off — a burst can overshoot by what is running.
+    let spent = d.spent.load(Ordering::Acquire);
+    if spent >= TURN_TOKEN_BUDGET {
+        return Err(format!(
+            "Subagent budget spent: this Turn's children used {spent} of {TURN_TOKEN_BUDGET} \
+             uncached tokens. Complete the remaining work yourself."
+        ));
+    }
     let id = format!("{}--sub--{}", d.parent.chat_id, uuid::Uuid::new_v4());
     let data_dir = directory(&d.runtime.data_dir, &d.parent.chat_id);
+    let output = schema.map(|schema| {
+        Arc::new(StructuredOutput {
+            schema,
+            value: Mutex::new(None),
+        })
+    });
     let link = Arc::new(ChildLink {
         parent: d.parent.clone(),
-        parent_parts: d.parent_parts,
-        parent_entry: d.parent_entry,
-        tool_id,
+        parent_parts: d.parent_parts.clone(),
+        parent_entry: d.parent_entry.clone(),
+        tool_id: part_id,
         role,
         label,
         status: Mutex::new(SubagentStatus::Running),
+        output: output.clone(),
     });
     let brief_id = format!("{id}-brief");
     let child = {
@@ -397,20 +836,20 @@ async fn execute(
                 chat_id: id.clone(),
                 chat: child.clone(),
                 prompt,
-                cwd: d.cwd,
+                cwd: d.cwd.clone(),
                 reasoning: d.reasoning,
                 model: d.model.clone(),
-                api_key: d.api_key,
+                api_key: d.api_key.clone(),
                 timestamp: chrono::Utc::now().timestamp_millis(),
                 cancel: cancel.clone(),
-                skills: d.skills,
+                skills: d.skills.clone(),
                 invocation: Vec::new(),
                 permission_mode: d.permission_mode,
                 plan_mode: false,
                 provider_mode: false,
-                search_backend: d.search_backend,
+                search_backend: d.search_backend.clone(),
                 providers: None,
-                attribution: d.attribution,
+                attribution: d.attribution.clone(),
                 stream_fn: Some(stream_fn),
                 resume: false,
             })
@@ -432,6 +871,7 @@ async fn execute(
         }
     }
     *child.usage.lock().unwrap_or_else(|e| e.into_inner()) = usage.clone();
+    d.spent.fetch_add(budget_tokens(&usage), Ordering::AcqRel);
     drop(permit);
     let history = child.history.read().unwrap_or_else(|e| e.into_inner());
     let final_text = history
@@ -451,21 +891,35 @@ async fn execute(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let ok = ok && storage_error.is_none();
-    let error = storage_error.or_else(|| {
-        child
-            .transcript
-            .read()
+    let structured = output.as_ref().and_then(|output| {
+        output
+            .value
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .rev()
-            .flat_map(|e| e.parts.iter().rev())
-            .find_map(|p| match p {
-                MessagePart::Error { message, .. } => Some(message.clone()),
-                _ => None,
-            })
+            .take()
     });
-    let text = if ok {
+    // A run that ended cleanly without submitting is the child's failure to
+    // follow its contract; a run that already failed keeps its own reason.
+    let missing_result = ok && output.is_some() && structured.is_none();
+    let ok = ok && storage_error.is_none() && !missing_result;
+    let error = storage_error
+        .or_else(|| missing_result.then(|| "finished without calling submit_result".to_string()))
+        .or_else(|| {
+            child
+                .transcript
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .rev()
+                .flat_map(|e| e.parts.iter().rev())
+                .find_map(|p| match p {
+                    MessagePart::Error { message, .. } => Some(message.clone()),
+                    _ => None,
+                })
+        });
+    let text = if let Some(value) = structured.as_ref().filter(|_| ok) {
+        serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
+    } else if ok {
         final_text
     } else {
         format!(
@@ -477,7 +931,12 @@ async fn execute(
             })
         )
     };
-    let path = data_dir.join("results").join(format!("{id}.txt"));
+    let extension = if structured.is_some() && ok {
+        "json"
+    } else {
+        "txt"
+    };
+    let path = data_dir.join("results").join(format!("{id}.{extension}"));
     let persisted = {
         let _persistence = child.persistence.lock().unwrap_or_else(|e| e.into_inner());
         if child.is_removed() {
@@ -486,11 +945,7 @@ async fn execute(
             write_result(&path, &text).map_err(|e| e.to_string())
         }
     };
-    let prepared = persisted.and_then(|()| {
-        let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-        let content = bounded_result(&text, &path)?;
-        Ok((path, content))
-    });
+    let prepared = persisted.and_then(|()| std::fs::canonicalize(path).map_err(|e| e.to_string()));
     let mut settled = Vec::new();
     for entry in child
         .transcript
@@ -536,15 +991,14 @@ async fn execute(
         link.publish(&child);
         return Err(error);
     }
-    let (path, content) = prepared?;
-    Ok(AgentToolResult {
-        content: vec![BlockContent::Text(TextContent {
-            text: content,
-            ..Default::default()
-        })],
-        details: serde_json::json!({"subagentRef": id, "failed": !ok, "resultPath": crate::tools::addressed_canonical(&path), "model": d.model.id, "usage": usage}),
-        usage: Some(usage),
-        ..Default::default()
+    let path = prepared?;
+    Ok(ChildOutcome {
+        doc_id: id,
+        ok,
+        text,
+        structured: structured.filter(|_| ok),
+        path,
+        usage,
     })
 }
 
@@ -671,7 +1125,7 @@ mod tests {
     #[tokio::test]
     async fn the_child_prompt_names_the_surface_the_run_mounts() {
         let catalog = empty_catalog();
-        let explorer = system_prompt("explorer", "/tmp/holt", &catalog, false).await;
+        let explorer = system_prompt("explorer", "/tmp/holt", &catalog, false, false).await;
         assert!(
             explorer.contains(
                 "ls, read, grep, read_chat, and web_fetch only; \
@@ -681,10 +1135,10 @@ mod tests {
         );
         assert!(!explorer.contains("web_search"));
 
-        let searching = system_prompt("explorer", "/tmp/holt", &catalog, true).await;
+        let searching = system_prompt("explorer", "/tmp/holt", &catalog, true, false).await;
         assert!(searching.contains("ls, read, grep, read_chat, web_fetch, and web_search only"));
 
-        let worker = system_prompt("worker", "/tmp/holt", &catalog, false).await;
+        let worker = system_prompt("worker", "/tmp/holt", &catalog, false, false).await;
         assert!(worker.contains("ls, read, grep, read_chat, web_fetch, write, edit, and bash;"));
     }
 

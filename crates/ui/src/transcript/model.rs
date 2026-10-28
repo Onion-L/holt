@@ -101,6 +101,13 @@ pub(super) fn is_spawn_link(item: &ToolItem) -> bool {
     is_agent_call(&item.call) && item.subagent_ref.is_some()
 }
 
+fn is_fanout_container(parts: &[MessagePart], id: &str) -> bool {
+    let prefix = format!("{id}#item-");
+    parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::Tool { id, .. } if id.starts_with(&prefix)))
+}
+
 /// Ordinary tool groups fold behind a summary header; agent-only groups use
 /// the renderer's one-line expandable fan-out row.
 pub(super) fn tool_group_collapses(tools: &[ToolItem]) -> bool {
@@ -863,6 +870,12 @@ pub fn rows_for_entry(
                 subagent_usage,
                 gate,
             } => {
+                // A fan-out `Agent` call is drawn by its per-item spawn parts
+                // (`{id}#item-{n}`, engine `subagents::execute_fanout`); the
+                // container chip itself would only repeat them.
+                if call.is_subagent_spawn() && is_fanout_container(&entry.parts, id) {
+                    continue;
+                }
                 let item = ToolItem {
                     call: call.clone(),
                     call_id: Some(SharedString::from(id.clone())),
@@ -1978,6 +1991,32 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert!(!tool_group_collapses(tools));
         assert!(tools.iter().all(is_agent_tool));
+    }
+
+    #[test]
+    fn a_fanout_call_is_drawn_by_its_item_parts_alone() {
+        // The engine lands one display part per fan-out item right after
+        // the `Agent` call; the container chip would repeat them.
+        let entry = assistant(
+            "m-fanout",
+            MessageStatus::Complete,
+            vec![
+                agent_part("spawn-1", "audit {{item}}"),
+                agent_part("spawn-1#item-0", "audit auth"),
+                agent_part("spawn-1#item-1", "audit billing"),
+                agent_part("spawn-2", "unrelated single spawn"),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::ToolGroup { tools, .. } = &rows[0].kind else {
+            panic!("agent group expected")
+        };
+        let ids: Vec<&str> = tools
+            .iter()
+            .map(|t| t.call_id.as_deref().unwrap())
+            .collect();
+        assert_eq!(ids, ["spawn-1#item-0", "spawn-1#item-1", "spawn-2"]);
     }
 
     #[test]
