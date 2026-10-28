@@ -332,8 +332,23 @@ pub struct PendingMessage {
     /// The verifier's missing piece the round carries (empty on a resume).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub goal_reason: String,
+    /// A finished workflow's report (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
+    /// the row the engine queued to hand the run's result back to the chat.
+    /// The transcript draws its entry as a result row from this, never from
+    /// the prompt. Additive — `None` on every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_result: Option<WorkflowResultMark>,
     pub submitted_at: i64,
     pub error: Option<String>,
+}
+
+/// Which workflow a queued report belongs to, and how its run ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowResultMark {
+    pub name: String,
+    #[serde(default)]
+    pub failed: bool,
 }
 
 /// Authoritative per-chat queue snapshot, independent of the Transcript.
@@ -710,14 +725,16 @@ impl ToolCall {
 pub const SUBAGENT_MODEL_KEYS: [&str; 4] = ["model", "modelId", "model_id", "subagent_model"];
 
 /// The spawn-input keys [`sanitize_tool_call`](crate::) must preserve so the
-/// chip can name the child's model. Deliberately tiny: everything else on a
-/// spawn's input (the whole prompt, most of all) stays host-local.
-pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
+/// chip can name the child's model — and, for a workflow's children, the
+/// `phase` the transcript groups them under. Deliberately tiny: everything
+/// else on a spawn's input (the whole prompt, most of all) stays host-local.
+pub const SUBAGENT_INPUT_KEEP: [&str; 6] = [
     "model",
     "modelId",
     "model_id",
     "subagent_model",
     "subagent_type",
+    "phase",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

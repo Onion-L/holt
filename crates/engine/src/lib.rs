@@ -79,6 +79,7 @@ mod update_platform;
 mod usage;
 mod usage_stats;
 mod web_search_settings;
+mod workflow;
 mod workspace_watch;
 
 use agent::AgentRuntime;
@@ -360,6 +361,7 @@ impl LocalEngine {
             _instance_lock: lock,
         };
         engine.service.spawn_scheduler();
+        engine.service.spawn_workflow_delivery();
         // Orphaned shell groups die before any Turn resumes into their
         // workspace (ADR-turns-resume-from-an-intent-journal). Unix only:
         // Windows spawns carry no process-group bookkeeping yet.

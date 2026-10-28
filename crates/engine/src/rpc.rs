@@ -442,6 +442,7 @@ impl RpcService for EngineService {
             methods::SET_GOAL => self.set_goal(params),
             methods::CLEAR_GOAL => self.clear_goal(params),
             methods::SET_GOAL_PAUSED => self.set_goal_paused(params),
+            methods::STOP_WORKFLOW => self.stop_workflow(params),
             methods::ENTER_PROVIDER_MODE => self.enter_provider_mode(params),
             methods::EXIT_PROVIDER_MODE => self.exit_provider_mode(params),
             methods::GET_PROVIDER_MODE => {

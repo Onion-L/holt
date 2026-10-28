@@ -248,6 +248,11 @@ pub mod methods {
     pub const SET_GOAL: &str = "SetGoal";
     pub const CLEAR_GOAL: &str = "ClearGoal";
     pub const SET_GOAL_PAUSED: &str = "SetGoalPaused";
+    /// Stop a background workflow run (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
+    /// params `{chatId, callId}` — the `Workflow` tool call that launched it
+    /// → `{stopped}`, false when no such run is live. Its agents stop, no
+    /// report is queued, and the run's journal stays for a `resume`.
+    pub const STOP_WORKFLOW: &str = "StopWorkflow";
     /// Provider Mode (ADR-provider-mode-is-a-chat-mode). `EnterProviderMode` / `ExitProviderMode`
     /// take `{chatId}` and reply the chat's `holt_proto::ProviderModeState`;
     /// both are idempotent. Entering exits Plan Mode first (and

@@ -39,6 +39,11 @@ iana-time-zone = "0.1"
 croner = "4"
 chrono-tz = "0.10"
 tiktoken-rs = "0.7"
+# Workflow scripts (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
+# an embedded QuickJS. `futures` maps JS promises onto Rust futures so
+# `agent()` awaits a real child run; no `parallel` — each run's JS lives on
+# its own thread.
+rquickjs = { version = "0.14", features = ["futures"] }
 reqwest.workspace = true
 htmd = "0.5"
 # The MCP client (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): official SDK, client role only — stdio
