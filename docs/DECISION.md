@@ -731,7 +731,7 @@ validate-and-retry loop); and bringing back a per-Turn child count
 
 ## subagent-spend-is-visible-not-bounded
 
-`SHA_PENDING`. Subagent token spend has no cap: delegation exists to do
+`0d28842`. Subagent token spend has no cap: delegation exists to do
 many things at once, and what the parent needs is the final result,
 however many children it took. Spend is shown instead — each settled
 chip's total and the fan-out row's sum — and the Turn stays stoppable.
