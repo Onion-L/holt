@@ -37,6 +37,8 @@ composer_input:
       zh-CN: /init 需要一个项目 — 请先选择项目
     usage_goal:
       zh-CN: "用法：/goal <目标> | off | pause | resume"
+    usage_workflow:
+      zh-CN: "用法：/workflow <任务>"
     goal_needs_chat:
       zh-CN: 这里还没有会话 — 用 /goal <目标> 开始一个
     goal_failed:

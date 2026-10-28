@@ -219,6 +219,12 @@ impl Composer {
                 self.goal_command(action, cx);
                 return;
             }
+            super::slash::Parsed::MalformedWorkflow => {
+                self.failure = Some(t!("composer_input.failure.usage_workflow").into());
+                self.failure_key = None;
+                cx.notify();
+                return;
+            }
             _ => {}
         }
         let no_content = !composer_has_content(
@@ -421,6 +427,14 @@ impl Composer {
             text = crate::goal::with_goal_block(&objective);
             slash = super::slash::Parsed::Plain;
             goal_set = Some(objective);
+        } else if let super::slash::Parsed::Workflow(task) = &slash {
+            // `/workflow <task>`: the task plus the marker line the model
+            // reads as "call the Workflow tool"; the transcript lifts the
+            // marker back out as the bubble's `Workflow` chip. A failed send
+            // restores the directive, like `/goal`.
+            restore_text = Some(text.clone());
+            text = crate::workflow::with_workflow_block(task);
+            slash = super::slash::Parsed::Plain;
         } else if matches!(slash, super::slash::Parsed::Init) {
             // `/init`: the queued message's prompt is the bundled template
             // (codex's `include_str!` shape) — the directive itself never
