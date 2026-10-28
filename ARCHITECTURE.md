@@ -52,6 +52,7 @@ Method names live in `rpc::methods` (code is the contract). Each family's behavi
 | Git and Turn change sets | `ListRefs`, `GetCheckoutDiff`, `GetTurnChangeSet`, `RestoreTurnChanges` | [workspace-git](docs/subsystems/workspace-git.md) |
 | Terminals | `OpenTerminal`, `WriteTerminal`, `SubscribeTerminal`, `CloseTerminal` | [terminals](docs/subsystems/terminals.md) |
 | Transcript and subagent blobs | `WatchDocMessages`, `FetchToolBlob` | [persistence](docs/subsystems/persistence.md), [subagents](docs/subsystems/subagents.md) |
+| Workflow runs | `StopWorkflow` | [workflows](docs/subsystems/workflows.md) |
 | Usage | `WatchChatUsage`, `UsageStats` | [persistence](docs/subsystems/persistence.md) |
 | Tools and integrations settings | `GetMcpSettings`, `GetWebSearchSettings` | [toolset-mechanics](docs/subsystems/toolset-mechanics.md) |
 | Title and goal settings | `GetTitleSettings`, `GetGoalSettings` | [conversation-policy](docs/subsystems/conversation-policy.md), [goals-routines](docs/subsystems/goals-routines.md) |
@@ -72,7 +73,7 @@ Plain JSON/JSONL under the data dir; each record written by the engine, atomical
 - `provider-credentials.json`, `provider-store.json`, `provider-settings.json`, `provider-logos/` — provider-transport
 - `provider-mode/<chatId>.json` — modes
 - `turn-changes/<chatId>/<messageId>.json` — workspace-git
-- `subagents/<parentChatId>/` — subagents
+- `subagents/<parentChatId>/` — subagents; its `workflows/<runId>/` — workflows
 - `images/` — workspace-files
 - `mcp.json`, `web-search.json`, `search-backends.json` (user-written), `title-settings.json`, `goal-settings.json`, `permission-mode-default.json`, `routines.json` — their owning pages
 - `device-id` (plain text), `engine.lock`, `logs/` — shell-registry

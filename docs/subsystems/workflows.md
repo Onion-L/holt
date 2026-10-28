@@ -1,0 +1,44 @@
+# Workflows
+
+Background orchestration: the parent model writes a JavaScript body, the engine runs it off the Turn on an embedded QuickJS, and the script coordinates many Subagents through `agent()` / `parallel()` / `pipeline()`. Only the script's return value comes back — as an engine-queued Turn in the same chat.
+
+Not here: how one child runs, its roles, briefing, structured results, and result files (see subagents — every `agent()` is one child through that path); the queue the report rides (see conversation-policy); the transcript record the run's chips persist through (see persistence).
+
+## Responsibilities and sources of truth
+
+| Part | Responsibility | Source |
+| --- | --- | --- |
+| Tool | `Workflow {name, script?, args?, resume?}` mounts beside `Agent` on main-chat Turns only — never planning, Provider Mode, or a child. Ungated: each child's own `write`/`edit`/`bash` meets the gate. A script that does not parse fails the call; otherwise the call returns at once with the run id | [`crates/engine/src/workflow/mod.rs`](../../crates/engine/src/workflow/mod.rs) (`tool`, `launch`) |
+| Script host | One QuickJS per run on its own thread. The script is an async function body (`return` its value, top-level `await`). `agent(prompt, {label, phase, role, schema})` resolves to the child's text, its schema object, or `null` on failure; `parallel(thunks)` starts in array order and nulls a failure; `pipeline(items, ...stages)` moves each item through the stages independently. No filesystem, shell, or imports; `Date.now()`, `Math.random()`, and argument-less `new Date()` throw so a replay issues the same calls. Caps: 1000 agents per run, 4096 items per `parallel`/`pipeline`, 256 MB of JS heap | [`workflow/script.rs`](../../crates/engine/src/workflow/script.rs), [`workflow/prelude.js`](../../crates/engine/src/workflow/prelude.js) |
+| Children | Each `agent()` inserts a display-only spawn part `{callId}#item-{n}` (with its `phase` in the kept spawn input) after the call's part and runs through `subagents::run_child` with the run's own cancellation and no Turn change attribution. They share the eight engine-wide slots with `Agent` | `workflow/mod.rs` (`agent`), [`subagents.rs`](../../crates/engine/src/subagents.rs) (`display_part`, `insert_display_parts`) |
+| Run chip | The call's own part becomes `Workflow: <name>` and carries the run: `subagentStatus` running → done/failed, `subagentUsage` the children's token total so far | `workflow/mod.rs` (`stamp_container`) |
+| Journal | Each finished child is appended to `journal.jsonl`, keyed by sha256(role, schema, prompt) plus that request's occurrence count — content, never start order, since `pipeline` starts later stages in completion order. Failures are not recorded. `resume: <runId>` copies the old journal into the new run and answers matching requests from it, binding the replayed chip to the original child doc | [`workflow/journal.rs`](../../crates/engine/src/workflow/journal.rs) |
+| Report | On return the value is written to `result.json`, and a report run is queued under the chat's captured settings with `workflowResult` set: its prompt carries the bounded value (12,000 tokens, else a truncation notice and path) or, on failure, the error, the log tail, and the `resume` call to make. The entry carries a `WorkflowResult` part; the UI draws it as the light foldable row goal continuations use | `workflow/mod.rs` (`drive`, `deliver_workflow`), [`queue.rs`](../../crates/engine/src/queue.rs) (`enqueue_workflow_result`) |
+| Stop | `StopWorkflow {chatId, callId}` → `{stopped}`; also chat deletion and engine shutdown. Cancels the script (interrupting busy JS) and every child; no report is queued; the journal stays | `workflow/mod.rs` (`Workflows`, `stop_workflow`) |
+| Records | `subagents/<chatId>/workflows/<runId>/`: `script.js`, `args.json`, `journal.jsonl`, `result.json`, `log.txt` — deleted with the parent chat | `workflow/mod.rs` |
+| UI | The call draws as a workflow row (name, status, tokens, Stop while running in the main chat); its children split into one fan-out row per phase, the phase leading the row's summary | [`transcript/model.rs`](../../crates/ui/src/transcript/model.rs) (`RowKind::Workflow`, `tool_phase`), [`transcript/render.rs`](../../crates/ui/src/transcript/render.rs) (`render_workflow_row`) |
+
+## Runtime path
+
+1. **Launch.** The parent calls `Workflow`; the script is parsed, the run directory written, the run registered under `(chatId, callId)`, and the call returns. The parent Turn continues or ends; the chat stays usable.
+2. **Run.** The script's `agent()` calls leave the JS thread as requests; each gets its chip, then a journal hit or a child run. Children settle their chips; the run chip accumulates tokens.
+3. **Report.** The script returns (or throws). The value or error is written, the run chip settles, and the report is queued — the queue's pause rule applies, as for a goal continuation.
+4. **Continue.** The report Turn runs like any queued Turn; the model reads the value and carries on — or relaunches with `resume`.
+
+## Constraints, state, and failure behavior
+
+- **Background, not foreground**: a run outlives the Turn that launched it. Stop and Steer on the chat never touch it; only `StopWorkflow`, chat deletion, or quitting Holt do.
+- **No automatic resume**: a run live at restart settles its chip as failed through the subagent load-time settle, and nothing reruns until the model calls `resume`.
+- **A failed agent is a value**: the script reads `null` and decides; an exception escaping the script fails the run, and the report says so.
+- **Background edits are outside Turn change sets**: workers run with no Turn attribution — their edits show in the working tree, not in any Turn's review card.
+- **No spend cap** (ADR-subagent-spend-is-visible-not-bounded); the 1000-agent ceiling only guards runaway loops.
+
+## Verification
+
+```sh
+cargo test -p holt-engine --lib workflow
+cargo test -p holt-engine --test all workflow
+cargo test -p holt-ui workflow
+```
+
+The library suites cover the script API (ordering, null failures, pipeline independence, options and phases, clock/randomness guards, caps, syntax checks, cancellation of busy scripts) and the journal (occurrence keys, resume hits and misses, torn lines). The integration suite covers launch-then-report end to end with phases, failure reports with a `resume` that skips finished agents, `StopWorkflow`, restart settling, and parse failures; the UI suite covers the run row, phase rows, and the report row.

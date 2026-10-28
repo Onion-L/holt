@@ -25,7 +25,7 @@ in the same commit.
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
-| [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) |
+| [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
@@ -162,7 +162,10 @@ transcript, repair, and diff semantics.
 
 ## subagents-use-independent-history-and-foreground-results
 
-`c282635`. Children start from a brief, not the parent's History; the final
+`c282635`. Partially superseded: background execution now exists for
+workflow runs (`workflows-run-scripts-in-the-background-and-report-by-continuation`);
+`Agent` itself stays foreground.
+Children start from a brief, not the parent's History; the final
 summary is the tool result. Background execution and follow-up
 instructions are out of scope; the parent owns child execution, and there
 are no automatic worktrees, merging, or rollback.
@@ -742,3 +745,21 @@ per-Turn child count, for the same reason. Claude Code's workflow
 runtime sets no token budget either, only a per-run agent ceiling against
 runaway script loops — the guard to add when orchestration moves into a
 script, where a loop can spawn without a model round in between.
+
+## workflows-run-scripts-in-the-background-and-report-by-continuation
+
+`9b61f33`, `71237eb`. Orchestration beyond a few `Agent` calls is a
+`Workflow` tool: the model writes a JavaScript body run on an embedded
+QuickJS (rquickjs), with `agent()` / `parallel()` / `pipeline()` over the
+existing child path. The run is background — the call returns at once —
+and the script's return value comes back as an engine-queued Turn (the
+goal continuation's path) whose entry carries a new additive
+`WorkflowResult` part. Finished agents are journaled by content (role,
+schema, prompt, occurrence), so `resume` reuses them; runs never resume
+on their own after a restart. Rejected: a foreground call blocking the
+Turn (the chat would be unusable for the run's length — the user chose
+background); a declarative JSON DAG (no loops, conditions, or
+result-driven branching); boa (slower, weaker promise integration) and
+V8/deno (binary size and build weight); journaling by start order, as
+Claude Code's runtime does (`pipeline` starts later stages in completion
+order, so a replay reorders them and misses).
