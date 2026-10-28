@@ -450,6 +450,16 @@ pub enum MessagePart {
         #[serde(default)]
         reason: String,
     },
+    /// A workflow's report entry (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation): the
+    /// engine-queued Turn that hands a finished run's result back. Readers
+    /// draw the entry as a result row from it; the model reads the prompt
+    /// text part. Old readers fall back to an empty text part.
+    WorkflowResult {
+        id: String,
+        name: String,
+        #[serde(default)]
+        failed: bool,
+    },
     /// The Compaction divider (ADR-compaction-is-not-a-turn): marks where the model's verbatim
     /// memory begins. The Transcript never loses rows — this row is
     /// appended, never substituted — and expands to show the exact summary
@@ -553,6 +563,7 @@ impl MessagePart {
             | MessagePart::Error { id, .. }
             | MessagePart::Notice { id, .. }
             | MessagePart::GoalRound { id, .. }
+            | MessagePart::WorkflowResult { id, .. }
             | MessagePart::CompactionDivider { id, .. }
             | MessagePart::PlanApproval { id, .. }
             | MessagePart::ModelProposal { id, .. }
@@ -595,6 +606,7 @@ impl MessagePart {
                 message.len()
             }
             MessagePart::GoalRound { reason, .. } => reason.len() + 8,
+            MessagePart::WorkflowResult { name, .. } => name.len() + 8,
             MessagePart::CompactionDivider { summary, .. } => summary.len(),
             // The state rides the estimate: pending and settled cards
             // differ here, which is what the transcript's entry

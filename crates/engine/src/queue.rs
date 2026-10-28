@@ -326,6 +326,29 @@ impl Queue {
             extra_instructions,
             attended,
             None,
+            None,
+        )
+    }
+
+    /// A finished workflow's report (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
+    /// an ordinary queued run the engine enqueued, marked so its entry draws
+    /// as a result row. Never attended — like a goal continuation, it does
+    /// not grant itself a pass through a paused queue.
+    pub fn enqueue_workflow_result(
+        &mut self,
+        request: RunRequest,
+        message_id: String,
+        mark: holt_proto::WorkflowResultMark,
+    ) -> Result<(), RpcError> {
+        self.enqueue_inner(
+            request,
+            message_id,
+            PendingKind::Ordinary,
+            None,
+            None,
+            false,
+            None,
+            Some(mark),
         )
     }
 
@@ -348,6 +371,7 @@ impl Queue {
             None,
             false,
             Some((round, reason)),
+            None,
         )
     }
 
@@ -361,6 +385,7 @@ impl Queue {
         extra_instructions: Option<String>,
         attended: bool,
         goal_round: Option<(holt_proto::GoalRoundKind, String)>,
+        workflow_result: Option<holt_proto::WorkflowResultMark>,
     ) -> Result<(), RpcError> {
         if self.record.accepted.contains(&message_id) {
             return if self.error.is_some() {
@@ -383,6 +408,7 @@ impl Queue {
                 .map(|(_, reason)| reason.clone())
                 .unwrap_or_default(),
             goal_round: goal_round.map(|(round, _)| round),
+            workflow_result,
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -441,6 +467,7 @@ impl Queue {
             goal_continuation: false,
             goal_round: None,
             goal_reason: String::new(),
+            workflow_result: None,
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -1114,6 +1141,15 @@ impl EngineService {
                                     id: "g0".into(),
                                     round,
                                     reason: message.goal_reason.clone(),
+                                });
+                            }
+                            // A workflow report draws as its result row the
+                            // same way (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation).
+                            if let Some(mark) = message.workflow_result.clone() {
+                                parts.push(MessagePart::WorkflowResult {
+                                    id: "w0".into(),
+                                    name: mark.name,
+                                    failed: mark.failed,
                                 });
                             }
                             let prepared = service

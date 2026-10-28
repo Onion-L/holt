@@ -27,6 +27,10 @@ The current session provides these execution tools:
   similar tasks, fan one brief out with `items`; request `output_schema`
   when you will combine results, and `result_mode: "file"` for wide
   fan-outs so results stay out of your context until you read them.
+- `Workflow`: run a JavaScript script in the background that orchestrates
+  many subagents (`agent`, `parallel`, `pipeline`); its return value
+  arrives later as a new message. Use it for work wider or longer than a
+  few `Agent` calls, or when asked for a workflow.
 
 MCP tools may also be available in ordinary main-chat turns. They use the
 `mcp__<server>__<tool>` name and their description and input schema come from

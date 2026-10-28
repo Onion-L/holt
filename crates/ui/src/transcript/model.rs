@@ -1144,6 +1144,7 @@ pub fn rows_for_entry(
                     MessagePart::Tool { .. }
                     | MessagePart::Reasoning { .. }
                     | MessagePart::GoalRound { .. }
+                    | MessagePart::WorkflowResult { .. }
                     | MessagePart::TodoCard { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,

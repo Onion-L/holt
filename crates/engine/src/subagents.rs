@@ -98,7 +98,7 @@ pub(crate) fn parent_id(id: &str) -> Option<&str> {
         .then_some(parent)
 }
 
-fn directory(data_dir: &Path, parent: &str) -> PathBuf {
+pub(crate) fn directory(data_dir: &Path, parent: &str) -> PathBuf {
     data_dir.join("subagents").join(parent)
 }
 
@@ -407,24 +407,24 @@ fn parse_request(args: &serde_json::Value) -> Result<Request, String> {
 
 /// One child to run: the transcript part it stamps (the `Agent` call
 /// itself, or a fan-out's display part), and its brief.
-struct ChildTask {
-    part_id: String,
-    role: String,
-    label: String,
-    prompt: String,
-    schema: Option<serde_json::Value>,
+pub(crate) struct ChildTask {
+    pub(crate) part_id: String,
+    pub(crate) role: String,
+    pub(crate) label: String,
+    pub(crate) prompt: String,
+    pub(crate) schema: Option<serde_json::Value>,
 }
 
 /// A child that ran (successfully or not) and left a result file.
-struct ChildOutcome {
-    doc_id: String,
-    ok: bool,
+pub(crate) struct ChildOutcome {
+    pub(crate) doc_id: String,
+    pub(crate) ok: bool,
     /// The final text — or, for a structured child, its result as JSON —
     /// prefixed with the failure reason when `ok` is false.
-    text: String,
-    structured: Option<serde_json::Value>,
-    path: PathBuf,
-    usage: Usage,
+    pub(crate) text: String,
+    pub(crate) structured: Option<serde_json::Value>,
+    pub(crate) path: PathBuf,
+    pub(crate) usage: Usage,
 }
 
 async fn execute(
@@ -527,13 +527,20 @@ async fn execute_fanout(
         .enumerate()
         .map(|(index, item)| fanout_task(&request, &tool_id, index, item))
         .collect();
-    insert_fanout_parts(&d, &tool_id, &tasks);
+    insert_display_parts(
+        &d,
+        &tool_id,
+        tasks
+            .iter()
+            .map(|task| display_part(&task.part_id, &task.label, None))
+            .collect(),
+    );
     let outcomes = futures::future::join_all(tasks.into_iter().map(|task| {
         let d = &d;
         async move {
             let part_id = task.part_id.clone();
             let outcome = run_child(d, task).await;
-            settle_fanout_part(d, &part_id, &outcome);
+            settle_outcome(d, &part_id, &outcome);
             outcome
         }
     }))
@@ -615,12 +622,16 @@ async fn execute_fanout(
     })
 }
 
-fn fanout_part(task: &ChildTask) -> MessagePart {
+/// A display-only spawn chip for a child the parent never called directly
+/// — a fan-out item or a workflow's `agent()`. Queued (unresolved, no ref)
+/// until the child is admitted. A workflow phase rides the kept spawn
+/// input, so the transcript can group by it.
+pub(crate) fn display_part(part_id: &str, label: &str, phase: Option<&str>) -> MessagePart {
     MessagePart::Tool {
-        id: task.part_id.clone(),
+        id: part_id.to_owned(),
         call: holt_proto::ToolCall::Unknown {
-            name: format!("Agent: {}", task.label),
-            input: None,
+            name: format!("Agent: {label}"),
+            input: phase.map(|phase| serde_json::json!({ "phase": phase })),
         },
         is_error: false,
         resolved: false,
@@ -638,19 +649,11 @@ fn fanout_part(task: &ChildTask) -> MessagePart {
     }
 }
 
-/// Land every fan-out child's chip at once, queued (unresolved, no ref),
-/// right after the container call — the way approval copies join the
-/// parent's parts: display-only, never in History.
-fn insert_fanout_parts(d: &Delegation, container: &str, tasks: &[ChildTask]) {
-    let parts: Vec<MessagePart> = tasks.iter().map(fanout_part).collect();
-    let insert = |list: &mut Vec<MessagePart>| {
-        let at = list
-            .iter()
-            .position(|p| matches!(p, MessagePart::Tool { id, .. } if id == container))
-            .map_or(list.len(), |ix| ix + 1);
-        list.splice(at..at, parts.iter().cloned());
-    };
-    insert(&mut d.parent_parts.lock().unwrap_or_else(|e| e.into_inner()));
+/// Apply `edit` to the parent's parts — the live run's base parts and the
+/// transcript entry alike, the way approval copies join them — then land
+/// the entry, so display-only parts persist like any completed unit.
+pub(crate) fn edit_parent_parts(d: &Delegation, edit: impl Fn(&mut Vec<MessagePart>)) {
+    edit(&mut d.parent_parts.lock().unwrap_or_else(|e| e.into_inner()));
     if let Some(entry) = d
         .parent
         .transcript
@@ -659,29 +662,45 @@ fn insert_fanout_parts(d: &Delegation, container: &str, tasks: &[ChildTask]) {
         .iter_mut()
         .find(|e| e.id == d.parent_entry)
     {
-        insert(&mut entry.parts);
+        edit(&mut entry.parts);
     }
     if !d.parent.is_removed() {
         d.parent.persist_entry(&d.parent_entry);
     }
 }
 
-/// A fan-out child settled: its display part takes the role the `Agent`
-/// call's own tool result plays for a single spawn.
-fn settle_fanout_part(d: &Delegation, part_id: &str, outcome: &Result<ChildOutcome, String>) {
-    let (failed, total) = match outcome {
-        Ok(outcome) => (
-            !outcome.ok,
-            Some(crate::usage::gross_tokens(&outcome.usage)),
-        ),
-        Err(_) => (true, None),
-    };
-    let settle = |list: &mut Vec<MessagePart>| {
+/// Insert display parts after `container`'s chip and any items it already
+/// has (`{container}#item-{n}`), so items read in arrival order.
+pub(crate) fn insert_display_parts(d: &Delegation, container: &str, parts: Vec<MessagePart>) {
+    let prefix = format!("{container}#item-");
+    edit_parent_parts(d, |list| {
+        let at = list
+            .iter()
+            .rposition(|p| {
+                matches!(p, MessagePart::Tool { id, .. } if id == container || id.starts_with(&prefix))
+            })
+            .map_or(list.len(), |ix| ix + 1);
+        list.splice(at..at, parts.iter().cloned());
+    });
+}
+
+/// A display part's child settled: it takes the role the `Agent` call's own
+/// tool result plays for a single spawn. `subagent` binds a part whose child
+/// never ran here (a workflow replaying a cached result) to its doc.
+pub(crate) fn settle_display_part(
+    d: &Delegation,
+    part_id: &str,
+    failed: bool,
+    subagent: Option<&str>,
+    tokens: Option<u64>,
+) {
+    edit_parent_parts(d, |list| {
         for part in list.iter_mut() {
             if let MessagePart::Tool {
                 id,
                 resolved,
                 is_error,
+                subagent_ref,
                 subagent_status,
                 subagent_usage,
                 ..
@@ -690,32 +709,38 @@ fn settle_fanout_part(d: &Delegation, part_id: &str, outcome: &Result<ChildOutco
             {
                 *resolved = true;
                 *is_error = failed;
+                if let Some(doc) = subagent {
+                    *subagent_ref = Some(doc.to_owned());
+                }
                 *subagent_status = Some(if failed {
                     SubagentStatus::Failed
                 } else {
                     SubagentStatus::Done
                 });
-                *subagent_usage = total;
+                *subagent_usage = tokens;
             }
         }
-    };
-    settle(&mut d.parent_parts.lock().unwrap_or_else(|e| e.into_inner()));
-    if let Some(entry) = d
-        .parent
-        .transcript
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter_mut()
-        .find(|e| e.id == d.parent_entry)
-    {
-        settle(&mut entry.parts);
-    }
-    if !d.parent.is_removed() {
-        d.parent.persist_entry(&d.parent_entry);
+    });
+}
+
+pub(crate) fn settle_outcome(
+    d: &Delegation,
+    part_id: &str,
+    outcome: &Result<ChildOutcome, String>,
+) {
+    match outcome {
+        Ok(outcome) => settle_display_part(
+            d,
+            part_id,
+            !outcome.ok,
+            None,
+            Some(crate::usage::gross_tokens(&outcome.usage)),
+        ),
+        Err(_) => settle_display_part(d, part_id, true, None, None),
     }
 }
 
-async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, String> {
+pub(crate) async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, String> {
     let ChildTask {
         part_id,
         role,
@@ -987,7 +1012,7 @@ pub(crate) fn after_tool_call() -> AfterToolCallFn {
     })
 }
 
-fn write_result(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_result(path: &Path, text: &str) -> std::io::Result<()> {
     let dir = path.parent().expect("result directory");
     std::fs::create_dir_all(dir)?;
     let temp = path.with_extension("tmp");
@@ -998,7 +1023,7 @@ fn write_result(path: &Path, text: &str) -> std::io::Result<()> {
     crate::store::sync_dir(dir)
 }
 
-fn bounded_result(text: &str, path: &Path) -> Result<String, String> {
+pub(crate) fn bounded_result(text: &str, path: &Path) -> Result<String, String> {
     static TOKENIZER: OnceLock<Result<tiktoken_rs::CoreBPE, String>> = OnceLock::new();
     let tokenizer = TOKENIZER
         .get_or_init(|| tiktoken_rs::o200k_base().map_err(|e| e.to_string()))
