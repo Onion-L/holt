@@ -178,6 +178,21 @@ conversation_transcript:
         zh-CN: "已回退对话和 %{count} 个文件。"
       other:
         zh-CN: "已回退对话和 %{count} 个文件。"
+  workflow:
+    label:
+      zh-CN: Workflow
+    running:
+      zh-CN: "运行中"
+    done:
+      zh-CN: "已完成"
+    failed:
+      zh-CN: "失败"
+    stop:
+      zh-CN: "停止 workflow"
+    report:
+      zh-CN: Workflow「%{name}」已完成
+    report_failed:
+      zh-CN: Workflow「%{name}」失败
   goal:
     chip:
       zh-CN: 目标

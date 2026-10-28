@@ -629,6 +629,12 @@ impl Transcript {
                 error,
             } => retry_chip(*attempt, *max_retries, *retry_at_ms, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
+            RowKind::Workflow {
+                call_id,
+                name,
+                status,
+                tokens,
+            } => self.render_workflow_row(call_id, name, *status, *tokens, &theme, cx),
             RowKind::GoalEnd { message, event } => goal_end_row(message.clone(), *event, &theme),
             RowKind::GoalRound {
                 label,
@@ -1581,6 +1587,115 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
                 .child(message),
         )
         .into_any_element()
+}
+
+impl Transcript {
+    /// A workflow run's own row: glyph, "Workflow", the run's name, its
+    /// lifecycle and spend, and — while it runs, in the main chat — Stop.
+    fn render_workflow_row(
+        &self,
+        call_id: &SharedString,
+        name: &SharedString,
+        status: Option<SubagentStatus>,
+        tokens: Option<u64>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let running = matches!(status, Some(SubagentStatus::Running));
+        let state = match status {
+            Some(SubagentStatus::Running) => Some(t!("conversation_transcript.workflow.running")),
+            Some(SubagentStatus::Done) => Some(t!("conversation_transcript.workflow.done")),
+            Some(SubagentStatus::Failed) => Some(t!("conversation_transcript.workflow.failed")),
+            None => None,
+        };
+        let mut detail: Vec<String> = state.into_iter().map(|s| s.into_owned()).collect();
+        if let Some(tokens) = tokens.filter(|t| *t > 0) {
+            detail.push(
+                t!(
+                    "conversation_transcript.tool.tokens",
+                    count = crate::token_display::compact_tokens(tokens)
+                )
+                .into_owned(),
+            );
+        }
+        let stop = self
+            .chat_id
+            .clone()
+            .filter(|_| running && self.doc_override.is_none())
+            .map(|chat_id| {
+                let call_id = call_id.to_string();
+                let hint: SharedString = t!("conversation_transcript.workflow.stop").into();
+                div()
+                    .id(SharedString::from(format!("workflow-stop-{call_id}")))
+                    .debug_selector(|| "workflow-stop".to_string())
+                    .flex_none()
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(crate::theme::ink(0.06)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::popover::TextTooltip(hint.clone())).into()
+                    })
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TranscriptEvent::StopWorkflow {
+                            chat_id: chat_id.clone(),
+                            call_id: call_id.clone(),
+                        });
+                    }))
+                    .child(
+                        crate::icons::icon(crate::icons::STOP)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                    )
+            });
+        div()
+            .h(px(CHIP_HEIGHT))
+            .px(px(4.0))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(px(12.0))
+            .font_family(theme.font_sans_fixed.clone())
+            .debug_selector(|| "workflow-row".to_string())
+            .child(
+                crate::icons::icon(crate::icons::WIDGET)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.text)
+                    .child(SharedString::from(t!(
+                        "conversation_transcript.workflow.label"
+                    ))),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.text_muted)
+                    .child(name.clone()),
+            )
+            .when(!detail.is_empty(), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(detail.join(" · "))),
+                )
+            })
+            .child(div().flex_1())
+            .children(stop)
+            .into_any_element()
+    }
 }
 
 /// The hover strip's timestamp label.

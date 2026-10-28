@@ -41,7 +41,14 @@ fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
             count = tools.len()
         )
     };
-    let mut parts = vec![count.into_owned()];
+    // A workflow's phase rows lead with their phase.
+    let mut parts: Vec<String> = tools
+        .first()
+        .and_then(|tool| super::super::model::tool_phase(&tool.call))
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    parts.push(count.into_owned());
     for (n, key) in [
         (
             running,
@@ -1333,6 +1340,15 @@ mod tests {
         assert_eq!(
             subagent_fanout_summary(&settled[2..3]),
             "1 subagent · 1 done"
+        );
+        let mut phased = settled[2].clone();
+        phased.call = ToolCall::Unknown {
+            name: "Agent: task".into(),
+            input: Some(serde_json::json!({"phase": "Verify"})),
+        };
+        assert_eq!(
+            subagent_fanout_summary(&[phased]),
+            "Verify · 1 subagent · 1 done"
         );
     }
 

@@ -101,6 +101,23 @@ pub(super) fn is_spawn_link(item: &ToolItem) -> bool {
     is_agent_call(&item.call) && item.subagent_ref.is_some()
 }
 
+/// A `Workflow` call's part: bare while its arguments stream, `Workflow:
+/// <name>` once the engine launched the run.
+pub(super) fn is_workflow_call(call: &ToolCall) -> bool {
+    matches!(call, ToolCall::Unknown { name, .. } if name == "Workflow" || name.starts_with("Workflow: "))
+}
+
+/// The workflow phase a child's chip was started under (the kept spawn
+/// input), which splits a workflow's children into one row per phase.
+pub(super) fn tool_phase(call: &ToolCall) -> Option<&str> {
+    match call {
+        ToolCall::Unknown {
+            input: Some(input), ..
+        } if call.is_subagent_spawn() => input.get("phase")?.as_str(),
+        _ => None,
+    }
+}
+
 fn is_fanout_container(parts: &[MessagePart], id: &str) -> bool {
     let prefix = format!("{id}#item-");
     parts
@@ -335,6 +352,15 @@ pub enum RowKind {
     /// not the user. Drawn as a light, foldable loop row — round label and
     /// the verifier's missing piece — instead of a user bubble; the fold
     /// shows the full prompt the model got.
+    /// A background workflow run (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
+    /// the `Workflow` call's own row — its name, lifecycle, and tokens; the
+    /// run's agents follow as fan-out rows, one per phase.
+    Workflow {
+        call_id: SharedString,
+        name: SharedString,
+        status: Option<SubagentStatus>,
+        tokens: Option<u64>,
+    },
     GoalRound {
         label: SharedString,
         reason: SharedString,
@@ -659,16 +685,38 @@ pub fn rows_for_entry(
         // A loop-queued continuation carries its round as a part (ADR-goal-mode-verified-loop-at-turn-settle):
         // it is the loop speaking, so it never draws as a user bubble.
         let goal_round = entry.parts.iter().find_map(|p| match p {
-            MessagePart::GoalRound { round, reason, .. } => Some((*round, reason.clone())),
+            MessagePart::GoalRound { round, reason, .. } => {
+                Some((crate::goal::round_label(round), reason.clone()))
+            }
             _ => None,
         });
-        if let Some((round, reason)) = goal_round {
+        // A workflow's report (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation) is
+        // the engine speaking too: the same light, foldable row, whose fold
+        // shows the result the model received.
+        let goal_round = goal_round.or_else(|| {
+            entry.parts.iter().find_map(|p| match p {
+                MessagePart::WorkflowResult { name, failed, .. } => Some((
+                    if *failed {
+                        crate::i18n::t!(
+                            "conversation_transcript.workflow.report_failed",
+                            name = name
+                        )
+                    } else {
+                        crate::i18n::t!("conversation_transcript.workflow.report", name = name)
+                    }
+                    .into_owned(),
+                    String::new(),
+                )),
+                _ => None,
+            })
+        });
+        if let Some((label, reason)) = goal_round {
             rows.push(Row {
                 id: entry.id.clone().into(),
                 version: (raw.len() as u64) << 1 | pending as u64,
                 turn_start: true,
                 kind: RowKind::GoalRound {
-                    label: crate::goal::round_label(&round).into(),
+                    label: label.into(),
                     reason: reason.into(),
                     prompt: raw.into(),
                     footer_owner: None,
@@ -870,6 +918,33 @@ pub fn rows_for_entry(
                 subagent_usage,
                 gate,
             } => {
+                // A workflow call is its run's own row; its agents follow.
+                if is_workflow_call(call) {
+                    flush_group(
+                        &mut rows,
+                        &mut pending_group,
+                        &mut group_ix,
+                        group_last_part_ix,
+                    );
+                    let (_, name) = tool_chip_content(call);
+                    rows.push(Row {
+                        id: format!("{}#{}", entry.id, id).into(),
+                        version: fnv1a(
+                            format!("{name}\0{subagent_status:?}\0{subagent_usage:?}").as_bytes(),
+                        ),
+                        turn_start: false,
+                        kind: RowKind::Workflow {
+                            call_id: id.clone().into(),
+                            name: name.into(),
+                            status: *subagent_status,
+                            tokens: *subagent_usage,
+                        },
+                        entry_id: entry.id.clone().into(),
+                        timestamp: None,
+                        copy_text: None,
+                    });
+                    continue;
+                }
                 // A fan-out `Agent` call is drawn by its per-item spawn parts
                 // (`{id}#item-{n}`, engine `subagents::execute_fanout`); the
                 // container chip itself would only repeat them.
@@ -921,10 +996,11 @@ pub fn rows_for_entry(
                 }
                 // Agent chips don't share a fold with ordinary tools: flush
                 // whenever the genus flips so each group is uniform.
-                if pending_group
-                    .first()
-                    .is_some_and(|head| is_agent_tool(head) != is_agent_tool(&item))
-                {
+                // A workflow's agents split further, one row per phase.
+                if pending_group.first().is_some_and(|head| {
+                    is_agent_tool(head) != is_agent_tool(&item)
+                        || tool_phase(&head.call) != tool_phase(&item.call)
+                }) {
                     flush_group(
                         &mut rows,
                         &mut pending_group,
@@ -2018,6 +2094,99 @@ mod tests {
             .map(|t| t.call_id.as_deref().unwrap())
             .collect();
         assert_eq!(ids, ["spawn-1#item-0", "spawn-1#item-1", "spawn-2"]);
+    }
+
+    fn phased(id: &str, label: &str, phase: &str) -> MessagePart {
+        let mut part = agent_part(id, label);
+        if let MessagePart::Tool { call, .. } = &mut part {
+            *call = ToolCall::Unknown {
+                name: format!("Agent: {label}"),
+                input: Some(serde_json::json!({ "phase": phase })),
+            };
+        }
+        part
+    }
+
+    #[test]
+    fn a_workflow_is_its_own_row_with_one_agent_row_per_phase() {
+        let mut container = tool_part("wf-1", "ignored");
+        if let MessagePart::Tool {
+            call,
+            subagent_status,
+            subagent_usage,
+            ..
+        } = &mut container
+        {
+            *call = ToolCall::Unknown {
+                name: "Workflow: audit".into(),
+                input: None,
+            };
+            *subagent_status = Some(SubagentStatus::Running);
+            *subagent_usage = Some(1200);
+        }
+        let entry = assistant(
+            "m-wf",
+            MessageStatus::Complete,
+            vec![
+                container,
+                phased("wf-1#item-0", "a", "Find"),
+                phased("wf-1#item-1", "b", "Find"),
+                phased("wf-1#item-2", "verify", "Verify"),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 3);
+        let RowKind::Workflow {
+            call_id,
+            name,
+            status,
+            tokens,
+        } = &rows[0].kind
+        else {
+            panic!("workflow row expected")
+        };
+        assert_eq!(call_id.as_ref(), "wf-1");
+        assert_eq!(name.as_ref(), "audit");
+        assert_eq!(*status, Some(SubagentStatus::Running));
+        assert_eq!(*tokens, Some(1200));
+        let RowKind::ToolGroup { tools, .. } = &rows[1].kind else {
+            panic!("phase row expected")
+        };
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tool_phase(&tools[0].call), Some("Find"));
+        let RowKind::ToolGroup { tools, .. } = &rows[2].kind else {
+            panic!("phase row expected")
+        };
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tool_phase(&tools[0].call), Some("Verify"));
+    }
+
+    #[test]
+    fn a_workflow_report_draws_as_a_light_row() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let entry = SessionMessageEntry {
+            id: "m-report".into(),
+            role: MessageRole::User,
+            parts: vec![
+                text_part("t0", "Workflow \"audit\" (run x) finished. …"),
+                MessagePart::WorkflowResult {
+                    id: "w0".into(),
+                    name: "audit".into(),
+                    failed: false,
+                },
+            ],
+            created_at: 0,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        };
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::GoalRound { label, prompt, .. } = &rows[0].kind else {
+            panic!("report row expected, not a user bubble")
+        };
+        assert_eq!(label.as_ref(), "Workflow “audit” finished");
+        assert!(prompt.starts_with("Workflow \"audit\" (run x)"));
     }
 
     #[test]

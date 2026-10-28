@@ -535,7 +535,12 @@ fn tool_chip_content_raw(call: &crate::ToolCall, cwd: Option<&str>) -> (&'static
         ToolCall::Unknown { name, .. } => match name.strip_prefix("Agent: ") {
             Some(description) => ("Agent", description.to_owned()),
             None if name == "Agent" => ("Agent", String::new()),
-            None => ("Tool", name.clone()),
+            // A workflow call names its run the same way once launched.
+            None => match name.strip_prefix("Workflow: ") {
+                Some(title) => ("Workflow", title.to_owned()),
+                None if name == "Workflow" => ("Workflow", String::new()),
+                None => ("Tool", name.clone()),
+            },
         },
     }
 }
