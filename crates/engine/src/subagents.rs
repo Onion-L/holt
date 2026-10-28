@@ -4,10 +4,7 @@ use std::{
     collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use futures::FutureExt as _;
@@ -30,12 +27,6 @@ const RESULT_TOKENS: usize = 12_000;
 /// create any number of children — the budget bounds concurrency, not
 /// total, so an orchestrating Turn can run waves of children.
 const MAX_RUNNING_CHILDREN: usize = 8;
-/// Uncached tokens (input + output + cache writes) a Turn's children may
-/// spend before further spawns are refused — the runaway guard now that a
-/// Turn may create any number of children. Cache reads are left out: they
-/// dominate a long child's gross total yet cost a fraction, so the budget
-/// tracks spend rather than context replay.
-const TURN_TOKEN_BUDGET: u64 = 20_000_000;
 
 pub(crate) async fn system_prompt(
     role: &str,
@@ -294,15 +285,12 @@ pub(crate) struct Delegation {
     pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     pub(crate) stream_fn: StreamFn,
     pub(crate) cancel: CancellationToken,
-    /// Uncached tokens this Turn's children have spent (see
-    /// [`TURN_TOKEN_BUDGET`]); one counter per mounted tool, so per Turn.
-    pub(crate) spent: Arc<AtomicU64>,
 }
 
 pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     AgentTool {
         name: "Agent".into(), label: "Delegate".into(),
-        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work, or pass `items` to fan one brief out over many inputs in a single call. This foreground call waits for every child it started. Pass `output_schema` when you will combine results programmatically or across many children — each child then returns JSON matching it. Use `result_mode: \"file\"` for wide fan-outs so results stay out of your context until you read the result file. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children run at once across Holt (later children wait for a free slot); a Turn may create any number of children until its subagent token budget is spent; children cannot delegate.".into(),
+        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work, or pass `items` to fan one brief out over many inputs in a single call. This foreground call waits for every child it started. Pass `output_schema` when you will combine results programmatically or across many children — each child then returns JSON matching it. Use `result_mode: \"file\"` for wide fan-outs so results stay out of your context until you read the result file. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children run at once across Holt (later children wait for a free slot); a Turn may create any number of children; children cannot delegate.".into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {
                 "subagent_type": {"type": "string", "enum": ["explorer", "worker"]},
@@ -727,11 +715,6 @@ fn settle_fanout_part(d: &Delegation, part_id: &str, outcome: &Result<ChildOutco
     }
 }
 
-/// The tokens a child's run counts against its Turn's budget.
-fn budget_tokens(usage: &Usage) -> u64 {
-    usage.input + usage.output + usage.cache_write
-}
-
 async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, String> {
     let ChildTask {
         part_id,
@@ -746,16 +729,6 @@ async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, Stri
         _ = cancel.cancelled() => return Err("Subagent interrupted before starting".into()),
         permit = d.runtime.subagents.slots.clone().acquire_owned() => permit.map_err(|e| e.to_string())?,
     };
-    // Checked at admission, after the slot wait, so it reads what every
-    // child settled while this one queued. In-flight children are never cut
-    // off — a burst can overshoot by what is running.
-    let spent = d.spent.load(Ordering::Acquire);
-    if spent >= TURN_TOKEN_BUDGET {
-        return Err(format!(
-            "Subagent budget spent: this Turn's children used {spent} of {TURN_TOKEN_BUDGET} \
-             uncached tokens. Complete the remaining work yourself."
-        ));
-    }
     let id = format!("{}--sub--{}", d.parent.chat_id, uuid::Uuid::new_v4());
     let data_dir = directory(&d.runtime.data_dir, &d.parent.chat_id);
     let output = schema.map(|schema| {
@@ -871,7 +844,6 @@ async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, Stri
         }
     }
     *child.usage.lock().unwrap_or_else(|e| e.into_inner()) = usage.clone();
-    d.spent.fetch_add(budget_tokens(&usage), Ordering::AcqRel);
     drop(permit);
     let history = child.history.read().unwrap_or_else(|e| e.into_inner());
     let final_text = history
