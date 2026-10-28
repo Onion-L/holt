@@ -264,7 +264,8 @@ impl RpcService for EngineService {
                 { "name": "init", "description": "Generate or update AGENTS.md for this repository" },
                 { "name": "plan", "description": "Plan Mode: explore read-only, submit a plan for approval", "inputHint": "[task]" },
                 { "name": "provider", "description": "Provider Mode: add or update providers and models by conversation", "inputHint": "[task | off]" },
-                { "name": "goal", "description": "Goal Mode: loop on an objective until a verifier says it holds", "inputHint": "[objective | off | pause | resume]" }
+                { "name": "goal", "description": "Goal Mode: loop on an objective until a verifier says it holds", "inputHint": "[objective | off | pause | resume]" },
+                { "name": "workflow", "description": "Run the task as a background workflow that orchestrates subagents", "inputHint": "<task>" }
             ])),
             // The skills catalog (ADR-skills-referenced-in-place-from-standard-roots): fresh per call — the
             // filesystem is the registry, so there is nothing to cache.

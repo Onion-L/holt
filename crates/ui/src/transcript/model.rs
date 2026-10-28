@@ -261,6 +261,33 @@ fn home_dir() -> Option<String> {
         .filter(|home| !home.is_empty())
 }
 
+/// The directive a user bubble chips inline at its head — icon gutter +
+/// bare name, the composer's own treatment — lifted from the send's
+/// trailing marker block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectiveChip {
+    /// The `/goal <objective>` arming send.
+    Goal,
+    /// A `/workflow <task>` send.
+    Workflow,
+}
+
+impl DirectiveChip {
+    pub(super) fn icon(self) -> &'static str {
+        match self {
+            DirectiveChip::Goal => crate::icons::TARGET,
+            DirectiveChip::Workflow => crate::icons::WIDGET,
+        }
+    }
+
+    pub(super) fn label(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            DirectiveChip::Goal => crate::i18n::t!("conversation_transcript.goal.chip"),
+            DirectiveChip::Workflow => crate::i18n::t!("conversation_transcript.workflow.label"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum RowKind {
     User {
@@ -282,10 +309,9 @@ pub enum RowKind {
         badges: Arc<Vec<crate::badges::MessageBadge>>,
         /// Skill invocation metadata when the turn was launched via `/skill`.
         skill: Option<Arc<UserSkill>>,
-        /// The arming send (`/goal <objective>`): the bubble heads its text
-        /// with the white `goal` chip (icon gutter + bare name — the
-        /// composer's own treatment) instead of a pill above it.
-        goal_chip: bool,
+        /// A `/goal` arming or `/workflow` send: the bubble heads its text
+        /// with the directive's white chip instead of a pill above it.
+        directive_chip: Option<DirectiveChip>,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -746,11 +772,15 @@ pub fn rows_for_entry(
         // Lifted before the mention projection, so a comment body's own
         // Markdown never lands in the bubble.
         let (body, badges) = crate::badges::split(&body);
-        // No pill replaces the goal marker: the renderer chips the `goal`
-        // directive inline at the bubble's head (the composer's treatment).
-        let (body, goal_chip) = match crate::goal::strip_block(&body) {
-            Some(objective) => (objective, true),
-            None => (body, false),
+        // No pill replaces the goal or workflow marker: the renderer chips
+        // the directive inline at the bubble's head (the composer's
+        // treatment).
+        let (body, directive_chip) = if let Some(objective) = crate::goal::strip_block(&body) {
+            (objective, Some(DirectiveChip::Goal))
+        } else if let Some(task) = crate::workflow::strip_block(&body) {
+            (task, Some(DirectiveChip::Workflow))
+        } else {
+            (body, None)
         };
         parsed.attachments.extend(
             references
@@ -822,7 +852,7 @@ pub fn rows_for_entry(
                     attachments: Arc::new(parsed.attachments),
                     badges: Arc::new(badges),
                     skill,
-                    goal_chip,
+                    directive_chip,
                     pending,
                 },
                 entry_id,
@@ -2365,13 +2395,17 @@ mod tests {
             text,
             raw,
             badges,
-            goal_chip,
+            directive_chip,
             ..
         } = &rows[0].kind
         else {
             panic!("expected a user row");
         };
-        assert!(goal_chip, "the row chips the goal directive inline");
+        assert_eq!(
+            *directive_chip,
+            Some(DirectiveChip::Goal),
+            "the row chips the goal directive inline"
+        );
         assert!(badges.is_empty(), "no pill rides above the bubble");
         assert_eq!(text.as_ref(), "ship the login page");
         assert_eq!(raw.as_ref(), "ship the login page");
@@ -2393,21 +2427,52 @@ mod tests {
         entry.parts = vec![text_part("t0", &with_refs)];
         let rows = rows_for_entry(&entry, false, &mut parse);
         let RowKind::User {
-            text, goal_chip, ..
+            text,
+            directive_chip,
+            ..
         } = &rows[0].kind
         else {
             panic!("expected a user row");
         };
-        assert!(goal_chip, "the chip survives an appended path list");
+        assert_eq!(
+            *directive_chip,
+            Some(DirectiveChip::Goal),
+            "the chip survives an appended path list"
+        );
         assert_eq!(text.as_ref(), "ship the login page");
 
         // An ordinary prompt never chips.
         entry.parts = vec![text_part("t0", "just a prompt")];
         let rows = rows_for_entry(&entry, false, &mut parse);
-        let RowKind::User { goal_chip, .. } = &rows[0].kind else {
+        let RowKind::User { directive_chip, .. } = &rows[0].kind else {
             panic!("expected a user row");
         };
-        assert!(!goal_chip);
+        assert_eq!(*directive_chip, None);
+    }
+
+    /// A `/workflow <task>` send chips `Workflow` the same way, and the
+    /// model-facing marker sentence never reaches the bubble.
+    #[test]
+    fn user_rows_chip_the_workflow_directive_inline() {
+        let mut entry = assistant("u9", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part(
+            "t0",
+            &crate::workflow::with_workflow_block("audit the engine"),
+        )];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User {
+            text,
+            directive_chip,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert_eq!(*directive_chip, Some(DirectiveChip::Workflow));
+        assert_eq!(text.as_ref(), "audit the engine");
+        assert_eq!(rows[0].copy_text.as_deref(), Some("audit the engine"));
     }
 
     #[test]

@@ -30,8 +30,8 @@ use holt_proto::view::tool_chip_content_in;
 
 use super::agent_avatar::{AgentIdentity, AvatarMood, agent_avatar};
 use super::model::{
-    Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
-    is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
+    DirectiveChip, Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp,
+    is_agent_call, is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
 };
 use super::question_card;
 use super::tool::{
@@ -200,7 +200,7 @@ impl Transcript {
                 attachments,
                 badges,
                 skill,
-                goal_chip,
+                directive_chip,
                 pending,
             } => {
                 let attachments = attachments.clone();
@@ -209,7 +209,7 @@ impl Transcript {
                 let raw = raw.clone();
                 let mentions = mentions.clone();
                 let skill = skill.clone();
-                let goal_chip = *goal_chip;
+                let directive_chip = *directive_chip;
                 let pending = *pending;
                 let mut targets: Vec<crate::image_viewer::ViewerTarget> = attachments
                     .iter()
@@ -401,14 +401,14 @@ impl Transcript {
                             skill_open: Some(skill_open),
                             copy_map,
                         };
-                        match (skill, goal_chip) {
+                        match (skill, directive_chip) {
                             (Some(skill), _) => self.render_user_skill(
                                 &row.id, &skill, &text, &mentions, &theme, clicks,
                             ),
-                            (None, true) => {
-                                render_user_goal(&row.id, text, mentions, &theme, clicks)
+                            (None, Some(chip)) => {
+                                render_user_directive(&row.id, chip, text, mentions, &theme, clicks)
                             }
-                            (None, false) => user_bubble_text_with_chip(
+                            (None, None) => user_bubble_text_with_chip(
                                 &row.id, text, mentions, None, &theme, clicks,
                             )
                             .into_any_element(),
@@ -1108,14 +1108,15 @@ struct SkillChipRun {
 /// icon in the gutter — the composer's own treatment, never the accent).
 enum LeadingChip {
     Skill(SkillChipRun),
-    Goal(std::ops::Range<usize>),
+    /// A `/goal` or `/workflow` directive: its label range and gutter glyph.
+    Directive(std::ops::Range<usize>, &'static str),
 }
 
 impl LeadingChip {
     fn range(&self) -> std::ops::Range<usize> {
         match self {
             LeadingChip::Skill(chip) => chip.range.clone(),
-            LeadingChip::Goal(range) => range.clone(),
+            LeadingChip::Directive(range, _) => range.clone(),
         }
     }
 }
@@ -1192,7 +1193,7 @@ fn user_bubble_text_with_chip(
             LeadingChip::Skill(_) => skill_run(range.len()),
             // White sans ink — the body's own run. The neutral wash and the
             // gutter icon carry the chip's identity (the composer's recipe).
-            LeadingChip::Goal(_) => body_run(range.len()),
+            LeadingChip::Directive(..) => body_run(range.len()),
         });
         at = range.end;
     }
@@ -1261,9 +1262,9 @@ fn user_bubble_text_with_chip(
     };
     let wash = theme.code_wash;
     let skill_wash = theme.accent_wash;
-    // The goal chip's neutral fill — white ink, never the skill's accent
-    // (the composer's `element_hover`).
-    let goal_wash = theme.element_hover;
+    // The directive chip's neutral fill — white ink, never the skill's
+    // accent (the composer's `element_hover`).
+    let directive_wash = theme.element_hover;
     let sel_key: std::sync::Arc<str> = format!("{row_id}:u").into();
     let sel_theme = theme.clone();
     let underlay = canvas(
@@ -1282,12 +1283,23 @@ fn user_bubble_text_with_chip(
                 }
             };
             if let Some(range) = &leading_range {
-                let goal = matches!(leading, Some(LeadingChip::Goal(_)));
-                paint(window, range, if goal { goal_wash } else { skill_wash });
-                // The goal chip leads with the mode's target glyph — painted
-                // in the label's gutter NBSPs, white like the ink (the
-                // composer's recipe; the display text is the bare name).
-                if goal
+                let directive_icon = match leading {
+                    Some(LeadingChip::Directive(_, icon)) => Some(icon),
+                    _ => None,
+                };
+                paint(
+                    window,
+                    range,
+                    if directive_icon.is_some() {
+                        directive_wash
+                    } else {
+                        skill_wash
+                    },
+                );
+                // The directive chip leads with its glyph — painted in the
+                // label's gutter NBSPs, white like the ink (the composer's
+                // recipe; the display text is the bare name).
+                if let Some(icon_path) = directive_icon
                     && let Some(rect) = render::range_rects(&layout, range, 0.0, 2.0)
                         .first()
                         .copied()
@@ -1301,7 +1313,7 @@ fn user_bubble_text_with_chip(
                             ),
                             size(icon, icon),
                         ),
-                        crate::icons::TARGET.into(),
+                        icon_path.into(),
                         None,
                         gpui::TransformationMatrix::unit(),
                         sel_theme.text,
@@ -1365,8 +1377,9 @@ fn user_bubble_text_with_chip(
 /// composer's own projection, never the accent), then the objective. The
 /// arming marker itself never reaches the bubble (`model.rs` strips it), and
 /// no pill rides above it — the chip IS the provenance.
-fn render_user_goal(
+fn render_user_directive(
     row_id: &SharedString,
+    directive: DirectiveChip,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
     theme: &Theme,
@@ -1377,9 +1390,9 @@ fn render_user_goal(
     // must exist in Geist (exotic whitespace collapsed a chip once already).
     let label = format!(
         "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}{}\u{00A0}",
-        t!("conversation_transcript.goal.chip")
+        directive.label()
     );
-    let chip = LeadingChip::Goal(0..label.len());
+    let chip = LeadingChip::Directive(0..label.len(), directive.icon());
     let (full, mentions) = if text.is_empty() {
         (label, Vec::new())
     } else {

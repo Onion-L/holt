@@ -37,6 +37,8 @@ composer_input:
       en-US: /init needs a project — pick a project first
     usage_goal:
       en-US: "Usage: /goal <objective> | off | pause | resume"
+    usage_workflow:
+      en-US: "Usage: /workflow <task>"
     goal_needs_chat:
       en-US: No chat here yet — /goal <objective> starts one
     goal_failed:
