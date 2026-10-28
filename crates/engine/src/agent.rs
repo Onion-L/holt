@@ -1721,9 +1721,14 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
     let (mut system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
     if let Some(child) = &chat.child {
-        system_prompt =
-            crate::subagents::system_prompt(&child.role, &cwd, &catalog, search_backend.is_some())
-                .await;
+        system_prompt = crate::subagents::system_prompt(
+            &child.role,
+            &cwd,
+            &catalog,
+            search_backend.is_some(),
+            child.output.is_some(),
+        )
+        .await;
     }
     let skill_files: HashMap<String, String> = catalog
         .winners
@@ -2040,6 +2045,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         if child.role == "explorer" {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }
+        if let Some(output) = &child.output {
+            tools.push(crate::subagents::submit_result_tool(output.clone()));
+        }
     } else if provider_mode {
         // The Provider Mode surface (ADR-provider-mode-is-a-chat-mode): web research plus the
         // read-only proposal tool and the Key request (ADR-api-keys-collected-through-key-requests) — no file
@@ -2081,6 +2089,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
             attribution: attribution.clone(),
+            spent: Default::default(),
         }));
         // The task list (issue #47) mounts on main-chat Turns only — the
         // MCP policy: subagent, planning, and Provider Mode Turns keep
