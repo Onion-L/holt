@@ -8,7 +8,48 @@ use super::*;
 
 const SUBAGENT_HEADER_AVATARS: usize = 5;
 const SUBAGENT_HEADER_AVATAR_SIZE: f32 = 22.0;
-const SUBAGENT_HEADER_AVATAR_OVERLAP: f32 = 3.0;
+const SUBAGENT_HEADER_AVATAR_GAP: f32 = 4.0;
+
+/// "30 subagents · 8 running · 2 failed" — lifecycle counts by the same
+/// mood the faces wear, zero buckets omitted.
+fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
+    let (mut running, mut done, mut failed) = (0, 0, 0);
+    for tool in tools {
+        match subagent_avatar_mood(tool) {
+            AvatarMood::Running => running += 1,
+            AvatarMood::Done => done += 1,
+            AvatarMood::Failed => failed += 1,
+        }
+    }
+    let count = if tools.len() == 1 {
+        t!(
+            "conversation_transcript.tool.subagent_fanout.count.one",
+            count = 1
+        )
+    } else {
+        t!(
+            "conversation_transcript.tool.subagent_fanout.count.other",
+            count = tools.len()
+        )
+    };
+    let mut parts = vec![count.into_owned()];
+    for (n, key) in [
+        (
+            running,
+            "conversation_transcript.tool.subagent_fanout.running",
+        ),
+        (
+            failed,
+            "conversation_transcript.tool.subagent_fanout.failed",
+        ),
+        (done, "conversation_transcript.tool.subagent_fanout.done"),
+    ] {
+        if n > 0 {
+            parts.push(t!(key, count = n).into_owned());
+        }
+    }
+    parts.join(" · ")
+}
 
 fn subagent_header_order(tools: &[ToolItem]) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..tools.len()).collect();
@@ -49,21 +90,10 @@ impl Transcript {
             })
             .collect();
         let order = subagent_header_order(tools);
-        let names = order
-            .iter()
-            .take(SUBAGENT_HEADER_AVATARS)
-            .map(|ix| {
-                identities[*ix]
-                    .as_ref()
-                    .map(|identity| identity.name.to_string())
-                    .unwrap_or_else(|| subagent_tab_title(&tools[*ix].call).to_string())
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let remaining = tools.len().saturating_sub(SUBAGENT_HEADER_AVATARS);
+        let summary = subagent_fanout_summary(tools);
         let face_count = order.len().min(SUBAGENT_HEADER_AVATARS);
-        let faces_width = 8.0 + face_count as f32 * SUBAGENT_HEADER_AVATAR_SIZE
-            - face_count.saturating_sub(1) as f32 * SUBAGENT_HEADER_AVATAR_OVERLAP;
+        let faces_width = face_count as f32 * SUBAGENT_HEADER_AVATAR_SIZE
+            + face_count.saturating_sub(1) as f32 * SUBAGENT_HEADER_AVATAR_GAP;
         let key = SharedString::from(format!("{row_id}#agents-fanout"));
         let mut fold = self.folds.get(&key).copied().unwrap_or_default();
         let open = fold.open.unwrap_or(false);
@@ -76,40 +106,53 @@ impl Transcript {
         fold.last_target = target;
         self.folds.insert(key.clone(), fold);
         let toggle_id = key.clone();
+        // Same shape as the ordinary group header (chevron slot, quiet 12px
+        // summary) so the two read as one family; the faces sit between.
         let header = div()
             .id(key.clone())
             .debug_selector(|| "subagent-fanout".to_string())
             .h(px(CHIP_HEIGHT))
-            .w_full()
+            .px(px(4.0))
             .flex_none()
             .flex()
             .flex_row()
             .items_center()
-            .rounded(px(6.0))
+            .gap(px(8.0))
             .cursor_pointer()
-            .hover(|s| s.bg(crate::theme::ink(0.04)))
+            .text_size(px(12.0))
+            .line_height(px(18.0))
+            .text_color(theme.text_muted)
+            .hover(|s| s.text_color(theme.text))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(toggle_id.clone(), open_height, false);
                 cx.notify();
             }))
             .child(
                 div()
-                    .relative()
-                    .h(px(CHIP_HEIGHT))
+                    .size(px(18.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_muted.opacity(0.7))
+                    .child(SharedString::from(if open { "▾" } else { "▸" })),
+            )
+            .child(
+                div()
                     .w(px(faces_width))
                     .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(SUBAGENT_HEADER_AVATAR_GAP))
                     .debug_selector(|| "subagent-fanout-faces".to_string())
                     .children(order.iter().take(SUBAGENT_HEADER_AVATARS).enumerate().map(
                         |(position, ix)| {
                             let tool = &tools[*ix];
                             div()
-                                .absolute()
-                                .left(px(4.0
-                                    + position as f32
-                                        * (SUBAGENT_HEADER_AVATAR_SIZE
-                                            - SUBAGENT_HEADER_AVATAR_OVERLAP)))
-                                .top(px((CHIP_HEIGHT - SUBAGENT_HEADER_AVATAR_SIZE) / 2.0))
                                 .size(px(SUBAGENT_HEADER_AVATAR_SIZE))
+                                .flex_none()
                                 .debug_selector(move || format!("subagent-fanout-face-{position}"))
                                 .when_some(identities[*ix].as_ref(), |face, identity| {
                                     face.child(agent_avatar(
@@ -124,38 +167,13 @@ impl Transcript {
             )
             .child(
                 div()
-                    .ml(px(8.0))
                     .min_w_0()
-                    .flex_1()
+                    .h(px(18.0))
+                    .flex()
+                    .items_center()
                     .truncate()
-                    .debug_selector(|| "subagent-fanout-names".to_string())
-                    .text_size(px(12.0))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(names)),
-            )
-            .when(remaining > 0, |row| {
-                row.child(
-                    div()
-                        .ml(px(8.0))
-                        .flex_none()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from(
-                            t!(
-                                "conversation_transcript.tool.subagent_fanout.more",
-                                count = remaining
-                            )
-                            .into_owned(),
-                        )),
-                )
-            })
-            .child(
-                div()
-                    .px(px(8.0))
-                    .flex_none()
-                    .text_size(px(10.0))
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from(if open { "▾" } else { "▸" })),
+                    .debug_selector(|| "subagent-fanout-summary".to_string())
+                    .child(SharedString::from(summary)),
             );
         let rows = div()
             .flex()
@@ -181,7 +199,7 @@ impl Transcript {
                                 frozen,
                             });
                         }),
-                        false,
+                        true,
                         theme,
                         cx.entity_id(),
                         chip_cwd.as_deref(),
@@ -191,7 +209,7 @@ impl Transcript {
                     tool_chip(
                         tool,
                         identity,
-                        false,
+                        true,
                         (SharedString::from(format!("{row_id}#fanout-r{ix}")), None),
                         theme,
                         cx.entity_id(),
@@ -1172,8 +1190,8 @@ fn tool_chip(
 /// A spawn chip: same flat row as [`tool_chip`], but the WHOLE row is the
 /// "open the subagent tab" click (open-arrow affordance in the trailing
 /// slot). No accordion — an inline body would only repeat the subagent's own
-/// transcript. The group guide rail is omitted for agent-only rows (no
-/// collapse header for it to hang from).
+/// transcript. The guide rail hangs from whichever header folds it — the
+/// mixed group's summary or the agent-only fan-out row.
 #[expect(clippy::too_many_arguments)]
 fn subagent_chip(
     tool: &ToolItem,
@@ -1259,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn fanout_header_shows_five_active_faces_then_overflow() {
+    fn fanout_header_shows_active_faces_and_lifecycle_counts() {
         let mut tools = Vec::new();
         for ix in 0..30 {
             let (status, resolved, has_ref) = match ix {
@@ -1273,13 +1291,20 @@ mod tests {
         let order = subagent_header_order(&tools);
         assert_eq!(&order[..SUBAGENT_HEADER_AVATARS], &[18, 19, 20, 21, 22]);
         assert_eq!(&order[8..12], &[26, 27, 28, 29]);
-        assert_eq!(tools.len().saturating_sub(SUBAGENT_HEADER_AVATARS), 25);
+        assert_eq!(
+            subagent_fanout_summary(&tools),
+            "30 subagents · 12 running · 2 failed · 16 done"
+        );
 
         let settled: Vec<ToolItem> = (0..5)
             .map(|ix| agent(ix, Some(SubagentStatus::Done), true, true))
             .collect();
         assert_eq!(subagent_header_order(&settled), [0, 1, 2, 3, 4]);
-        assert_eq!(settled.len().saturating_sub(SUBAGENT_HEADER_AVATARS), 0);
+        assert_eq!(subagent_fanout_summary(&settled), "5 subagents · 5 done");
+        assert_eq!(
+            subagent_fanout_summary(&settled[..1]),
+            "1 subagent · 1 done"
+        );
     }
 
     #[test]

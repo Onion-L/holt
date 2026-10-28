@@ -100,8 +100,17 @@ conversation_transcript:
     subagent:
       zh-CN: Subagent
     subagent_fanout:
-      more:
-        zh-CN: "还有 %{count} 个 subagent"
+      count:
+        one:
+          zh-CN: "%{count} 个 subagent"
+        other:
+          zh-CN: "%{count} 个 subagent"
+      running:
+        zh-CN: "%{count} 个运行中"
+      done:
+        zh-CN: "%{count} 个完成"
+      failed:
+        zh-CN: "%{count} 个失败"
   turn_card:
     edited_files:
       one:
