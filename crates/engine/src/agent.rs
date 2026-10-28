@@ -2089,7 +2089,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
             attribution: attribution.clone(),
-            spent: Default::default(),
         }));
         // The task list (issue #47) mounts on main-chat Turns only — the
         // MCP policy: subagent, planning, and Provider Mode Turns keep

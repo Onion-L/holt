@@ -941,29 +941,3 @@ async fn a_fanout_runs_one_child_per_item_and_returns_json_lines() {
         assert!(chip(id)["subagentRef"].as_str().is_some());
     }
 }
-
-#[tokio::test]
-async fn spawns_past_the_turn_token_budget_are_refused() {
-    let fixture = Fixture::new();
-    let heavy = holt_core::ai::types::Usage {
-        output: 20_000_000,
-        total_tokens: 20_000_000,
-        ..Default::default()
-    };
-    let provider = ScriptedProvider::new(vec![
-        spawn("spawn-1", "explorer"),
-        ScriptedReply::text_with_usage("Expensive findings", heavy),
-        spawn("spawn-2", "explorer"),
-        ScriptedReply::text("Parent finished alone"),
-    ]);
-    let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate twice").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    let requests = provider.requests();
-    assert_eq!(requests.len(), 4, "the second child never runs");
-    let (text, is_error) = result_text(&requests, "spawn-2");
-    assert!(is_error);
-    assert!(text.contains("Subagent budget spent"), "{text}");
-}

@@ -13,6 +13,7 @@ const SUBAGENT_HEADER_AVATAR_GAP: f32 = 4.0;
 /// "30 subagents · 8 running · 12 queued · 2 failed" — lifecycle counts by
 /// the same mood the faces wear, with children still waiting for a slot
 /// (unresolved, never bound to a doc) split out; zero buckets omitted.
+/// Settled children's token totals trail it — spend is shown, not capped.
 fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
     let (mut running, mut queued, mut done, mut failed) = (0, 0, 0, 0);
     for tool in tools {
@@ -59,6 +60,16 @@ fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
         if n > 0 {
             parts.push(t!(key, count = n).into_owned());
         }
+    }
+    let tokens: u64 = tools.iter().filter_map(|tool| tool.subagent_usage).sum();
+    if tokens > 0 {
+        parts.push(
+            t!(
+                "conversation_transcript.tool.tokens",
+                count = crate::token_display::compact_tokens(tokens)
+            )
+            .into_owned(),
+        );
     }
     parts.join(" · ")
 }
@@ -1308,13 +1319,19 @@ mod tests {
             "30 subagents · 8 running · 4 queued · 2 failed · 16 done"
         );
 
-        let settled: Vec<ToolItem> = (0..5)
+        let mut settled: Vec<ToolItem> = (0..5)
             .map(|ix| agent(ix, Some(SubagentStatus::Done), true, true))
             .collect();
         assert_eq!(subagent_header_order(&settled), [0, 1, 2, 3, 4]);
         assert_eq!(subagent_fanout_summary(&settled), "5 subagents · 5 done");
+        settled[0].subagent_usage = Some(900_000);
+        settled[1].subagent_usage = Some(300_000);
         assert_eq!(
-            subagent_fanout_summary(&settled[..1]),
+            subagent_fanout_summary(&settled),
+            "5 subagents · 5 done · 1.2M tokens"
+        );
+        assert_eq!(
+            subagent_fanout_summary(&settled[2..3]),
             "1 subagent · 1 done"
         );
     }
