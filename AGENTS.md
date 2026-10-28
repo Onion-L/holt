@@ -58,9 +58,10 @@ unserved RPC, or "fixing" an `UnknownMethod` reply, is work on code that
 does not run.
 
 - **Served**: the whole chat/space/session surface, the queue and Turn loop,
-  provider configuration, the git surface (branches, all four diff modes,
-  history, fetch), the file sidebar, terminals, usage, Turn change sets,
-  plan/provider/goal modes, routines, self-update.
+  subagents and background workflows, provider configuration, the git
+  surface (branches, all four diff modes, history, fetch), the file
+  sidebar, terminals, usage, Turn change sets, plan/provider/goal modes,
+  routines, self-update.
 - **Deliberately unserved** (the UI keeps rendering them; `UnknownMethod`
   is the contract, not a regression): the sync and account surface —
   sign-in, orgs, repos, clone, uploads — and worktree lifecycle beyond

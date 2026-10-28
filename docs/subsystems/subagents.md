@@ -2,7 +2,7 @@
 
 Foreground delegation inside a parent Turn: the parent model calls the `Agent` tool, a child run starts with its own History and its own transcript document, and only its bounded final summary enters the parent conversation. Children are workers, not peers — they cannot delegate, and their whole run books to the parent.
 
-Not here: the run loop a child executes (see run-loop — a child is one `run_agent_command` with a narrowed toolset); the permission gate (children inherit the parent Turn's mode, and child Approvals project into the parent transcript with a typed origin — see permission-gate); usage booking (see persistence — one `subagent` kind, stamped with the child doc id).
+Not here: background orchestration of many children by a script (see workflows — its `agent()` calls run through this page's child path); the run loop a child executes (see run-loop — a child is one `run_agent_command` with a narrowed toolset); the permission gate (children inherit the parent Turn's mode, and child Approvals project into the parent transcript with a typed origin — see permission-gate); usage booking (see persistence — one `subagent` kind, stamped with the child doc id).
 
 ## Responsibilities and sources of truth
 
@@ -29,7 +29,7 @@ Not here: the run loop a child executes (see run-loop — a child is one `run_ag
 
 ## Constraints, state, and failure behavior
 
-- **Foreground or nothing**: children are created and awaited inside the parent Turn; there is no background queue of agents, and a child never outlives its parent's Turn except as a viewable record.
+- **Foreground for `Agent`**: its children are created and awaited inside the parent Turn and never outlive it except as a viewable record. Background children exist only inside a workflow run (see workflows).
 - **The parent assigns file ownership** — workers share the parent's actual working directory; there are no automatic worktrees, merging, or rollback (the parent's change-set attribution covers the whole Turn; see workspace-git).
 - **A child's failure is content, not a crash**: the parent model reads the error and partial output and can route around it.
 - **Planning Turns mount no `Agent` tool** — delegation is a main-chat capability (see modes).
