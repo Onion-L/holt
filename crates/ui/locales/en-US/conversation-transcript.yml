@@ -178,6 +178,21 @@ conversation_transcript:
         en-US: "Rewound the conversation and %{count} file."
       other:
         en-US: "Rewound the conversation and %{count} files."
+  workflow:
+    label:
+      en-US: Workflow
+    running:
+      en-US: "running"
+    done:
+      en-US: "done"
+    failed:
+      en-US: "failed"
+    stop:
+      en-US: "Stop workflow"
+    report:
+      en-US: Workflow “%{name}” finished
+    report_failed:
+      en-US: Workflow “%{name}” failed
   goal:
     chip:
       en-US: goal

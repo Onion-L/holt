@@ -438,6 +438,8 @@ pub enum TranscriptEvent {
         chat_id: String,
         tool_call_id: String,
     },
+    /// A running workflow row's Stop (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation).
+    StopWorkflow { chat_id: String, call_id: String },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
