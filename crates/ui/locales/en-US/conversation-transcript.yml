@@ -100,8 +100,17 @@ conversation_transcript:
     subagent:
       en-US: Subagent
     subagent_fanout:
-      more:
-        en-US: "+ %{count} more subagents"
+      count:
+        one:
+          en-US: "%{count} subagent"
+        other:
+          en-US: "%{count} subagents"
+      running:
+        en-US: "%{count} running"
+      done:
+        en-US: "%{count} done"
+      failed:
+        en-US: "%{count} failed"
   turn_card:
     edited_files:
       one:

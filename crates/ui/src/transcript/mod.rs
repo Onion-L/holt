@@ -3180,14 +3180,14 @@ mod tests {
         let second = cx.debug_bounds("subagent-fanout-face-1").unwrap();
         assert_eq!(
             f32::from(second.origin.x - first.origin.x),
-            19.0,
-            "22px faces overlap by exactly 3px"
+            26.0,
+            "22px faces sit 4px apart, never overlapping"
         );
         let faces = cx.debug_bounds("subagent-fanout-faces").unwrap();
-        let names = cx.debug_bounds("subagent-fanout-names").unwrap();
+        let summary = cx.debug_bounds("subagent-fanout-summary").unwrap();
         assert!(
-            names.origin.x >= faces.origin.x + faces.size.width,
-            "names start after the avatar group, never inside it"
+            summary.origin.x >= faces.origin.x + faces.size.width,
+            "the summary starts after the avatar group, never inside it"
         );
         transcript.update(cx, |this, _| {
             assert_eq!(this.folds["a-fanout#g0#agents-fanout"].last_target, 0.0);
