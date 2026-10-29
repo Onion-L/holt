@@ -12,6 +12,7 @@
 //! agent for a `resume`.
 
 pub(crate) mod journal;
+pub(crate) mod plan;
 pub(crate) mod script;
 
 use std::{
@@ -25,11 +26,13 @@ use holt_core::{
     ai::types::{BlockContent, TextContent},
 };
 use holt_doc::{MessagePart, SubagentStatus};
+use holt_proto::WorkflowPlan;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::subagents::{self, ChildTask, Delegation};
 use journal::{Journal, Record};
+use plan::PlanTracker;
 use script::{AgentRequest, ScriptEvent};
 
 const NAME_CHARS: usize = 80;
@@ -109,44 +112,44 @@ impl Workflows {
 /// a run trustworthy, and the example shows them composed.
 const DESCRIPTION: &str = "Run a JavaScript workflow in the background that orchestrates many subagents — for work wider or longer than a few Agent calls: audits across many files, find → verify → fix stages, research cross-checked across sources. The call returns at once; when the script finishes, its return value arrives as a new message in this chat, so continue other work or end your turn.
 
+Plan. Every call declares its `plan` first: `{steps: [{id, title, after?, agents?, loop?}]}`. The user sees this graph before any agent runs, and the run must follow it. `after` lists the steps this one depends on; `agents` is how many agents a round of it starts, when known; `loop: {to, max}` on a step sends work back to the upstream step `to`, at most `max` more rounds (review → revise). Every `agent()` names its `step`. An agent whose step is undeclared, whose `after` steps have no finished agent yet, or that runs a loop past `max` fails the whole run — so declare the graph the script really walks.
+
 API. The script is an async function body (top-level await; `return` the result) with: \
-`agent(prompt, {label, phase, role: 'explorer'|'worker', schema})` → the child's final text, the object matching `schema` (a JSON Schema of type object), or null if it failed; any other option is an error; \
+`agent(prompt, {step, label, role: 'explorer'|'worker', schema})` → the child's final text, the object matching `schema` (a JSON Schema of type object), or null if it failed; any other option is an error; \
 `parallel([() => agent(...), ...])` runs thunks concurrently (a failure is null); \
 `pipeline(items, stage1, stage2, ...)` runs each item through the stages without waiting for other items (`stage(previous, item, index)`; a null result stops that item); \
-`phase(title)` groups the agents that follow in the transcript; `log(...)`; `args` is this call's `args`. \
+`log(...)`; `args` is this call's `args`. \
 Children start with fresh context — put everything they need in the prompt, and give workers non-overlapping files. Keep intermediate results in variables and return only what you need. The script itself has no filesystem, shell, imports, Date.now(), or Math.random(): agents do the work. Eight agents run at once across Holt, at most 1000 per run.
 
-Design. Split the work by responsibility, not only by input: each agent has one job and a prompt written for that job. Name each phase after what it does. Pick the stages the task needs:
-- Gather: parallel explorers, one per source, area, or question, returning `schema` objects so later stages can filter and count.
-- Verify: an agent that did not produce a claim re-checks it (re-reads the file, re-fetches the source, reproduces the bug) and marks it confirmed or not. Drop or flag what fails; never pass unverified claims on as fact. Use `pipeline` so each claim is checked as soon as it exists.
+Design. Split the work by responsibility, not only by input: each step has one job and agents whose prompts are written for that job. Title each step after what it does. Pick the steps the task needs:
+- Gather: parallel explorers, one per source, area, or question, returning `schema` objects so later steps can filter and count.
+- Verify: an agent that did not produce the material re-checks it (re-reads the file, re-fetches the source, reproduces the bug) and marks each claim confirmed or not. Verify in batches — one verifier per gathered result, judging all of its claims — never one agent per claim. Drop or flag what fails; never pass unverified claims on as fact.
 - Produce: a writer or fixer that works only from verified material.
 - Review: one or more independent reviewers who did not take part read the output against the original request and return concrete problems.
-- Revise: the producer fixes what the review found; loop review → revise until no blocking problem remains or a round limit (usually 2) is hit.
+- Revise: the producer fixes what the review found, and the review runs again, until no blocking problem remains or the loop's `max` (usually 2) is hit.
 One gather-then-summarize pass is right only for quick lookups; for research, audits, and changes the user will rely on, add verification and review.
 
-Example (research):
-const claims = {type:'object', properties:{claims:{type:'array', items:{type:'object', properties:{claim:{type:'string'}, source:{type:'string'}}, required:['claim','source']}}}, required:['claims']};
-const checked = {type:'object', properties:{confirmed:{type:'boolean'}, note:{type:'string'}}, required:['confirmed']};
-const review = {type:'object', properties:{problems:{type:'array', items:{type:'string'}}}, required:['problems']};
-phase('Research');
-const found = await parallel(args.topics.map(t => () => agent(`Research ${t}. Every claim needs a source URL.`, {label: t, schema: claims})));
-phase('Verify');
-const all = found.filter(Boolean).flatMap(f => f.claims);
-const verdicts = await pipeline(all, c => agent(`Fetch ${c.source} and check whether it supports: ${c.claim}`, {label: 'verify', schema: checked}));
-const facts = all.filter((c, i) => verdicts[i]?.confirmed);
-phase('Write');
-let report = await agent(`Write the report from these verified facts only:\\n${JSON.stringify(facts)}`, {label: 'writer'});
-for (let round = 1; round <= 2; round++) {
-  phase('Review');
-  const reviews = await parallel(['accuracy', 'clarity'].map(lens => () => agent(`Review this report for ${lens}; list blocking problems only:\\n${report}`, {label: `reviewer:${lens}`, schema: review})));
-  const problems = reviews.filter(Boolean).flatMap(r => r.problems);
-  if (!problems.length) break;
-  phase('Revise');
-  report = await agent(`Revise the report to fix:\\n${problems.join('\\n')}\\n\\nReport:\\n${report}`, {label: 'writer'});
-}
-return {report, unverified: all.length - facts.length};
+Example (research) plan:
+{\"steps\": [{\"id\": \"research\", \"title\": \"Research\"}, {\"id\": \"verify\", \"title\": \"Verify\", \"after\": [\"research\"]}, {\"id\": \"write\", \"title\": \"Write\", \"after\": [\"verify\"], \"agents\": 1}, {\"id\": \"review\", \"title\": \"Review\", \"after\": [\"write\"], \"agents\": 2}, {\"id\": \"revise\", \"title\": \"Revise\", \"after\": [\"review\"], \"agents\": 1, \"loop\": {\"to\": \"review\", \"max\": 2}}]}
 
-To rerun after a failure or an edit, pass `resume` with the run id: agents that already finished with an identical prompt return their saved results.";
+Example script:
+const claims = {type:'object', properties:{claims:{type:'array', items:{type:'object', properties:{claim:{type:'string'}, source:{type:'string'}}, required:['claim','source']}}}, required:['claims']};
+const checked = {type:'object', properties:{claims:{type:'array', items:{type:'object', properties:{claim:{type:'string'}, source:{type:'string'}, confirmed:{type:'boolean'}, note:{type:'string'}}, required:['claim','source','confirmed']}}}, required:['claims']};
+const review = {type:'object', properties:{problems:{type:'array', items:{type:'string'}}}, required:['problems']};
+const verified = await pipeline(args.topics,
+  t => agent(`Research ${t}. Every claim needs a source URL.`, {step: 'research', label: t, schema: claims}),
+  (found, t) => agent(`Fetch each source and mark whether it supports its claim:\\n${JSON.stringify(found.claims)}`, {step: 'verify', label: `verify:${t}`, schema: checked}));
+const facts = verified.filter(Boolean).flatMap(v => v.claims.filter(c => c.confirmed));
+let report = await agent(`Write the report from these verified facts only:\\n${JSON.stringify(facts)}`, {step: 'write', label: 'writer'});
+const reviewOnce = async () => (await parallel(['accuracy', 'clarity'].map(lens => () => agent(`Review this report for ${lens}; list blocking problems only:\\n${report}`, {step: 'review', label: `reviewer:${lens}`, schema: review})))).filter(Boolean).flatMap(r => r.problems);
+let problems = await reviewOnce();
+for (let round = 0; problems.length && round < 2; round++) {
+  report = await agent(`Revise the report to fix:\\n${problems.join('\\n')}\\n\\nReport:\\n${report}`, {step: 'revise', label: 'writer'});
+  problems = await reviewOnce();
+}
+return {report, facts: facts.length, open: problems};
+
+To rerun after a failure or an edit, pass `resume` with the run id (the saved plan and script rerun unless you pass new ones): agents that already finished with an identical prompt return their saved results.";
 
 pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     AgentTool {
@@ -156,6 +159,24 @@ pub(crate) fn tool(delegation: Delegation) -> AgentTool {
         parameters: serde_json::json!({
             "type": "object", "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": NAME_CHARS, "description": "Short title shown in the transcript."},
+                "plan": {
+                    "type": "object",
+                    "description": "The run's step graph, drawn before it starts and enforced while it runs. Required unless resuming.",
+                    "properties": {
+                        "steps": {"type": "array", "minItems": 1, "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "Referenced by agent({step})."},
+                                "title": {"type": "string", "description": "What the step does, shown on the graph."},
+                                "after": {"type": "array", "items": {"type": "string"}, "description": "Step ids that must have a finished agent first."},
+                                "agents": {"type": "integer", "minimum": 1, "description": "Agents per round, when known."},
+                                "loop": {"type": "object", "properties": {"to": {"type": "string"}, "max": {"type": "integer", "minimum": 1}}, "required": ["to", "max"], "additionalProperties": false, "description": "Send work back to upstream step `to`, at most `max` more rounds."}
+                            },
+                            "required": ["id", "title"], "additionalProperties": false
+                        }}
+                    },
+                    "required": ["steps"], "additionalProperties": false
+                },
                 "script": {"type": "string", "description": "The workflow body. Optional with `resume` (the saved script reruns)."},
                 "args": {"description": "Any JSON value, readable in the script as `args`."},
                 "resume": {"type": "string", "description": "A previous run id from this chat to relaunch with its saved results."}
@@ -214,6 +235,19 @@ fn launch(
             None => return Err("script is required".into()),
         },
     };
+    let plan: WorkflowPlan = match args.get("plan").filter(|p| !p.is_null()) {
+        Some(value) => {
+            serde_json::from_value(value.clone()).map_err(|e| format!("plan is malformed: {e}"))?
+        }
+        None => match &previous {
+            Some(dir) => std::fs::read_to_string(dir.join("plan.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .ok_or("the resumed run has no saved plan; pass plan")?,
+            None => return Err("plan is required".into()),
+        },
+    };
+    plan::validate(&plan)?;
     let run_args = match args.get("args") {
         Some(value) => value.clone(),
         None => previous
@@ -230,6 +264,8 @@ fn launch(
     subagents::write_result(&run_dir.join("script.js"), &script).map_err(|e| e.to_string())?;
     let args_text = serde_json::to_string_pretty(&run_args).map_err(|e| e.to_string())?;
     subagents::write_result(&run_dir.join("args.json"), &args_text).map_err(|e| e.to_string())?;
+    let plan_text = serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?;
+    subagents::write_result(&run_dir.join("plan.json"), &plan_text).map_err(|e| e.to_string())?;
 
     // The run outlives this Turn: its own token (Stop and Steer leave it
     // alone), and no Turn change attribution — a background worker's edits
@@ -246,10 +282,12 @@ fn launch(
     stamp_container(
         &d,
         &call_id,
-        Some(&name),
+        Some((&name, &plan)),
         Some(SubagentStatus::Running),
         None,
     );
+    // The plan is checked and drawn, and nothing has run yet: an approval
+    // of the plan (by the user or a reviewing agent) would gate here.
     tokio::spawn(drive(
         d,
         Run {
@@ -259,6 +297,7 @@ fn launch(
             run_dir,
             script,
             args: run_args,
+            plan,
             journal,
             cancel,
         },
@@ -275,12 +314,12 @@ fn launch(
     })
 }
 
-/// The `Workflow` call's own chip carries the run: its title, lifecycle,
-/// and the tokens its children spent so far.
+/// The `Workflow` call's own chip carries the run: its title and plan,
+/// lifecycle, and the tokens its children spent so far.
 fn stamp_container(
     d: &Delegation,
     container: &str,
-    name: Option<&str>,
+    title: Option<(&str, &WorkflowPlan)>,
     status: Option<SubagentStatus>,
     tokens: Option<u64>,
 ) {
@@ -295,10 +334,10 @@ fn stamp_container(
             } = part
                 && id == container
             {
-                if let Some(name) = name {
+                if let Some((name, plan)) = title {
                     *call = holt_proto::ToolCall::Unknown {
                         name: format!("Workflow: {name}"),
-                        input: None,
+                        input: Some(serde_json::json!({ "plan": plan })),
                     };
                 }
                 if let Some(status) = status {
@@ -319,13 +358,21 @@ struct Run {
     run_dir: PathBuf,
     script: String,
     args: serde_json::Value,
+    plan: WorkflowPlan,
     journal: Journal,
     cancel: CancellationToken,
 }
 
 async fn drive(d: Delegation, run: Run) {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut done = script::spawn(run.script.clone(), run.args.clone(), tx, run.cancel.clone());
+    let tracker = Arc::new(Mutex::new(PlanTracker::new(run.plan.clone())));
+    let mut done = script::spawn(
+        run.script.clone(),
+        run.args.clone(),
+        tracker.clone(),
+        tx,
+        run.cancel.clone(),
+    );
     let journal = Arc::new(Mutex::new(run.journal));
     let mut children = tokio::task::JoinSet::new();
     let mut next_item = 0usize;
@@ -344,6 +391,7 @@ async fn drive(d: Delegation, run: Run) {
                         part_id,
                         request,
                         journal.clone(),
+                        tracker.clone(),
                     ));
                 }
                 Some(ScriptEvent::Log(line)) => logs.push(line),
@@ -432,19 +480,30 @@ async fn drive(d: Delegation, run: Run) {
 }
 
 /// One `agent()` call: its chip, then a cached result or a real child.
-/// Returns the tokens it spent (a cached result spent them earlier).
+/// Returns the tokens it spent (a cached result spent them earlier). The
+/// step settles in the plan before the script hears back, so the script's
+/// next `agent()` already sees it finished.
 async fn agent(
     d: Delegation,
     container: String,
     part_id: String,
     request: AgentRequest,
     journal: Arc<Mutex<Journal>>,
+    tracker: Arc<Mutex<PlanTracker>>,
 ) -> u64 {
     let AgentRequest {
         prompt,
         options,
         reply,
     } = request;
+    let step = options.step.clone().unwrap_or_default();
+    let reply = move |value: Option<serde_json::Value>| {
+        tracker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .settle(&step);
+        let _ = reply.send(value);
+    };
     let label = options
         .label
         .clone()
@@ -465,7 +524,7 @@ async fn agent(
         vec![subagents::display_part(
             &part_id,
             &label,
-            options.phase.as_deref(),
+            options.step.as_deref(),
         )],
     );
     let (key, cached) = {
@@ -482,7 +541,7 @@ async fn agent(
             Some(&record.subagent),
             Some(record.tokens),
         );
-        let _ = reply.send(Some(record.result));
+        reply(Some(record.result));
         return 0;
     }
     let outcome = subagents::run_child(
@@ -498,12 +557,12 @@ async fn agent(
     .await;
     subagents::settle_outcome(&d, &part_id, &outcome);
     let Ok(outcome) = outcome else {
-        let _ = reply.send(None);
+        reply(None);
         return 0;
     };
     let tokens = crate::usage::gross_tokens(&outcome.usage);
     if !outcome.ok {
-        let _ = reply.send(None);
+        reply(None);
         return tokens;
     }
     let value = outcome
@@ -518,7 +577,7 @@ async fn agent(
             result: value.clone(),
             tokens,
         });
-    let _ = reply.send(Some(value));
+    reply(Some(value));
     tokens
 }
 

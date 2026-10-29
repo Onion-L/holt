@@ -1,6 +1,10 @@
-//! Read-only, native GPUI rendering of a workflow's actual agent invocations.
-//! The transcript owns the persisted inputs; this module owns graph topology,
+//! Read-only, native GPUI rendering of a workflow run. A run with a declared
+//! plan draws its step graph ([`plan`]) from the moment it launches; an older
+//! run without one draws its actual agent invocations, layered by phase. The
+//! transcript owns the persisted inputs; this module owns graph topology,
 //! deterministic layout, and the spatial canvas interaction.
+
+mod plan;
 
 use std::rc::Rc;
 
@@ -27,12 +31,36 @@ const DEFAULT_PAN: f32 = 24.0;
 pub(crate) const ZOOM_MIN: f32 = 0.6;
 pub(crate) const ZOOM_MAX: f32 = 1.75;
 
+pub(crate) use plan::{PlanGraph, plan_graph};
+
+/// What a workflow row draws: its declared plan, or — for a run from before
+/// plans — the agents it actually started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowGraph {
+    Plan(PlanGraph),
+    Agents(AgentGraph),
+}
+
+impl WorkflowGraph {
+    pub(crate) fn nodes(&self) -> &[AgentNode] {
+        match self {
+            Self::Plan(graph) => graph.nodes(),
+            Self::Agents(graph) => graph.nodes(),
+        }
+    }
+
+    pub(crate) fn node(&self, ix: usize) -> Option<&AgentNode> {
+        self.nodes().get(ix)
+    }
+}
+
 /// One actual workflow `agent()` invocation, projected from its spawn part.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentNode {
     pub call_id: SharedString,
     pub subagent_ref: Option<SharedString>,
     pub label: String,
+    /// The plan step it ran under, or a pre-plan run's phase title.
     pub phase: Option<String>,
     pub status: Option<SubagentStatus>,
     pub tokens: Option<u64>,
@@ -95,10 +123,6 @@ struct GraphLayout {
 impl AgentGraph {
     pub(crate) fn nodes(&self) -> &[AgentNode] {
         &self.nodes
-    }
-
-    pub(crate) fn node(&self, ix: usize) -> Option<&AgentNode> {
-        self.nodes.get(ix)
     }
 
     fn layout(&self, zoom: f32) -> GraphLayout {
@@ -169,6 +193,7 @@ pub(crate) type ZoomHandler = Rc<dyn Fn(f32, &mut Window, &mut App)>;
 pub(crate) type NodeOpenHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub(crate) type PanHandler = Rc<dyn Fn(CanvasPanEvent, &mut App)>;
 pub(crate) type ExpandHandler = Rc<dyn Fn(&mut App)>;
+pub(crate) type StepToggleHandler = Rc<dyn Fn(SharedString, &mut App)>;
 
 pub(crate) struct GraphInteraction {
     pub identities: Vec<Option<AgentIdentity>>,
@@ -180,14 +205,18 @@ pub(crate) struct GraphInteraction {
     /// The canvas fills its parent's height (the transcript-covering
     /// overlay) instead of keeping the inline row height.
     pub expanded: bool,
+    /// Plan steps whose full agent list is shown (the rest fold past
+    /// [`plan::VISIBLE_AGENTS`]).
+    pub open_steps: Vec<SharedString>,
+    pub on_toggle_step: StepToggleHandler,
     pub view: EntityId,
 }
 
 /// Native spatial canvas: nodes, edges, and the dot grid share pan/zoom
 /// coordinates. Blank-space drags pan; agent clicks never become drags.
-pub(crate) fn render_agent_graph(
+pub(crate) fn render_workflow_graph(
     id: &SharedString,
-    graph: &AgentGraph,
+    graph: &WorkflowGraph,
     viewport: WorkflowViewport,
     theme: &Theme,
     interaction: GraphInteraction,
@@ -201,10 +230,11 @@ pub(crate) fn render_agent_graph(
         on_expand,
         dragging,
         expanded,
+        open_steps,
+        on_toggle_step,
         view,
     } = interaction;
     let zoom = viewport.zoom;
-    let layout = graph.layout(zoom);
 
     let dot_color = theme.text_muted.opacity(0.20);
     let dot_canvas = canvas(
@@ -223,79 +253,28 @@ pub(crate) fn render_agent_graph(
     .absolute()
     .inset_0();
 
-    let edges = graph.edges.clone();
-    let edge_layout = layout.clone();
-    let edge_color = theme.text_muted.opacity(0.35);
-    let edge_canvas = canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            for (from, to) in &edges {
-                let from = edge_layout.placements[*from];
-                let to = edge_layout.placements[*to];
-                let start = point(
-                    bounds.origin.x + px(from.x + edge_layout.node_width),
-                    bounds.origin.y + px(from.y + edge_layout.node_height / 2.0),
-                );
-                let end = point(
-                    bounds.origin.x + px(to.x),
-                    bounds.origin.y + px(to.y + edge_layout.node_height / 2.0),
-                );
-                let bend = px(f32::from(end.x - start.x) * 0.5);
-                let mut builder = PathBuilder::stroke(px(1.0));
-                builder.move_to(start);
-                builder.cubic_bezier_to(
-                    end,
-                    point(start.x + bend, start.y),
-                    point(end.x - bend, end.y),
-                );
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, edge_color);
-                }
-
-                let mut arrow = PathBuilder::fill();
-                arrow.move_to(end);
-                arrow.line_to(point(end.x - px(5.0 * zoom), end.y - px(3.0 * zoom)));
-                arrow.line_to(point(end.x - px(5.0 * zoom), end.y + px(3.0 * zoom)));
-                arrow.close();
-                if let Ok(path) = arrow.build() {
-                    window.paint_path(path, edge_color);
-                }
-            }
-        },
-    )
-    .absolute()
-    .inset_0();
-
-    let nodes =
-        graph
-            .nodes
-            .iter()
-            .zip(&layout.placements)
-            .enumerate()
-            .map(|(ix, (node, placement))| {
-                render_agent_node(
-                    ix,
-                    node,
-                    *placement,
-                    &layout,
-                    zoom,
-                    NodePresentation {
-                        theme,
-                        identity: identities.get(ix).cloned().flatten(),
-                        on_open: on_open.clone(),
-                        view,
-                    },
-                    cx,
-                )
-            });
-    let world = div()
+    let content = match graph {
+        WorkflowGraph::Plan(graph) => plan::render(
+            graph,
+            zoom,
+            plan::Presentation {
+                theme,
+                identities: &identities,
+                on_open,
+                open_steps: &open_steps,
+                on_toggle: on_toggle_step,
+                view,
+            },
+            cx,
+        ),
+        WorkflowGraph::Agents(graph) => {
+            agent_content(graph, zoom, theme, &identities, on_open, view, cx)
+        }
+    };
+    let world = content
         .absolute()
         .left(px(viewport.pan_x))
-        .top(px(viewport.pan_y))
-        .w(px(layout.width))
-        .h(px(layout.height))
-        .child(edge_canvas)
-        .children(nodes);
+        .top(px(viewport.pan_y));
 
     let pan_start = on_pan.clone();
     let pan_move = on_pan.clone();
@@ -377,6 +356,98 @@ pub(crate) fn render_agent_graph(
         )
         .child(controls)
         .into_any_element()
+}
+
+/// The pre-plan graph: one card per agent, phase layers fully linked.
+fn agent_content(
+    graph: &AgentGraph,
+    zoom: f32,
+    theme: &Theme,
+    identities: &[Option<AgentIdentity>],
+    on_open: NodeOpenHandler,
+    view: EntityId,
+    cx: &mut App,
+) -> gpui::Div {
+    let layout = graph.layout(zoom);
+    let edges = graph.edges.clone();
+    let edge_layout = layout.clone();
+    let edge_color = theme.text_muted.opacity(0.35);
+    let edge_canvas = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            for (from, to) in &edges {
+                let from = edge_layout.placements[*from];
+                let to = edge_layout.placements[*to];
+                let start = point(
+                    bounds.origin.x + px(from.x + edge_layout.node_width),
+                    bounds.origin.y + px(from.y + edge_layout.node_height / 2.0),
+                );
+                let end = point(
+                    bounds.origin.x + px(to.x),
+                    bounds.origin.y + px(to.y + edge_layout.node_height / 2.0),
+                );
+                paint_link(window, start, end, zoom, edge_color);
+            }
+        },
+    )
+    .absolute()
+    .inset_0();
+    let nodes =
+        graph
+            .nodes
+            .iter()
+            .zip(&layout.placements)
+            .enumerate()
+            .map(|(ix, (node, placement))| {
+                render_agent_node(
+                    ix,
+                    node,
+                    *placement,
+                    &layout,
+                    zoom,
+                    NodePresentation {
+                        theme,
+                        identity: identities.get(ix).cloned().flatten(),
+                        on_open: on_open.clone(),
+                        view,
+                    },
+                    cx,
+                )
+            });
+    div()
+        .w(px(layout.width))
+        .h(px(layout.height))
+        .child(edge_canvas)
+        .children(nodes)
+}
+
+/// A left-to-right dependency link: a horizontal S-curve ending in an arrow.
+fn paint_link(
+    window: &mut Window,
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+    zoom: f32,
+    color: Hsla,
+) {
+    let bend = px(f32::from(end.x - start.x) * 0.5);
+    let mut builder = PathBuilder::stroke(px(1.0));
+    builder.move_to(start);
+    builder.cubic_bezier_to(
+        end,
+        point(start.x + bend, start.y),
+        point(end.x - bend, end.y),
+    );
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+    let mut arrow = PathBuilder::fill();
+    arrow.move_to(end);
+    arrow.line_to(point(end.x - px(5.0 * zoom), end.y - px(3.0 * zoom)));
+    arrow.line_to(point(end.x - px(5.0 * zoom), end.y + px(3.0 * zoom)));
+    arrow.close();
+    if let Ok(path) = arrow.build() {
+        window.paint_path(path, color);
+    }
 }
 
 fn paint_dot_grid(
@@ -720,7 +791,7 @@ mod tests {
     }
 
     struct GraphPreview {
-        graph: AgentGraph,
+        graph: WorkflowGraph,
         identities: Vec<Option<AgentIdentity>>,
         on_open: NodeOpenHandler,
         on_expand: ExpandHandler,
@@ -734,7 +805,7 @@ mod tests {
             cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             let theme = Theme::of(cx).clone();
-            render_agent_graph(
+            render_workflow_graph(
                 &"preview".into(),
                 &self.graph,
                 WorkflowViewport::default(),
@@ -747,6 +818,8 @@ mod tests {
                     on_expand: self.on_expand.clone(),
                     dragging: false,
                     expanded: false,
+                    open_steps: Vec::new(),
+                    on_toggle_step: Rc::new(|_, _| {}),
                     view: cx.entity_id(),
                 },
                 cx,
@@ -764,7 +837,7 @@ mod tests {
         ])
         .unwrap();
         let window = cx.add_window(|_, _| GraphPreview {
-            graph,
+            graph: WorkflowGraph::Agents(graph),
             identities: Vec::new(),
             on_open: Rc::new(|_, _, _| {}),
             on_expand: Rc::new(|_| {}),
@@ -782,6 +855,82 @@ mod tests {
     }
 
     #[gpui::test]
+    fn plan_cards_open_agents_and_fold_wide_steps(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let plan: holt_proto::WorkflowPlan = serde_json::from_value(serde_json::json!({"steps": [
+            {"id": "find", "title": "Find"},
+            {"id": "verify", "title": "Verify", "after": ["find"]},
+        ]}))
+        .unwrap();
+        let mut agents: Vec<_> = (0..7)
+            .map(|ix| {
+                let mut node = agent(&format!("f{ix}"), Some("find"));
+                node.subagent_ref = Some(format!("doc-{ix}").into());
+                node.status = Some(SubagentStatus::Done);
+                node
+            })
+            .collect();
+        agents.push(agent("v", Some("verify")));
+        let graph = WorkflowGraph::Plan(plan_graph(plan, &agents).unwrap());
+        let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        let toggled = Rc::new(std::cell::RefCell::new(Vec::<SharedString>::new()));
+        let toggle_sink = toggled.clone();
+        let window = cx.add_window(|_, _| PlanPreview {
+            graph,
+            on_open: Rc::new(move |ix, _, _| sink.borrow_mut().push(ix)),
+            on_toggle: Rc::new(move |step, _| toggle_sink.borrow_mut().push(step)),
+        });
+        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        assert!(visual.debug_bounds("workflow-step-0").is_some());
+        assert!(visual.debug_bounds("workflow-step-1").is_some());
+        // Five of Find's seven agents show; the fold row hides the rest.
+        assert!(visual.debug_bounds("workflow-agent-node-4").is_some());
+        assert!(visual.debug_bounds("workflow-agent-node-5").is_none());
+        let first = visual.debug_bounds("workflow-agent-node-0").unwrap();
+        visual.simulate_click(first.center(), Default::default());
+        assert_eq!(opened.borrow().as_slice(), [0]);
+        let more = visual.debug_bounds("workflow-step-more").unwrap();
+        visual.simulate_click(more.center(), Default::default());
+        assert_eq!(toggled.borrow().as_slice(), ["find"]);
+    }
+
+    struct PlanPreview {
+        graph: WorkflowGraph,
+        on_open: NodeOpenHandler,
+        on_toggle: StepToggleHandler,
+    }
+
+    impl gpui::Render for PlanPreview {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let theme = Theme::of(cx).clone();
+            render_workflow_graph(
+                &"preview".into(),
+                &self.graph,
+                WorkflowViewport::default(),
+                &theme,
+                GraphInteraction {
+                    identities: Vec::new(),
+                    on_open: self.on_open.clone(),
+                    on_zoom: Rc::new(|_, _, _| {}),
+                    on_pan: Rc::new(|_, _| {}),
+                    on_expand: Rc::new(|_| {}),
+                    dragging: false,
+                    expanded: true,
+                    open_steps: Vec::new(),
+                    on_toggle_step: self.on_toggle.clone(),
+                    view: cx.entity_id(),
+                },
+                cx,
+            )
+        }
+    }
+
+    #[gpui::test]
     fn only_doc_bound_nodes_open_their_subagent(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let mut first = agent("a", Some("Find"));
@@ -795,7 +944,7 @@ mod tests {
         let mut registry = crate::transcript::agent_avatar::AgentIdentities::new(1, None);
         let identity = registry.identity_for(Some("a"), Some("doc-a"));
         let window = cx.add_window(|_, _| GraphPreview {
-            graph,
+            graph: WorkflowGraph::Agents(graph),
             identities: vec![identity, None],
             on_open,
             on_expand: Rc::new(|_| {}),
@@ -818,7 +967,7 @@ mod tests {
         let expanded = Rc::new(std::cell::Cell::new(false));
         let sink = expanded.clone();
         let window = cx.add_window(|_, _| GraphPreview {
-            graph,
+            graph: WorkflowGraph::Agents(graph),
             identities: Vec::new(),
             on_open: Rc::new(|_, _, _| {}),
             on_expand: Rc::new(move |_| sink.set(true)),
@@ -845,7 +994,7 @@ mod tests {
             sink.borrow_mut().push(name);
         });
         let window = cx.add_window(|_, _| GraphPreview {
-            graph,
+            graph: WorkflowGraph::Agents(graph),
             identities: Vec::new(),
             on_open: Rc::new(|_, _, _| {}),
             on_expand: Rc::new(|_| {}),

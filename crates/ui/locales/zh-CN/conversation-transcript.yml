@@ -199,6 +199,14 @@ conversation_transcript:
       zh-CN: "展开"
     collapse:
       zh-CN: "收起"
+    step_waiting:
+      zh-CN: "等待中"
+    more:
+      zh-CN: "还有 %{count} 个"
+    show_fewer:
+      zh-CN: "收起"
+    loop:
+      zh-CN: "↺ ≤%{max}"
     stop:
       zh-CN: "停止 workflow"
     report:

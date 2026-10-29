@@ -272,6 +272,8 @@ pub struct Transcript {
     workflow_graph_drag: Option<crate::workflow_graph::WorkflowGraphDrag>,
     /// The workflow run whose canvas covers the transcript, if any.
     workflow_graph_expanded: Option<SharedString>,
+    /// Per workflow run: the plan steps whose folded agent list is open.
+    workflow_open_steps: HashMap<SharedString, Vec<SharedString>>,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -550,6 +552,7 @@ impl Transcript {
             workflow_graph_viewports: HashMap::new(),
             workflow_graph_drag: None,
             workflow_graph_expanded: None,
+            workflow_open_steps: HashMap::new(),
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,

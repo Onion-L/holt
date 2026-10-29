@@ -8,7 +8,6 @@
 (() => {
   const MAX_ITEMS = 4096;
   const g = globalThis;
-  let currentPhase = null;
 
   // Replays must issue the same agent() calls: wall-clock time and
   // randomness would let a relaunched run diverge from its journal.
@@ -29,8 +28,8 @@
 
   g.args = JSON.parse(g.__holt_args);
 
-  g.phase = (title) => {
-    currentPhase = title == null ? null : String(title);
+  g.phase = () => {
+    throw new Error("phase() is gone: declare steps in the Workflow plan and pass agent(prompt, { step })");
   };
 
   g.log = (...parts) => {
@@ -39,8 +38,8 @@
 
   // An option the host does not read would be dropped silently — a
   // misspelled `schema` then runs every child unstructured.
-  const AGENT_OPTIONS = ["label", "phase", "role", "schema"];
-  const OPTION_HINTS = { output_schema: "schema" };
+  const AGENT_OPTIONS = ["step", "label", "role", "schema"];
+  const OPTION_HINTS = { output_schema: "schema", phase: "step" };
 
   g.agent = async (prompt, opts = {}) => {
     for (const key of Object.keys(opts)) {
@@ -52,7 +51,7 @@
     }
     const options = {
       label: opts.label == null ? null : String(opts.label),
-      phase: opts.phase == null ? currentPhase : String(opts.phase),
+      step: opts.step == null ? null : String(opts.step),
       role: opts.role == null ? "explorer" : String(opts.role),
       schema: opts.schema == null ? null : opts.schema,
     };

@@ -351,6 +351,40 @@ pub struct WorkflowResultMark {
     pub failed: bool,
 }
 
+/// A workflow's declared shape (ADR-workflow-runs-declare-their-plan-up-front):
+/// given with the `Workflow` call, drawn before the script runs, and
+/// enforced on every `agent()` call. Stored on the call's chip input under
+/// `plan` and in the run directory's `plan.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowPlan {
+    pub steps: Vec<WorkflowStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowStep {
+    pub id: String,
+    pub title: String,
+    /// Steps that must have a settled agent before this one may start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
+    /// Agents expected per round — display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#loop: Option<WorkflowLoop>,
+}
+
+/// A step that sends work back upstream: after this step settles, `to`
+/// may start again, at most `max` more rounds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowLoop {
+    pub to: String,
+    pub max: u32,
+}
+
 /// Authoritative per-chat queue snapshot, independent of the Transcript.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
