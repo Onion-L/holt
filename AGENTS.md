@@ -82,6 +82,10 @@ does not run.
 
 ## Facts with no other home
 
+- UI prototypes go in `crates/ui/prototypes/` by default; use standalone
+  HTML files unless another format or location is requested. After a variant
+  is chosen and implemented, delete the prototype files so old variants do
+  not get confused with current work.
 - Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in
   use: core, engine, ui — comma-joined when a change spans several.
 - Releases: a pushed `v*` tag must match the workspace `version` in the
