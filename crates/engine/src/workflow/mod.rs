@@ -104,18 +104,55 @@ impl Workflows {
     }
 }
 
+/// The API alone leaves models writing the shallowest shape that works
+/// (fan out, then summarize). The design section names the stages that make
+/// a run trustworthy, and the example shows them composed.
+const DESCRIPTION: &str = "Run a JavaScript workflow in the background that orchestrates many subagents — for work wider or longer than a few Agent calls: audits across many files, find → verify → fix stages, research cross-checked across sources. The call returns at once; when the script finishes, its return value arrives as a new message in this chat, so continue other work or end your turn.
+
+API. The script is an async function body (top-level await; `return` the result) with: \
+`agent(prompt, {label, phase, role: 'explorer'|'worker', schema})` → the child's final text, the object matching `schema` (a JSON Schema of type object), or null if it failed; any other option is an error; \
+`parallel([() => agent(...), ...])` runs thunks concurrently (a failure is null); \
+`pipeline(items, stage1, stage2, ...)` runs each item through the stages without waiting for other items (`stage(previous, item, index)`; a null result stops that item); \
+`phase(title)` groups the agents that follow in the transcript; `log(...)`; `args` is this call's `args`. \
+Children start with fresh context — put everything they need in the prompt, and give workers non-overlapping files. Keep intermediate results in variables and return only what you need. The script itself has no filesystem, shell, imports, Date.now(), or Math.random(): agents do the work. Eight agents run at once across Holt, at most 1000 per run.
+
+Design. Split the work by responsibility, not only by input: each agent has one job and a prompt written for that job. Name each phase after what it does. Pick the stages the task needs:
+- Gather: parallel explorers, one per source, area, or question, returning `schema` objects so later stages can filter and count.
+- Verify: an agent that did not produce a claim re-checks it (re-reads the file, re-fetches the source, reproduces the bug) and marks it confirmed or not. Drop or flag what fails; never pass unverified claims on as fact. Use `pipeline` so each claim is checked as soon as it exists.
+- Produce: a writer or fixer that works only from verified material.
+- Review: one or more independent reviewers who did not take part read the output against the original request and return concrete problems.
+- Revise: the producer fixes what the review found; loop review → revise until no blocking problem remains or a round limit (usually 2) is hit.
+One gather-then-summarize pass is right only for quick lookups; for research, audits, and changes the user will rely on, add verification and review.
+
+Example (research):
+const claims = {type:'object', properties:{claims:{type:'array', items:{type:'object', properties:{claim:{type:'string'}, source:{type:'string'}}, required:['claim','source']}}}, required:['claims']};
+const checked = {type:'object', properties:{confirmed:{type:'boolean'}, note:{type:'string'}}, required:['confirmed']};
+const review = {type:'object', properties:{problems:{type:'array', items:{type:'string'}}}, required:['problems']};
+phase('Research');
+const found = await parallel(args.topics.map(t => () => agent(`Research ${t}. Every claim needs a source URL.`, {label: t, schema: claims})));
+phase('Verify');
+const all = found.filter(Boolean).flatMap(f => f.claims);
+const verdicts = await pipeline(all, c => agent(`Fetch ${c.source} and check whether it supports: ${c.claim}`, {label: 'verify', schema: checked}));
+const facts = all.filter((c, i) => verdicts[i]?.confirmed);
+phase('Write');
+let report = await agent(`Write the report from these verified facts only:\\n${JSON.stringify(facts)}`, {label: 'writer'});
+for (let round = 1; round <= 2; round++) {
+  phase('Review');
+  const reviews = await parallel(['accuracy', 'clarity'].map(lens => () => agent(`Review this report for ${lens}; list blocking problems only:\\n${report}`, {label: `reviewer:${lens}`, schema: review})));
+  const problems = reviews.filter(Boolean).flatMap(r => r.problems);
+  if (!problems.length) break;
+  phase('Revise');
+  report = await agent(`Revise the report to fix:\\n${problems.join('\\n')}\\n\\nReport:\\n${report}`, {label: 'writer'});
+}
+return {report, unverified: all.length - facts.length};
+
+To rerun after a failure or an edit, pass `resume` with the run id: agents that already finished with an identical prompt return their saved results.";
+
 pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     AgentTool {
         name: "Workflow".into(),
         label: "Workflow".into(),
-        description: "Run a JavaScript workflow in the background that orchestrates many subagents — for work wider or longer than a few Agent calls: audits across many files, find → verify → fix stages, research cross-checked across sources. The call returns at once; when the script finishes, its return value arrives as a new message in this chat, so continue other work or end your turn. \
-The script is an async function body (top-level await; `return` the result) with: \
-`agent(prompt, {label, phase, role: 'explorer'|'worker', schema})` → the child's final text, the object matching `schema` (a JSON Schema of type object), or null if it failed; \
-`parallel([() => agent(...), ...])` runs thunks concurrently (a failure is null); \
-`pipeline(items, stage1, stage2, ...)` runs each item through the stages without waiting for other items (`stage(previous, item, index)`; a null result stops that item); \
-`phase(title)` groups the agents that follow in the transcript; `log(...)`; `args` is this call's `args`. \
-Children start with fresh context — put everything they need in the prompt, and give workers non-overlapping files. Keep intermediate results in variables and return only what you need. The script itself has no filesystem, shell, imports, Date.now(), or Math.random(): agents do the work. Eight agents run at once across Holt, at most 1000 per run. \
-To rerun after a failure or an edit, pass `resume` with the run id: agents that already finished with an identical prompt return their saved results.".into(),
+        description: DESCRIPTION.into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": NAME_CHARS, "description": "Short title shown in the transcript."},
