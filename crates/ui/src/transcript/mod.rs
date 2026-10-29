@@ -268,7 +268,8 @@ pub struct Transcript {
     typography_generation: u32,
     highlights: HighlightStore,
     mermaids: MermaidStore,
-    workflow_graph_zooms: HashMap<SharedString, f32>,
+    workflow_graph_viewports: HashMap<SharedString, crate::workflow_graph::WorkflowViewport>,
+    workflow_graph_drag: Option<crate::workflow_graph::WorkflowGraphDrag>,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -544,7 +545,8 @@ impl Transcript {
             typography_generation: crate::typography::generation(cx),
             highlights: HighlightStore::default(),
             mermaids: MermaidStore::default(),
-            workflow_graph_zooms: HashMap::new(),
+            workflow_graph_viewports: HashMap::new(),
+            workflow_graph_drag: None,
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,

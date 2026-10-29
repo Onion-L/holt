@@ -836,6 +836,14 @@ impl Transcript {
         .flatten();
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
+        let canvas_expanded = matches!(
+            &row.kind,
+            RowKind::Workflow { call_id, .. }
+                if self
+                    .workflow_graph_viewports
+                    .get(call_id)
+                    .is_some_and(|viewport| viewport.expanded)
+        );
         div()
             .id(row.id.clone())
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -869,11 +877,14 @@ impl Transcript {
             .pt(px(top_gap))
             .pb(px(bottom_pad))
             // Wide gutters (holt `px-4 @3xl:px-12`) around the 46rem column.
-            .px(px(48.0))
+            // An expanded Workflow canvas instead takes the transcript's full width.
+            .px(px(if canvas_expanded { 0.0 } else { 48.0 }))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(MAX_CONTENT_WIDTH))
+                    .when(!canvas_expanded, |column| {
+                        column.max_w(px(MAX_CONTENT_WIDTH))
+                    })
                     .min_w_0()
                     .children(caption)
                     .child(inner)
@@ -1666,33 +1677,114 @@ impl Transcript {
                             .text_color(theme.text_muted),
                     )
             });
-        let zoom = self
-            .workflow_graph_zooms
+        let viewport = self
+            .workflow_graph_viewports
             .get(call_id)
             .copied()
-            .unwrap_or(1.0);
+            .unwrap_or_default();
         let entity = cx.weak_entity();
         let graph_id = call_id.clone();
         let on_zoom = Rc::new(
             move |factor: f32, _window: &mut Window, cx: &mut gpui::App| {
                 entity
                     .update(cx, |this, cx| {
-                        let zoom = this
-                            .workflow_graph_zooms
+                        let viewport = this
+                            .workflow_graph_viewports
                             .entry(graph_id.clone())
-                            .or_insert(1.0);
-                        *zoom = (*zoom * factor).clamp(
+                            .or_default();
+                        viewport.zoom = (viewport.zoom * factor).clamp(
                             crate::workflow_graph::ZOOM_MIN,
                             crate::workflow_graph::ZOOM_MAX,
                         );
-                        if (*zoom - 1.0).abs() < 0.001 {
-                            *zoom = 1.0;
+                        if (viewport.zoom - 1.0).abs() < 0.001 {
+                            viewport.zoom = 1.0;
                         }
                         cx.notify();
                     })
                     .ok();
             },
         );
+        let pan_entity = cx.weak_entity();
+        let pan_id = call_id.clone();
+        let on_pan = Rc::new(
+            move |event: crate::workflow_graph::CanvasPanEvent, cx: &mut gpui::App| {
+                pan_entity
+                    .update(cx, |this, cx| {
+                        use crate::workflow_graph::CanvasPanEvent;
+                        match event {
+                            CanvasPanEvent::Start(position) => {
+                                this.workflow_graph_drag =
+                                    Some(crate::workflow_graph::WorkflowGraphDrag {
+                                        call_id: pan_id.clone(),
+                                        last_position: position,
+                                    });
+                                cx.notify();
+                            }
+                            CanvasPanEvent::Move(position) => {
+                                let delta = this.workflow_graph_drag.as_mut().and_then(|drag| {
+                                    if drag.call_id != pan_id {
+                                        return None;
+                                    }
+                                    let delta = (
+                                        f32::from(position.x - drag.last_position.x),
+                                        f32::from(position.y - drag.last_position.y),
+                                    );
+                                    drag.last_position = position;
+                                    Some(delta)
+                                });
+                                if let Some((dx, dy)) = delta {
+                                    let viewport = this
+                                        .workflow_graph_viewports
+                                        .entry(pan_id.clone())
+                                        .or_default();
+                                    viewport.pan_x += dx;
+                                    viewport.pan_y += dy;
+                                    cx.notify();
+                                }
+                            }
+                            CanvasPanEvent::End => {
+                                if this
+                                    .workflow_graph_drag
+                                    .as_ref()
+                                    .is_some_and(|drag| drag.call_id == pan_id)
+                                {
+                                    this.workflow_graph_drag = None;
+                                    cx.notify();
+                                }
+                            }
+                            CanvasPanEvent::Reset => {
+                                let default = crate::workflow_graph::WorkflowViewport::default();
+                                let viewport = this
+                                    .workflow_graph_viewports
+                                    .entry(pan_id.clone())
+                                    .or_default();
+                                viewport.pan_x = default.pan_x;
+                                viewport.pan_y = default.pan_y;
+                                cx.notify();
+                            }
+                        }
+                    })
+                    .ok();
+            },
+        );
+        let expand_entity = cx.weak_entity();
+        let expand_id = call_id.clone();
+        let on_expand = Rc::new(move |cx: &mut gpui::App| {
+            expand_entity
+                .update(cx, |this, cx| {
+                    let viewport = this
+                        .workflow_graph_viewports
+                        .entry(expand_id.clone())
+                        .or_default();
+                    viewport.expanded = !viewport.expanded;
+                    cx.notify();
+                })
+                .ok();
+        });
+        let dragging = self
+            .workflow_graph_drag
+            .as_ref()
+            .is_some_and(|drag| drag.call_id == *call_id);
         let identities = graph
             .as_ref()
             .map(|graph| {
@@ -1731,12 +1823,15 @@ impl Transcript {
             crate::workflow_graph::render_agent_graph(
                 call_id,
                 graph,
-                zoom,
+                viewport,
                 &theme,
                 crate::workflow_graph::GraphInteraction {
                     identities,
                     on_open,
                     on_zoom,
+                    on_pan,
+                    on_expand,
+                    dragging,
                     view: cx.entity_id(),
                 },
                 cx,
@@ -1744,7 +1839,7 @@ impl Transcript {
         });
         let header = div()
             .h(px(CHIP_HEIGHT))
-            .px(px(4.0))
+            .px(px(if viewport.expanded { 48.0 } else { 4.0 }))
             .w_full()
             .flex()
             .flex_row()
