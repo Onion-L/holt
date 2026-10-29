@@ -16,7 +16,7 @@ Not here: how one child runs, its roles, briefing, structured results, and resul
 | Report | On return the value is written to `result.json`, and a report run is queued under the chat's captured settings with `workflowResult` set: its prompt carries the bounded value (12,000 tokens, else a truncation notice and path) or, on failure, the error, the log tail, and the `resume` call to make. The entry carries a `WorkflowResult` part; the UI draws it as the light foldable row goal continuations use | `workflow/mod.rs` (`drive`, `deliver_workflow`), [`queue.rs`](../../crates/engine/src/queue.rs) (`enqueue_workflow_result`) |
 | Stop | `StopWorkflow {chatId, callId}` → `{stopped}`; also chat deletion and engine shutdown. Cancels the script (interrupting busy JS) and every child; no report is queued; the journal stays | `workflow/mod.rs` (`Workflows`, `stop_workflow`) |
 | Records | `subagents/<chatId>/workflows/<runId>/`: `script.js`, `args.json`, `journal.jsonl`, `result.json`, `log.txt` — deleted with the parent chat | `workflow/mod.rs` |
-| UI | The call draws as a workflow row (name, status, tokens, Stop while running in the main chat); its children split into one fan-out row per phase, the phase leading the row's summary | [`transcript/model.rs`](../../crates/ui/src/transcript/model.rs) (`RowKind::Workflow`, `tool_phase`), [`transcript/render.rs`](../../crates/ui/src/transcript/render.rs) (`render_workflow_row`) |
+| UI | The call draws as a workflow row (name, status, tokens, Stop while running in the main chat) plus a read-only native GPUI graph whose agent nodes carry the ordinary subagent identity and open the child tab on click; contiguous phases form graph layers. A projected graph replaces its duplicate fan-out rows; an over-budget graph keeps them as the fallback | [`transcript/model.rs`](../../crates/ui/src/transcript/model.rs) (`RowKind::Workflow`, `tool_phase`), [`workflow_graph.rs`](../../crates/ui/src/workflow_graph.rs) (`agent_graph`, `render_agent_graph`), [`transcript/render.rs`](../../crates/ui/src/transcript/render.rs) (`render_workflow_row`) |
 
 ## Runtime path
 
@@ -32,6 +32,7 @@ Not here: how one child runs, its roles, briefing, structured results, and resul
 - **A failed agent is a value**: the script reads `null` and decides; an exception escaping the script fails the run, and the report says so.
 - **Background edits are outside Turn change sets**: workers run with no Turn attribution — their edits show in the working tree, not in any Turn's review card.
 - **No spend cap** (ADR-subagent-spend-is-visible-not-bounded); the 1000-agent ceiling only guards runaway loops.
+- **Graph budget**: the native graph draws up to 128 agents and 1024 phase edges; larger runs keep the ordinary phase rows only.
 
 ## Verification
 
@@ -41,4 +42,4 @@ cargo test -p holt-engine --test all workflow
 cargo test -p holt-ui workflow
 ```
 
-The library suites cover the script API (ordering, null failures, pipeline independence, options and phases, clock/randomness guards, caps, syntax checks, cancellation of busy scripts) and the journal (occurrence keys, resume hits and misses, torn lines). The integration suite covers launch-then-report end to end with phases, failure reports with a `resume` that skips finished agents, `StopWorkflow`, restart settling, and parse failures; the UI suite covers the run row, phase rows, and the report row.
+The library suites cover the script API (ordering, null failures, pipeline independence, options and phases, clock/randomness guards, caps, syntax checks, cancellation of busy scripts) and the journal (occurrence keys, resume hits and misses, torn lines). The integration suite covers launch-then-report end to end with phases, failure reports with a `resume` that skips finished agents, `StopWorkflow`, restart settling, and parse failures; the UI suite covers the run row, native graph topology/layout, subagent-node clicks, phase-row replacement and fallback, and the report row.
