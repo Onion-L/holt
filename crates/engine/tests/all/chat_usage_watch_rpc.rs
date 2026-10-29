@@ -139,6 +139,52 @@ async fn occupancy_is_the_latest_reports_request_input_not_the_run_accumulator()
     assert_eq!(frame["occupancy"]["estimated"], json!(false), "{frame}");
 }
 
+/// A rate-limited round-trip never reaches a usage event, so its assistant
+/// message arrives with an all-zero report. It books — the failed answer is
+/// the Turn's own round-trip — but the occupancy must keep the previous
+/// turn's measured number instead of collapsing to an empty context.
+#[tokio::test]
+async fn a_rate_limited_turn_keeps_the_previous_occupancy() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text_with_usage(
+            "first",
+            Usage {
+                input: 700,
+                output: 70,
+                cache_read: 7,
+                cache_write: 3,
+                total_tokens: 780,
+                ..Default::default()
+            },
+        ),
+        ScriptedReply::Failed(
+            "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"429\"}}"
+                .into(),
+        ),
+    ])
+    // The failed reply reports nothing, exactly as a pre-stream 429 does.
+    .with_usage(Usage::default());
+    let engine = fixture.engine(&provider);
+    setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "first prompt").await;
+    wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let mut usage = usage_watch(&engine).await;
+    let measured = frame_until(&mut usage, |frame| {
+        frame["occupancy"]["estimated"] == json!(false)
+    })
+    .await;
+    assert_eq!(measured["occupancy"]["tokens"], json!(710), "{measured}");
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "second prompt").await;
+    let failed = frame_until(&mut usage, |frame| frame["recordCount"] == json!(2)).await;
+    // The zero record lands in the ledger without moving gross or occupancy.
+    assert_eq!(failed["gross"], json!(780), "{failed}");
+    assert_eq!(failed["occupancy"]["tokens"], json!(710), "{failed}");
+    assert_eq!(failed["occupancy"]["estimated"], json!(false), "{failed}");
+}
+
 #[tokio::test]
 async fn occupancy_estimates_from_history_until_a_report_arrives_then_measures() {
     let fixture = Fixture::new();
