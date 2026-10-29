@@ -37,7 +37,19 @@
     g.__holt_log(parts.map((p) => (typeof p === "string" ? p : JSON.stringify(p))).join(" "));
   };
 
+  // An option the host does not read would be dropped silently — a
+  // misspelled `schema` then runs every child unstructured.
+  const AGENT_OPTIONS = ["label", "phase", "role", "schema"];
+  const OPTION_HINTS = { output_schema: "schema" };
+
   g.agent = async (prompt, opts = {}) => {
+    for (const key of Object.keys(opts)) {
+      if (AGENT_OPTIONS.includes(key)) continue;
+      const hint = OPTION_HINTS[key] ? ` (did you mean ${OPTION_HINTS[key]}?)` : "";
+      throw new Error(
+        `agent() has no option ${JSON.stringify(key)}${hint}; it takes ${AGENT_OPTIONS.join(", ")}`,
+      );
+    }
     const options = {
       label: opts.label == null ? null : String(opts.label),
       phase: opts.phase == null ? currentPhase : String(opts.phase),

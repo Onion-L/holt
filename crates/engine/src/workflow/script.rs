@@ -362,6 +362,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_agent_options_fail_the_run() {
+        let (result, requests, _) = drive(
+            "await agent('a', { output_schema: { type: 'object' } });",
+            serde_json::Value::Null,
+            echo,
+        )
+        .await;
+        assert!(requests.is_empty());
+        let error = result.unwrap_err();
+        assert!(error.contains("no option \"output_schema\""), "{error}");
+        assert!(error.contains("did you mean schema?"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_tool_description_example_runs() {
+        let description = super::super::DESCRIPTION;
+        let start = description.find("Example (research):\n").unwrap() + 20;
+        let end = description.find("\n\nTo rerun").unwrap();
+        let example = &description[start..end];
+        let reviews = std::sync::atomic::AtomicUsize::new(0);
+        let (result, requests, _) = drive(
+            example,
+            serde_json::json!({"topics": ["a", "b"]}),
+            move |prompt, options| {
+                Some(match options.label.as_deref() {
+                    Some("verify") => serde_json::json!({"confirmed": !prompt.contains("bad")}),
+                    Some("writer") => serde_json::json!("report"),
+                    Some(label) if label.starts_with("reviewer") => {
+                        // The first review round finds a problem; the second passes.
+                        let n = reviews.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        serde_json::json!({"problems": if n < 2 { vec!["fix"] } else { vec![] }})
+                    }
+                    _ => serde_json::json!({"claims": [
+                        {"claim": "good", "source": "u"},
+                        {"claim": "bad", "source": "u"},
+                    ]}),
+                })
+            },
+        )
+        .await;
+        assert_eq!(
+            result.unwrap(),
+            serde_json::json!({"report": "report", "unverified": 2})
+        );
+        let phases: Vec<_> = requests
+            .iter()
+            .map(|(_, options)| options.phase.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                "Research", "Research", "Verify", "Verify", "Verify", "Verify", "Write", "Review",
+                "Review", "Revise", "Review", "Review",
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn clocks_and_randomness_throw() {
         for script in ["Date.now()", "Math.random()", "new Date()"] {
             let (result, _, _) = drive(script, serde_json::Value::Null, echo).await;
