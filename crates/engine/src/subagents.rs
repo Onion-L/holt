@@ -624,14 +624,14 @@ async fn execute_fanout(
 
 /// A display-only spawn chip for a child the parent never called directly
 /// — a fan-out item or a workflow's `agent()`. Queued (unresolved, no ref)
-/// until the child is admitted. A workflow phase rides the kept spawn
-/// input, so the transcript can group by it.
-pub(crate) fn display_part(part_id: &str, label: &str, phase: Option<&str>) -> MessagePart {
+/// until the child is admitted. A workflow agent's plan step rides the
+/// kept spawn input, so the transcript can place it on the run's graph.
+pub(crate) fn display_part(part_id: &str, label: &str, step: Option<&str>) -> MessagePart {
     MessagePart::Tool {
         id: part_id.to_owned(),
         call: holt_proto::ToolCall::Unknown {
             name: format!("Agent: {label}"),
-            input: phase.map(|phase| serde_json::json!({ "phase": phase })),
+            input: step.map(|step| serde_json::json!({ "step": step })),
         },
         is_error: false,
         resolved: false,

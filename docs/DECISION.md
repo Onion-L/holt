@@ -25,7 +25,7 @@ in the same commit.
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
-| [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) |
+| [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
@@ -763,3 +763,22 @@ result-driven branching); boa (slower, weaker promise integration) and
 V8/deno (binary size and build weight); journaling by start order, as
 Claude Code's runtime does (`pipeline` starts later stages in completion
 order, so a replay reorders them and misses).
+
+## workflow-runs-declare-their-plan-up-front
+
+A `Workflow` call carries a required `plan` — steps with `after` links,
+an optional per-round `agents` count, and `loop {to, max}` back to an
+upstream step — beside its script. The engine validates it at launch
+(unique ids, known references, no cycle, loops upstream only), stores it
+in `plan.json` and on the call's chip input, and admits every `agent()`
+against it: the call must name a declared `step`, each `after` step needs
+a settled agent first, and a loop runs at most `max` rounds. A refusal
+ends the run — `parallel()` cannot turn it into a null — so the graph the
+user sees from launch is the one the run walks. The script stays JS; the
+plan constrains it rather than replacing it. Rejected: drawing the graph
+from the agents started so far (nothing to show before the run, and
+phase layers fully linked into a wall of edges at 48 verifiers); a
+display-only plan the engine does not check (it drifts from what runs);
+replacing the script with the plan as a declarative DAG (rejected in
+`workflows-run-scripts-in-the-background-and-report-by-continuation` —
+filtering and branching on results need code).

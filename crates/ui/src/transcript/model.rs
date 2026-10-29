@@ -107,15 +107,42 @@ pub(super) fn is_workflow_call(call: &ToolCall) -> bool {
     matches!(call, ToolCall::Unknown { name, .. } if name == "Workflow" || name.starts_with("Workflow: "))
 }
 
-/// The workflow phase a child's chip was started under (the kept spawn
-/// input), which splits a workflow's children into one row per phase.
+/// The workflow step a child's chip was started under (the kept spawn
+/// input; `phase` on runs from before plans), which splits a workflow's
+/// children into one row per step.
 pub(super) fn tool_phase(call: &ToolCall) -> Option<&str> {
     match call {
         ToolCall::Unknown {
             input: Some(input), ..
-        } if call.is_subagent_spawn() => input.get("phase")?.as_str(),
+        } if call.is_subagent_spawn() => input.get("step").or_else(|| input.get("phase"))?.as_str(),
         _ => None,
     }
+}
+
+/// The plan a `Workflow` chip carries once its run launched.
+fn workflow_plan(call: &ToolCall) -> Option<holt_proto::WorkflowPlan> {
+    match call {
+        ToolCall::Unknown {
+            input: Some(input), ..
+        } => serde_json::from_value(input.get("plan")?.clone()).ok(),
+        _ => None,
+    }
+}
+
+/// A workflow call's graph: its plan with the agents started so far, or —
+/// for a run without one, or a record that leaves its plan — the agents
+/// alone, layered by phase.
+fn workflow_graph(
+    parts: &[MessagePart],
+    id: &str,
+    call: &ToolCall,
+) -> Option<crate::workflow_graph::WorkflowGraph> {
+    use crate::workflow_graph::{WorkflowGraph, agent_graph, plan_graph};
+    let agents = workflow_agent_nodes(parts, id);
+    workflow_plan(call)
+        .and_then(|plan| plan_graph(plan, &agents))
+        .map(WorkflowGraph::Plan)
+        .or_else(|| agent_graph(&agents).map(WorkflowGraph::Agents))
 }
 
 fn workflow_agent_nodes(
@@ -410,13 +437,14 @@ pub enum RowKind {
     /// shows the full prompt the model got.
     /// A background workflow run (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
     /// the `Workflow` call's own row — its name, lifecycle, tokens, and a
-    /// read-only graph of the actual agents; detailed fan-out rows follow.
+    /// read-only graph of its plan and agents; without a graph, detailed
+    /// fan-out rows follow.
     Workflow {
         call_id: SharedString,
         name: SharedString,
         status: Option<SubagentStatus>,
         tokens: Option<u64>,
-        graph: Option<Arc<crate::workflow_graph::AgentGraph>>,
+        graph: Option<Arc<crate::workflow_graph::WorkflowGraph>>,
     },
     GoalRound {
         label: SharedString,
@@ -905,12 +933,7 @@ pub fn rows_for_entry(
         .iter()
         .filter_map(|part| match part {
             MessagePart::Tool { id, call, .. }
-                if is_workflow_call(call)
-                    && crate::workflow_graph::agent_graph(&workflow_agent_nodes(
-                        &entry.parts,
-                        id,
-                    ))
-                    .is_some() =>
+                if is_workflow_call(call) && workflow_graph(&entry.parts, id, call).is_some() =>
             {
                 Some(id.clone())
             }
@@ -1006,12 +1029,11 @@ pub fn rows_for_entry(
                         group_last_part_ix,
                     );
                     let (_, name) = tool_chip_content(call);
-                    let agents = workflow_agent_nodes(&entry.parts, id);
-                    let graph = crate::workflow_graph::agent_graph(&agents).map(Arc::new);
+                    let graph = workflow_graph(&entry.parts, id, call).map(Arc::new);
                     rows.push(Row {
                         id: format!("{}#{}", entry.id, id).into(),
                         version: fnv1a(
-                            format!("{name}\0{subagent_status:?}\0{subagent_usage:?}\0{agents:?}")
+                            format!("{name}\0{subagent_status:?}\0{subagent_usage:?}\0{graph:?}")
                                 .as_bytes(),
                         ),
                         turn_start: false,
@@ -2245,6 +2267,51 @@ mod tests {
             graph.node(0).and_then(|node| node.subagent_ref.as_deref()),
             Some("chat--sub--wf-1#item-0")
         );
+    }
+
+    #[test]
+    fn a_planned_workflow_draws_every_step_before_its_agents_run() {
+        let plan = serde_json::json!({"steps": [
+            {"id": "find", "title": "Find"},
+            {"id": "verify", "title": "Verify", "after": ["find"]},
+        ]});
+        let workflow = |parts: Vec<MessagePart>| {
+            let mut container = tool_part("wf-1", "ignored");
+            if let MessagePart::Tool { call, .. } = &mut container {
+                *call = ToolCall::Unknown {
+                    name: "Workflow: audit".into(),
+                    input: Some(serde_json::json!({ "plan": plan })),
+                };
+            }
+            let mut all = vec![container];
+            all.extend(parts);
+            let entry = assistant("m-wf", MessageStatus::Complete, all);
+            rows_for_entry(&entry, false, &mut parse)
+        };
+        let rows = workflow(Vec::new());
+        assert_eq!(rows.len(), 1);
+        let RowKind::Workflow { graph, .. } = &rows[0].kind else {
+            panic!("workflow row expected")
+        };
+        assert!(matches!(
+            graph.as_deref(),
+            Some(crate::workflow_graph::WorkflowGraph::Plan(_))
+        ));
+
+        // Step-tagged agents land on the plan and leave no fan-out rows.
+        let mut agent = phased("wf-1#item-0", "a", "ignored");
+        if let MessagePart::Tool { call, .. } = &mut agent {
+            *call = ToolCall::Unknown {
+                name: "Agent: a".into(),
+                input: Some(serde_json::json!({ "step": "find" })),
+            };
+        }
+        let rows = workflow(vec![agent]);
+        assert_eq!(rows.len(), 1);
+        let RowKind::Workflow { graph, .. } = &rows[0].kind else {
+            panic!("workflow row expected")
+        };
+        assert_eq!(graph.as_ref().unwrap().nodes().len(), 1);
     }
 
     #[test]

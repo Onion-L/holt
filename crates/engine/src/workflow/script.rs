@@ -1,12 +1,12 @@
 //! The workflow script host: one embedded QuickJS per run, on its own
 //! thread. The script sees `agent()` / `parallel()` / `pipeline()` /
-//! `phase()` / `log()` / `args` ([`PRELUDE`]); every `agent()` call leaves
-//! the JS thread as an [`AgentRequest`] and resolves with whatever the
-//! engine side replies. The host knows nothing of chats or children — the
-//! caller owns what an agent request does.
+//! `log()` / `args` ([`PRELUDE`]); every `agent()` call is admitted against
+//! the run's plan, then leaves the JS thread as an [`AgentRequest`] and
+//! resolves with whatever the engine side replies. The host knows nothing
+//! of chats or children — the caller owns what an agent request does.
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -18,6 +18,8 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::plan::PlanTracker;
+
 const PRELUDE: &str = include_str!("prelude.js");
 /// Runaway guard: a script loop can spawn without a model round in between,
 /// so a run stops admitting agents past this many.
@@ -25,11 +27,11 @@ pub(crate) const MAX_AGENTS_PER_RUN: usize = 1000;
 const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 
 /// One `agent()` call's options as the script passed them (the prelude
-/// fills `phase` from the current `phase()` and `role` with `explorer`).
+/// fills `role` with `explorer`).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub(crate) struct AgentOptions {
+    pub(crate) step: Option<String>,
     pub(crate) label: Option<String>,
-    pub(crate) phase: Option<String>,
     pub(crate) role: String,
     pub(crate) schema: Option<serde_json::Value>,
 }
@@ -41,6 +43,32 @@ pub(crate) struct AgentRequest {
     pub(crate) prompt: String,
     pub(crate) options: AgentOptions,
     pub(crate) reply: oneshot::Sender<Option<serde_json::Value>>,
+}
+
+/// The plan's refusal of an `agent()` call: the error, and a token that
+/// ends the run at once — even while the script sits awaiting other agents.
+#[derive(Clone, Default)]
+struct Refusal {
+    error: Arc<Mutex<Option<String>>>,
+    token: CancellationToken,
+}
+
+impl Refusal {
+    fn refuse(&self, error: String) {
+        self.error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert(error);
+        self.token.cancel();
+    }
+
+    fn take(&self) -> String {
+        self.error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_else(|| "the plan refused an agent".into())
+    }
 }
 
 pub(crate) enum ScriptEvent {
@@ -73,14 +101,18 @@ pub(crate) fn check_syntax(script: &str) -> Result<(), String> {
 /// Run `script` on a dedicated thread. Agent calls and log lines arrive on
 /// `events`; the returned receiver yields the script's return value, or the
 /// error that ended it. Cancelling `cancel` interrupts the script (a busy
-/// loop included) and ends the run with an error.
+/// loop included) and ends the run with an error. An `agent()` the plan
+/// refuses ends the run with that refusal — `parallel()` cannot turn it
+/// into a null, or a script drifting from its drawn graph would carry on.
 pub(crate) fn spawn(
     script: String,
     args: serde_json::Value,
+    plan: Arc<Mutex<PlanTracker>>,
     events: mpsc::UnboundedSender<ScriptEvent>,
     cancel: CancellationToken,
 ) -> oneshot::Receiver<Result<serde_json::Value, String>> {
     let (done_tx, done_rx) = oneshot::channel();
+    let refusal = Refusal::default();
     let spawned = std::thread::Builder::new()
         .name("holt-workflow".into())
         .spawn(move || {
@@ -92,7 +124,8 @@ pub(crate) fn spawn(
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => Err("workflow stopped".to_string()),
-                        result = run(script, args, events, cancel.clone()) => result,
+                        _ = refusal.token.cancelled() => Err(refusal.take()),
+                        result = run(script, args, plan, events, cancel.clone(), refusal.clone()) => result,
                     }
                 }),
                 Err(error) => Err(error.to_string()),
@@ -110,14 +143,17 @@ pub(crate) fn spawn(
 async fn run(
     script: String,
     args: serde_json::Value,
+    plan: Arc<Mutex<PlanTracker>>,
     events: mpsc::UnboundedSender<ScriptEvent>,
     cancel: CancellationToken,
+    refusal: Refusal,
 ) -> Result<serde_json::Value, String> {
     let runtime = AsyncRuntime::new().map_err(|e| e.to_string())?;
     runtime.set_memory_limit(MEMORY_LIMIT).await;
     let interrupted = Arc::new(AtomicBool::new(false));
     {
         let interrupted = interrupted.clone();
+        let refused = refusal.token.clone();
         let cancel = cancel.clone();
         runtime
             .set_interrupt_handler(Some(Box::new(move || {
@@ -125,7 +161,9 @@ async fn run(
                 if stop {
                     interrupted.store(true, Ordering::Release);
                 }
-                stop
+                // A refusal must also break a busy loop the script entered
+                // after its failed agent() call.
+                stop || refused.is_cancelled()
             })))
             .await;
     }
@@ -138,11 +176,14 @@ async fn run(
         .async_with(async |ctx| {
             let globals = ctx.globals();
             let agent_events = events.clone();
+            let agent_refusal = refusal.clone();
             let agent = Function::new(
                 ctx.clone(),
                 Async(move |prompt: String, options: String| {
                     let events = agent_events.clone();
                     let spawned = spawned.clone();
+                    let plan = plan.clone();
+                    let refusal = agent_refusal.clone();
                     async move {
                         if spawned.fetch_add(1, Ordering::AcqRel) >= MAX_AGENTS_PER_RUN {
                             return Err(rquickjs::Error::new_from_js_message(
@@ -159,6 +200,16 @@ async fn run(
                                     e.to_string(),
                                 )
                             })?;
+                        let admitted = plan
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .admit(options.step.as_deref());
+                        if let Err(error) = admitted {
+                            refusal.refuse(error.clone());
+                            return Err(rquickjs::Error::new_from_js_message(
+                                "agent", "result", error,
+                            ));
+                        }
                         let (reply, answer) = oneshot::channel();
                         let sent = events.send(ScriptEvent::Agent(AgentRequest {
                             prompt,
@@ -207,6 +258,9 @@ async fn run(
     if interrupted.load(Ordering::Acquire) {
         return Err("workflow stopped".into());
     }
+    if refusal.token.is_cancelled() {
+        return Err(refusal.take());
+    }
     let output = output?;
     serde_json::from_str(&output).map_err(|e| e.to_string())
 }
@@ -219,7 +273,8 @@ mod tests {
 
     /// Drive a script against a fake host: `answer` maps a prompt to its
     /// reply (absent → the child failed). Returns the result, the requests
-    /// in arrival order, and the log lines.
+    /// in arrival order, and the log lines. Scripts name the one-step
+    /// plan's `s` unless they run under [`drive_plan`].
     async fn drive(
         script: &str,
         args: serde_json::Value,
@@ -229,14 +284,41 @@ mod tests {
         Vec<(String, AgentOptions)>,
         Vec<String>,
     ) {
+        let plan = serde_json::json!({"steps": [{"id": "s", "title": "S"}]});
+        drive_plan(script, plan, args, answer).await
+    }
+
+    async fn drive_plan(
+        script: &str,
+        plan: serde_json::Value,
+        args: serde_json::Value,
+        answer: impl Fn(&str, &AgentOptions) -> Option<serde_json::Value> + Send + 'static,
+    ) -> (
+        Result<serde_json::Value, String>,
+        Vec<(String, AgentOptions)>,
+        Vec<String>,
+    ) {
+        let plan = serde_json::from_value(plan).unwrap();
+        super::super::plan::validate(&plan).unwrap();
+        let tracker = Arc::new(Mutex::new(PlanTracker::new(plan)));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let done = spawn(script.into(), args, tx, CancellationToken::new());
+        let done = spawn(
+            script.into(),
+            args,
+            tracker.clone(),
+            tx,
+            CancellationToken::new(),
+        );
         let mut requests = Vec::new();
         let mut logs = Vec::new();
         while let Some(event) = rx.recv().await {
             match event {
                 ScriptEvent::Agent(request) => {
                     let reply = answer(&request.prompt, &request.options);
+                    tracker
+                        .lock()
+                        .unwrap()
+                        .settle(request.options.step.as_deref().unwrap_or_default());
                     requests.push((request.prompt, request.options));
                     let _ = request.reply.send(reply);
                 }
@@ -253,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn returns_the_script_value_as_json() {
         let (result, requests, _) = drive(
-            "const a = await agent('one'); return { a, n: args.n };",
+            "const a = await agent('one', { step: 's' }); return { a, n: args.n };",
             serde_json::json!({"n": 3}),
             echo,
         )
@@ -265,14 +347,19 @@ mod tests {
 
     #[tokio::test]
     async fn no_return_reads_as_null() {
-        let (result, _, _) = drive("await agent('x');", serde_json::Value::Null, echo).await;
+        let (result, _, _) = drive(
+            "await agent('x', { step: 's' });",
+            serde_json::Value::Null,
+            echo,
+        )
+        .await;
         assert_eq!(result.unwrap(), serde_json::Value::Null);
     }
 
     #[tokio::test]
     async fn parallel_starts_in_order_and_a_failure_is_null() {
         let (result, requests, logs) = drive(
-            "return await parallel(['a', 'b', 'c'].map(x => () => agent(x)));",
+            "return await parallel(['a', 'b', 'c'].map(x => () => agent(x, { step: 's' })));",
             serde_json::Value::Null,
             |prompt, _| (prompt != "b").then(|| serde_json::json!(prompt)),
         )
@@ -289,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn a_throwing_parallel_step_is_logged_and_null() {
         let (result, _, logs) = drive(
-            "return await parallel([() => agent('a'), () => { throw new Error('boom'); }]);",
+            "return await parallel([() => agent('a', { step: 's' }), () => { throw new Error('boom'); }]);",
             serde_json::Value::Null,
             echo,
         )
@@ -303,10 +390,18 @@ mod tests {
         // Item 0's first stage is held until item 1 reached its second
         // stage: a barrier between stages would deadlock this script.
         let (tx, mut rx) = mpsc::unbounded_channel();
+        let plan = serde_json::from_value(serde_json::json!({"steps": [
+            {"id": "find", "title": "Find"},
+            {"id": "check", "title": "Check", "after": ["find"]},
+        ]}))
+        .unwrap();
+        let tracker = Arc::new(Mutex::new(PlanTracker::new(plan)));
         let done = spawn(
-            "return await pipeline(['x', 'y'], (v) => agent('find ' + v), (v) => agent('check ' + v));"
+            "return await pipeline(['x', 'y'], (v) => agent('find ' + v, { step: 'find' }), \
+             (v) => agent('check ' + v, { step: 'check' }));"
                 .into(),
             serde_json::Value::Null,
+            tracker.clone(),
             tx,
             CancellationToken::new(),
         );
@@ -322,10 +417,15 @@ mod tests {
                 continue;
             }
             let reply = serde_json::json!(request.prompt.replace("find ", ""));
+            tracker
+                .lock()
+                .unwrap()
+                .settle(request.options.step.as_deref().unwrap());
             let _ = request.reply.send(Some(reply));
             if seen.contains(&"check y".to_string())
                 && let Some(first) = held.take()
             {
+                tracker.lock().unwrap().settle("find");
                 let _ = first.reply.send(Some(serde_json::json!("x")));
             }
         }
@@ -339,10 +439,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn options_and_phase_reach_the_host() {
+    async fn options_reach_the_host() {
         let (_, requests, _) = drive(
-            "phase('Review'); await agent('a', { label: 'L', role: 'worker', schema: { type: 'object' } }); \
-             await agent('b', { phase: 'Other' }); phase(null); await agent('c');",
+            "await agent('a', { step: 's', label: 'L', role: 'worker', schema: { type: 'object' } }); \
+             await agent('b', { step: 's' });",
             serde_json::Value::Null,
             |_, _| Some(serde_json::json!({"ok": true})),
         )
@@ -351,14 +451,44 @@ mod tests {
         assert_eq!(
             options["a"],
             AgentOptions {
+                step: Some("s".into()),
                 label: Some("L".into()),
-                phase: Some("Review".into()),
                 role: "worker".into(),
                 schema: Some(serde_json::json!({"type": "object"})),
             }
         );
-        assert_eq!(options["b"].phase.as_deref(), Some("Other"));
-        assert_eq!(options["c"].phase, None);
+        assert_eq!(options["b"].role, "explorer");
+    }
+
+    #[tokio::test]
+    async fn a_plan_refusal_fails_the_run_even_inside_parallel() {
+        let plan = serde_json::json!({"steps": [
+            {"id": "find", "title": "Find"},
+            {"id": "check", "title": "Check", "after": ["find"]},
+        ]});
+        // `check` starts before any `find` agent finished: parallel() would
+        // otherwise read the throw as a null and carry on.
+        let (result, requests, _) = drive_plan(
+            "const r = await parallel([() => agent('f', { step: 'find' }), () => agent('c', { step: 'check' })]); \
+             return r;",
+            plan.clone(),
+            serde_json::Value::Null,
+            echo,
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(error.contains("before any \"find\""), "{error}");
+        assert_eq!(requests.len(), 1);
+        for (script, expected) in [
+            ("await agent('x');", "needs a step"),
+            ("await agent('x', { step: 'draft' });", "not in the plan"),
+            ("phase('Find');", "phase() is gone"),
+        ] {
+            let (result, _, _) =
+                drive_plan(script, plan.clone(), serde_json::Value::Null, echo).await;
+            let error = result.unwrap_err();
+            assert!(error.contains(expected), "{script}: {error}");
+        }
     }
 
     #[tokio::test]
@@ -378,18 +508,27 @@ mod tests {
     #[tokio::test]
     async fn the_tool_description_example_runs() {
         let description = super::super::DESCRIPTION;
-        let start = description.find("Example (research):\n").unwrap() + 20;
-        let end = description.find("\n\nTo rerun").unwrap();
-        let example = &description[start..end];
+        let section = |start: &str, end: &str| {
+            let from = description.find(start).unwrap() + start.len();
+            let to = from + description[from..].find(end).unwrap();
+            description[from..to].to_owned()
+        };
+        let plan: serde_json::Value =
+            serde_json::from_str(&section("Example (research) plan:\n", "\n\n")).unwrap();
+        let script = section("Example script:\n", "\n\nTo rerun");
         let reviews = std::sync::atomic::AtomicUsize::new(0);
-        let (result, requests, _) = drive(
-            example,
+        let (result, requests, _) = drive_plan(
+            &script,
+            plan,
             serde_json::json!({"topics": ["a", "b"]}),
-            move |prompt, options| {
-                Some(match options.label.as_deref() {
-                    Some("verify") => serde_json::json!({"confirmed": !prompt.contains("bad")}),
-                    Some("writer") => serde_json::json!("report"),
-                    Some(label) if label.starts_with("reviewer") => {
+            move |_, options| {
+                Some(match options.step.as_deref() {
+                    Some("verify") => serde_json::json!({"claims": [
+                        {"claim": "good", "source": "u", "confirmed": true},
+                        {"claim": "bad", "source": "u", "confirmed": false},
+                    ]}),
+                    Some("write") | Some("revise") => serde_json::json!("report"),
+                    Some("review") => {
                         // The first review round finds a problem; the second passes.
                         let n = reviews.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         serde_json::json!({"problems": if n < 2 { vec!["fix"] } else { vec![] }})
@@ -404,17 +543,19 @@ mod tests {
         .await;
         assert_eq!(
             result.unwrap(),
-            serde_json::json!({"report": "report", "unverified": 2})
+            serde_json::json!({"report": "report", "facts": 2, "open": []})
         );
-        let phases: Vec<_> = requests
+        let mut steps: Vec<_> = requests
             .iter()
-            .map(|(_, options)| options.phase.as_deref().unwrap())
+            .map(|(_, options)| options.step.as_deref().unwrap())
             .collect();
+        // Research and verify interleave per topic; one verifier per topic.
+        steps[..4].sort();
         assert_eq!(
-            phases,
+            steps,
             [
-                "Research", "Research", "Verify", "Verify", "Verify", "Verify", "Write", "Review",
-                "Review", "Revise", "Review", "Review",
+                "research", "research", "verify", "verify", "write", "review", "review", "revise",
+                "review", "review",
             ]
         );
     }
@@ -445,7 +586,7 @@ mod tests {
     async fn the_agent_cap_rejects_past_the_limit() {
         let (result, requests, _) = drive(
             &format!(
-                "for (let i = 0; i < {MAX_AGENTS_PER_RUN}; i++) await agent('a' + i); await agent('over');"
+                "for (let i = 0; i < {MAX_AGENTS_PER_RUN}; i++) await agent('a' + i, {{ step: 's' }}); await agent('over', {{ step: 's' }});"
             ),
             serde_json::Value::Null,
             echo,
@@ -458,7 +599,7 @@ mod tests {
     #[tokio::test]
     async fn oversized_fanouts_are_refused() {
         let (result, requests, _) = drive(
-            "return await parallel(Array.from({ length: 4097 }, () => () => agent('x')));",
+            "return await parallel(Array.from({ length: 4097 }, () => () => agent('x', { step: 's' })));",
             serde_json::Value::Null,
             echo,
         )
@@ -491,9 +632,13 @@ mod tests {
     async fn cancelling_interrupts_a_busy_script() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
+        let plan =
+            serde_json::from_value(serde_json::json!({"steps": [{"id": "s", "title": "S"}]}))
+                .unwrap();
         let done = spawn(
             "while (true) {}".into(),
             serde_json::Value::Null,
+            Arc::new(Mutex::new(PlanTracker::new(plan))),
             tx,
             cancel.clone(),
         );

@@ -1612,7 +1612,7 @@ impl Transcript {
         name: &SharedString,
         status: Option<SubagentStatus>,
         tokens: Option<u64>,
-        graph: Option<&Arc<crate::workflow_graph::AgentGraph>>,
+        graph: Option<&Arc<crate::workflow_graph::WorkflowGraph>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = Theme::of(cx).clone();
@@ -1725,7 +1725,7 @@ impl Transcript {
     fn render_workflow_graph(
         &mut self,
         call_id: &SharedString,
-        graph: &Arc<crate::workflow_graph::AgentGraph>,
+        graph: &Arc<crate::workflow_graph::WorkflowGraph>,
         expanded: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1830,6 +1830,29 @@ impl Transcript {
                 })
                 .ok();
         });
+        let toggle_entity = cx.weak_entity();
+        let toggle_id = call_id.clone();
+        let on_toggle_step = Rc::new(move |step: SharedString, cx: &mut gpui::App| {
+            toggle_entity
+                .update(cx, |this, cx| {
+                    let open = this
+                        .workflow_open_steps
+                        .entry(toggle_id.clone())
+                        .or_default();
+                    if let Some(at) = open.iter().position(|id| *id == step) {
+                        open.remove(at);
+                    } else {
+                        open.push(step);
+                    }
+                    cx.notify();
+                })
+                .ok();
+        });
+        let open_steps = self
+            .workflow_open_steps
+            .get(call_id)
+            .cloned()
+            .unwrap_or_default();
         let dragging = self
             .workflow_graph_drag
             .as_ref()
@@ -1863,7 +1886,7 @@ impl Transcript {
             };
             open_entity.update(cx, move |_, cx| cx.emit(event)).ok();
         });
-        crate::workflow_graph::render_agent_graph(
+        crate::workflow_graph::render_workflow_graph(
             call_id,
             graph,
             viewport,
@@ -1876,6 +1899,8 @@ impl Transcript {
                 on_expand,
                 dragging,
                 expanded,
+                open_steps,
+                on_toggle_step,
                 view: cx.entity_id(),
             },
             cx,

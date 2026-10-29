@@ -199,6 +199,14 @@ conversation_transcript:
       en-US: "Expand"
     collapse:
       en-US: "Collapse"
+    step_waiting:
+      en-US: "waiting"
+    more:
+      en-US: "%{count} more"
+    show_fewer:
+      en-US: "Show fewer"
+    loop:
+      en-US: "↺ ≤%{max}"
     stop:
       en-US: "Stop workflow"
     report:
