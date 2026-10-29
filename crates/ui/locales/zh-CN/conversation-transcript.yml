@@ -183,6 +183,8 @@ conversation_transcript:
       zh-CN: Workflow
     running:
       zh-CN: "运行中"
+    queued:
+      zh-CN: "排队中"
     done:
       zh-CN: "已完成"
     failed:

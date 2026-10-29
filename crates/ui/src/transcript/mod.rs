@@ -88,7 +88,7 @@ pub use tool::{
 mod markdown;
 mod model;
 
-mod agent_avatar;
+pub(crate) mod agent_avatar;
 mod approval;
 mod plan_card;
 mod provider_card;
@@ -268,6 +268,7 @@ pub struct Transcript {
     typography_generation: u32,
     highlights: HighlightStore,
     mermaids: MermaidStore,
+    workflow_graph_zooms: HashMap<SharedString, f32>,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -543,6 +544,7 @@ impl Transcript {
             typography_generation: crate::typography::generation(cx),
             highlights: HighlightStore::default(),
             mermaids: MermaidStore::default(),
+            workflow_graph_zooms: HashMap::new(),
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,

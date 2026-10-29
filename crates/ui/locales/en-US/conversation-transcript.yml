@@ -183,6 +183,8 @@ conversation_transcript:
       en-US: Workflow
     running:
       en-US: "running"
+    queued:
+      en-US: "queued"
     done:
       en-US: "done"
     failed:

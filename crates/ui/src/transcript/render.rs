@@ -634,7 +634,8 @@ impl Transcript {
                 name,
                 status,
                 tokens,
-            } => self.render_workflow_row(call_id, name, *status, *tokens, &theme, cx),
+                graph,
+            } => self.render_workflow_row(call_id, name, *status, *tokens, graph.as_ref(), cx),
             RowKind::GoalEnd { message, event } => goal_end_row(message.clone(), *event, &theme),
             RowKind::GoalRound {
                 label,
@@ -1606,14 +1607,15 @@ impl Transcript {
     /// A workflow run's own row: glyph, "Workflow", the run's name, its
     /// lifecycle and spend, and — while it runs, in the main chat — Stop.
     fn render_workflow_row(
-        &self,
+        &mut self,
         call_id: &SharedString,
         name: &SharedString,
         status: Option<SubagentStatus>,
         tokens: Option<u64>,
-        theme: &Theme,
+        graph: Option<&Arc<crate::workflow_graph::AgentGraph>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
         let running = matches!(status, Some(SubagentStatus::Running));
         let state = match status {
             Some(SubagentStatus::Running) => Some(t!("conversation_transcript.workflow.running")),
@@ -1664,7 +1666,83 @@ impl Transcript {
                             .text_color(theme.text_muted),
                     )
             });
-        div()
+        let zoom = self
+            .workflow_graph_zooms
+            .get(call_id)
+            .copied()
+            .unwrap_or(1.0);
+        let entity = cx.weak_entity();
+        let graph_id = call_id.clone();
+        let on_zoom = Rc::new(
+            move |factor: f32, _window: &mut Window, cx: &mut gpui::App| {
+                entity
+                    .update(cx, |this, cx| {
+                        let zoom = this
+                            .workflow_graph_zooms
+                            .entry(graph_id.clone())
+                            .or_insert(1.0);
+                        *zoom = (*zoom * factor).clamp(
+                            crate::workflow_graph::ZOOM_MIN,
+                            crate::workflow_graph::ZOOM_MAX,
+                        );
+                        if (*zoom - 1.0).abs() < 0.001 {
+                            *zoom = 1.0;
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            },
+        );
+        let identities = graph
+            .as_ref()
+            .map(|graph| {
+                graph
+                    .nodes()
+                    .iter()
+                    .map(|node| {
+                        self.agent_identities
+                            .identity_for(Some(node.call_id.as_ref()), node.subagent_ref.as_deref())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let graph_for_open = graph.cloned();
+        let chat_id = self.chat_id.clone().unwrap_or_default();
+        let open_entity = cx.weak_entity();
+        let on_open = Rc::new(move |ix: usize, _window: &mut Window, cx: &mut gpui::App| {
+            let Some(node) = graph_for_open.as_ref().and_then(|graph| graph.node(ix)) else {
+                return;
+            };
+            let Some(doc_id) = node.subagent_ref.clone() else {
+                return;
+            };
+            let event = TranscriptEvent::OpenSubagent {
+                chat_id: chat_id.clone(),
+                doc_id: doc_id.to_string(),
+                title: node.label.clone(),
+                frozen: matches!(
+                    node.status,
+                    Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                ),
+            };
+            open_entity.update(cx, move |_, cx| cx.emit(event)).ok();
+        });
+        let graph = graph.map(|graph| {
+            crate::workflow_graph::render_agent_graph(
+                call_id,
+                graph,
+                zoom,
+                &theme,
+                crate::workflow_graph::GraphInteraction {
+                    identities,
+                    on_open,
+                    on_zoom,
+                    view: cx.entity_id(),
+                },
+                cx,
+            )
+        });
+        let header = div()
             .h(px(CHIP_HEIGHT))
             .px(px(4.0))
             .w_full()
@@ -1706,7 +1784,14 @@ impl Transcript {
                 )
             })
             .child(div().flex_1())
-            .children(stop)
+            .children(stop);
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(header)
+            .when_some(graph, |row, graph| row.child(graph))
             .into_any_element()
     }
 }
