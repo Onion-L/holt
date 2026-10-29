@@ -22,7 +22,6 @@ const LAYER_GAP: f32 = 72.0;
 const NODE_GAP: f32 = 12.0;
 const GRAPH_PADDING: f32 = 16.0;
 const CANVAS_HEIGHT: f32 = 420.0;
-const EXPANDED_CANVAS_HEIGHT: f32 = 680.0;
 const DOT_SPACING: f32 = 20.0;
 const DEFAULT_PAN: f32 = 24.0;
 pub(crate) const ZOOM_MIN: f32 = 0.6;
@@ -142,7 +141,6 @@ pub(crate) struct WorkflowViewport {
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
-    pub expanded: bool,
 }
 
 impl Default for WorkflowViewport {
@@ -151,7 +149,6 @@ impl Default for WorkflowViewport {
             zoom: 1.0,
             pan_x: DEFAULT_PAN,
             pan_y: DEFAULT_PAN,
-            expanded: false,
         }
     }
 }
@@ -180,6 +177,9 @@ pub(crate) struct GraphInteraction {
     pub on_pan: PanHandler,
     pub on_expand: ExpandHandler,
     pub dragging: bool,
+    /// The canvas fills its parent's height (the transcript-covering
+    /// overlay) instead of keeping the inline row height.
+    pub expanded: bool,
     pub view: EntityId,
 }
 
@@ -200,15 +200,11 @@ pub(crate) fn render_agent_graph(
         on_pan,
         on_expand,
         dragging,
+        expanded,
         view,
     } = interaction;
     let zoom = viewport.zoom;
     let layout = graph.layout(zoom);
-    let canvas_height = if viewport.expanded {
-        EXPANDED_CANVAS_HEIGHT
-    } else {
-        CANVAS_HEIGHT
-    };
 
     let dot_color = theme.text_muted.opacity(0.20);
     let dot_canvas = canvas(
@@ -310,7 +306,8 @@ pub(crate) fn render_agent_graph(
         .debug_selector(|| "workflow-viewport".to_string())
         .relative()
         .w_full()
-        .h(px(canvas_height))
+        .when(expanded, |body| body.flex_1().min_h_0())
+        .when(!expanded, |body| body.h(px(CANVAS_HEIGHT)))
         .overflow_hidden()
         .cursor(if dragging {
             CursorStyle::ClosedHand
@@ -337,14 +334,22 @@ pub(crate) fn render_agent_graph(
         .child(dot_canvas)
         .child(world);
 
-    let expand = expand_control(id, viewport.expanded, theme, on_expand);
-    let zoom_controls = zoom_controls(id, viewport, canvas_height, theme, on_zoom.clone(), on_pan);
-    let minimap = minimap(graph, theme);
+    let controls = canvas_controls(
+        id,
+        viewport,
+        expanded,
+        theme,
+        on_zoom.clone(),
+        on_pan,
+        on_expand,
+    );
     div()
         .relative()
         .w_full()
-        .border_1()
-        .border_color(theme.border)
+        .when(expanded, |frame| frame.flex_1().min_h_0().flex().flex_col())
+        .when(!expanded, |frame| {
+            frame.border_1().border_color(theme.border)
+        })
         .bg(theme.bg)
         .overflow_hidden()
         .debug_selector(|| "workflow-graph".to_string())
@@ -370,9 +375,7 @@ pub(crate) fn render_agent_graph(
                 .text_color(theme.text_faint)
                 .child(format!("DRAG TO PAN / {:.0}%", zoom * 100.0)),
         )
-        .child(expand)
-        .child(zoom_controls)
-        .child(minimap)
+        .child(controls)
         .into_any_element()
 }
 
@@ -402,127 +405,108 @@ fn paint_dot_grid(
     }
 }
 
-fn expand_control(
-    id: &SharedString,
-    expanded: bool,
-    theme: &Theme,
-    on_expand: ExpandHandler,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(SharedString::from(format!("workflow-expand-{id}")))
-        .debug_selector(|| "workflow-expand".to_string())
-        .absolute()
-        .right(px(12.0))
-        .top(px(12.0))
-        .h(px(26.0))
-        .px(px(9.0))
-        .rounded(px(5.0))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface_raised)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.surface_raised_hover))
-        .text_size(px(11.0))
-        .text_color(theme.text_muted)
-        .on_click(move |_, _, cx| on_expand(cx))
-        .child(if expanded { "Collapse" } else { "Expand" })
-}
-
-fn zoom_controls(
+/// One floating group of icon buttons, vertically centered on the canvas's
+/// right edge: zoom in/out, reset view, and expand/collapse. The group
+/// occludes the canvas so a button press never starts a pan.
+fn canvas_controls(
     id: &SharedString,
     viewport: WorkflowViewport,
-    canvas_height: f32,
+    expanded: bool,
     theme: &Theme,
     on_zoom: ZoomHandler,
     on_pan: PanHandler,
+    on_expand: ExpandHandler,
 ) -> gpui::Div {
-    let button = |name: &str, label: SharedString, factor: f32| {
-        let on_zoom = on_zoom.clone();
+    let button = |name: &'static str, path: &'static str, hint: SharedString| {
+        let group = SharedString::from(format!("workflow-graph-{name}-{id}"));
+        let hover_fg = theme.text;
         div()
-            .id(SharedString::from(format!("workflow-graph-{name}-{id}")))
-            .size(px(28.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_raised)
+            .id(group.clone())
+            .group(group.clone())
+            .debug_selector(move || format!("workflow-{name}"))
+            .size(px(26.0))
             .flex()
             .items_center()
             .justify_center()
+            .rounded(px(5.0))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_raised_hover))
-            .text_size(px(11.0))
-            .child(label)
-            .on_click(move |_, window, cx| on_zoom(factor, window, cx))
+            .hover(|style| style.bg(crate::theme::ink(0.08)))
+            .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(hint.clone())).into())
+            .child(
+                crate::icons::icon(path)
+                    .size(px(14.0))
+                    .text_color(theme.text_muted)
+                    .group_hover(group, move |style| style.text_color(hover_fg)),
+            )
     };
-    let fit_zoom = on_zoom.clone();
-    let fit = div()
-        .id(SharedString::from(format!("workflow-graph-fit-{id}")))
-        .h(px(28.0))
-        .px(px(7.0))
-        .rounded(px(5.0))
+    let zoom_in = on_zoom.clone();
+    let zoom_out = on_zoom.clone();
+    let fit_zoom = on_zoom;
+    let (expand_icon, expand_hint) = if expanded {
+        (
+            crate::icons::COLLAPSE_ARROWS,
+            t!("conversation_transcript.workflow.collapse"),
+        )
+    } else {
+        (
+            crate::icons::EXPAND_ARROWS,
+            t!("conversation_transcript.workflow.expand"),
+        )
+    };
+    let group = div()
+        .id(SharedString::from(format!("workflow-graph-controls-{id}")))
+        .occlude()
+        .p(px(3.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .rounded(px(8.0))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_raised)
+        .shadow_sm()
+        .child(
+            button(
+                "zoom-in",
+                crate::icons::PLUS,
+                t!("conversation_transcript.workflow.zoom_in").into(),
+            )
+            .on_click(move |_, window, cx| zoom_in(1.15, window, cx)),
+        )
+        .child(
+            button(
+                "zoom-out",
+                crate::icons::MINUS,
+                t!("conversation_transcript.workflow.zoom_out").into(),
+            )
+            .on_click(move |_, window, cx| zoom_out(1.0 / 1.15, window, cx)),
+        )
+        .child(
+            button(
+                "fit",
+                crate::icons::RECENTER,
+                t!("conversation_transcript.workflow.fit").into(),
+            )
+            .on_click(move |_, window, cx| {
+                fit_zoom(1.0 / viewport.zoom, window, cx);
+                on_pan(CanvasPanEvent::Reset, cx);
+            }),
+        )
+        .child(div().mx(px(4.0)).h(px(1.0)).bg(theme.border))
+        .child(
+            button("expand", expand_icon, expand_hint.into())
+                .on_click(move |_, _, cx| on_expand(cx)),
+        );
+    // A pass-through column (no id or listeners) centers the group, so the
+    // canvas above and below it still pans.
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(px(12.0))
         .flex()
         .items_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.surface_raised_hover))
-        .text_size(px(10.0))
-        .child(t!("conversation_transcript.markdown.fit"))
-        .on_click(move |_, window, cx| {
-            fit_zoom(1.0 / viewport.zoom, window, cx);
-            on_pan(CanvasPanEvent::Reset, cx);
-        });
-    div()
-        .absolute()
-        .right(px(12.0))
-        .top(px(canvas_height / 2.0 - 48.0))
-        .flex()
-        .flex_col()
-        .gap(px(5.0))
-        .text_color(theme.text_muted)
-        .child(button("plus", "+".into(), 1.15))
-        .child(button("minus", "−".into(), 1.0 / 1.15))
-        .child(fit)
-}
-
-fn minimap(graph: &AgentGraph, theme: &Theme) -> gpui::Div {
-    const WIDTH: f32 = 126.0;
-    const HEIGHT: f32 = 76.0;
-    let layout = graph.layout(1.0);
-    let scale = (WIDTH / layout.width).min(HEIGHT / layout.height);
-    div()
-        .absolute()
-        .left(px(12.0))
-        .bottom(px(12.0))
-        .w(px(WIDTH))
-        .h(px(HEIGHT))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.bg.opacity(0.85))
-        .debug_selector(|| "workflow-minimap".to_string())
-        .children(
-            graph
-                .nodes
-                .iter()
-                .zip(&layout.placements)
-                .map(|(node, placement)| {
-                    let color = match node.status {
-                        Some(SubagentStatus::Running) => theme.busy,
-                        Some(SubagentStatus::Failed) => theme.danger,
-                        _ => theme.text_faint,
-                    };
-                    div()
-                        .absolute()
-                        .left(px(placement.x * scale))
-                        .top(px(placement.y * scale))
-                        .w(px((layout.node_width * scale).max(3.0)))
-                        .h(px((layout.node_height * scale).max(3.0)))
-                        .bg(color.opacity(0.65))
-                }),
-        )
+        .child(group)
 }
 
 struct NodePresentation<'a> {
@@ -762,6 +746,7 @@ mod tests {
                     on_pan: self.on_pan.clone(),
                     on_expand: self.on_expand.clone(),
                     dragging: false,
+                    expanded: false,
                     view: cx.entity_id(),
                 },
                 cx,
@@ -789,7 +774,6 @@ mod tests {
 
         assert!(visual.debug_bounds("workflow-graph").is_some());
         assert!(visual.debug_bounds("workflow-viewport").is_some());
-        assert!(visual.debug_bounds("workflow-minimap").is_some());
         let first = visual.debug_bounds("workflow-agent-node-0").unwrap();
         let third = visual.debug_bounds("workflow-agent-node-2").unwrap();
         assert_eq!(first.size.width, px(NODE_WIDTH));

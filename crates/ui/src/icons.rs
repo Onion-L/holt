@@ -280,6 +280,10 @@ icon_assets![
     // menu-check.tsx / logo.tsx).
     (TERMINAL, "terminal"),
     (PLUS, "plus"),
+    // plus without its upright, and a ticked crosshair — the
+    // workflow canvas's zoom-out and reset-view controls (the set has neither).
+    (MINUS, "minus"),
+    (RECENTER, "recenter"),
     (CLOSE, "close"),
     // Hand-drawn Linux caption glyphs (minimize dash, maximize square,
     // restore stacked squares) in the same style as `close` — drawn for the
