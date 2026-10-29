@@ -270,6 +270,8 @@ pub struct Transcript {
     mermaids: MermaidStore,
     workflow_graph_viewports: HashMap<SharedString, crate::workflow_graph::WorkflowViewport>,
     workflow_graph_drag: Option<crate::workflow_graph::WorkflowGraphDrag>,
+    /// The workflow run whose canvas covers the transcript, if any.
+    workflow_graph_expanded: Option<SharedString>,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -547,6 +549,7 @@ impl Transcript {
             mermaids: MermaidStore::default(),
             workflow_graph_viewports: HashMap::new(),
             workflow_graph_drag: None,
+            workflow_graph_expanded: None,
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,
@@ -1456,7 +1459,12 @@ impl Transcript {
     /// Whether the shell should float the "Scroll to bottom" pill (scrolled
     /// more than [`SCROLL_BUTTON_THRESHOLD_PX`] off the end, unpinned).
     pub fn jump_button_shown(&self) -> bool {
-        self.show_jump_button
+        self.show_jump_button && self.workflow_graph_expanded.is_none()
+    }
+
+    /// A workflow canvas covers the viewport; the host drops its edge fade.
+    pub fn workflow_expanded(&self) -> bool {
+        self.workflow_graph_expanded.is_some()
     }
 
     /// The scroll-to-bottom pill's click: glide back to the end and re-pin.
@@ -1643,6 +1651,7 @@ impl Transcript {
                 self.own_turn_last_tick = None;
             }
             self.chat_id = selected;
+            self.workflow_graph_expanded = None;
             self.rows.clear();
             self.row_cache.clear();
             self.live_parsers.clear();

@@ -836,14 +836,6 @@ impl Transcript {
         .flatten();
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
-        let canvas_expanded = matches!(
-            &row.kind,
-            RowKind::Workflow { call_id, .. }
-                if self
-                    .workflow_graph_viewports
-                    .get(call_id)
-                    .is_some_and(|viewport| viewport.expanded)
-        );
         div()
             .id(row.id.clone())
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -877,14 +869,11 @@ impl Transcript {
             .pt(px(top_gap))
             .pb(px(bottom_pad))
             // Wide gutters (holt `px-4 @3xl:px-12`) around the 46rem column.
-            // An expanded Workflow canvas instead takes the transcript's full width.
-            .px(px(if canvas_expanded { 0.0 } else { 48.0 }))
+            .px(px(48.0))
             .child(
                 div()
                     .w_full()
-                    .when(!canvas_expanded, |column| {
-                        column.max_w(px(MAX_CONTENT_WIDTH))
-                    })
+                    .max_w(px(MAX_CONTENT_WIDTH))
                     .min_w_0()
                     .children(caption)
                     .child(inner)
@@ -1677,6 +1666,70 @@ impl Transcript {
                             .text_color(theme.text_muted),
                     )
             });
+        let graph = graph.map(|graph| self.render_workflow_graph(call_id, graph, false, cx));
+        let header = div()
+            .h(px(CHIP_HEIGHT))
+            .px(px(4.0))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(px(12.0))
+            .font_family(theme.font_sans_fixed.clone())
+            .debug_selector(|| "workflow-row".to_string())
+            .child(
+                crate::icons::icon(crate::icons::WIDGET)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.text)
+                    .child(SharedString::from(t!(
+                        "conversation_transcript.workflow.label"
+                    ))),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.text_muted)
+                    .child(name.clone()),
+            )
+            .when(!detail.is_empty(), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(detail.join(" · "))),
+                )
+            })
+            .child(div().flex_1())
+            .children(stop);
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(header)
+            .when_some(graph, |row, graph| row.child(graph))
+            .into_any_element()
+    }
+
+    /// A workflow run's canvas, inline under its row or (`expanded`) filling
+    /// the transcript-covering overlay. Both share the run's viewport.
+    fn render_workflow_graph(
+        &mut self,
+        call_id: &SharedString,
+        graph: &Arc<crate::workflow_graph::AgentGraph>,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
         let viewport = self
             .workflow_graph_viewports
             .get(call_id)
@@ -1772,11 +1825,7 @@ impl Transcript {
         let on_expand = Rc::new(move |cx: &mut gpui::App| {
             expand_entity
                 .update(cx, |this, cx| {
-                    let viewport = this
-                        .workflow_graph_viewports
-                        .entry(expand_id.clone())
-                        .or_default();
-                    viewport.expanded = !viewport.expanded;
+                    this.workflow_graph_expanded = (!expanded).then(|| expand_id.clone());
                     cx.notify();
                 })
                 .ok();
@@ -1786,19 +1835,14 @@ impl Transcript {
             .as_ref()
             .is_some_and(|drag| drag.call_id == *call_id);
         let identities = graph
-            .as_ref()
-            .map(|graph| {
-                graph
-                    .nodes()
-                    .iter()
-                    .map(|node| {
-                        self.agent_identities
-                            .identity_for(Some(node.call_id.as_ref()), node.subagent_ref.as_deref())
-                    })
-                    .collect::<Vec<_>>()
+            .nodes()
+            .iter()
+            .map(|node| {
+                self.agent_identities
+                    .identity_for(Some(node.call_id.as_ref()), node.subagent_ref.as_deref())
             })
-            .unwrap_or_default();
-        let graph_for_open = graph.cloned();
+            .collect::<Vec<_>>();
+        let graph_for_open = Some(graph.clone());
         let chat_id = self.chat_id.clone().unwrap_or_default();
         let open_entity = cx.weak_entity();
         let on_open = Rc::new(move |ix: usize, _window: &mut Window, cx: &mut gpui::App| {
@@ -1819,75 +1863,64 @@ impl Transcript {
             };
             open_entity.update(cx, move |_, cx| cx.emit(event)).ok();
         });
-        let graph = graph.map(|graph| {
-            crate::workflow_graph::render_agent_graph(
+        crate::workflow_graph::render_agent_graph(
+            call_id,
+            graph,
+            viewport,
+            &theme,
+            crate::workflow_graph::GraphInteraction {
+                identities,
+                on_open,
+                on_zoom,
+                on_pan,
+                on_expand,
+                dragging,
+                expanded,
+                view: cx.entity_id(),
+            },
+            cx,
+        )
+    }
+
+    /// The expanded workflow canvas: everything between the titlebar and the
+    /// composer stack, until collapsed.
+    fn render_expanded_workflow(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let expanded = self.workflow_graph_expanded.clone()?;
+        let Some(graph) = self.rows.iter().find_map(|row| match &row.kind {
+            RowKind::Workflow {
                 call_id,
-                graph,
-                viewport,
-                &theme,
-                crate::workflow_graph::GraphInteraction {
-                    identities,
-                    on_open,
-                    on_zoom,
-                    on_pan,
-                    on_expand,
-                    dragging,
-                    view: cx.entity_id(),
-                },
-                cx,
-            )
-        });
-        let header = div()
-            .h(px(CHIP_HEIGHT))
-            .px(px(if viewport.expanded { 48.0 } else { 4.0 }))
-            .w_full()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.0))
-            .text_size(px(12.0))
-            .font_family(theme.font_sans_fixed.clone())
-            .debug_selector(|| "workflow-row".to_string())
-            .child(
-                crate::icons::icon(crate::icons::WIDGET)
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(theme.text_muted),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(theme.text)
-                    .child(SharedString::from(t!(
-                        "conversation_transcript.workflow.label"
-                    ))),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(theme.text_muted)
-                    .child(name.clone()),
-            )
-            .when(!detail.is_empty(), |row| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from(detail.join(" · "))),
-                )
-            })
-            .child(div().flex_1())
-            .children(stop);
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(header)
-            .when_some(graph, |row, graph| row.child(graph))
-            .into_any_element()
+                graph: Some(graph),
+                ..
+            } if *call_id == expanded => Some(graph.clone()),
+            _ => None,
+        }) else {
+            self.workflow_graph_expanded = None;
+            return None;
+        };
+        let theme = Theme::of(cx).clone();
+        // The shell drops its edge fade while a canvas is expanded, so the
+        // canvas meets the titlebar and composer stack with hard edges.
+        let top = if self.doc_override.is_some() {
+            0.0
+        } else {
+            Theme::chrome_top_inset()
+        };
+        let graph = self.render_workflow_graph(&expanded, &graph, true, cx);
+        Some(
+            div()
+                .id("workflow-expanded")
+                .debug_selector(|| "workflow-expanded".to_string())
+                .occlude()
+                .absolute()
+                .inset_0()
+                .pt(px(top))
+                .pb(px(self.bottom_clearance))
+                .bg(theme.bg)
+                .flex()
+                .flex_col()
+                .child(graph)
+                .into_any_element(),
+        )
     }
 }
 
@@ -2583,7 +2616,8 @@ impl Render for Transcript {
                 .size_full(),
             )
             .child(content)
-            .child(rail);
+            .child(rail)
+            .children(self.render_expanded_workflow(cx));
         if let Some(preview) = self.attachment_preview.clone() {
             return root.child(preview);
         }

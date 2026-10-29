@@ -189,6 +189,16 @@ conversation_transcript:
       en-US: "done"
     failed:
       en-US: "failed"
+    zoom_in:
+      en-US: "Zoom in"
+    zoom_out:
+      en-US: "Zoom out"
+    fit:
+      en-US: "Reset view"
+    expand:
+      en-US: "Expand"
+    collapse:
+      en-US: "Collapse"
     stop:
       en-US: "Stop workflow"
     report:

@@ -189,6 +189,16 @@ conversation_transcript:
       zh-CN: "已完成"
     failed:
       zh-CN: "失败"
+    zoom_in:
+      zh-CN: "放大"
+    zoom_out:
+      zh-CN: "缩小"
+    fit:
+      zh-CN: "重置视图"
+    expand:
+      zh-CN: "展开"
+    collapse:
+      zh-CN: "收起"
     stop:
       zh-CN: "停止 workflow"
     report:
