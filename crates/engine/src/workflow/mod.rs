@@ -16,7 +16,7 @@ pub(crate) mod plan;
 pub(crate) mod script;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -38,6 +38,11 @@ use script::{AgentRequest, ScriptEvent};
 const NAME_CHARS: usize = 80;
 const LABEL_CHARS: usize = 80;
 const LOG_TAIL: usize = 20;
+/// `log()` keeps only the newest lines, each clipped, so a looping script
+/// cannot grow the engine's memory or the failure report without bound.
+const LOG_LINES: usize = 1000;
+const LOG_LINE_CHARS: usize = 500;
+const ERROR_CHARS: usize = 4000;
 
 /// A finished run's report, on its way to the chat's queue.
 pub(crate) struct Delivery {
@@ -377,7 +382,8 @@ async fn drive(d: Delegation, run: Run) {
     let mut children = tokio::task::JoinSet::new();
     let mut next_item = 0usize;
     let mut tokens = 0u64;
-    let mut logs: Vec<String> = Vec::new();
+    let mut logs: VecDeque<String> = VecDeque::new();
+    let mut dropped_logs = 0usize;
     let mut events_open = true;
     let outcome = loop {
         tokio::select! {
@@ -394,7 +400,13 @@ async fn drive(d: Delegation, run: Run) {
                         tracker.clone(),
                     ));
                 }
-                Some(ScriptEvent::Log(line)) => logs.push(line),
+                Some(ScriptEvent::Log(line)) => {
+                    if logs.len() == LOG_LINES {
+                        logs.pop_front();
+                        dropped_logs += 1;
+                    }
+                    logs.push_back(clip(&line, LOG_LINE_CHARS));
+                }
                 None => events_open = false,
             },
             Some(joined) = children.join_next(), if !children.is_empty() => {
@@ -412,19 +424,40 @@ async fn drive(d: Delegation, run: Run) {
     while let Some(joined) = children.join_next().await {
         tokens += joined.unwrap_or(0);
     }
-    if !logs.is_empty() {
-        let _ = subagents::write_result(&run.run_dir.join("log.txt"), &(logs.join("\n") + "\n"));
-    }
     let result_path = run.run_dir.join("result.json");
-    let written = serde_json::to_string_pretty(&match &outcome {
-        Ok(value) => value.clone(),
-        Err(error) => serde_json::json!({ "error": error }),
-    })
-    .map_err(|e| e.to_string())
-    .and_then(|text| {
-        subagents::write_result(&result_path, &text).map_err(|e| e.to_string())?;
-        Ok(text)
-    });
+    let written = {
+        // Chat deletion removes the run directory under this lock; writing
+        // after it would recreate the directory.
+        let _persistence = d
+            .parent
+            .persistence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if d.parent.is_removed() {
+            Err("Parent chat was removed".to_owned())
+        } else {
+            if !logs.is_empty() {
+                let mut text = String::new();
+                if dropped_logs > 0 {
+                    text.push_str(&format!("[{dropped_logs} earlier lines dropped]\n"));
+                }
+                for line in &logs {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+                let _ = subagents::write_result(&run.run_dir.join("log.txt"), &text);
+            }
+            serde_json::to_string_pretty(&match &outcome {
+                Ok(value) => value.clone(),
+                Err(error) => serde_json::json!({ "error": error }),
+            })
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                subagents::write_result(&result_path, &text).map_err(|e| e.to_string())?;
+                Ok(text)
+            })
+        }
+    };
     let failed = outcome.is_err() || written.is_err();
     stamp_container(
         &d,
@@ -456,10 +489,15 @@ async fn drive(d: Delegation, run: Run) {
         }
         _ => {
             let error = match (&outcome, &written) {
-                (Err(error), _) | (_, Err(error)) => error.clone(),
+                (Err(error), _) | (_, Err(error)) => clip(error, ERROR_CHARS),
                 _ => unreachable!(),
             };
-            let tail = logs[logs.len().saturating_sub(LOG_TAIL)..].join("\n");
+            let tail = logs
+                .iter()
+                .skip(logs.len().saturating_sub(LOG_TAIL))
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
             let log = if tail.is_empty() {
                 String::new()
             } else {
@@ -483,6 +521,14 @@ async fn drive(d: Delegation, run: Run) {
 /// Returns the tokens it spent (a cached result spent them earlier). The
 /// step settles in the plan before the script hears back, so the script's
 /// next `agent()` already sees it finished.
+/// `text` cut to `max` characters, marked when cut.
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_owned(),
+    }
+}
+
 async fn agent(
     d: Delegation,
     container: String,
