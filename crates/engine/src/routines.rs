@@ -71,6 +71,12 @@ impl Routines {
         self.clock.now()
     }
 
+    /// The engine clock this store reads — the `current_time` tool's time
+    /// source, so the answer and Routine scheduling share one clock.
+    pub(crate) fn clock(&self) -> Clock {
+        self.clock.clone()
+    }
+
     /// Create and persist one validated Routine. The list watch that wakes
     /// the scheduler is published only after the write succeeds.
     pub(crate) fn create(&self, draft: RoutineDraft) -> Result<Routine, RpcError> {

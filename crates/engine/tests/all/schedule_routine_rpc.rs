@@ -1,6 +1,8 @@
-//! The agent-facing Routine tool at the Turn seam: a scripted model creates
-//! a relative one-shot Routine through the ordinary approval gate, and the
-//! existing scheduler fires it when the manual clock reaches its deadline.
+//! The agent-facing Routine tools at the Turn seam: a scripted model
+//! schedules a relative one-shot Routine through the ordinary approval
+//! gate and the existing scheduler fires it when the manual clock reaches
+//! its deadline; `current_time` answers clock queries from the same engine
+//! clock, ungated.
 
 use crate::common;
 
@@ -144,7 +146,30 @@ async fn an_agent_schedule_is_approved_persisted_and_fired() {
 }
 
 #[tokio::test]
-async fn schedule_routine_mounts_on_main_chat_turns_not_planning_turns() {
+async fn current_time_answers_from_the_engine_clock() {
+    let fixture = Fixture::new();
+    let clock = Clock::manual(Utc.with_ymd_and_hms(2026, 10, 7, 9, 0, 0).unwrap());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call("time-1", "current_time", json!({})),
+        ScriptedReply::text("it is morning"),
+    ]);
+    let engine = fixture.engine_with_clock(&provider, clock);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "what time is it").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    // The UTC line is zone-independent, so the assertion holds on any
+    // CI runner; the local line varies with the device zone.
+    let carried = common::summarize(&requests[1].messages).join("\n");
+    assert!(carried.contains("Device time zone:"), "{carried}");
+    assert!(carried.contains("UTC: 2026-10-07T09:00:00Z"), "{carried}");
+}
+
+#[tokio::test]
+async fn routine_tools_mount_on_main_chat_turns_not_planning_turns() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::text("ordinary reply"),
@@ -156,11 +181,12 @@ async fn schedule_routine_mounts_on_main_chat_turns_not_planning_turns() {
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "ordinary").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    assert!(
-        provider.requests()[0]
-            .tool_names
-            .contains(&"schedule_routine".into())
-    );
+    for tool in ["current_time", "schedule_routine"] {
+        assert!(
+            provider.requests()[0].tool_names.contains(&tool.into()),
+            "{tool} mounts beside its consumer on a main-chat Turn"
+        );
+    }
 
     engine
         .handle(methods::ENTER_PLAN_MODE, json!({ "chatId": "chat-1" }))
@@ -169,9 +195,10 @@ async fn schedule_routine_mounts_on_main_chat_turns_not_planning_turns() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "plan it").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     common::wait_for_requests(&provider, 2).await;
-    assert!(
-        !provider.requests()[1]
-            .tool_names
-            .contains(&"schedule_routine".into())
-    );
+    for tool in ["current_time", "schedule_routine"] {
+        assert!(
+            !provider.requests()[1].tool_names.contains(&tool.into()),
+            "{tool} stays off a planning Turn"
+        );
+    }
 }

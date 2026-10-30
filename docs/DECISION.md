@@ -399,10 +399,11 @@ the structured `ScheduleRoutine` transcript keeps the name, schedule, and
 prompt visible to the approver. Agent ids derive from `(chatId, toolCallId)`
 and return the first committed Routine on retry; creation holds the same
 registry lock as Space deletion so it cannot leave an active Routine behind
-a deleted Space. The description embeds the device zone and the Turn-start
-local time — the system prompt carries neither, so an omitted zone falls
-back correctly but a guessed one fires at the wrong hour, and the engine
-cannot tell a guess from a user-named foreign zone. Rejected: exposing the raw RPC payload (the model would
+a deleted Space. ~~The description embeds the device zone and the Turn-start
+local time~~ (superseded by `model-facing-time-is-pulled-not-embedded`:
+the embedded minute-level clock re-keyed the provider cache every Turn;
+the description now states the static device zone and points at the
+`current_time` tool). Rejected: exposing the raw RPC payload (the model would
 invent config and do time math), Bash timer scripts (lifetime, visibility,
 and recovery), an untyped chip (the approval loses its subject),
 unkeyed creation (a crash can duplicate a committed task), and engine-side
@@ -782,3 +783,24 @@ display-only plan the engine does not check (it drifts from what runs);
 replacing the script with the plan as a declarative DAG (rejected in
 `workflows-run-scripts-in-the-background-and-report-by-continuation` —
 filtering and branching on results need code).
+
+## model-facing-time-is-pulled-not-embedded
+
+Tool descriptions and the system prompt sit ahead of the messages in the
+provider's serialized prompt, and prefix caches match from the first
+token — so a byte that changes between Turns re-keys the cache and
+re-bills the entire conversation as fresh input. `72a340a` embedded the
+minute-level local time in `schedule_routine`'s description (a correct
+fix for the model guessing UTC, in the wrong channel): every Turn
+starting in a new minute then re-sent 100k–460k-token histories
+uncached, dropping the device's measured cache hit from ~97% to ~89%
+over four days (verified over the usage ledgers — turn-boundary requests
+with `cacheRead` pinned at one 2,560-token block). Time the model needs
+now reaches it through a pull channel: the `current_time` tool answers
+from the engine clock at call time, `delayMinutes` resolves relative
+delays tool-side, and `schedule_routine`'s description carries only
+static facts (the device zone — a guessed zone fires at the wrong hour —
+and a pointer to `current_time`). Rejected: a day-granularity timestamp
+in the description (one full-prefix bust per chat per day, and the
+Turn-frozen date still goes stale across midnight) and putting "now" in
+the system prompt (same prefix position, same bust, for every chat).

@@ -7,9 +7,11 @@
 //! [`web_fetch`], and web search behind the user-configured [`SearchBackend`]
 //! (ADR-web-tools-full-text-ungated-pluggable-search) in [`web_search`] — plus the question card's `ask_user` tool
 //! (ADR-ask-user-is-a-question-card) in [`ask_user`] and the Turn task list's `todo` tool
-//! (issue #47) in [`todo`], plus main-chat Routine creation in [`schedule_routine`].
+//! (issue #47) in [`todo`], main-chat Routine creation in [`schedule_routine`],
+//! and the model's clock pull channel in [`current_time`].
 
 pub(crate) mod ask_user;
+pub(crate) mod current_time;
 mod grep;
 mod ls;
 pub(crate) mod model_setup;
@@ -1379,6 +1381,7 @@ pub(crate) fn execution_tools_for_model(
     tools
 }
 
+pub(crate) use current_time::create_current_time_tool;
 pub(crate) use model_setup::create_choose_provider_tool;
 pub(crate) use model_setup::create_model_proposal_tool;
 pub(crate) use model_setup::create_request_provider_key_tool;
