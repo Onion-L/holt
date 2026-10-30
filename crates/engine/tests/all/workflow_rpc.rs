@@ -325,6 +325,61 @@ async fn stopping_a_run_cancels_its_agents_without_a_report() {
 }
 
 #[tokio::test]
+async fn deleting_the_chat_leaves_no_run_directory_behind() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        launch(
+            "wf-1",
+            "slow",
+            single(),
+            "log('started'); return await agent('Take forever', { step: 's' });",
+            Value::Null,
+        ),
+        ScriptedReply::text("Waiting."),
+    ])
+    .with_chat_script("Take forever", vec![ScriptedReply::Silent]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Go slow").await;
+    common::wait_for_requests(&provider, 3).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert_eq!(workflow_dirs(&fixture).len(), 1);
+
+    engine
+        .handle(
+            methods::MUTATE,
+            json!({ "op": "deleteChat", "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+    // The cancelled run settles after the delete; once it unregisters it
+    // must not have written its log or result back into the removed directory.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let RpcReply::Value(reply) = engine
+                .handle(
+                    methods::STOP_WORKFLOW,
+                    json!({"chatId": "chat-1", "callId": "wf-1"}),
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("value reply")
+            };
+            if reply["stopped"] == false {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the run unregistered");
+    assert!(!fixture.data_dir.path().join("subagents/chat-1").exists());
+    wait_for_requests_exact(&provider, 3).await;
+}
+
+#[tokio::test]
 async fn a_restart_settles_a_live_run_as_failed() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
