@@ -53,6 +53,15 @@ pub(crate) fn plan_graph(plan: WorkflowPlan, agents: &[AgentNode]) -> Option<Pla
     if plan.steps.is_empty() || index.len() != plan.steps.len() {
         return None;
     }
+    // A rejected call keeps the model's raw plan, so a loop may name no step.
+    if plan
+        .steps
+        .iter()
+        .filter_map(|step| step.r#loop.as_ref())
+        .any(|back| !index.contains_key(back.to.as_str()))
+    {
+        return None;
+    }
     let mut members = vec![Vec::new(); plan.steps.len()];
     for (ix, agent) in agents.iter().enumerate() {
         members[*index.get(agent.phase.as_deref()?)?].push(ix);
@@ -644,6 +653,15 @@ mod tests {
         assert_eq!(graph.state(2), StepState::Pending);
         // An agent outside the plan means the record does not match it.
         assert!(plan_graph(research_plan(), &[agent("x", "draft", None)]).is_none());
+    }
+
+    #[test]
+    fn a_loop_to_an_unknown_step_falls_back() {
+        let plan = serde_json::from_value(serde_json::json!({"steps": [
+            {"id": "write", "title": "Write", "loop": {"to": "draft", "max": 2}},
+        ]}))
+        .unwrap();
+        assert!(plan_graph(plan, &[]).is_none());
     }
 
     #[test]
