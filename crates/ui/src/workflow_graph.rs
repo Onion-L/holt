@@ -15,6 +15,7 @@ use gpui::{
 use holt_doc::SubagentStatus;
 
 use crate::i18n::t;
+use crate::motion::{self, MotionSpec};
 use crate::theme::Theme;
 use crate::transcript::agent_avatar::{AgentIdentity, AvatarMood, agent_avatar};
 
@@ -30,6 +31,8 @@ const DOT_SPACING: f32 = 20.0;
 const DEFAULT_PAN: f32 = 24.0;
 pub(crate) const ZOOM_MIN: f32 = 0.6;
 pub(crate) const ZOOM_MAX: f32 = 1.75;
+
+const WORKFLOW_FLOW: MotionSpec = MotionSpec::new(1600, motion::EASE);
 
 pub(crate) use plan::{PlanGraph, plan_graph};
 
@@ -329,7 +332,7 @@ pub(crate) fn render_workflow_graph(
         .when(!expanded, |frame| {
             frame.border_1().border_color(theme.border)
         })
-        .bg(theme.bg)
+        .bg(theme.surface)
         .overflow_hidden()
         .debug_selector(|| "workflow-graph".to_string())
         .on_scroll_wheel(move |event: &gpui::ScrollWheelEvent, window, cx| {
@@ -369,13 +372,30 @@ fn agent_content(
     cx: &mut App,
 ) -> gpui::Div {
     let layout = graph.layout(zoom);
-    let edges = graph.edges.clone();
+    let edges: Vec<_> = graph
+        .edges
+        .iter()
+        .map(|(from, to)| {
+            (
+                *from,
+                *to,
+                graph.nodes[*to].status == Some(SubagentStatus::Running),
+            )
+        })
+        .collect();
     let edge_layout = layout.clone();
     let edge_color = theme.text_muted.opacity(0.35);
+    let flow = edges
+        .iter()
+        .any(|(_, _, active)| *active)
+        .then(|| LinkFlow {
+            phase: motion::pulse_delta(&WORKFLOW_FLOW, view, cx),
+            color: theme.busy,
+        });
     let edge_canvas = canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            for (from, to) in &edges {
+            for (from, to, active) in &edges {
                 let from = edge_layout.placements[*from];
                 let to = edge_layout.placements[*to];
                 let start = point(
@@ -386,7 +406,18 @@ fn agent_content(
                     bounds.origin.x + px(to.x),
                     bounds.origin.y + px(to.y + edge_layout.node_height / 2.0),
                 );
-                paint_link(window, start, end, zoom, edge_color);
+                paint_link(
+                    window,
+                    start,
+                    end,
+                    zoom,
+                    if *active {
+                        flow.map_or(edge_color, |flow| flow.color.opacity(0.55))
+                    } else {
+                        edge_color
+                    },
+                    if *active { flow } else { None },
+                );
             }
         },
     )
@@ -421,22 +452,31 @@ fn agent_content(
         .children(nodes)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LinkFlow {
+    pub phase: f32,
+    pub color: Hsla,
+}
+
 /// A left-to-right dependency link: a horizontal S-curve ending in an arrow.
+/// Active links add a dashed stroke and one packet on the same cubic path.
 fn paint_link(
     window: &mut Window,
     start: Point<Pixels>,
     end: Point<Pixels>,
     zoom: f32,
     color: Hsla,
+    flow: Option<LinkFlow>,
 ) {
     let bend = px(f32::from(end.x - start.x) * 0.5);
+    let control_a = point(start.x + bend, start.y);
+    let control_b = point(end.x - bend, end.y);
     let mut builder = PathBuilder::stroke(px(1.0));
+    if flow.is_some() {
+        builder = builder.dash_array(&[px(2.0 * zoom), px(7.0 * zoom)]);
+    }
     builder.move_to(start);
-    builder.cubic_bezier_to(
-        end,
-        point(start.x + bend, start.y),
-        point(end.x - bend, end.y),
-    );
+    builder.cubic_bezier_to(end, control_a, control_b);
     if let Ok(path) = builder.build() {
         window.paint_path(path, color);
     }
@@ -447,6 +487,30 @@ fn paint_link(
     arrow.close();
     if let Ok(path) = arrow.build() {
         window.paint_path(path, color);
+    }
+    if let Some(flow) = flow {
+        let t = flow.phase.clamp(0.0, 1.0);
+        let u = 1.0 - t;
+        let at = |a: Pixels, b: Pixels, c: Pixels, d: Pixels| {
+            px(u * u * u * f32::from(a)
+                + 3.0 * u * u * t * f32::from(b)
+                + 3.0 * u * t * t * f32::from(c)
+                + t * t * t * f32::from(d))
+        };
+        let center = point(
+            at(start.x, control_a.x, control_b.x, end.x),
+            at(start.y, control_a.y, control_b.y, end.y),
+        );
+        let radius = px(2.0 * zoom);
+        let mut packet = PathBuilder::fill();
+        packet.move_to(point(center.x, center.y - radius));
+        packet.line_to(point(center.x + radius, center.y));
+        packet.line_to(point(center.x, center.y + radius));
+        packet.line_to(point(center.x - radius, center.y));
+        packet.close();
+        if let Ok(path) = packet.build() {
+            window.paint_path(path, flow.color);
+        }
     }
 }
 
@@ -533,9 +597,8 @@ fn canvas_controls(
         .gap(px(2.0))
         .rounded(px(8.0))
         .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface_raised)
-        .shadow_sm()
+        .border_color(theme.border_strong)
+        .bg(theme.surface_overlay)
         .child(
             button(
                 "zoom-in",
@@ -629,9 +692,16 @@ fn render_agent_node(
         );
     }
     let border = match node.status {
-        Some(SubagentStatus::Running) => theme.busy.opacity(0.65),
+        Some(SubagentStatus::Running) => theme.busy.opacity(0.55),
         Some(SubagentStatus::Failed) => theme.danger.opacity(0.65),
-        _ => theme.border,
+        Some(SubagentStatus::Done) => theme.success.opacity(0.20),
+        _ => theme.border_strong,
+    };
+    let status_opacity = if node.status == Some(SubagentStatus::Running) {
+        let phase = motion::pulse_delta(&motion::HOLT_PULSE, view, cx);
+        0.65 + 0.35 * motion::pulse_wave(phase)
+    } else {
+        1.0
     };
     let mood = match node.status {
         Some(SubagentStatus::Failed) => AvatarMood::Failed,
@@ -654,8 +724,8 @@ fn render_agent_node(
         .w(px(layout.node_width))
         .h(px(layout.node_height))
         .p(px(10.0 * zoom))
-        .rounded(px(8.0 * zoom))
-        .bg(theme.surface_raised)
+        .rounded(px(10.0 * zoom))
+        .bg(theme.surface_overlay)
         .border_1()
         .border_color(border)
         .flex()
@@ -704,7 +774,8 @@ fn render_agent_node(
                         .flex_none()
                         .size(px(4.0 * zoom))
                         .rounded_full()
-                        .bg(status_color),
+                        .bg(status_color)
+                        .opacity(status_opacity),
                 )
                 .child(
                     div()

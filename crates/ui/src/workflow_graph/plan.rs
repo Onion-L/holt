@@ -11,21 +11,22 @@ use gpui::{
 use holt_doc::SubagentStatus;
 use holt_proto::WorkflowPlan;
 
-use super::{AgentNode, NodeOpenHandler, StepToggleHandler, paint_link};
+use super::{AgentNode, LinkFlow, NodeOpenHandler, StepToggleHandler, WORKFLOW_FLOW, paint_link};
 use crate::i18n::t;
+use crate::motion;
 use crate::theme::Theme;
 use crate::transcript::agent_avatar::{AgentIdentity, AvatarMood, agent_avatar};
 
 /// Agents listed on a folded step card; the rest sit behind "N more".
 pub(crate) const VISIBLE_AGENTS: usize = 5;
-const CARD_WIDTH: f32 = 248.0;
-const HEADER_HEIGHT: f32 = 40.0;
-const AGENT_ROW: f32 = 28.0;
-const CARD_PAD: f32 = 8.0;
-const EMPTY_HEIGHT: f32 = 22.0;
-const LAYER_GAP: f32 = 64.0;
+const CARD_WIDTH: f32 = 252.0;
+const HEADER_HEIGHT: f32 = 42.0;
+const AGENT_ROW: f32 = 32.0;
+const CARD_PAD: f32 = 7.0;
+const EMPTY_HEIGHT: f32 = 34.0;
+const LAYER_GAP: f32 = 54.0;
 const CARD_GAP: f32 = 16.0;
-const PADDING: f32 = 16.0;
+const PADDING: f32 = 28.0;
 /// Room under the lowest card for loop arcs.
 const LOOP_LANE: f32 = 28.0;
 
@@ -223,27 +224,43 @@ pub(super) fn render(
     let mut loops = Vec::new();
     for (ix, step) in graph.plan.steps.iter().enumerate() {
         for dep in &step.after {
-            links.push((layout.cards[index[dep.as_str()]], layout.cards[ix]));
+            links.push((
+                layout.cards[index[dep.as_str()]],
+                layout.cards[ix],
+                graph.state(ix) == StepState::Running,
+            ));
         }
         if let Some(back) = &step.r#loop {
             loops.push((layout.cards[ix], layout.cards[index[back.to.as_str()]]));
         }
     }
     let edge_color = theme.text_muted.opacity(0.4);
-    let loop_color = theme.accent.opacity(0.55);
+    let loop_color = theme.accent.opacity(0.45);
+    let flow = links
+        .iter()
+        .any(|(_, _, active)| *active)
+        .then(|| LinkFlow {
+            phase: motion::pulse_delta(&WORKFLOW_FLOW, view, cx),
+            color: theme.busy,
+        });
     let floor = layout.height - LOOP_LANE * zoom * 0.5;
     let edges = canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             let at = |x: f32, y: f32| point(bounds.origin.x + px(x), bounds.origin.y + px(y));
-            for (from, to) in &links {
+            for (from, to, active) in &links {
                 let anchor = HEADER_HEIGHT * zoom / 2.0;
                 paint_link(
                     window,
                     at(from.x + CARD_WIDTH * zoom, from.y + anchor),
                     at(to.x, to.y + anchor),
                     zoom,
-                    edge_color,
+                    if *active {
+                        flow.map_or(edge_color, |flow| flow.color.opacity(0.55))
+                    } else {
+                        edge_color
+                    },
+                    if *active { flow } else { None },
                 );
             }
             // A loop leaves the bottom of its step, runs along the lane
@@ -291,7 +308,7 @@ pub(super) fn render(
                     .justify_center()
                     .text_size(px(10.0 * zoom))
                     .text_color(theme.accent)
-                    .bg(theme.bg)
+                    .bg(theme.surface)
                     .child(SharedString::from(t!(
                         "conversation_transcript.workflow.loop",
                         max = back.max
@@ -357,9 +374,9 @@ fn render_card(
     let members = &graph.members[step];
     let state = graph.state(step);
     let (dot, border) = match state {
-        StepState::Pending => (theme.text_faint, theme.border),
+        StepState::Pending => (theme.text_faint, theme.border_strong),
         StepState::Running => (theme.busy, theme.busy.opacity(0.55)),
-        StepState::Done => (theme.success, theme.border),
+        StepState::Done => (theme.success, theme.success.opacity(0.20)),
         StepState::Failed => (theme.danger, theme.danger.opacity(0.55)),
     };
     let settled = members
@@ -379,7 +396,7 @@ fn render_card(
     };
     let header = div()
         .h(px(HEADER_HEIGHT * zoom))
-        .px(px(10.0 * zoom))
+        .px(px(11.0 * zoom))
         .flex()
         .items_center()
         .gap(px(7.0 * zoom))
@@ -388,7 +405,11 @@ fn render_card(
                 .flex_none()
                 .size(px(6.0 * zoom))
                 .rounded_full()
-                .bg(dot),
+                .bg(dot)
+                .when(state == StepState::Running, |dot| {
+                    let phase = motion::pulse_delta(&motion::HOLT_PULSE, view, cx);
+                    dot.opacity(0.65 + 0.35 * motion::pulse_wave(phase))
+                }),
         )
         .child(
             div()
@@ -424,7 +445,7 @@ fn render_card(
         )
     });
     let body = div()
-        .px(px(4.0 * zoom))
+        .px(px(5.0 * zoom))
         .flex()
         .flex_col()
         .when(members.is_empty(), |body| {
@@ -480,8 +501,8 @@ fn render_card(
         .top(px(card.y))
         .w(px(CARD_WIDTH * zoom))
         .h(px(card.height))
-        .rounded(px(8.0 * zoom))
-        .bg(theme.surface_raised)
+        .rounded(px(10.0 * zoom))
+        .bg(theme.surface_overlay)
         .border_1()
         .border_color(border)
         .when(state == StepState::Pending, |card| card.border_dashed())
@@ -524,7 +545,7 @@ fn render_agent_row(
         )))
         .debug_selector(move || format!("workflow-agent-node-{ix}"))
         .h(px(AGENT_ROW * zoom))
-        .px(px(6.0 * zoom))
+        .px(px(7.0 * zoom))
         .flex()
         .items_center()
         .gap(px(7.0 * zoom))
@@ -557,7 +578,11 @@ fn render_agent_row(
                 .flex_none()
                 .size(px(5.0 * zoom))
                 .rounded_full()
-                .bg(status_color),
+                .bg(status_color)
+                .when(node.status == Some(SubagentStatus::Running), |dot| {
+                    let phase = motion::pulse_delta(&motion::HOLT_PULSE, view, cx);
+                    dot.opacity(0.65 + 0.35 * motion::pulse_wave(phase))
+                }),
         )
         .when(openable, |row| {
             row.cursor_pointer()
