@@ -1,53 +1,76 @@
 ---
 ---
 
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="robots" content="noindex" />
-<title>Holt — OG card</title>
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=block" rel="stylesheet" />
-<style is:inline>
-  *, *::before, *::after { box-sizing: border-box; }
-  :root {
-    --ink: #17233b; --cream: #f6f1e6; --paper: #fffdf8;
-    --blue: #0a4c9c; --deep: #072f66; --pink: #e34d83; --grey: #8a867c; --line: rgba(23,35,59,.14);
-  }
-  html, body { margin: 0; }
-  body {
-    width: 1200px; height: 630px; overflow: hidden; position: relative;
-    font-family: Geist, sans-serif; -webkit-font-smoothing: antialiased;
-    background: var(--cream); color: var(--ink);
-  }
-  a { color: inherit; text-decoration: none; }
-  img { display: block; }
-  .mono { font-family: "Geist Mono", Menlo, monospace; }
-
-  /* ============ A — Billboard ============ */
-  .va { position: absolute; inset: 0; display: block; color: #fff; }
-  .va-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 42%; }
-  .va-scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(5,25,55,.32), rgba(5,25,55,0) 34%, rgba(5,25,55,0) 52%, rgba(5,20,50,.68)); }
-  .va-top { position: absolute; top: 34px; left: 44px; right: 44px; display: flex; justify-content: space-between; align-items: center; }
-  .va-logo { font: 400 28px Anton, Impact, sans-serif; letter-spacing: .04em; }
-  .va-top .mono { font-size: 15px; letter-spacing: .1em; }
-  .va-hero { position: absolute; left: 44px; right: 44px; bottom: 40px; }
-  .va-kicker { margin: 0; font-size: 14px; letter-spacing: .18em; text-transform: uppercase; opacity: .92; }
-  .va-title { margin: 10px 0 0; font: 700 96px/0.98 Geist, sans-serif; letter-spacing: -.045em; text-shadow: 0 2px 30px rgba(5,25,55,.45); }
-</style>
-</head>
-<body>
-<!-- ============ A — Billboard ============ -->
-<section class="va">
-  <img class="va-bg" src="/assets/hero-coast.webp" alt="" />
-  <div class="va-scrim"></div>
-  <div class="va-top">
-    <span class="va-logo">HOLT</span>
-    <span class="mono">github.com/Onion-L/holt ↗</span>
-  </div>
-  <div class="va-hero">
-    <p class="va-kicker mono">Native coding agent — macOS</p>
-    <h1 class="va-title">Holt is an agent.</h1>
-  </div>
-</section>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="robots" content="noindex" />
+        <title>Holt — OG card</title>
+        <link
+            href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&display=block"
+            rel="stylesheet"
+        />
+        <style is:inline>
+            *, *::before, *::after { box-sizing: border-box; }
+            :root {
+                --page: #121316;
+                --ink: #ece9e2;
+                --muted: #b0b4bb;
+                --coral: #ed9b7f;
+            }
+            html, body { margin: 0; }
+            body {
+                width: 1200px; height: 630px; overflow: hidden; position: relative;
+                font-family: Archivo, system-ui, sans-serif;
+                -webkit-font-smoothing: antialiased;
+                background: var(--page); color: var(--ink);
+            }
+            img { display: block; }
+            .mono { font-family: "IBM Plex Mono", Menlo, monospace; }
+            .icon { display: inline-block; flex-shrink: 0; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
+            .icon-up-right { --icon: url("/assets/icons/arrow-up-right.svg"); }
+            .og { position: absolute; inset: 0; overflow: hidden; }
+            .og-bg {
+                position: absolute; inset: 0; width: 100%; height: 100%;
+                object-fit: cover; object-position: 50% 30%;
+            }
+            .og-scrim {
+                position: absolute; inset: 0;
+                background:
+                    linear-gradient(90deg, rgba(18,19,22,.98) 0%, rgba(18,19,22,.86) 38%, rgba(18,19,22,.28) 78%, rgba(18,19,22,.5) 100%),
+                    linear-gradient(0deg, rgba(18,19,22,.92) 0%, rgba(18,19,22,0) 68%);
+            }
+            .og-top {
+                position: absolute; top: 34px; left: 44px; right: 44px;
+                display: flex; align-items: center; justify-content: space-between;
+            }
+            .brand { display: flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 900; letter-spacing: -.06em; }
+            .brand img { width: 32px; height: 32px; border-radius: 7px; }
+            .github { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+            .og-hero { position: absolute; left: 44px; right: 44px; bottom: 46px; }
+            .kicker { margin: 0 0 18px; color: var(--coral); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+            .og-title { margin: 0; font-size: 82px; font-weight: 900; line-height: 1; letter-spacing: -.055em; white-space: nowrap; }
+            .og-title span { color: var(--coral); }
+            .intro { max-width: 640px; margin: 20px 0 0; color: var(--muted); font-size: 17px; line-height: 1.6; }
+        </style>
+    </head>
+    <body>
+        <section class="og">
+            <img class="og-bg" src="/assets/hero-astronaut.png" alt="" />
+            <div class="og-scrim"></div>
+            <div class="og-top">
+                <div class="brand">
+                    <img src="/assets/holt-logo.webp" alt="" width="32" height="32" />
+                    holt
+                </div>
+                <span class="github mono">github.com/Onion-L/holt <span class="icon icon-up-right" aria-hidden="true"></span></span>
+            </div>
+            <div class="og-hero">
+                <p class="kicker mono">Native coding agent · macOS, Windows, Linux</p>
+                <h1 class="og-title">Holt is an agent<span>.</span></h1>
+                <p class="intro">From the first prompt to the final diff, Holt keeps your work moving—and keeps you in control.</p>
+            </div>
+        </section>
+    </body>
 </html>
