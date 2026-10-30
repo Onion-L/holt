@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
 
-// React controller for the hero page (/). The page is the prototype's own
-// Billboard markup rendered statically by Astro; this island renders nothing
-// and only resolves the version stamp from the latest GitHub release. The
-// download button is a plain link to /download, where the per-chip dmgs are
-// resolved.
+// React controller for the landing page (/). The page renders static Astro
+// markup; this island renders nothing and only resolves the version stamp
+// from the latest GitHub release. Download links point to /download, where
+// per-platform assets are resolved.
 
 export default function HeroController() {
   useEffect(() => {

@@ -2,6 +2,7 @@
 import HeroController from "../components/HeroController";
 ---
 
+<!doctype html>
 <html lang="en">
     <head>
         <meta charset="utf-8" />
@@ -32,324 +33,373 @@ import HeroController from "../components/HeroController";
         <meta name="twitter:title" content="Holt is an agent." />
         <meta
             name="twitter:description"
-            content="A native desktop coding agent for macOS."
+            content="A native desktop coding agent for macOS, Windows, and Linux."
         />
         <meta
             name="twitter:image"
             content="https://holt.onionl5236.workers.dev/assets/og.png"
         />
-        <meta name="theme-color" content="#f6f1e6" />
+        <meta name="theme-color" content="#121316" />
         <link rel="icon" type="image/png" href="/assets/favicon.png" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
-            href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap"
+            href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&display=swap"
             rel="stylesheet"
         />
         <style is:inline>
-            *,
-            *::before,
-            *::after {
-                box-sizing: border-box;
-            }
+            *, *::before, *::after { box-sizing: border-box; }
             :root {
-                --ink: #17233b;
-                --cream: #f6f1e6;
-                --paper: #fbf7ee;
-                --blue: #0a4c9c;
-                --deep: #072f66;
-                --pink: #e34d83;
-                --grey: #8a867c;
+                --page:  #121316;
+                --surface: #1a1c20;
+                --ink:   #ece9e2;
+                --muted: #979ba3;
+                --line:  rgba(255,255,255,.1);
+                --coral: #ed9b7f;
+                --dk:    #0c0d0f;
+                --sans: "Archivo", system-ui, sans-serif;
+                --mono: "IBM Plex Mono", monospace;
             }
-            html,
-            body {
-                margin: 0;
-                overflow-x: hidden;
-            }
-            body {
-                background: var(--cream);
-                font-family:
-                    Geist,
-                    -apple-system,
-                    BlinkMacSystemFont,
-                    sans-serif;
-                -webkit-font-smoothing: antialiased;
-            }
-            a {
-                color: inherit;
-                text-decoration: none;
-            }
-            img {
-                display: block;
-            }
-            .mono {
-                font-family: "Geist Mono", Menlo, monospace;
-            }
+            html { scroll-behavior: smooth; }
+            body { margin: 0; font-family: var(--sans); background: var(--page); color: var(--ink); -webkit-font-smoothing: antialiased; }
+            a { color: inherit; text-decoration: none; }
+            a:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; }
+            h1,h2,h3,p { margin-top: 0; }
+            .icon { display: inline-block; flex-shrink: 0; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
+            .icon-download { --icon: url("/assets/icons/download.svg"); }
+            .icon-up-right { --icon: url("/assets/icons/arrow-up-right.svg"); }
 
-            /* ================= A — Billboard ================= */
-            .va {
-                position: relative;
-                overflow: hidden;
+            /* ── NAV — minimal full-width bar ── */
+            .nav-wrap {
+                padding: 24px clamp(20px,3vw,44px) 0;
+            }
+            .nav {
+                display: flex; align-items: center; gap: clamp(28px,4vw,56px);
                 width: 100%;
-                max-width: 100vw;
-                min-height: 100vh;
-                color: #fff;
-                display: flex;
-                flex-direction: column;
             }
-            .va-bg {
-                position: absolute;
-                inset: 0;
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-                object-position: 50% 40%;
+            .logo { display: inline-flex; align-items: center; gap: 9px; font-size: 20px; font-weight: 900; letter-spacing: -.06em; color: var(--ink); }
+            .logo img { width: 28px; height: 28px; border-radius: 6px; }
+            .nav-links { display: flex; gap: 32px; font-size: 14px; color: var(--muted); }
+            .nav-links a, .nav-icon, .btn-nav { transition: color .15s, opacity .15s; }
+            .nav-links a:hover { color: var(--ink); }
+            .nav-actions { display: flex; align-items: center; gap: 24px; margin-left: auto; }
+            .nav-icon { display: inline-flex; opacity: .6; }
+            .nav-icon:hover { opacity: 1; }
+            .nav-icon img { width: 20px; height: 20px; }
+            .btn-nav { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--ink); }
+            .btn-nav:hover { color: var(--coral); }
+
+            /* ── HERO IMAGE — full width, moderate height ── */
+            .hero-img-wrap {
+                position: relative; overflow: hidden;
+                margin: 18px clamp(16px,3vw,40px) 0;
+                border-radius: 8px;
             }
-            .va-scrim {
-                position: absolute;
-                inset: 0;
-                background: linear-gradient(
-                    180deg,
-                    rgba(5, 25, 55, 0.35) 0%,
-                    rgba(5, 25, 55, 0.05) 28%,
-                    rgba(5, 25, 55, 0) 45%,
-                    rgba(5, 20, 50, 0.58) 78%,
-                    rgba(5, 20, 50, 0.78) 100%
-                );
+            .hero-img {
+                width: 100%; display: block;
+                aspect-ratio: 21/9;
+                object-fit: cover; object-position: 50% 30%;
+                animation: imgReveal 2.2s cubic-bezier(.22,1,.36,1) both;
             }
-            .va-top {
-                position: relative;
-                display: flex;
-                justify-content: flex-end;
-                align-items: center;
-                padding: 26px clamp(20px, 4vw, 48px);
-                z-index: 10;
+            @keyframes imgReveal {
+                from { opacity: 0; transform: scale(1.04); }
+                to   { opacity: 1; transform: scale(1); }
             }
-            .va-nav {
-                display: flex;
-                align-items: center;
-                gap: 22px;
-                font-size: 12px;
-                letter-spacing: 0.1em;
-                text-transform: uppercase;
-                background: rgba(5, 25, 55, 0.28);
-                backdrop-filter: blur(12px);
-                -webkit-backdrop-filter: blur(12px);
-                border: 1px solid rgba(255, 255, 255, 0.18);
-                padding: 8px 18px;
-                border-radius: 999px;
+            /* subtle bottom vignette so copy below reads well */
+            .hero-img-wrap::after {
+                content: ""; position: absolute; inset: 0; pointer-events: none;
+                background: linear-gradient(180deg, transparent 60%, rgba(18,19,22,.18) 100%);
             }
-            .va-nav a {
-                color: rgba(255, 255, 255, 0.88);
-                transition: color 0.15s, border-color 0.15s;
-                border-bottom: 1px solid transparent;
-                padding-bottom: 1px;
+
+            /* ── HERO COPY — below image, two-column ── */
+            .hero-copy {
+                display: grid; grid-template-columns: 1fr 1fr;
+                gap: clamp(24px,4vw,56px); align-items: center;
+                padding: 32px clamp(16px,3vw,40px) 44px;
+                animation: copyRise .8s .2s cubic-bezier(.22,1,.36,1) both;
             }
-            .va-nav a:hover {
-                color: #fff;
-                border-color: rgba(255, 255, 255, 0.6);
+            @keyframes copyRise {
+                from { opacity: 0; transform: translateY(12px); }
+                to   { opacity: 1; transform: translateY(0); }
             }
-            .va-nav a:focus-visible {
-                outline: 2px solid #fff;
-                outline-offset: 3px;
-                border-radius: 2px;
-            }
-            .va-hero {
-                position: relative;
-                margin-top: auto;
-                padding: 0 clamp(20px, 4.5vw, 64px) clamp(40px, 7vh, 72px);
-                z-index: 10;
-            }
-            .va-kicker {
+            .hero-title {
                 margin: 0;
-                font-size: 12px;
-                letter-spacing: 0.18em;
-                text-transform: uppercase;
-                color: rgba(255, 255, 255, 0.9);
-                text-shadow: 0 1px 12px rgba(5, 25, 55, 0.6);
+                font-size: clamp(34px, 5.5vw, 84px); line-height: 1; letter-spacing: -.045em; font-weight: 900;
+                white-space: nowrap;
             }
-            .va-title {
-                margin: 12px 0 26px;
-                font:
-                    700 clamp(36px, 7.6vw, 104px)/0.98 Geist,
-                    sans-serif;
-                letter-spacing: -0.045em;
-                text-shadow:
-                    0 2px 18px rgba(5, 25, 55, 0.65),
-                    0 8px 40px rgba(5, 25, 55, 0.45);
+            .hero-right { display: flex; flex-direction: column; justify-content: flex-end; gap: 16px; }
+            .hero-sub { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.65; }
+            .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+            .btn {
+                display: inline-flex; align-items: center; justify-content: center;
+                height: 50px; padding: 0 28px; gap: 8px; border-radius: 999px;
+                font-size: 14px; font-weight: 700;
+                border: 1px solid transparent;
+                transition: transform .15s, background .15s;
+                cursor: pointer; align-self: flex-start;
             }
-            .va-cta {
-                display: flex;
-                gap: 14px;
-                flex-wrap: wrap;
-                align-items: center;
-            }
-            .va-btn {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                gap: 0.5em;
-                padding: 13.5px 26px;
-                /* transparent border keeps the solid and ghost pills the same
-                   height; min-width keeps the pair the same width. */
-                border: 1.5px solid transparent;
-                min-width: 176px;
-                border-radius: 999px;
-                font-weight: 700;
-                font-size: 14.5px;
-                line-height: 1;
-                cursor: pointer;
-                user-select: none;
-                transition:
-                    transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
-                    box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1),
-                    background-color 0.18s,
-                    border-color 0.18s;
-            }
-            .va-btn:focus-visible {
-                outline: 2px solid #fff;
-                outline-offset: 3px;
-            }
-            .va-btn.solid {
-                background: #fff;
-                color: var(--deep);
-                box-shadow:
-                    0 2px 8px rgba(5, 25, 55, 0.2),
-                    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-            }
-            .va-btn.solid:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 12px 28px -4px rgba(5, 25, 55, 0.42);
-                background: #ffffff;
-            }
-            .va-btn.solid:active {
-                transform: translateY(0);
-                box-shadow: 0 4px 12px rgba(5, 25, 55, 0.25);
-            }
-            .va-btn.ghost {
-                border: 1.5px solid rgba(255, 255, 255, 0.7);
-                color: #fff;
-                background: rgba(255, 255, 255, 0.08);
-                backdrop-filter: blur(12px);
-                -webkit-backdrop-filter: blur(12px);
-            }
-            .va-btn.ghost:hover {
-                background: rgba(255, 255, 255, 0.2);
-                border-color: #fff;
-                transform: translateY(-2px);
-                box-shadow: 0 12px 28px -4px rgba(5, 25, 55, 0.35);
-            }
-            .va-btn.ghost:active {
-                transform: translateY(0);
-                box-shadow: 0 4px 12px rgba(5, 25, 55, 0.2);
-            }
-            .va-sub {
-                margin: 20px 0 0;
-                font-size: 12px;
-                letter-spacing: 0.05em;
-                color: rgba(255, 255, 255, 0.88);
-                text-shadow: 0 1px 8px rgba(5, 25, 55, 0.45);
-                word-break: break-word;
-            }
-            .va-sub a {
-                color: #fff;
-                text-decoration: underline;
-                text-underline-offset: 3px;
-                transition: color 0.15s;
-            }
-            .va-sub a:hover {
-                color: var(--pink);
-            }
-            .va-sub a:focus-visible {
-                outline: 2px solid var(--pink);
-                outline-offset: 2px;
-            }
+            .btn:hover { transform: translateY(-1px); }
+            .btn-dk  { background: var(--coral); color: var(--dk); }
+            .btn-dk:hover { background: #f0a58c; }
+            .btn-wh  { background: var(--surface); color: var(--ink); border-color: var(--line); }
+            .btn-wh:hover { background: #24272c; }
+            .btn-gh  { border-color: rgba(255,255,255,.2); color: rgba(255,255,255,.65); }
+            .btn-gh:hover { border-color: rgba(255,255,255,.45); color: var(--ink); }
 
-            @media (max-width: 640px) {
-                .va-top {
-                    padding: 16px 16px;
-                }
-                .va-nav {
-                    gap: 14px;
-                    padding: 6px 14px;
-                    font-size: 11px;
-                }
-                .va-hero {
-                    padding: 0 18px 32px;
-                }
-                .va-kicker {
-                    font-size: 11px;
-                    letter-spacing: 0.15em;
-                }
-                .va-title {
-                    margin: 8px 0 20px;
-                    font-size: clamp(34px, 10vw, 44px);
-                }
-                .va-cta {
-                    flex-direction: column;
-                    align-items: stretch;
-                    max-width: 290px;
-                    gap: 10px;
-                }
-                .va-btn {
-                    justify-content: center;
-                    padding: 13px 20px;
-                    font-size: 14px;
-                }
-                .va-bg {
-                    object-position: 72% 35%;
-                }
-                .va-sub {
-                    margin: 16px 0 0;
-                    font-size: 11px;
-                    line-height: 1.6;
-                    max-width: 320px;
-                }
+            /* ── PROVIDER BAND ── */
+            .band {
+                display: flex; align-items: center; flex-wrap: wrap;
+                gap: 24px;
+                padding: 24px clamp(16px,3vw,40px);
+                border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+                margin-bottom: 80px; overflow: hidden;
             }
+            .band-lbl { flex-shrink: 0; display: inline-flex; align-items: center; padding-right: 24px; border-right: 1px solid var(--line); font: 500 10px/1 var(--mono); color: #7f858e; letter-spacing: .08em; text-transform: uppercase; }
+            .provider-marquee { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent); mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent); }
+            .provider-track { display: flex; width: max-content; animation: providerScroll 120s linear infinite; }
+            .provider-group { flex-shrink: 0; display: flex; align-items: center; gap: clamp(28px,3vw,48px); padding-right: clamp(28px,3vw,48px); }
+            .provider-marquee:hover .provider-track { animation-play-state: paused; }
+            @keyframes providerScroll { to { transform: translateX(-50%); } }
+            .provider  { flex-shrink: 0; display: inline-flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; color: #a7acb5; letter-spacing: -.02em; transition: color .15s; }
+            .provider img { width: 18px; height: 18px; object-fit: contain; filter: grayscale(1) brightness(0) invert(1); opacity: .55; transition: opacity .15s; }
+            .provider-mark { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid currentColor; border-radius: 5px; font: 500 7px/1 var(--mono); opacity: .55; transition: opacity .15s; }
+            .provider:hover { color: var(--ink); }
+            .provider:hover img, .provider:hover .provider-mark { opacity: .9; }
 
+            /* ── WHY ── */
+            .section { max-width: 1280px; margin: 0 auto; padding: 0 clamp(16px,3vw,40px); }
+            .why { text-align: center; margin-bottom: 52px; }
+            .why h2 { font-size: clamp(28px,4vw,50px); line-height: 1.06; letter-spacing: -.04em; font-weight: 800; margin: 0; }
+
+            /* ── FEATURES ── */
+            .features { margin-bottom: 80px; border-bottom: 1px solid var(--line); }
+            .fc { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+            .fv {
+                order: 2; min-height: 380px; background: #17191d;
+                display: grid; place-items: center;
+                color: #777d87; font-size: 12px; font-weight: 500;
+                border-left: 1px solid var(--line);
+            }
+            .fb { order: 1; padding: clamp(32px,4vw,56px); display: flex; flex-direction: column; justify-content: center; }
+            .fn { font: 500 10px/1 var(--mono); color: var(--coral); letter-spacing: .1em; margin-bottom: 20px; }
+            .fb h3 { font-size: clamp(28px,3vw,44px); line-height: 1.08; letter-spacing: -.04em; margin-bottom: 20px; }
+            .fb p  { color: var(--muted); font-size: 14px; line-height: 1.75; max-width: 400px; margin: 0 0 28px; }
+            .tags  { display: flex; gap: 6px; flex-wrap: wrap; }
+            .tag   { padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; font: 400 9px/1 var(--mono); color: #9fa4ae; }
+
+            /* ── CTA ── */
+            .cta {
+                border-radius: 10px; padding: clamp(40px,5vw,64px) clamp(28px,4vw,56px);
+                background: var(--dk); color: var(--ink);
+                display: flex; align-items: center; justify-content: space-between; gap: 24px;
+                margin-bottom: 28px;
+            }
+            .cta h2 { margin: 0; font-size: clamp(24px,3.4vw,42px); line-height: 1.06; letter-spacing: -.04em; }
+            .cta-actions { display: flex; gap: 10px; flex-shrink: 0; }
+
+            /* ── FOOTER ── */
+            footer {
+                border-top: 1px solid var(--line);
+                display: flex; justify-content: space-between; align-items: center;
+                padding: 22px 0 36px; color: #8b9099; font: 400 11px/1.5 var(--mono);
+            }
+            .fl { display: flex; gap: 22px; }
+            .fl a:hover { color: var(--muted); }
+
+            /* ── RESPONSIVE ── */
+            @media (max-width: 820px) {
+                .nav-links { display: none; }
+                .hero-copy { grid-template-columns: 1fr; gap: 20px; }
+                .band-lbl { width: 100%; justify-content: center; padding-right: 0; border-right: 0; }
+                .hero-img { aspect-ratio: 16/9; }
+                .fc { grid-template-columns: 1fr; }
+                .fv { min-height: 260px; border-left: 0; border-top: 1px solid var(--line); }
+                .cta { flex-direction: column; align-items: flex-start; }
+            }
+            @media (max-width: 520px) {
+                footer { flex-direction: column; align-items: flex-start; gap: 12px; padding-bottom: 48px; }
+                .cta-actions { flex-direction: column; width: 100%; }
+            }
             @media (prefers-reduced-motion: reduce) {
-                *,
-                *::before,
-                *::after {
-                    transition-duration: 0s !important;
-                    animation-duration: 0s !important;
-                }
+                .hero-img, .hero-copy, .provider-track { animation: none; }
             }
         </style>
     </head>
     <body>
-        <!-- ============ A — Billboard ============ -->
-        <section class="va">
-            <img
-                class="va-bg"
-                src="/assets/hero-coast.webp"
-                alt="City Pop illustration of a girl with headphones overlooking a sunny coastal highway"
-            />
-            <div class="va-scrim"></div>
-            <header class="va-top">
-                <nav class="va-nav mono">
-                    <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
-                    <a href="/changelog">Changelog ↗</a>
-                </nav>
-            </header>
-            <div class="va-hero">
-                <p class="va-kicker mono">Native coding agent · macOS, Windows, Linux</p>
-                <h1 class="va-title">Holt is an agent.</h1>
-                <div class="va-cta">
-                    <a class="va-btn solid" href="/download">↓ Download</a>
-                    <a
-                        class="va-btn ghost"
-                        href="https://github.com/Onion-L/holt"
-                    >
-                        Star on GitHub ↗
-                    </a>
+        <!-- NAV: full-width minimal bar -->
+        <div class="nav-wrap">
+            <nav class="nav" aria-label="Primary">
+                <a class="logo" href="/">
+                    <img src="/assets/holt-logo.webp" alt="" width="28" height="28" />
+                    holt
+                </a>
+                <div class="nav-links">
+                    <a href="/changelog">Changelog</a>
+                    <a href="#why">Why Holt</a>
                 </div>
-                <p class="va-sub mono">
-                    Apple Silicon, Intel, x64 &amp; arm64 · GPL-3.0 · v<span data-version>x.x.x</span> ·{" "}
-                    <a href="/changelog">what's new ↗</a>
-                </p>
+                <div class="nav-actions">
+                    <a class="nav-icon" href="https://github.com/Onion-L/holt" aria-label="GitHub">
+                        <img src="/assets/github.svg" alt="" width="20" height="20" />
+                    </a>
+                    <a class="btn-nav" href="/download">Download <span class="icon icon-download" aria-hidden="true"></span></a>
+                </div>
+            </nav>
+        </div>
+
+        <!-- HERO IMAGE: full width below nav -->
+        <div class="hero-img-wrap">
+            <img class="hero-img" src="/assets/hero-astronaut.png" alt="Astronaut above Earth" fetchpriority="high" />
+        </div>
+
+        <!-- HERO COPY: two-column below image -->
+        <div class="hero-copy">
+            <h1 class="hero-title">Holt is an agent.</h1>
+            <div class="hero-right">
+                <p class="hero-sub">From the first prompt to the final diff, Holt keeps your work moving—and keeps you in control.</p>
+                <div class="hero-actions">
+                    <a class="btn btn-dk" href="/download">Download Holt <span class="icon icon-download" aria-hidden="true"></span></a>
+                    <a class="btn btn-wh" href="https://github.com/Onion-L/holt">GitHub <span class="icon icon-up-right" aria-hidden="true"></span></a>
+                </div>
             </div>
-        </section>
+        </div>
+
+        <!-- PROVIDER BAND -->
+        <div class="band">
+            <span class="band-lbl">Bring your own keys</span>
+            <div class="provider-marquee">
+                <div class="provider-track">
+                    <div class="provider-group">
+                        <span class="provider"><img src="/assets/providers/amazon-web-services.svg" alt="" width="18" height="18" />Amazon Bedrock</span>
+                        <span class="provider"><img src="/assets/providers/ant-ling.svg" alt="" width="18" height="18" />Ant Ling</span>
+                        <span class="provider"><img src="/assets/providers/anthropic.svg" alt="" width="18" height="18" />Anthropic</span>
+                        <span class="provider"><img src="/assets/providers/microsoft-azure.svg" alt="" width="18" height="18" />Azure OpenAI</span>
+                        <span class="provider"><img src="/assets/providers/baseten.svg" alt="" width="18" height="18" />Baseten</span>
+                        <span class="provider"><img src="/assets/providers/cerebras.svg" alt="" width="18" height="18" />Cerebras</span>
+                        <span class="provider"><img src="/assets/providers/cloudflare.svg" alt="" width="18" height="18" />Cloudflare</span>
+                        <span class="provider"><img src="/assets/providers/deepseek.svg" alt="" width="18" height="18" />DeepSeek</span>
+                        <span class="provider"><img src="/assets/providers/fireworks.svg" alt="" width="18" height="18" />Fireworks</span>
+                        <span class="provider"><img src="/assets/providers/github-copilot.svg" alt="" width="18" height="18" />GitHub Copilot</span>
+                        <span class="provider"><img src="/assets/providers/gemini.svg" alt="" width="18" height="18" />Google</span>
+                        <span class="provider"><img src="/assets/providers/groq.svg" alt="" width="18" height="18" />Groq</span>
+                        <span class="provider"><img src="/assets/providers/huggingface.svg" alt="" width="18" height="18" />Hugging Face</span>
+                        <span class="provider"><img src="/assets/providers/kimi.svg" alt="" width="18" height="18" />Kimi For Coding</span>
+                        <span class="provider"><img src="/assets/providers/minimax.svg" alt="" width="18" height="18" />MiniMax</span>
+                        <span class="provider"><img src="/assets/providers/mistral.svg" alt="" width="18" height="18" />Mistral</span>
+                        <span class="provider"><img src="/assets/providers/moonshot.svg" alt="" width="18" height="18" />Moonshot AI</span>
+                        <span class="provider"><img src="/assets/providers/nvidia.svg" alt="" width="18" height="18" />NVIDIA</span>
+                        <span class="provider"><img src="/assets/providers/openai.svg" alt="" width="18" height="18" />OpenAI</span>
+                        <span class="provider"><img src="/assets/providers/opencode.svg" alt="" width="18" height="18" />OpenCode</span>
+                        <span class="provider"><img src="/assets/providers/openrouter.svg" alt="" width="18" height="18" />OpenRouter</span>
+                        <span class="provider"><img src="/assets/providers/qwen.svg" alt="" width="18" height="18" />Qwen</span>
+                        <span class="provider"><span class="provider-mark" aria-hidden="true">RA</span>Radius</span>
+                        <span class="provider"><img src="/assets/providers/together.svg" alt="" width="18" height="18" />Together</span>
+                        <span class="provider"><img src="/assets/providers/vercel.svg" alt="" width="18" height="18" />Vercel AI Gateway</span>
+                        <span class="provider"><img src="/assets/providers/xai.svg" alt="" width="18" height="18" />xAI</span>
+                        <span class="provider"><img src="/assets/providers/xiaomi.svg" alt="" width="18" height="18" />Xiaomi</span>
+                        <span class="provider"><img src="/assets/providers/zai.svg" alt="" width="18" height="18" />Z.AI</span>
+                    </div>
+                    <div class="provider-group" aria-hidden="true">
+                        <span class="provider"><img src="/assets/providers/amazon-web-services.svg" alt="" width="18" height="18" />Amazon Bedrock</span>
+                        <span class="provider"><img src="/assets/providers/ant-ling.svg" alt="" width="18" height="18" />Ant Ling</span>
+                        <span class="provider"><img src="/assets/providers/anthropic.svg" alt="" width="18" height="18" />Anthropic</span>
+                        <span class="provider"><img src="/assets/providers/microsoft-azure.svg" alt="" width="18" height="18" />Azure OpenAI</span>
+                        <span class="provider"><img src="/assets/providers/baseten.svg" alt="" width="18" height="18" />Baseten</span>
+                        <span class="provider"><img src="/assets/providers/cerebras.svg" alt="" width="18" height="18" />Cerebras</span>
+                        <span class="provider"><img src="/assets/providers/cloudflare.svg" alt="" width="18" height="18" />Cloudflare</span>
+                        <span class="provider"><img src="/assets/providers/deepseek.svg" alt="" width="18" height="18" />DeepSeek</span>
+                        <span class="provider"><img src="/assets/providers/fireworks.svg" alt="" width="18" height="18" />Fireworks</span>
+                        <span class="provider"><img src="/assets/providers/github-copilot.svg" alt="" width="18" height="18" />GitHub Copilot</span>
+                        <span class="provider"><img src="/assets/providers/gemini.svg" alt="" width="18" height="18" />Google</span>
+                        <span class="provider"><img src="/assets/providers/groq.svg" alt="" width="18" height="18" />Groq</span>
+                        <span class="provider"><img src="/assets/providers/huggingface.svg" alt="" width="18" height="18" />Hugging Face</span>
+                        <span class="provider"><img src="/assets/providers/kimi.svg" alt="" width="18" height="18" />Kimi For Coding</span>
+                        <span class="provider"><img src="/assets/providers/minimax.svg" alt="" width="18" height="18" />MiniMax</span>
+                        <span class="provider"><img src="/assets/providers/mistral.svg" alt="" width="18" height="18" />Mistral</span>
+                        <span class="provider"><img src="/assets/providers/moonshot.svg" alt="" width="18" height="18" />Moonshot AI</span>
+                        <span class="provider"><img src="/assets/providers/nvidia.svg" alt="" width="18" height="18" />NVIDIA</span>
+                        <span class="provider"><img src="/assets/providers/openai.svg" alt="" width="18" height="18" />OpenAI</span>
+                        <span class="provider"><img src="/assets/providers/opencode.svg" alt="" width="18" height="18" />OpenCode</span>
+                        <span class="provider"><img src="/assets/providers/openrouter.svg" alt="" width="18" height="18" />OpenRouter</span>
+                        <span class="provider"><img src="/assets/providers/qwen.svg" alt="" width="18" height="18" />Qwen</span>
+                        <span class="provider"><span class="provider-mark" aria-hidden="true">RA</span>Radius</span>
+                        <span class="provider"><img src="/assets/providers/together.svg" alt="" width="18" height="18" />Together</span>
+                        <span class="provider"><img src="/assets/providers/vercel.svg" alt="" width="18" height="18" />Vercel AI Gateway</span>
+                        <span class="provider"><img src="/assets/providers/xai.svg" alt="" width="18" height="18" />xAI</span>
+                        <span class="provider"><img src="/assets/providers/xiaomi.svg" alt="" width="18" height="18" />Xiaomi</span>
+                        <span class="provider"><img src="/assets/providers/zai.svg" alt="" width="18" height="18" />Z.AI</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <!-- WHY -->
+            <div class="why" id="why">
+                <h2>Less babysitting.<br />More building.</h2>
+            </div>
+
+            <!-- FEATURES -->
+            <div class="features">
+                <div class="fc wide">
+                    <div class="fv">Product screenshot</div>
+                    <div class="fb">
+                        <div class="fn">SYS / 01</div>
+                        <h3>Bring your<br />own keys.</h3>
+                        <p>Choose the model that fits the task. Connect major providers or define your own, change course mid-chat, and keep your credentials local.</p>
+                        <div class="tags">
+                            <span class="tag">Custom providers</span>
+                            <span class="tag">Live model settings</span>
+                            <span class="tag">Local credentials</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="fc">
+                    <div class="fv">Product screenshot</div>
+                    <div class="fb">
+                        <div class="fn">SYS / 02</div>
+                        <h3>Continue,<br />don't restart.</h3>
+                        <p>Conversations and checkpoints survive interruption. When Holt comes back, your work comes back with it.</p>
+                        <div class="tags">
+                            <span class="tag">Crash recovery</span>
+                            <span class="tag">Step checkpoints</span>
+                            <span class="tag">Rewind changes</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="fc">
+                    <div class="fv">Product screenshot</div>
+                    <div class="fb">
+                        <div class="fn">SYS / 03</div>
+                        <h3>Put a crew<br />on it.</h3>
+                        <p>Coordinate focused subagents across a declared plan. Watch each branch move and keep the main conversation clear.</p>
+                        <div class="tags">
+                            <span class="tag">Parallel agents</span>
+                            <span class="tag">Visible plans</span>
+                            <span class="tag">Resumable results</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CTA -->
+            <div class="cta">
+                <h2>Give your next idea<br />some room to run.</h2>
+                <div class="cta-actions">
+                    <a class="btn btn-wh" href="/download">Download for free <span class="icon icon-download" aria-hidden="true"></span></a>
+                    <a class="btn btn-gh" href="https://github.com/Onion-L/holt">GitHub <span class="icon icon-up-right" aria-hidden="true"></span></a>
+                </div>
+            </div>
+
+            <footer>
+                <span>© 2026 Holt · GPL-3.0 · macOS / Windows / Linux · v<span data-version>x.x.x</span></span>
+                <div class="fl">
+                    <a href="/changelog">Changelog</a>
+                    <a href="https://github.com/Onion-L/holt">Source</a>
+                </div>
+            </footer>
+        </div>
         <HeroController client:load />
     </body>
 </html>
