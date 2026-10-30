@@ -2105,6 +2105,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         // their curated toolsets (this branch already excludes all three).
         tools.push(crate::tools::create_todo_tool());
         if let Some(routines) = runtime.routines.get().cloned() {
+            // The clock's pull channel (ADR-model-facing-time-is-pulled-not-embedded):
+            // mounted beside its consumer so "now" never enters a
+            // prefix-position description.
+            tools.push(crate::tools::create_current_time_tool(routines.clock()));
             tools.push(crate::tools::create_schedule_routine_tool(
                 runtime.clone(),
                 routines,
