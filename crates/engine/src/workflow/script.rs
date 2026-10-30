@@ -467,9 +467,10 @@ mod tests {
             {"id": "check", "title": "Check", "after": ["find"]},
         ]});
         // `check` starts before any `find` agent finished: parallel() would
-        // otherwise read the throw as a null and carry on.
+        // otherwise read the throw as a null and carry on. It goes first so
+        // the refusal does not race this harness settling `find`.
         let (result, requests, _) = drive_plan(
-            "const r = await parallel([() => agent('f', { step: 'find' }), () => agent('c', { step: 'check' })]); \
+            "const r = await parallel([() => agent('c', { step: 'check' }), () => agent('f', { step: 'find' })]); \
              return r;",
             plan.clone(),
             serde_json::Value::Null,
@@ -478,7 +479,7 @@ mod tests {
         .await;
         let error = result.unwrap_err();
         assert!(error.contains("before any \"find\""), "{error}");
-        assert_eq!(requests.len(), 1);
+        assert!(requests.iter().all(|(prompt, _)| prompt != "c"));
         for (script, expected) in [
             ("await agent('x');", "needs a step"),
             ("await agent('x', { step: 'draft' });", "not in the plan"),
