@@ -650,6 +650,13 @@ impl crate::EngineService {
     /// keeps the row until the user continues it.
     fn deliver_workflow(&self, delivery: Delivery) -> Result<(), holt_rpc::RpcError> {
         use holt_rpc::RpcError;
+        // The runtime Arc before the registry row. A delete drops the row
+        // first and the live runtime (then the queue file) only after, so a
+        // row lookup that follows the Arc can never miss a delete that
+        // already finished; in the other order, a runtime rebuilt after the
+        // drop carried `removed = false` and the enqueue resurrected
+        // queues/{chatId}.json for a chat the user deleted.
+        let chat = self.runtime.chat(&delivery.chat_id);
         let request = {
             let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
             let row = chats
@@ -665,7 +672,6 @@ impl crate::EngineService {
                 .ok_or_else(|| RpcError::Failed("the chat has no working directory".into()))?;
             Self::queued_run_request(&config, &delivery.prompt, cwd)
         };
-        let chat = self.runtime.chat(&delivery.chat_id);
         let paused = {
             let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
             if chat.is_removed() {
@@ -697,5 +703,124 @@ impl crate::EngineService {
         let call_id = crate::rpc::required_string(&params, "callId")?;
         let stopped = self.runtime.workflows.stop(chat_id, call_id);
         holt_rpc::RpcReply::value(&serde_json::json!({ "stopped": stopped }))
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::Delivery;
+    use holt_proto::{Chat, ChatConfig, PermissionMode, ProviderId};
+
+    fn assembled(dir: &std::path::Path) -> crate::LocalEngine {
+        crate::LocalEngine::assemble(&crate::EngineConfig {
+            data_dir: dir.to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+            clock: None,
+            exec_shell: None,
+        })
+        .unwrap()
+    }
+
+    fn chat_row(id: &str, cwd: &str) -> Chat {
+        Chat {
+            id: id.into(),
+            device_id: "d".into(),
+            cwd: Some(cwd.into()),
+            config: Some(ChatConfig {
+                provider: ProviderId("test".into()),
+                model: "model".into(),
+                reasoning: None,
+                model_options: serde_json::Map::new(),
+                permission_mode: PermissionMode::default(),
+                scope: holt_proto::ChatScope::Normal,
+            }),
+            created_at: chrono::Utc::now(),
+            title: None,
+            title_source: holt_proto::TitleSource::Automatic,
+            title_task_started: false,
+            archived: false,
+            pinned: false,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            last_message_preview: None,
+            last_message_at: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+            plan_mode: None,
+            provider_mode: false,
+            worktree: None,
+            routine_run: None,
+            goal: None,
+        }
+    }
+
+    fn delivery(chat_id: &str) -> Delivery {
+        Delivery {
+            chat_id: chat_id.into(),
+            name: "run".into(),
+            failed: false,
+            prompt: "report".into(),
+        }
+    }
+
+    /// The delete-race end state: the workflow finished, the user deleted
+    /// the chat, and the delivery lands only now. `runtime.chat()` rebuilds
+    /// a `removed = false` runtime here, so the refusal must come from the
+    /// registry row — the queue file must stay deleted.
+    #[tokio::test]
+    async fn a_delivery_landing_after_the_delete_does_not_resurrect_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = assembled(dir.path());
+        let runtime = engine.service.runtime.clone();
+        runtime
+            .chats
+            .write()
+            .unwrap()
+            .push(chat_row("chat-1", "/tmp"));
+        // The chat was open while its workflow ran.
+        drop(runtime.chat("chat-1"));
+        // deleteChat's steps, in order: the registry row, then the runtime
+        // and its records.
+        runtime
+            .chats
+            .write()
+            .unwrap()
+            .retain(|row| row.id != "chat-1");
+        runtime.remove_chat("chat-1");
+
+        let error = engine
+            .service
+            .deliver_workflow(delivery("chat-1"))
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown chat"), "{error}");
+        assert!(!dir.path().join("queues/chat-1.json").exists());
+    }
+
+    #[tokio::test]
+    async fn a_delivery_for_a_live_chat_queues_the_marked_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = assembled(dir.path());
+        let runtime = engine.service.runtime.clone();
+        runtime
+            .chats
+            .write()
+            .unwrap()
+            .push(chat_row("chat-1", "/tmp"));
+        let chat = runtime.chat("chat-1");
+        // Parked, so the delivery only queues — no driver, no model call.
+        chat.queue.lock().unwrap().pause(true).unwrap();
+
+        engine.service.deliver_workflow(delivery("chat-1")).unwrap();
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("queues/chat-1.json")).unwrap())
+                .unwrap();
+        assert_eq!(record["pending"].as_array().unwrap().len(), 1);
+        assert_eq!(record["pending"][0]["workflowResult"]["name"], "run");
+        assert!(record["paused"].as_bool().unwrap());
     }
 }
