@@ -1,5 +1,6 @@
 ---
 import HeroController from "../components/HeroController";
+import DesktopDemo from "../components/DesktopDemo.astro";
 ---
 
 <!doctype html>
@@ -166,26 +167,13 @@ import HeroController from "../components/HeroController";
             .provider:hover { color: var(--ink); }
             .provider:hover img, .provider:hover .provider-mark { opacity: .9; }
 
-            /* ── WHY ── */
+            /* ── PRODUCT DEMO ── */
             .section { max-width: 1280px; margin: 0 auto; padding: 0 clamp(16px,3vw,40px); }
-            .why { text-align: center; margin-bottom: 52px; }
-            .why h2 { font-size: clamp(28px,4vw,50px); line-height: 1.06; letter-spacing: -.04em; font-weight: 800; margin: 0; }
-
-            /* ── FEATURES ── */
-            .features { margin-bottom: 80px; border-bottom: 1px solid var(--line); }
-            .fc { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
-            .fv {
-                order: 2; min-height: 380px; background: #17191d;
-                display: grid; place-items: center;
-                color: #777d87; font-size: 12px; font-weight: 500;
-                border-left: 1px solid var(--line);
-            }
-            .fb { order: 1; padding: clamp(32px,4vw,56px); display: flex; flex-direction: column; justify-content: center; }
-            .fn { font: 500 10px/1 var(--mono); color: var(--coral); letter-spacing: .1em; margin-bottom: 20px; }
-            .fb h3 { font-size: clamp(28px,3vw,44px); line-height: 1.08; letter-spacing: -.04em; margin-bottom: 20px; }
-            .fb p  { color: var(--muted); font-size: 14px; line-height: 1.75; max-width: 400px; margin: 0 0 28px; }
-            .tags  { display: flex; gap: 6px; flex-wrap: wrap; }
-            .tag   { padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; font: 400 9px/1 var(--mono); color: #9fa4ae; }
+            .product-demo { margin-bottom: 96px; }
+            .demo-heading { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(24px,4vw,56px); margin-bottom: 76px; }
+            .demo-eyebrow { margin-bottom: 24px; color: var(--coral); font: 500 10px/1 var(--mono); letter-spacing: .08em; }
+            .demo-heading h2 { max-width: 580px; margin: 0; font-size: clamp(36px,4.6vw,62px); line-height: 1.04; letter-spacing: -.045em; font-weight: 700; }
+            .demo-intro { align-self: start; max-width: 500px; margin: 0; padding-top: 38px; color: var(--muted); font-size: 16px; line-height: 1.75; }
 
             /* ── CTA ── */
             .cta {
@@ -212,8 +200,9 @@ import HeroController from "../components/HeroController";
                 .hero-copy { grid-template-columns: 1fr; gap: 20px; }
                 .band-lbl { width: 100%; justify-content: center; padding-right: 0; border-right: 0; }
                 .hero-img { aspect-ratio: 16/9; }
-                .fc { grid-template-columns: 1fr; }
-                .fv { min-height: 260px; border-left: 0; border-top: 1px solid var(--line); }
+                .demo-heading { grid-template-columns: 1fr; gap: 20px; margin-bottom: 64px; }
+                .demo-intro { padding-top: 0; }
+                .product-demo { margin-bottom: 64px; }
                 .cta { flex-direction: column; align-items: flex-start; }
             }
             @media (max-width: 520px) {
@@ -333,55 +322,17 @@ import HeroController from "../components/HeroController";
         </div>
 
         <div class="section">
-            <!-- WHY -->
-            <div class="why" id="why">
-                <h2>Less babysitting.<br />More building.</h2>
-            </div>
-
-            <!-- FEATURES -->
-            <div class="features">
-                <div class="fc wide">
-                    <div class="fv">Product screenshot</div>
-                    <div class="fb">
-                        <div class="fn">SYS / 01</div>
-                        <h3>Bring your<br />own keys.</h3>
-                        <p>Choose the model that fits the task. Connect major providers or define your own, change course mid-chat, and keep your credentials local.</p>
-                        <div class="tags">
-                            <span class="tag">Custom providers</span>
-                            <span class="tag">Live model settings</span>
-                            <span class="tag">Local credentials</span>
-                        </div>
+            <!-- PRODUCT DEMO -->
+            <section class="product-demo" id="why" aria-labelledby="demo-title">
+                <div class="demo-heading">
+                    <div>
+                        <div class="demo-eyebrow">02 / RESEARCH AND EXECUTION</div>
+                        <h2 id="demo-title">See the work<br />behind the answer.</h2>
                     </div>
+                    <p class="demo-intro">Follow the tools, inspect the changes, open the result. The path from a request to a finished task stays in the conversation.</p>
                 </div>
-
-                <div class="fc">
-                    <div class="fv">Product screenshot</div>
-                    <div class="fb">
-                        <div class="fn">SYS / 02</div>
-                        <h3>Continue,<br />don't restart.</h3>
-                        <p>Conversations and checkpoints survive interruption. When Holt comes back, your work comes back with it.</p>
-                        <div class="tags">
-                            <span class="tag">Crash recovery</span>
-                            <span class="tag">Step checkpoints</span>
-                            <span class="tag">Rewind changes</span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="fc">
-                    <div class="fv">Product screenshot</div>
-                    <div class="fb">
-                        <div class="fn">SYS / 03</div>
-                        <h3>Put a crew<br />on it.</h3>
-                        <p>Coordinate focused subagents across a declared plan. Watch each branch move and keep the main conversation clear.</p>
-                        <div class="tags">
-                            <span class="tag">Parallel agents</span>
-                            <span class="tag">Visible plans</span>
-                            <span class="tag">Resumable results</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+                <DesktopDemo />
+            </section>
 
             <!-- CTA -->
             <div class="cta">

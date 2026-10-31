@@ -1,0 +1,1570 @@
+---
+const prompt = "Review the landing page and make the product demo feel alive.";
+const ringCells = [
+    [2, 1], [3, 1], [4, 1],
+    [1, 2], [2, 2], [4, 2], [5, 2],
+    [0, 3], [1, 3], [5, 3], [6, 3],
+    [0, 4], [1, 4], [5, 4], [6, 4],
+    [1, 5], [2, 5], [4, 5], [5, 5],
+    [2, 6], [3, 6], [4, 6],
+];
+
+const sessions = [
+    {
+        id: "demo",
+        title: "Live product demo",
+        time: "Now",
+        branch: "main",
+        provider: "zai",
+        modelName: "GLM-5.3-Flash Max",
+        reasoning: "",
+        prompt: "Review the landing page and make the product demo feel alive.",
+        tools: [
+            { label: "Read", detail: "site/src/pages/index.astro", icon: "document" },
+            { label: "Search", detail: "features and product demos", icon: "magnifer" },
+            { label: "Edit", detail: "site/src/components/DesktopDemo.astro", icon: "pen" },
+            { label: "Run", detail: "npm run build", icon: "command" },
+        ],
+        response: {
+            intro: "Implemented the live product demo in <code>site/src/components/DesktopDemo.astro</code>.",
+            bullets: [
+                "Recreated Holt’s Desktop conversation and composer.",
+                "Added typed input, visible tool activity, and a streamed reply.",
+                "Preserved reduced-motion preferences and added replay.",
+            ],
+            result: "<code>npm run build</code> passes. All four pages build successfully.",
+        },
+    },
+    {
+        id: "checklist",
+        title: "Refine the release checklist",
+        time: "42m",
+        branch: "main",
+        provider: "anthropic",
+        modelName: "Claude 3.7 Sonnet",
+        reasoning: "High",
+        prompt: "Update the release checklist to verify multi-platform binaries and Cloudflare build steps.",
+        tools: [
+            { label: "Read", detail: "docs/RELEASE.md", icon: "document" },
+            { label: "Edit", detail: "docs/CHECKLIST.md", icon: "pen" },
+        ],
+        response: {
+            intro: "Updated the release workflow checklist in <code>docs/CHECKLIST.md</code>:",
+            bullets: [
+                "Added SHA-256 binary validation on macOS, Windows, and Linux CI artifacts.",
+                "Automated Cloudflare Worker build verification and changelog date checks.",
+            ],
+            result: "Release checklist is synchronized with root workspace version.",
+        },
+    },
+    {
+        id: "sidebar",
+        title: "Fix sidebar resizing",
+        time: "3h",
+        branch: "main",
+        provider: "openai",
+        modelName: "GPT-4o",
+        reasoning: "",
+        prompt: "Fix jitter on the sidebar width tween during fast drag events.",
+        tools: [
+            { label: "Read", detail: "crates/ui/src/shell/panes.rs", icon: "document" },
+            { label: "Edit", detail: "crates/ui/src/shell/panes.rs", icon: "pen" },
+            { label: "Run", detail: "cargo test -p holt-ui", icon: "command" },
+        ],
+        response: {
+            intro: "Fixed the sidebar width tween evaluation in <code>crates/ui/src/shell/panes.rs</code>:",
+            bullets: [
+                "Cached instantaneous mouse coordinates during drag gestures.",
+                "Prevented re-evaluating the tween start timestamp during uninterrupted drag motions.",
+            ],
+            result: "<code>cargo test -p holt-ui</code> passed 42 tests without regressions.",
+        },
+    },
+    {
+        id: "settings",
+        title: "Add provider settings",
+        time: "Tue",
+        branch: "main",
+        provider: "deepseek",
+        modelName: "DeepSeek-V3",
+        reasoning: "",
+        prompt: "Add configurable timeout and retry parameters to the provider settings panel.",
+        tools: [
+            { label: "Read", detail: "crates/ui/src/settings/providers.rs", icon: "document" },
+            { label: "Edit", detail: "crates/ui/src/settings/providers.rs", icon: "pen" },
+        ],
+        response: {
+            intro: "Added advanced provider connection settings:",
+            bullets: [
+                "Custom base URL input field with trailing slash normalization.",
+                "Request timeout slider (5s - 120s) and streaming keepalive toggle.",
+            ],
+            result: "Provider settings persisted to <code>~/.holt/config.json</code>.",
+        },
+    },
+];
+
+const providers = [
+    {
+        id: "deepseek",
+        name: "DeepSeek",
+        icon: "/assets/providers/deepseek.svg",
+        models: [
+            { id: "deepseek-v3", name: "DeepSeek-V3", sub: "deepseek", shortcut: "⌘1" },
+            { id: "deepseek-r1", name: "DeepSeek-R1", sub: "deepseek", shortcut: "⌘2" },
+            { id: "deepseek-coder", name: "DeepSeek-Coder-V2", sub: "deepseek", shortcut: "⌘3" },
+        ],
+    },
+    {
+        id: "google",
+        name: "Google",
+        icon: "/assets/providers/gemini.svg",
+        models: [
+            { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", sub: "google", shortcut: "⌘1" },
+            { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", sub: "google", shortcut: "⌘2" },
+            { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", sub: "google", shortcut: "⌘3" },
+        ],
+    },
+    {
+        id: "kimi",
+        name: "Kimi",
+        icon: "/assets/providers/kimi.svg",
+        models: [
+            { id: "kimi-k3", name: "Kimi K3", sub: "kimi-coding", shortcut: "⌘1" },
+            { id: "kimi-k3-256k", name: "Kimi K3-256K", sub: "kimi-coding", shortcut: "⌘2" },
+            { id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", sub: "kimi-coding", shortcut: "⌘3" },
+            { id: "kimi-k3.1-pro-highspeed", name: "Kimi K3.1 Pro Highspeed", sub: "kimi-coding", shortcut: "⌘4" },
+            { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", sub: "kimi-coding", shortcut: "⌘5" },
+            { id: "kimi-for-coding-highspeed", name: "Kimi For Coding HighSpeed", sub: "kimi-coding", shortcut: "⌘6" },
+        ],
+    },
+    {
+        id: "minimax",
+        name: "MiniMax",
+        icon: "/assets/providers/minimax.svg",
+        models: [
+            { id: "minimax-text-01", name: "MiniMax-Text-01", sub: "minimax", shortcut: "⌘1" },
+            { id: "abab6.5s-chat", name: "abab6.5s-chat", sub: "minimax", shortcut: "⌘2" },
+        ],
+    },
+    {
+        id: "xiaomi",
+        name: "Xiaomi",
+        icon: "/assets/providers/xiaomi.svg",
+        models: [
+            { id: "mimo-v1", name: "MiMo-V1", sub: "xiaomi", shortcut: "⌘1" },
+        ],
+    },
+    {
+        id: "zai",
+        name: "Z.AI",
+        icon: "/assets/providers/zai.svg",
+        models: [
+            { id: "glm-5.3-flash-max", name: "GLM-5.3-Flash Max", sub: "z-ai", shortcut: "⌘1" },
+            { id: "glm-4-plus", name: "GLM-4-Plus", sub: "z-ai", shortcut: "⌘2" },
+            { id: "glm-4-flash", name: "GLM-4-Flash", sub: "z-ai", shortcut: "⌘3" },
+            { id: "glm-4-air", name: "GLM-4-Air", sub: "z-ai", shortcut: "⌘4" },
+        ],
+    },
+];
+---
+
+<figure class="desktop-demo" data-desktop-demo data-phase="idle">
+    <button class="desktop-replay" type="button" aria-label="Replay Desktop conversation animation" data-demo-replay title="Replay demo animation">
+        <span class="desktop-icon desktop-i-refresh" aria-hidden="true"></span>
+    </button>
+    <div class="desktop-viewport" data-desktop-viewport>
+        <div class="desktop-app" data-desktop-app>
+            <!-- Titlebar -->
+            <div class="desktop-titlebar">
+                <div class="desktop-traffic">
+                    <i class="traffic-close"></i><i class="traffic-min"></i><i class="traffic-max"></i>
+                </div>
+                <div class="desktop-title-controls">
+                    <button class="desktop-control desktop-sidebar-glyph" type="button" data-action="toggle-left-sidebar" title="Toggle Sidebar (Cmd+B)" aria-label="Toggle sidebar"></button>
+                    <span class="desktop-control"><span class="desktop-icon desktop-i-arrow-left"></span></span>
+                    <span class="desktop-control desktop-control-dim"><span class="desktop-icon desktop-i-arrow-right"></span></span>
+                    <button class="desktop-control desktop-title-plus" type="button" data-title-plus data-action="new-chat" title="New Chat (Cmd+N)" aria-label="New chat"><span class="desktop-icon desktop-i-plus"></span></button>
+                    <button class="desktop-control desktop-title-menu" type="button" data-menu-trigger="more" title="More options" aria-label="More options"><span class="desktop-icon desktop-i-menu-dots"></span></button>
+                </div>
+                <div class="desktop-session-title" data-session-title>
+                    <img class="desktop-title-provider-icon" src="/assets/providers/zai.svg" alt="" width="14" height="14" />
+                    <span class="desktop-title-text">Live product demo</span>
+                    <span class="desktop-session-target">holt</span>
+                </div>
+                <div class="desktop-title-actions" data-title-actions>
+                    <button class="desktop-control" type="button" data-action="toggle-terminal" title="Toggle Terminal (Cmd+J)" aria-label="Toggle terminal"><span class="desktop-icon desktop-i-terminal"></span></button>
+                    <button class="desktop-control" type="button" data-action="toggle-diff" title="Toggle Changes / Diff (Cmd+Shift+D)" aria-label="Toggle changes"><span class="desktop-icon desktop-i-split-columns"></span></button>
+                </div>
+            </div>
+
+            <!-- Left Sidebar -->
+            <aside class="desktop-sidebar" data-desktop-sidebar>
+                <div class="sidebar-filter" data-menu-trigger="workspace" role="button" tabindex="0">
+                    <span class="desktop-icon desktop-i-folder"></span>
+                    <span class="sidebar-workspace-name">holt</span>
+                    <span class="desktop-icon desktop-i-alt-arrow-down sidebar-filter-chevron"></span>
+                    <span class="desktop-icon desktop-i-sort sidebar-sort"></span>
+                </div>
+                <div class="sidebar-sessions" data-sidebar-sessions>
+                    <div class="sidebar-session sidebar-session-new is-active" data-new-session-row data-session-id="demo">
+                        <div class="session-context"><span>holt</span><span>Now</span></div>
+                        <div class="session-name">
+                            <img class="session-provider-img" src="/assets/providers/zai.svg" alt="" width="13" height="13" />
+                            <span class="session-title-label">Live product demo</span>
+                        </div>
+                        <div class="session-meta"><span class="desktop-icon desktop-i-git-branch"></span><span>main</span></div>
+                    </div>
+                    {sessions.slice(1).map((s) => (
+                        <div class="sidebar-session" data-session-id={s.id} role="button" tabindex="0">
+                            <div class="session-context"><span>holt</span><span>{s.time}</span></div>
+                            <div class="session-name">
+                                <img src={`/assets/providers/${s.provider}.svg`} alt="" width="13" height="13" />
+                                <span>{s.title}</span>
+                            </div>
+                            <div class="session-meta"><span class="desktop-icon desktop-i-git-branch"></span><span>{s.branch}</span></div>
+                        </div>
+                    ))}
+                </div>
+                <div class="sidebar-settings">
+                    <span class="desktop-icon desktop-i-settings-minimalistic"></span>
+                    <span>Settings</span>
+                </div>
+            </aside>
+
+            <!-- Main Conversation / Canvas -->
+            <main class="desktop-main" data-desktop-main>
+                <div class="desktop-canvas" data-canvas>
+                    <div class="desktop-canvas-inner">
+                        <div class="desktop-mark">
+                            {ringCells.map(([x, y]) => (
+                                <span style={`grid-column:${x + 1};grid-row:${y + 1};--cell-delay:-${(((6 - x + y) / 14) * 1.32).toFixed(3)}s`}></span>
+                            ))}
+                        </div>
+                        <div class="desktop-canvas-title">What should we build in holt?</div>
+                    </div>
+                </div>
+
+                <div class="desktop-transcript" data-transcript>
+                    <div class="desktop-transcript-column" data-transcript-column>
+                        <div class="desktop-user-row" data-user-row>
+                            <div class="desktop-user-bubble" data-user-bubble>{prompt}</div>
+                        </div>
+                        <div class="desktop-user-meta-space"></div>
+
+                        <div class="desktop-tool-group" data-tool-group>
+                            <div class="desktop-tool-header" data-tool-toggle>
+                                <span class="desktop-tool-disclosure" data-tool-disclosure>▾</span>
+                                <span data-tool-summary>4 tool calls</span>
+                            </div>
+                            <div class="desktop-tool-list" data-tool-list>
+                                {sessions[0].tools.map((tool) => (
+                                    <div class="desktop-tool-row" data-tool-row>
+                                        <span class={`desktop-icon desktop-i-${tool.icon} desktop-tool-icon`}></span>
+                                        <span class="desktop-tool-label">{tool.label}</span>
+                                        <span class="desktop-tool-detail">{tool.detail}</span>
+                                        <span class="desktop-tool-state">
+                                            <span class="desktop-tool-spinner">
+                                                {Array.from({ length: 9 }, (_, index) => <i style={`--matrix-index:${index}`}></i>)}
+                                            </span>
+                                            <span class="desktop-icon desktop-i-check desktop-tool-check"></span>
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div class="desktop-assistant-response" data-assistant-response>
+                            <p class="desktop-response-block" data-response-chunk>Implemented the live product demo in <code>site/src/components/DesktopDemo.astro</code>.</p>
+                            <ul>
+                                <li class="desktop-response-block" data-response-chunk>Recreated Holt’s Desktop conversation and composer.</li>
+                                <li class="desktop-response-block" data-response-chunk>Added typed input, visible tool activity, and a streamed reply.</li>
+                                <li class="desktop-response-block" data-response-chunk>Preserved reduced-motion preferences and added replay.</li>
+                            </ul>
+                            <p class="desktop-response-block desktop-response-result" data-response-chunk><code>npm run build</code> passes. All four pages build successfully.</p>
+                        </div>
+
+                        <div class="desktop-working" data-working>
+                            <span class="desktop-working-dots"><i></i><i></i><i></i></span>
+                            <span data-working-label>Thinking…</span>
+                            <span class="desktop-working-elapsed" data-working-elapsed>0s</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="desktop-composer-stack">
+                    <div class="desktop-status" data-status>
+                        <span class="desktop-status-spinner"></span><span data-status-text>Sending…</span>
+                    </div>
+                    <div class="desktop-composer-column">
+                        <div class="desktop-project-selector" data-project-selector data-menu-trigger="workspace">
+                            <span class="desktop-icon desktop-i-folder"></span><span class="project-name-label">holt</span><span class="desktop-icon desktop-i-alt-arrow-down desktop-chip-chevron"></span>
+                        </div>
+                        <div class="desktop-composer" data-composer>
+                            <div class="desktop-composer-input" data-composer-input-wrap>
+                                <textarea
+                                    class="desktop-composer-textarea"
+                                    data-composer-textarea
+                                    placeholder="Do anything…"
+                                    rows="1"
+                                    aria-label="Composer input"
+                                ></textarea>
+                            </div>
+                            <div class="desktop-composer-actions">
+                                <div class="desktop-model-chip" data-menu-trigger="model" role="button" tabindex="0" title="Select Model">
+                                    <img class="desktop-model-icon" src="/assets/providers/zai.svg" alt="" width="14" height="14" />
+                                    <span class="desktop-model-label">GLM-5.3-Flash Max</span>
+                                    <span class="desktop-icon desktop-i-alt-arrow-down desktop-chip-chevron"></span>
+                                </div>
+                                <span class="desktop-attach"><span class="desktop-icon desktop-i-paperclip"></span></span>
+                                <button class="desktop-send" type="button" data-send-button aria-label="Send prompt">
+                                    <span class="desktop-icon desktop-i-arrow-up desktop-send-arrow"></span>
+                                    <span class="desktop-send-stop"></span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="desktop-composer-footer">
+                            <div class="desktop-footer-left">
+                                <span class="desktop-footer-chip desktop-permission" data-menu-trigger="permission" role="button" tabindex="0"><span class="desktop-icon desktop-i-lock-open"></span><span class="permission-label">Full access</span><span class="desktop-icon desktop-i-alt-arrow-down desktop-chip-chevron"></span></span>
+                                <span class="desktop-footer-chip" data-menu-trigger="workspace" role="button" tabindex="0"><span class="desktop-icon desktop-i-folder"></span><span>Current checkout</span><span class="desktop-icon desktop-i-alt-arrow-down desktop-chip-chevron"></span></span>
+                            </div>
+                            <span class="desktop-footer-chip" data-menu-trigger="branch" role="button" tabindex="0"><span class="desktop-icon desktop-i-git-branch"></span><span class="branch-label">main</span><span class="desktop-icon desktop-i-alt-arrow-down desktop-chip-chevron"></span></span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Pane: Diff, Terminal, Files -->
+            <aside class="desktop-right-pane is-closed" data-right-pane>
+                <div class="right-pane-header">
+                    <div class="right-pane-tabs">
+                        <button class="right-pane-tab is-active" type="button" data-pane-tab="diff">
+                            <span class="desktop-icon desktop-i-pen"></span><span>Diff</span>
+                            <span class="right-pane-badge">1</span>
+                        </button>
+                        <button class="right-pane-tab" type="button" data-pane-tab="terminal">
+                            <span class="desktop-icon desktop-i-terminal"></span><span>Terminal</span>
+                        </button>
+                        <button class="right-pane-tab" type="button" data-pane-tab="files">
+                            <span class="desktop-icon desktop-i-folder"></span><span>Files</span>
+                        </button>
+                    </div>
+                    <button class="right-pane-close" type="button" data-action="close-right-pane" title="Close Pane" aria-label="Close pane">
+                        <span class="desktop-icon desktop-i-close"></span>
+                    </button>
+                </div>
+                <div class="right-pane-body">
+                    <!-- Diff Surface -->
+                    <div class="right-pane-view is-active" data-pane-view="diff">
+                        <div class="diff-file-header">
+                            <span class="diff-file-name">site/src/components/DesktopDemo.astro</span>
+                            <span class="diff-file-stats"><i class="diff-stat-add">+28</i><i class="diff-stat-del">-6</i></span>
+                        </div>
+                        <div class="diff-content">
+                            <div class="diff-hunk">@@ -24,8 +24,14 @@ &lt;figure class="desktop-demo"&gt;</div>
+                            <div class="diff-line diff-del"><span class="diff-num">24</span><span class="diff-sig">-</span><span>const activeSession = "demo";</span></div>
+                            <div class="diff-line diff-del"><span class="diff-num">25</span><span class="diff-sig">-</span><span>// Static preview only</span></div>
+                            <div class="diff-line diff-add"><span class="diff-num">24</span><span class="diff-sig">+</span><span>// Real Holt desktop interactive runtime:</span></div>
+                            <div class="diff-line diff-add"><span class="diff-num">25</span><span class="diff-sig">+</span><span>const [active, setActive] = useState(session);</span></div>
+                            <div class="diff-line diff-add"><span class="diff-num">26</span><span class="diff-sig">+</span><span>sidebar.toggle(&#123; animated: true &#125;);</span></div>
+                            <div class="diff-line diff-add"><span class="diff-num">27</span><span class="diff-sig">+</span><span>rightPane.open("diff");</span></div>
+                            <div class="diff-line diff-add"><span class="diff-num">28</span><span class="diff-sig">+</span><span>composer.listen("send", executeTurn);</span></div>
+                            <div class="diff-line"><span class="diff-num">29</span><span class="diff-sig"> </span><span>await engine.dispatch(turn);</span></div>
+                            <div class="diff-line"><span class="diff-num">30</span><span class="diff-sig"> </span><span>transcript.append(response);</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Terminal Surface -->
+                    <div class="right-pane-view" data-pane-view="terminal">
+                        <div class="terminal-header-bar">
+                            <span>zsh · node v22.12.0 · holt-engine</span>
+                        </div>
+                        <div class="terminal-body">
+                            <div class="term-line"><span class="term-prompt">onion@mac holt %</span> <span class="term-cmd">npm run build</span></div>
+                            <div class="term-line term-dim">> site@0.0.1 build</div>
+                            <div class="term-line term-dim">> astro build</div>
+                            <div class="term-line"><span class="term-accent">[vite]</span> ✓ built in 42ms</div>
+                            <div class="term-line"><span class="term-accent">[build]</span> ✓ 4 page(s) built in 222ms</div>
+                            <div class="term-line term-success"><span class="term-accent">[build]</span> Complete!</div>
+                            <div class="term-line"><span class="term-prompt">onion@mac holt %</span> <span class="term-cmd">cargo test --workspace</span></div>
+                            <div class="term-line term-success">test result: ok. 184 passed; 0 failed; finished in 2.14s</div>
+                            <div class="term-line"><span class="term-prompt">onion@mac holt %</span> <span class="term-cursor">█</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Files Surface -->
+                    <div class="right-pane-view" data-pane-view="files">
+                        <div class="file-tree">
+                            <div class="file-item file-dir"><span class="desktop-icon desktop-i-folder"></span><span>site</span></div>
+                            <div class="file-item file-dir file-indent"><span class="desktop-icon desktop-i-folder"></span><span>src</span></div>
+                            <div class="file-item file-dir file-indent-2"><span class="desktop-icon desktop-i-folder"></span><span>components</span></div>
+                            <div class="file-item file-doc file-indent-3 is-modified"><span class="desktop-icon desktop-i-document"></span><span>DesktopDemo.astro</span><span class="file-badge-m">M</span></div>
+                            <div class="file-item file-doc file-indent-3"><span class="desktop-icon desktop-i-document"></span><span>HeroController.tsx</span></div>
+                            <div class="file-item file-dir file-indent-2"><span class="desktop-icon desktop-i-folder"></span><span>pages</span></div>
+                            <div class="file-item file-doc file-indent-3"><span class="desktop-icon desktop-i-document"></span><span>index.astro</span></div>
+                            <div class="file-item file-dir"><span class="desktop-icon desktop-i-folder"></span><span>crates</span></div>
+                            <div class="file-item file-dir file-indent"><span class="desktop-icon desktop-i-folder"></span><span>ui</span></div>
+                            <div class="file-item file-dir file-indent"><span class="desktop-icon desktop-i-folder"></span><span>core</span></div>
+                            <div class="file-item file-dir file-indent"><span class="desktop-icon desktop-i-folder"></span><span>engine</span></div>
+                            <div class="file-item file-doc"><span class="desktop-icon desktop-i-document"></span><span>Cargo.toml</span></div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Real Holt Model Picker Popover (Matches Holt Native GPUI app 1:1) -->
+            <div class="desktop-model-popover is-hidden" data-popover="model">
+                <!-- Provider Tabs across top -->
+                <div class="model-picker-tabs">
+                    {providers.map((p, idx) => (
+                        <div class={`model-picker-tab ${idx === 5 ? "is-active" : ""}`} data-provider-tab={p.id} title={p.name}>
+                            <img src={p.icon} alt={p.name} width="18" height="18" />
+                            <span class="model-picker-tab-indicator"></span>
+                        </div>
+                    ))}
+                </div>
+                <!-- Search input -->
+                <div class="model-picker-search">
+                    <span class="desktop-icon desktop-i-magnifer"></span>
+                    <input type="text" placeholder="Search models…" data-model-search aria-label="Search models" />
+                </div>
+                <!-- Model Rows -->
+                <div class="model-picker-list" data-model-list>
+                    {/* Populated dynamically */}
+                </div>
+                <!-- Reasoning Section -->
+                <div class="model-picker-reasoning">
+                    <div class="reasoning-heading">REASONING</div>
+                    <div class="reasoning-row" data-reasoning="Low"><span>Low</span></div>
+                    <div class="reasoning-row" data-reasoning="High"><span>High</span><span class="reasoning-default-tag">Default</span></div>
+                    <div class="reasoning-row is-selected" data-reasoning="Max"><span>Max</span></div>
+                </div>
+            </div>
+
+            <!-- Workspace Menu -->
+            <div class="desktop-popover desktop-workspace-popover is-hidden" data-popover="workspace">
+                <div class="popover-header">Workspaces</div>
+                <div class="popover-list">
+                    <div class="popover-item is-selected" data-workspace-select="holt">
+                        <span class="desktop-icon desktop-i-folder"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">holt</div><div class="popover-item-sub">~/workbench/holt</div></div>
+                        <span class="desktop-icon desktop-i-check"></span>
+                    </div>
+                    <div class="popover-item" data-workspace-select="site">
+                        <span class="desktop-icon desktop-i-folder"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">holt/site</div><div class="popover-item-sub">Astro landing site</div></div>
+                    </div>
+                    <div class="popover-item" data-workspace-select="core">
+                        <span class="desktop-icon desktop-i-folder"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">holt/crates/core</div><div class="popover-item-sub">Core agent runtime</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Permission Menu -->
+            <div class="desktop-popover desktop-permission-popover is-hidden" data-popover="permission">
+                <div class="popover-header">Execution Permissions</div>
+                <div class="popover-list">
+                    <div class="popover-item is-selected" data-perm-select="Full access">
+                        <span class="desktop-icon desktop-i-lock-open"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">Full access</div><div class="popover-item-sub">Execute tools, edit files, run commands</div></div>
+                        <span class="desktop-icon desktop-i-check"></span>
+                    </div>
+                    <div class="popover-item" data-perm-select="Ask before edits">
+                        <span class="desktop-icon desktop-i-pen"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">Ask before edits</div><div class="popover-item-sub">Prompt before modifying workspace files</div></div>
+                    </div>
+                    <div class="popover-item" data-perm-select="Read only">
+                        <span class="desktop-icon desktop-i-document"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">Read only</div><div class="popover-item-sub">Inspect and search files without writes</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Branch Menu -->
+            <div class="desktop-popover desktop-branch-popover is-hidden" data-popover="branch">
+                <div class="popover-header">Git Branches</div>
+                <div class="popover-list">
+                    <div class="popover-item is-selected" data-branch-select="main">
+                        <span class="desktop-icon desktop-i-git-branch"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">main</div></div>
+                        <span class="desktop-icon desktop-i-check"></span>
+                    </div>
+                    <div class="popover-item" data-branch-select="feat/desktop-demo">
+                        <span class="desktop-icon desktop-i-git-branch"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">feat/desktop-demo</div></div>
+                    </div>
+                    <div class="popover-item" data-branch-select="fix/sidebar-resizing">
+                        <span class="desktop-icon desktop-i-git-branch"></span>
+                        <div class="popover-item-details"><div class="popover-item-title">fix/sidebar-resizing</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- More Menu -->
+            <div class="desktop-popover desktop-more-popover is-hidden" data-popover="more">
+                <div class="popover-list">
+                    <button class="popover-btn" type="button" data-action="new-chat">
+                        <span class="desktop-icon desktop-i-plus"></span>
+                        <span>New Session</span>
+                        <span class="popover-shortcut">⌘N</span>
+                    </button>
+                    <button class="popover-btn" type="button" data-action="toggle-left-sidebar">
+                        <span class="desktop-icon desktop-i-split-columns"></span>
+                        <span>Toggle Sidebar</span>
+                        <span class="popover-shortcut">⌘B</span>
+                    </button>
+                    <button class="popover-btn" type="button" data-action="toggle-diff">
+                        <span class="desktop-icon desktop-i-pen"></span>
+                        <span>Toggle Changes</span>
+                        <span class="popover-shortcut">⌘⇧D</span>
+                    </button>
+                    <button class="popover-btn" type="button" data-action="toggle-terminal">
+                        <span class="desktop-icon desktop-i-terminal"></span>
+                        <span>Toggle Terminal</span>
+                        <span class="popover-shortcut">⌘J</span>
+                    </button>
+                    <div class="popover-divider"></div>
+                    <button class="popover-btn" type="button" data-action="clear-chat">
+                        <span class="desktop-icon desktop-i-refresh"></span>
+                        <span>Replay Demo Animation</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <figcaption class="desktop-sr-only">An animated and interactive Holt Desktop coding agent environment.</figcaption>
+</figure>
+
+<style is:inline>
+    @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+    @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist-Medium.ttf") format("truetype"); font-style: normal; font-weight: 500; font-display: swap; }
+    @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist-SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 600; font-display: swap; }
+    @font-face { font-family: "Holt Geist Mono"; src: url("/assets/fonts/GeistMono.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+
+    .desktop-demo { position: relative; width: 100%; max-width: 1180px; margin: 0 auto 96px; }
+    .desktop-replay { position: absolute; z-index: 2; top: -42px; right: 0; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #979ba3; cursor: pointer; transition: color .15s, background .15s; }
+    .desktop-replay:hover { color: #ece9e2; background: rgba(255,255,255,.05); }
+    .desktop-replay:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; }
+    .desktop-viewport { position: relative; width: 100%; aspect-ratio: 59 / 40; overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; background: #0d0d0d; box-shadow: 0 36px 100px rgba(0,0,0,.36); }
+    .desktop-app { position: absolute; top: 0; left: 0; width: 1180px; height: 800px; overflow: hidden; transform-origin: top left; background: #0d0d0d; color: #e8e8ea; font-family: "Holt Geist", sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    .desktop-app *, .desktop-app *::before, .desktop-app *::after { box-sizing: border-box; }
+    .desktop-app p, .desktop-app ul { margin-top: 0; }
+    .desktop-app button { font-family: inherit; font-size: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+
+    /* ALL provider logos are strictly monochrome in Holt's dark theme */
+    .desktop-app img { filter: grayscale(1) brightness(0) invert(1) !important; opacity: .75; }
+    .desktop-app .model-picker-tab.is-active img,
+    .desktop-app .sidebar-session.is-active img,
+    .desktop-app .desktop-model-chip img { opacity: .95; }
+
+    .desktop-icon { display: inline-block; flex-shrink: 0; width: 16px; height: 16px; background: currentColor; -webkit-mask: var(--desktop-icon) center / contain no-repeat; mask: var(--desktop-icon) center / contain no-repeat; }
+    .desktop-i-refresh { --desktop-icon: url("/assets/icons/refresh.svg"); }
+    .desktop-i-arrow-left { --desktop-icon: url("/assets/icons/arrow-left.svg"); }
+    .desktop-i-arrow-right { --desktop-icon: url("/assets/icons/arrow-right.svg"); }
+    .desktop-i-plus { --desktop-icon: url("/assets/icons/plus.svg"); }
+    .desktop-i-menu-dots { --desktop-icon: url("/assets/icons/menu-dots.svg"); }
+    .desktop-i-terminal { --desktop-icon: url("/assets/icons/terminal.svg"); }
+    .desktop-i-split-columns { --desktop-icon: url("/assets/icons/split-columns.svg"); }
+    .desktop-i-folder { --desktop-icon: url("/assets/icons/folder.svg"); }
+    .desktop-i-alt-arrow-down { --desktop-icon: url("/assets/icons/alt-arrow-down.svg"); }
+    .desktop-i-sort { --desktop-icon: url("/assets/icons/sort.svg"); }
+    .desktop-i-git-branch { --desktop-icon: url("/assets/icons/git-branch.svg"); }
+    .desktop-i-settings-minimalistic { --desktop-icon: url("/assets/icons/settings-minimalistic.svg"); }
+    .desktop-i-document { --desktop-icon: url("/assets/icons/document.svg"); }
+    .desktop-i-magnifer { --desktop-icon: url("/assets/icons/magnifer.svg"); }
+    .desktop-i-pen { --desktop-icon: url("/assets/icons/pen.svg"); }
+    .desktop-i-command { --desktop-icon: url("/assets/icons/command.svg"); }
+    .desktop-i-check { --desktop-icon: url("/assets/icons/check.svg"); }
+    .desktop-i-paperclip { --desktop-icon: url("/assets/icons/paperclip.svg"); }
+    .desktop-i-arrow-up { --desktop-icon: url("/assets/icons/arrow-up.svg"); }
+    .desktop-i-lock-open { --desktop-icon: url("/assets/icons/lock-open.svg"); }
+    .desktop-i-close { --desktop-icon: url("/assets/icons/close.svg"); }
+
+    /* macOS Window Titlebar */
+    .desktop-titlebar { position: absolute; z-index: 10; top: 0; left: 0; right: 0; height: 38px; color: #a9a9ae; display: flex; align-items: center; border-bottom: 1px solid rgba(255,255,255,.05); }
+    .desktop-traffic { position: absolute; top: 14px; left: 14px; display: flex; gap: 8px; }
+    .desktop-traffic i { width: 10px; height: 10px; border-radius: 50%; }
+    .traffic-close { background: #ff5f57; } .traffic-min { background: #febc2e; } .traffic-max { background: #28c840; }
+    .desktop-title-controls { position: absolute; top: 7px; left: 88px; display: flex; align-items: center; gap: 2px; }
+    .desktop-control { display: grid; place-items: center; flex-shrink: 0; width: 24px; height: 24px; border-radius: 6px; color: #a9a9ae; transition: background .15s, color .15s; }
+    .desktop-control:hover { background: rgba(255,255,255,.08); color: #e8e8ea; }
+    .desktop-control.is-active { background: rgba(255,255,255,.12); color: #fff; }
+    .desktop-control-dim { opacity: .38; pointer-events: none; }
+    .desktop-sidebar-glyph { position: relative; width: 24px; height: 24px; }
+    .desktop-sidebar-glyph::before { content: ""; position: absolute; width: 14px; height: 14px; border: 1.4px solid currentColor; border-radius: 3px; }
+    .desktop-sidebar-glyph::after { content: ""; position: absolute; width: 1.4px; height: 10px; background: currentColor; transform: translateX(-3px); }
+    .desktop-title-plus { visibility: hidden; }
+    .desktop-title-plus.is-visible { visibility: visible; }
+    .desktop-title-menu { margin-left: 22px; }
+    .desktop-session-title { position: absolute; top: 9px; left: 272px; display: flex; align-items: center; gap: 6px; max-width: 390px; font-size: 12px; font-weight: 500; opacity: 0; transition: opacity .18s, left .22s cubic-bezier(.22,1,.36,1); }
+    .desktop-session-title.is-visible { opacity: .86; }
+    .desktop-session-target { margin-left: 3px; color: #85858a; font-weight: 400; opacity: .65; }
+    .desktop-title-actions { position: absolute; top: 7px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .18s; }
+    .desktop-title-actions.is-visible { opacity: 1; }
+
+    /* Left Sidebar */
+    .desktop-sidebar { position: absolute; z-index: 5; top: 0; bottom: 0; left: 0; width: 256px; padding-top: 38px; background: rgba(255,255,255,.03); border-right: 1px solid rgba(255,255,255,.08); color: #a9a9ae; display: flex; flex-direction: column; transition: transform .22s cubic-bezier(.22,1,.36,1), opacity .18s; }
+    .desktop-sidebar.is-collapsed { transform: translateX(-100%); opacity: 0; pointer-events: none; }
+    .sidebar-filter { display: flex; align-items: center; gap: 7px; height: 29px; margin: 4px 8px 6px; padding: 0 8px; border-radius: 8px; color: #d0d0d3; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .15s; }
+    .sidebar-filter:hover { background: rgba(255,255,255,.06); }
+    .sidebar-filter > .desktop-icon:first-child { width: 15px; height: 15px; color: #85858a; }
+    .sidebar-filter-chevron { width: 11px; height: 11px; color: #85858a; }
+    .sidebar-sort { margin-left: auto; color: #85858a; }
+    .sidebar-sessions { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+    .sidebar-session { flex-shrink: 0; height: 63px; padding: 6px 8px; overflow: hidden; border-radius: 8px; cursor: pointer; transition: background .15s; }
+    .sidebar-session:hover { background: rgba(255,255,255,.05); }
+    .sidebar-session.is-active { background: rgba(235,235,239,.11); }
+    .sidebar-session-new { max-height: 0; height: 63px; padding-top: 0; padding-bottom: 0; opacity: 0; background: rgba(235,235,239,.11); transition: max-height .26s cubic-bezier(.22,1,.36,1), opacity .18s, padding .26s; }
+    .sidebar-session-new.is-visible { max-height: 63px; padding-top: 6px; padding-bottom: 6px; opacity: 1; }
+    .session-context { display: flex; align-items: center; justify-content: space-between; height: 14px; color: #85858a; font-size: 11px; line-height: 14px; }
+    .session-name { display: flex; align-items: center; gap: 8px; height: 19px; margin-top: 2px; overflow: hidden; color: #dedee1; font-size: 13px; line-height: 17px; white-space: nowrap; }
+    .session-name span { overflow: hidden; text-overflow: ellipsis; }
+    .session-meta { display: flex; align-items: center; gap: 5px; height: 16px; color: #85858a; font-size: 10px; line-height: 14px; }
+    .session-meta .desktop-icon { width: 11px; height: 11px; }
+    .sidebar-settings { margin: 8px 8px 12px; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 8px; font-size: 13px; color: #85858a; }
+
+    /* Main Area */
+    .desktop-main { position: absolute; top: 0; right: 0; bottom: 0; left: 256px; overflow: hidden; background: #070707; transition: left .22s cubic-bezier(.22,1,.36,1), right .22s cubic-bezier(.22,1,.36,1); }
+    .desktop-main.is-full-left { left: 0; }
+    .desktop-main.is-contract-right { right: 340px; }
+
+    /* Canvas (New Session State) */
+    .desktop-canvas { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding-bottom: 132px; opacity: 1; transition: opacity .2s; }
+    .desktop-canvas.is-hidden { opacity: 0; pointer-events: none; }
+    .desktop-canvas-inner { display: flex; flex-direction: column; align-items: center; text-align: center; }
+    .desktop-mark { display: grid; grid-template-columns: repeat(7,5px); grid-template-rows: repeat(8,5px); gap: 2px; width: 47px; height: 54px; }
+    .desktop-mark span { width: 5px; height: 5px; background: #e8e8ea; opacity: .1; animation: desktopMarkPulse 2.4s var(--cell-delay) ease-in-out infinite; }
+    @keyframes desktopMarkPulse { 0%,100% { opacity: .08; transform: scale(.9); } 50% { opacity: 1; transform: scale(1); } }
+    .desktop-canvas-title { margin-top: 16px; color: #e8e8ea; font-size: 16px; font-weight: 500; }
+
+    /* Transcript (Active Conversation) */
+    .desktop-transcript { position: absolute; inset: 0; overflow-y: auto; padding: 64px 48px 156px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .desktop-transcript.is-visible { opacity: 1; pointer-events: auto; }
+    .desktop-transcript-column { width: 100%; max-width: 736px; margin: 0 auto; display: flex; flex-direction: column; }
+    
+    .desktop-user-row { display: flex; justify-content: flex-end; opacity: 0; transition: opacity .16s; }
+    .desktop-user-row.is-visible { opacity: 1; }
+    .desktop-user-bubble { max-width: 80%; padding: 10px 16px; border-radius: 16px; background: rgba(235,235,235,.08); color: #e8e8ea; font-size: 14px; line-height: 22px; opacity: .65; transition: opacity .2s; user-select: text; }
+    .desktop-user-bubble.is-confirmed { opacity: 1; }
+    .desktop-user-meta-space { height: 32px; }
+
+    .desktop-tool-group { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .22s ease-out, opacity .16s; border-radius: 8px; }
+    .desktop-tool-group.is-open { max-height: 180px; opacity: 1; }
+    .desktop-tool-group.is-collapsed { max-height: 28px; opacity: 1; }
+    .desktop-tool-header { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 4px; color: #a9a9ae; font-size: 12px; line-height: 18px; cursor: pointer; user-select: none; }
+    .desktop-tool-disclosure { display: grid; place-items: center; width: 18px; color: #85858a; font-size: 10px; transition: transform .15s; }
+    .desktop-tool-disclosure.is-collapsed { transform: rotate(-90deg); }
+    .desktop-tool-list { margin-left: 12px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.08); }
+    .desktop-tool-row { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; color: #a9a9ae; font-size: 12px; line-height: 18px; opacity: 0; transition: opacity .16s; }
+    .desktop-tool-row.is-visible { opacity: 1; }
+    .desktop-tool-icon { width: 13px; height: 13px; color: #a9a9ae; }
+    .desktop-tool-label { flex-shrink: 0; color: #c4c4c8; font-weight: 500; }
+    .desktop-tool-detail { min-width: 0; overflow: hidden; color: #85858a; text-overflow: ellipsis; white-space: nowrap; font-family: "Holt Geist Mono", monospace; font-size: 11px; }
+    .desktop-tool-state { display: grid; place-items: center; flex-shrink: 0; width: 16px; height: 16px; margin-left: auto; }
+    .desktop-tool-spinner { display: none; grid-template-columns: repeat(3,2px); grid-template-rows: repeat(3,2px); gap: 1px; width: 8px; height: 8px; }
+    .desktop-tool-spinner i { width: 2px; height: 2px; background: #b6d3ef; opacity: .1; animation: desktopMatrixPulse .75s calc(var(--matrix-index) * -.075s) linear infinite; }
+    .desktop-tool-spinner i:nth-child(n+4):nth-child(-n+6) { background: #edb185; }
+    .desktop-tool-spinner i:nth-child(n+7) { background: #f888a0; }
+    @keyframes desktopMatrixPulse { 0% { opacity: 1; } 45%,92% { opacity: .1; } 100% { opacity: 1; } }
+    .desktop-tool-row.is-pending .desktop-tool-spinner { display: grid; }
+    .desktop-tool-check { display: none; width: 12px; height: 12px; color: #85858a; }
+    .desktop-tool-row.is-done .desktop-tool-check { display: block; }
+    .desktop-tool-row.is-done .desktop-tool-spinner { display: none; }
+
+    .desktop-assistant-response { margin-top: 12px; color: #e8e8ea; font-size: 14px; line-height: 22px; user-select: text; }
+    .desktop-response-block { display: none; }
+    .desktop-response-block.is-visible { display: block; animation: desktopResponseIn .26s ease-out; }
+    @keyframes desktopResponseIn { from { opacity: 0; } to { opacity: 1; } }
+    .desktop-assistant-response p { margin-bottom: 12px; }
+    .desktop-assistant-response ul { margin-bottom: 12px; padding-left: 19px; }
+    .desktop-assistant-response li { margin-bottom: 4px; padding-left: 2px; }
+    .desktop-assistant-response li::marker { color: #85858a; }
+    .desktop-assistant-response li.desktop-response-block.is-visible { display: list-item; }
+    .desktop-assistant-response code { padding: 1px 4px; border-radius: 4px; background: rgba(139,124,246,.09); color: #aba1f9; font-family: "Holt Geist Mono", monospace; font-size: 12.5px; }
+    .desktop-response-result { color: #a9a9ae; }
+
+    .desktop-working { display: none; align-items: center; gap: 7px; padding-top: 16px; color: #a9a9ae; font-size: 12px; line-height: 18px; }
+    .desktop-working.is-visible { display: flex; }
+    .desktop-working-dots { display: flex; align-items: center; gap: 3px; }
+    .desktop-working-dots i { width: 3px; height: 3px; border-radius: 1px; background: #aba1f9; animation: desktopWorkingPulse .9s ease-in-out infinite; }
+    .desktop-working-dots i:nth-child(2) { background: #8b7cf6; animation-delay: -.15s; }
+    .desktop-working-dots i:nth-child(3) { background: #7266ca; animation-delay: -.3s; }
+    @keyframes desktopWorkingPulse { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+    .desktop-working-elapsed { color: #85858a; opacity: .7; }
+
+    /* Composer */
+    .desktop-composer-stack { position: absolute; z-index: 8; right: 0; bottom: 0; left: 0; padding: 0 16px 16px; background: linear-gradient(180deg, rgba(7,7,7,0), #070707 72px); }
+    .desktop-status { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 768px; height: 24px; margin: 0 auto; padding: 0 24px; color: #a9a9ae; font-size: 12px; opacity: 0; transition: opacity .15s; }
+    .desktop-status.is-visible { opacity: 1; }
+    .desktop-status-spinner { width: 10px; height: 10px; border: 1.5px solid rgba(139,124,246,.25); border-top-color: #aba1f9; border-radius: 50%; animation: desktopSpin .75s linear infinite; }
+    @keyframes desktopSpin { to { transform: rotate(360deg); } }
+    .desktop-composer-column { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 768px; margin: 0 auto; }
+    .desktop-project-selector { display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 10px; color: #a9a9ae; font-size: 11px; cursor: pointer; }
+    .desktop-project-selector.is-hidden { display: none; }
+    .desktop-project-selector > .desktop-icon:first-child { width: 13px; height: 13px; }
+    .desktop-chip-chevron { width: 10px; height: 10px; color: #85858a; }
+
+    .desktop-composer { position: relative; flex-shrink: 0; width: 100%; height: 124px; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 26px; background: rgba(52,52,56,.72); box-shadow: 0 12px 32px rgba(0,0,0,.2); backdrop-filter: blur(16px); transition: height .18s ease-out; }
+    .desktop-composer.is-compact { height: 49px; }
+    .desktop-composer-input { position: absolute; inset: 0; padding: 14px 220px 12px 18px; transition: padding .18s ease-out; }
+    .desktop-composer.is-compact .desktop-composer-input { padding: 12px 242px 10px 18px; }
+    .desktop-composer-textarea { width: 100%; height: 100%; background: transparent; border: none; outline: none; resize: none; color: #e8e8ea; font-family: inherit; font-size: 14px; line-height: 22.75px; padding: 0; }
+    .desktop-composer-textarea::placeholder { color: #85858a; }
+
+    .desktop-composer-actions { position: absolute; right: 12px; bottom: 10px; display: flex; align-items: center; gap: 8px; height: 32px; transition: bottom .18s ease-out; }
+    .desktop-composer.is-compact .desktop-composer-actions { bottom: 8px; }
+    .desktop-model-chip { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 16px; color: #d0d0d3; font-size: 12px; white-space: nowrap; cursor: pointer; transition: background .15s; }
+    .desktop-model-chip:hover { background: rgba(255,255,255,.08); color: #fff; }
+    .desktop-attach { display: grid; place-items: center; width: 28px; height: 28px; color: #a9a9ae; cursor: pointer; }
+    .desktop-send { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #ebebef; color: #17171a; cursor: pointer; transition: opacity .15s; }
+    .desktop-send:hover { opacity: .9; }
+    .desktop-send-arrow { width: 14px; height: 14px; }
+    .desktop-send-stop { display: none; width: 11px; height: 11px; border-radius: 3px; background: #17171a; }
+    .desktop-send.is-running .desktop-send-arrow { display: none; }
+    .desktop-send.is-running .desktop-send-stop { display: block; }
+
+    .desktop-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 20px; margin-bottom: -2px; padding: 0 10px; color: #85858a; font-size: 11px; }
+    .desktop-footer-left { display: flex; align-items: center; gap: 12px; }
+    .desktop-footer-chip { display: flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background .15s, color .15s; }
+    .desktop-footer-chip:hover { background: rgba(255,255,255,.06); color: #e8e8ea; }
+    .desktop-footer-chip > .desktop-icon:first-child { width: 12px; height: 12px; }
+    .desktop-permission > .desktop-icon:first-child { color: #b69268; }
+
+    /* Right Pane */
+    .desktop-right-pane { position: absolute; z-index: 6; top: 0; right: 0; bottom: 0; width: 340px; background: #0b0b0e; border-left: 1px solid rgba(255,255,255,.08); display: flex; flex-direction: column; transition: transform .22s cubic-bezier(.22,1,.36,1), opacity .18s; }
+    .desktop-right-pane.is-closed { transform: translateX(100%); opacity: 0; pointer-events: none; }
+    .right-pane-header { height: 38px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.06); background: rgba(255,255,255,.02); }
+    .right-pane-tabs { display: flex; gap: 4px; }
+    .right-pane-tab { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 5px; font-size: 12px; color: #85858a; cursor: pointer; transition: color .15s, background .15s; }
+    .right-pane-tab:hover { color: #e8e8ea; background: rgba(255,255,255,.05); }
+    .right-pane-tab.is-active { color: #fff; background: rgba(255,255,255,.1); font-weight: 500; }
+    .right-pane-tab .desktop-icon { width: 13px; height: 13px; }
+    .right-pane-badge { display: inline-block; padding: 0 5px; font-size: 10px; border-radius: 10px; background: rgba(237,155,127,.2); color: #ed9b7f; }
+    .right-pane-close { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 4px; color: #85858a; cursor: pointer; }
+    .right-pane-close:hover { color: #fff; background: rgba(255,255,255,.08); }
+    .right-pane-close .desktop-icon { width: 12px; height: 12px; }
+    .right-pane-body { flex: 1; overflow-y: auto; }
+    .right-pane-view { display: none; height: 100%; }
+    .right-pane-view.is-active { display: flex; flex-direction: column; }
+    .diff-file-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.05); font-size: 11px; background: rgba(255,255,255,.015); }
+    .diff-file-name { color: #dedee1; font-family: "Holt Geist Mono", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .diff-file-stats { display: flex; gap: 6px; font-weight: 600; font-family: "Holt Geist Mono", monospace; }
+    .diff-stat-add { color: #28c840; font-style: normal; }
+    .diff-stat-del { color: #ff5f57; font-style: normal; }
+    .diff-content { padding: 8px 0; font-family: "Holt Geist Mono", monospace; font-size: 11px; line-height: 19px; }
+    .diff-hunk { padding: 2px 12px; color: #7266ca; background: rgba(139,124,246,.08); font-size: 10.5px; }
+    .diff-line { display: flex; padding: 1px 12px; color: #b6b6ba; white-space: pre; }
+    .diff-num { width: 24px; color: #626268; user-select: none; flex-shrink: 0; }
+    .diff-sig { width: 14px; user-select: none; flex-shrink: 0; }
+    .diff-line.diff-add { background: rgba(40,200,64,.08); color: #7fe690; }
+    .diff-line.diff-del { background: rgba(255,95,87,.08); color: #f88884; }
+    .terminal-header-bar { padding: 6px 12px; font-size: 11px; color: #75757d; border-bottom: 1px solid rgba(255,255,255,.04); }
+    .terminal-body { padding: 10px 12px; font-family: "Holt Geist Mono", monospace; font-size: 11.5px; line-height: 18px; color: #d0d0d5; flex: 1; }
+    .term-line { margin-bottom: 3px; }
+    .term-prompt { color: #8b7cf6; font-weight: 500; }
+    .term-cmd { color: #fff; }
+    .term-dim { color: #707077; }
+    .term-accent { color: #aba1f9; }
+    .term-success { color: #4ade80; }
+    .term-cursor { display: inline-block; color: #8b7cf6; animation: termBlink 1s step-end infinite; }
+    @keyframes termBlink { 50% { opacity: 0; } }
+    .file-tree { padding: 8px 6px; font-size: 12px; }
+    .file-item { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 6px; color: #b6b6ba; cursor: pointer; }
+    .file-item:hover { background: rgba(255,255,255,.06); color: #fff; }
+    .file-indent { padding-left: 20px; }
+    .file-indent-2 { padding-left: 32px; }
+    .file-indent-3 { padding-left: 44px; }
+    .file-item .desktop-icon { width: 13px; height: 13px; color: #85858a; }
+    .file-item.is-modified { color: #ed9b7f; }
+    .file-badge-m { margin-left: auto; font-size: 10px; font-weight: 600; color: #ed9b7f; }
+
+    /* REAL HOLT MODEL PICKER POPOVER (Matched to Native Holt 1:1) */
+    .desktop-model-popover { position: absolute; z-index: 50; bottom: 58px; right: 28px; width: 310px; background: #1a1b1e; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; box-shadow: 0 20px 48px rgba(0,0,0,.75); overflow: hidden; backdrop-filter: blur(24px); display: flex; flex-direction: column; font-size: 13px; }
+    .desktop-model-popover.is-hidden { display: none; }
+    .model-picker-tabs { display: flex; align-items: center; height: 40px; padding: 0 8px; border-bottom: 1px solid rgba(255,255,255,.08); gap: 4px; }
+    .model-picker-tab { position: relative; display: grid; place-items: center; width: 34px; height: 32px; border-radius: 6px; cursor: pointer; transition: background .12s; }
+    .model-picker-tab:hover { background: rgba(255,255,255,.06); }
+    .model-picker-tab-indicator { display: none; position: absolute; bottom: -4px; left: 4px; right: 4px; height: 2px; border-radius: 1px; background: #38bdf8; }
+    .model-picker-tab.is-active .model-picker-tab-indicator { display: block; }
+    .model-picker-search { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .model-picker-search .desktop-icon { width: 14px; height: 14px; color: #7d7d85; }
+    .model-picker-search input { flex: 1; background: transparent; border: none; outline: none; color: #e8e8ea; font-size: 13px; font-family: inherit; }
+    .model-picker-search input::placeholder { color: #7d7d85; }
+    .model-picker-list { max-height: 200px; overflow-y: auto; padding: 4px 6px; display: flex; flex-direction: column; gap: 2px; }
+    .model-picker-row { display: flex; align-items: center; height: 32px; padding: 0 8px; border-radius: 6px; cursor: pointer; transition: background .12s; }
+    .model-picker-row:hover { background: rgba(255,255,255,.06); }
+    .model-picker-row.is-selected { background: rgba(255,255,255,.09); }
+    .model-picker-name { font-size: 12.5px; font-weight: 600; color: #e8e8ea; }
+    .model-picker-sub { font-size: 11px; color: #75757d; margin-left: 6px; }
+    .model-picker-shortcut { margin-left: auto; font-family: "Holt Geist Mono", monospace; font-size: 10.5px; color: #7d7d85; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+    .model-picker-reasoning { border-top: 1px solid rgba(255,255,255,.08); padding: 6px 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .reasoning-heading { font-size: 10px; font-weight: 600; color: #7d7d85; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px 4px; }
+    .reasoning-row { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 8px; border-radius: 6px; font-size: 12.5px; color: #d0d0d5; cursor: pointer; transition: background .12s, color .12s; }
+    .reasoning-row:hover { background: rgba(255,255,255,.06); color: #fff; }
+    .reasoning-row.is-selected { background: rgba(255,255,255,.09); color: #fff; font-weight: 500; }
+    .reasoning-default-tag { font-size: 11px; color: #707077; }
+
+    /* Popovers and Menus */
+    .desktop-popover { position: absolute; z-index: 50; width: 240px; background: #161619; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; box-shadow: 0 18px 40px rgba(0,0,0,.65); padding: 6px; backdrop-filter: blur(20px); font-size: 13px; }
+    .desktop-popover.is-hidden { display: none; }
+    .popover-header { padding: 6px 8px 4px; font-size: 10.5px; font-weight: 600; color: #7d7d85; text-transform: uppercase; letter-spacing: .06em; }
+    .popover-list { display: flex; flex-direction: column; gap: 2px; }
+    .popover-item, .popover-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 6px; color: #d0d0d5; text-align: left; cursor: pointer; transition: background .12s, color .12s; }
+    .popover-item:hover, .popover-btn:hover { background: rgba(255,255,255,.08); color: #fff; }
+    .popover-item.is-selected { background: rgba(139,124,246,.12); color: #fff; }
+    .popover-item-details { flex: 1; min-width: 0; }
+    .popover-item-title { font-weight: 500; font-size: 12.5px; }
+    .popover-item-sub { font-size: 11px; color: #85858a; }
+    .popover-shortcut { margin-left: auto; font-size: 11px; color: #707077; font-family: "Holt Geist Mono", monospace; }
+    .popover-divider { height: 1px; margin: 4px 6px; background: rgba(255,255,255,.07); }
+    .desktop-more-popover { left: 160px; top: 40px; width: 220px; }
+    .desktop-workspace-popover { left: 14px; top: 72px; width: 240px; }
+    .desktop-permission-popover { left: 24px; bottom: 48px; width: 260px; }
+    .desktop-branch-popover { right: 24px; bottom: 48px; width: 210px; }
+
+    /* Clean slim scrollbars */
+    .model-picker-list::-webkit-scrollbar,
+    .sidebar-sessions::-webkit-scrollbar,
+    .desktop-transcript::-webkit-scrollbar,
+    .right-pane-body::-webkit-scrollbar {
+        width: 4px;
+    }
+    .model-picker-list::-webkit-scrollbar-track,
+    .sidebar-sessions::-webkit-scrollbar-track,
+    .desktop-transcript::-webkit-scrollbar-track,
+    .right-pane-body::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .model-picker-list::-webkit-scrollbar-thumb,
+    .sidebar-sessions::-webkit-scrollbar-thumb,
+    .desktop-transcript::-webkit-scrollbar-thumb,
+    .right-pane-body::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 2px;
+    }
+    .model-picker-empty {
+        padding: 20px 8px;
+        text-align: center;
+        color: #7d7d85;
+        font-size: 12px;
+    }
+
+    .desktop-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+    @media (max-width: 520px) {
+        .desktop-demo { margin-bottom: 64px; }
+        .desktop-replay { top: -36px; }
+        .desktop-viewport { border-radius: 7px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .desktop-demo *, .desktop-demo *::before, .desktop-demo *::after { animation: none !important; transition: none !important; }
+        .desktop-mark span { opacity: .9; transform: none; }
+    }
+</style>
+
+<script is:inline define:vars={{ initialSessions: sessions, initialProviders: providers }}>
+    (() => {
+        const root = document.querySelector("[data-desktop-demo]");
+        if (!root) return;
+
+        const one = (sel, parent = root) => parent.querySelector(sel);
+        const all = (sel, parent = root) => [...parent.querySelectorAll(sel)];
+
+        const viewport = one("[data-desktop-viewport]");
+        const app = one("[data-desktop-app]");
+        const sidebar = one("[data-desktop-sidebar]");
+        const main = one("[data-desktop-main]");
+        const rightPane = one("[data-right-pane]");
+        const canvas = one("[data-canvas]");
+        const transcript = one("[data-transcript]");
+        const userRow = one("[data-user-row]");
+        const userBubble = one("[data-user-bubble]");
+        const newSessionRow = one("[data-new-session-row]");
+        const sessionTitle = one("[data-session-title]");
+        const titlePlus = one("[data-title-plus]");
+        const titleActions = one("[data-title-actions]");
+        const toolGroup = one("[data-tool-group]");
+        const toolDisclosure = one("[data-tool-disclosure]");
+        const toolSummary = one("[data-tool-summary]");
+        const toolRows = all("[data-tool-row]");
+        const responseChunks = all("[data-response-chunk]");
+        const working = one("[data-working]");
+        const workingLabel = one("[data-working-label]");
+        const workingElapsed = one("[data-working-elapsed]");
+        const statusEl = one("[data-status]");
+        const statusText = one("[data-status-text]");
+        const projectSelector = one("[data-project-selector]");
+        const composer = one("[data-composer]");
+        const textarea = one("[data-composer-textarea]");
+        const sendBtn = one("[data-send-button]");
+        const replay = one("[data-demo-replay]");
+
+        // Popovers
+        const popovers = {
+            model: one('[data-popover="model"]'),
+            more: one('[data-popover="more"]'),
+            workspace: one('[data-popover="workspace"]'),
+            permission: one('[data-popover="permission"]'),
+            branch: one('[data-popover="branch"]'),
+        };
+
+        const modelListEl = one("[data-model-list]");
+        const modelSearchInput = one("[data-model-search]");
+
+        const promptText = "Review the landing page and make the product demo feel alive.";
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+        // State
+        const sessionsMap = new Map();
+        initialSessions.forEach(s => sessionsMap.set(s.id, { ...s }));
+
+        let activeSessionId = "demo";
+        let isLeftSidebarOpen = true;
+        let isRightPaneOpen = false;
+        let activeRightTab = "diff";
+        let activeProviderId = "kimi";
+        let activeModelId = "kimi-k3.1-pro";
+        let activeModelName = "Kimi K3.1 Pro";
+        let activeReasoning = "Max";
+        let activeWorkspace = "holt";
+        let activePermission = "Full access";
+        let activeBranch = "main";
+
+        let runId = 0;
+        let running = false;
+        let completed = false;
+        let userInteracted = false;
+        let elapsedTimer = null;
+
+        const fit = () => {
+            if (!viewport || !app) return;
+            app.style.transform = `scale(${viewport.clientWidth / 1180})`;
+        };
+        new ResizeObserver(fit).observe(viewport);
+        fit();
+
+        const wait = (ms, id) => new Promise((resolve, reject) => {
+            window.setTimeout(() => {
+                if (id === runId) resolve();
+                else reject(new DOMException("Animation replaced", "AbortError"));
+            }, ms);
+        });
+
+        const stopElapsed = () => {
+            if (elapsedTimer !== null) window.clearInterval(elapsedTimer);
+            elapsedTimer = null;
+        };
+
+        const startElapsed = () => {
+            stopElapsed();
+            const startedAt = Date.now();
+            workingElapsed.textContent = "0s";
+            elapsedTimer = window.setInterval(() => {
+                workingElapsed.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s`;
+            }, 500);
+        };
+
+        const closeAllPopovers = () => {
+            Object.values(popovers).forEach(p => p && p.classList.add("is-hidden"));
+        };
+
+        const togglePopover = (name) => {
+            const target = popovers[name];
+            if (!target) return;
+            const willOpen = target.classList.contains("is-hidden");
+            closeAllPopovers();
+            if (willOpen) target.classList.remove("is-hidden");
+        };
+
+        // Render Model Picker models for active provider
+        const renderModelList = (query = "") => {
+            const provider = initialProviders.find(p => p.id === activeProviderId);
+            if (!provider || !modelListEl) return;
+
+            const q = query.trim().toLowerCase();
+            const filtered = q
+                ? provider.models.filter(m => m.name.toLowerCase().includes(q) || m.sub.toLowerCase().includes(q))
+                : provider.models;
+
+            if (filtered.length === 0) {
+                modelListEl.innerHTML = `<div class="model-picker-empty">No models found</div>`;
+                return;
+            }
+
+            modelListEl.innerHTML = filtered.map(m => `
+                <div class="model-picker-row ${m.id === activeModelId ? "is-selected" : ""}" data-model-id="${m.id}" data-model-name="${m.name}">
+                    <span class="model-picker-name">${m.name}</span>
+                    <span class="model-picker-sub">${m.sub}</span>
+                    <span class="model-picker-shortcut">${m.shortcut}</span>
+                </div>
+            `).join("");
+        };
+
+        // Update the composer model chip
+        const updateModelChip = () => {
+            const provider = initialProviders.find(p => p.id === activeProviderId);
+            const chipIcon = one(".desktop-model-icon");
+            const chipLabel = one(".desktop-model-label");
+            if (provider && chipIcon) chipIcon.src = provider.icon;
+            if (chipLabel) {
+                chipLabel.textContent = `${activeModelName}${activeReasoning ? ` ${activeReasoning}` : ""}`;
+            }
+        };
+
+        // Reset demo to initial state
+        const reset = () => {
+            runId += 1;
+            stopElapsed();
+            root.dataset.phase = "idle";
+            canvas.classList.remove("is-hidden");
+            transcript.classList.remove("is-visible");
+            userRow.classList.remove("is-visible");
+            userBubble.classList.remove("is-confirmed");
+            userBubble.textContent = promptText;
+            newSessionRow.classList.remove("is-visible");
+            sessionTitle.classList.remove("is-visible");
+            titlePlus.classList.remove("is-visible");
+            titleActions.classList.remove("is-visible");
+            toolGroup.classList.remove("is-open", "is-collapsed");
+            toolDisclosure.textContent = "▾";
+            toolDisclosure.classList.remove("is-collapsed");
+            toolSummary.textContent = "4 tool calls";
+            toolRows.forEach((row) => row.classList.remove("is-visible", "is-pending", "is-done"));
+            responseChunks.forEach((chunk) => chunk.classList.remove("is-visible"));
+            working.classList.remove("is-visible");
+            workingLabel.textContent = "Thinking…";
+            statusEl.classList.remove("is-visible");
+            projectSelector.classList.remove("is-hidden");
+            composer.classList.remove("is-compact");
+            textarea.value = "";
+            sendBtn.classList.remove("is-running");
+        };
+
+        const showConversation = () => {
+            canvas.classList.add("is-hidden");
+            transcript.classList.add("is-visible");
+            userRow.classList.add("is-visible");
+            newSessionRow.classList.add("is-visible");
+            sessionTitle.classList.add("is-visible");
+            titlePlus.classList.add("is-visible");
+            titleActions.classList.add("is-visible");
+            projectSelector.classList.add("is-hidden");
+            composer.classList.add("is-compact");
+            textarea.value = "";
+        };
+
+        const showFinal = () => {
+            reset();
+            showConversation();
+            userBubble.classList.add("is-confirmed");
+            toolGroup.classList.add("is-collapsed");
+            toolDisclosure.textContent = "▸";
+            toolRows.forEach((row) => row.classList.add("is-visible", "is-done"));
+            responseChunks.forEach((chunk) => chunk.classList.add("is-visible"));
+            root.dataset.phase = "done";
+        };
+
+        // Auto animated demo run
+        const run = async () => {
+            reset();
+            const id = runId;
+            root.dataset.phase = "typing";
+            await wait(450, id);
+
+            for (let index = 0; index < promptText.length; index += 1) {
+                textarea.value = promptText.slice(0, index + 1);
+                await wait(promptText[index] === " " ? 18 : 28, id);
+            }
+
+            await wait(350, id);
+            root.dataset.phase = "sent";
+            showConversation();
+            sendBtn.classList.add("is-running");
+            statusEl.classList.add("is-visible");
+            await wait(500, id);
+
+            statusEl.classList.remove("is-visible");
+            userBubble.classList.add("is-confirmed");
+            working.classList.add("is-visible");
+            startElapsed();
+            root.dataset.phase = "working";
+            await wait(700, id);
+
+            root.dataset.phase = "tools";
+            toolGroup.classList.add("is-open");
+            workingLabel.textContent = "Working…";
+            for (const row of toolRows) {
+                row.classList.add("is-visible", "is-pending");
+                await wait(700, id);
+                row.classList.remove("is-pending");
+                row.classList.add("is-done");
+            }
+
+            await wait(400, id);
+            root.dataset.phase = "answering";
+            toolGroup.classList.remove("is-open");
+            toolGroup.classList.add("is-collapsed");
+            toolDisclosure.textContent = "▸";
+
+            for (const chunk of responseChunks) {
+                chunk.classList.add("is-visible");
+                await wait(380, id);
+            }
+
+            working.classList.remove("is-visible");
+            stopElapsed();
+            sendBtn.classList.remove("is-running");
+            root.dataset.phase = "done";
+            completed = true;
+            running = false;
+        };
+
+        const start = () => {
+            if (running || completed || userInteracted) return;
+            running = true;
+            if (reducedMotion.matches) {
+                showFinal();
+                completed = true;
+                running = false;
+                return;
+            }
+            run().catch((error) => {
+                if (error.name !== "AbortError") throw error;
+            });
+        };
+
+        const stop = () => {
+            running = false;
+            runId += 1;
+            stopElapsed();
+        };
+
+        // Switch to selected session
+        const switchSession = (sessionId) => {
+            userInteracted = true;
+            stop();
+            activeSessionId = sessionId;
+            all("[data-session-id]").forEach(el => {
+                el.classList.toggle("is-active", el.dataset.sessionId === sessionId);
+            });
+
+            if (sessionId === "new") {
+                // Blank canvas state
+                canvas.classList.remove("is-hidden");
+                transcript.classList.remove("is-visible");
+                projectSelector.classList.remove("is-hidden");
+                composer.classList.remove("is-compact");
+                one(".desktop-title-text").textContent = "New Session";
+                one(".desktop-title-provider-icon").src = `/assets/providers/${activeProviderId}.svg`;
+                textarea.value = "";
+                textarea.focus();
+                return;
+            }
+
+            const session = sessionsMap.get(sessionId);
+            if (!session) return;
+
+            showConversation();
+            userBubble.classList.add("is-confirmed");
+            userBubble.textContent = session.prompt;
+            one(".desktop-title-text").textContent = session.title;
+            one(".desktop-title-provider-icon").src = `/assets/providers/${session.provider}.svg`;
+
+            // Tool group
+            if (session.tools && session.tools.length) {
+                toolGroup.style.display = "block";
+                toolGroup.classList.remove("is-open");
+                toolGroup.classList.add("is-collapsed");
+                toolDisclosure.textContent = "▸";
+                toolSummary.textContent = `${session.tools.length} tool calls`;
+                one("[data-tool-list]").innerHTML = session.tools.map(t => `
+                    <div class="desktop-tool-row is-visible is-done">
+                        <span class="desktop-icon desktop-i-${t.icon} desktop-tool-icon"></span>
+                        <span class="desktop-tool-label">${t.label}</span>
+                        <span class="desktop-tool-detail">${t.detail}</span>
+                        <span class="desktop-tool-state"><span class="desktop-icon desktop-i-check desktop-tool-check" style="display:block"></span></span>
+                    </div>
+                `).join("");
+            } else {
+                toolGroup.style.display = "none";
+            }
+
+            // Response
+            if (session.response) {
+                one("[data-assistant-response]").innerHTML = `
+                    <p class="desktop-response-block is-visible">${session.response.intro || ""}</p>
+                    ${session.response.bullets ? `<ul>${session.response.bullets.map(b => `<li class="desktop-response-block is-visible">${b}</li>`).join("")}</ul>` : ""}
+                    ${session.response.result ? `<p class="desktop-response-block desktop-response-result is-visible">${session.response.result}</p>` : ""}
+                `;
+            }
+
+            working.classList.remove("is-visible");
+            statusEl.classList.remove("is-visible");
+            sendBtn.classList.remove("is-running");
+            textarea.value = "";
+            transcript.scrollTop = 0;
+        };
+
+        // Send a custom message
+        const sendMessage = async () => {
+            const text = textarea.value.trim();
+            if (!text) return;
+
+            userInteracted = true;
+            stop();
+            textarea.value = "";
+
+            if (!canvas.classList.contains("is-hidden")) {
+                canvas.classList.add("is-hidden");
+                transcript.classList.add("is-visible");
+                projectSelector.classList.add("is-hidden");
+                composer.classList.add("is-compact");
+            }
+
+            userBubble.textContent = text;
+            userBubble.classList.add("is-confirmed");
+            userRow.classList.add("is-visible");
+
+            // Update session title
+            const shortTitle = text.length > 24 ? text.slice(0, 24) + "…" : text;
+            one(".desktop-title-text").textContent = shortTitle;
+            one(".desktop-title-provider-icon").src = `/assets/providers/${activeProviderId}.svg`;
+            newSessionRow.classList.add("is-visible", "is-active");
+            one(".session-title-label", newSessionRow).textContent = shortTitle;
+            one(".session-provider-img", newSessionRow).src = `/assets/providers/${activeProviderId}.svg`;
+
+            // Status Sending
+            sendBtn.classList.add("is-running");
+            statusText.textContent = "Sending…";
+            statusEl.classList.add("is-visible");
+            await new Promise(r => setTimeout(r, 450));
+            statusEl.classList.remove("is-visible");
+
+            // Thinking
+            working.classList.add("is-visible");
+            startElapsed();
+            await new Promise(r => setTimeout(r, 700));
+
+            // Tool group
+            toolGroup.style.display = "block";
+            toolGroup.classList.remove("is-collapsed");
+            toolGroup.classList.add("is-open");
+            toolDisclosure.textContent = "▾";
+            toolSummary.textContent = "3 tool calls";
+            one("[data-tool-list]").innerHTML = `
+                <div class="desktop-tool-row is-visible is-pending" data-dyn-tool="1">
+                    <span class="desktop-icon desktop-i-document desktop-tool-icon"></span>
+                    <span class="desktop-tool-label">Read</span>
+                    <span class="desktop-tool-detail">site/src/components/DesktopDemo.astro</span>
+                    <span class="desktop-tool-state"><span class="desktop-tool-spinner" style="display:grid">${Array.from({length:9}).map((_,i)=>`<i style="--matrix-index:${i}"></i>`).join("")}</span><span class="desktop-icon desktop-i-check desktop-tool-check"></span></span>
+                </div>
+                <div class="desktop-tool-row is-visible" data-dyn-tool="2">
+                    <span class="desktop-icon desktop-i-pen desktop-tool-icon"></span>
+                    <span class="desktop-tool-label">Edit</span>
+                    <span class="desktop-tool-detail">site/src/components/DesktopDemo.astro</span>
+                    <span class="desktop-tool-state"><span class="desktop-tool-spinner">${Array.from({length:9}).map((_,i)=>`<i style="--matrix-index:${i}"></i>`).join("")}</span><span class="desktop-icon desktop-i-check desktop-tool-check"></span></span>
+                </div>
+                <div class="desktop-tool-row is-visible" data-dyn-tool="3">
+                    <span class="desktop-icon desktop-i-command desktop-tool-icon"></span>
+                    <span class="desktop-tool-label">Run</span>
+                    <span class="desktop-tool-detail">npm run build</span>
+                    <span class="desktop-tool-state"><span class="desktop-tool-spinner">${Array.from({length:9}).map((_,i)=>`<i style="--matrix-index:${i}"></i>`).join("")}</span><span class="desktop-icon desktop-i-check desktop-tool-check"></span></span>
+                </div>
+            `;
+
+            for (let i = 1; i <= 3; i++) {
+                await new Promise(r => setTimeout(r, 600));
+                const tr = one(`[data-dyn-tool="${i}"]`);
+                if (tr) {
+                    tr.classList.remove("is-pending");
+                    tr.classList.add("is-done");
+                    tr.querySelector(".desktop-tool-spinner").style.display = "none";
+                    tr.querySelector(".desktop-tool-check").style.display = "block";
+                }
+            }
+
+            await new Promise(r => setTimeout(r, 300));
+            toolGroup.classList.remove("is-open");
+            toolGroup.classList.add("is-collapsed");
+            toolDisclosure.textContent = "▸";
+            stopElapsed();
+            working.classList.remove("is-visible");
+
+            // Assistant reply
+            one("[data-assistant-response]").innerHTML = `
+                <p class="desktop-response-block is-visible">Completed: <strong>${text}</strong>.</p>
+                <ul>
+                    <li class="desktop-response-block is-visible">Loaded workspace configuration for <code>${activeWorkspace}</code>.</li>
+                    <li class="desktop-response-block is-visible">Applied updates and validated build artifacts.</li>
+                </ul>
+                <p class="desktop-response-block desktop-response-result is-visible"><code>npm run build</code> passes. All pages generated cleanly.</p>
+            `;
+            sendBtn.classList.remove("is-running");
+        };
+
+        // Left sidebar toggle
+        const toggleLeftSidebar = () => {
+            isLeftSidebarOpen = !isLeftSidebarOpen;
+            if (isLeftSidebarOpen) {
+                sidebar.classList.remove("is-collapsed");
+                main.classList.remove("is-full-left");
+                sessionTitle.style.left = "272px";
+            } else {
+                sidebar.classList.add("is-collapsed");
+                main.classList.add("is-full-left");
+                sessionTitle.style.left = "184px";
+            }
+        };
+
+        // Right pane toggle
+        const toggleRightPane = (preferredTab = null) => {
+            if (preferredTab) switchRightTab(preferredTab);
+            if (!isRightPaneOpen) {
+                isRightPaneOpen = true;
+                rightPane.classList.remove("is-closed");
+                main.classList.add("is-contract-right");
+                one('[data-action="toggle-diff"]').classList.toggle("is-active", activeRightTab === "diff");
+                one('[data-action="toggle-terminal"]').classList.toggle("is-active", activeRightTab === "terminal");
+            } else if (preferredTab && activeRightTab !== preferredTab) {
+                // Just switch tab
+            } else {
+                closeRightPane();
+            }
+        };
+
+        const closeRightPane = () => {
+            isRightPaneOpen = false;
+            rightPane.classList.add("is-closed");
+            main.classList.remove("is-contract-right");
+            one('[data-action="toggle-diff"]').classList.remove("is-active");
+            one('[data-action="toggle-terminal"]').classList.remove("is-active");
+        };
+
+        const switchRightTab = (tabName) => {
+            activeRightTab = tabName;
+            all("[data-pane-tab]").forEach(tab => tab.classList.toggle("is-active", tab.dataset.paneTab === tabName));
+            all("[data-pane-view]").forEach(view => view.classList.toggle("is-active", view.dataset.paneView === tabName));
+            one('[data-action="toggle-diff"]').classList.toggle("is-active", isRightPaneOpen && tabName === "diff");
+            one('[data-action="toggle-terminal"]').classList.toggle("is-active", isRightPaneOpen && tabName === "terminal");
+        };
+
+        // Click event handling
+        root.addEventListener("click", (e) => {
+            // 1. Session item click
+            const sessionEl = e.target.closest("[data-session-id]");
+            if (sessionEl) {
+                closeAllPopovers();
+                switchSession(sessionEl.dataset.sessionId);
+                return;
+            }
+
+            // 2. New Chat
+            if (e.target.closest('[data-action="new-chat"]')) {
+                closeAllPopovers();
+                switchSession("new");
+                return;
+            }
+
+            // 3. Left sidebar toggle
+            if (e.target.closest('[data-action="toggle-left-sidebar"]')) {
+                closeAllPopovers();
+                toggleLeftSidebar();
+                return;
+            }
+
+            // 4. Right pane toggles
+            if (e.target.closest('[data-action="toggle-diff"]')) {
+                closeAllPopovers();
+                toggleRightPane("diff");
+                return;
+            }
+            if (e.target.closest('[data-action="toggle-terminal"]')) {
+                closeAllPopovers();
+                toggleRightPane("terminal");
+                return;
+            }
+            if (e.target.closest('[data-action="close-right-pane"]')) {
+                closeRightPane();
+                return;
+            }
+            const paneTab = e.target.closest("[data-pane-tab]");
+            if (paneTab) {
+                switchRightTab(paneTab.dataset.paneTab);
+                return;
+            }
+
+            // 5. Tool header disclosure toggle
+            if (e.target.closest("[data-tool-toggle]")) {
+                const isOpen = toolGroup.classList.contains("is-open");
+                if (isOpen) {
+                    toolGroup.classList.remove("is-open");
+                    toolGroup.classList.add("is-collapsed");
+                    toolDisclosure.textContent = "▸";
+                } else {
+                    toolGroup.classList.remove("is-collapsed");
+                    toolGroup.classList.add("is-open");
+                    toolDisclosure.textContent = "▾";
+                }
+                return;
+            }
+
+            // 6. Popover triggers
+            const trigger = e.target.closest("[data-menu-trigger]");
+            if (trigger) {
+                e.stopPropagation();
+                const menu = trigger.dataset.menuTrigger;
+                togglePopover(menu);
+                return;
+            }
+
+            // 7. Model Picker: Provider tab switch
+            const provTab = e.target.closest("[data-provider-tab]");
+            if (provTab) {
+                activeProviderId = provTab.dataset.providerTab;
+                all("[data-provider-tab]").forEach(t => t.classList.toggle("is-active", t === provTab));
+                renderModelList(modelSearchInput.value);
+                return;
+            }
+
+            // 8. Model Picker: Model row select
+            const modelRow = e.target.closest(".model-picker-row");
+            if (modelRow) {
+                activeModelId = modelRow.dataset.modelId;
+                activeModelName = modelRow.dataset.modelName;
+                all(".model-picker-row").forEach(r => r.classList.toggle("is-selected", r === modelRow));
+                updateModelChip();
+                closeAllPopovers();
+                return;
+            }
+
+            // 9. Model Picker: Reasoning select
+            const rRow = e.target.closest(".reasoning-row");
+            if (rRow) {
+                activeReasoning = rRow.dataset.reasoning;
+                all(".reasoning-row").forEach(r => r.classList.toggle("is-selected", r === rRow));
+                updateModelChip();
+                return;
+            }
+
+            // 10. Workspace select
+            const ws = e.target.closest("[data-workspace-select]");
+            if (ws) {
+                activeWorkspace = ws.dataset.workspaceSelect;
+                one(".sidebar-workspace-name").textContent = activeWorkspace;
+                one(".project-name-label").textContent = activeWorkspace;
+                one(".desktop-session-target").textContent = activeWorkspace;
+                all("[data-workspace-select]").forEach(r => r.classList.toggle("is-selected", r === ws));
+                closeAllPopovers();
+                return;
+            }
+
+            // 11. Permission select
+            const perm = e.target.closest("[data-perm-select]");
+            if (perm) {
+                activePermission = perm.dataset.permSelect;
+                one(".permission-label").textContent = activePermission;
+                all("[data-perm-select]").forEach(r => r.classList.toggle("is-selected", r === perm));
+                closeAllPopovers();
+                return;
+            }
+
+            // 12. Branch select
+            const br = e.target.closest("[data-branch-select]");
+            if (br) {
+                activeBranch = br.dataset.branchSelect;
+                one(".branch-label").textContent = activeBranch;
+                all("[data-branch-select]").forEach(r => r.classList.toggle("is-selected", r === br));
+                closeAllPopovers();
+                return;
+            }
+
+            // 13. Replay demo animation
+            if (e.target.closest('[data-action="clear-chat"]')) {
+                closeAllPopovers();
+                userInteracted = false;
+                completed = false;
+                start();
+                return;
+            }
+
+            // Close popover when clicking outside
+            if (!e.target.closest(".desktop-popover") && !e.target.closest(".desktop-model-popover")) {
+                closeAllPopovers();
+            }
+        });
+
+        // Search input in model picker
+        if (modelSearchInput) {
+            modelSearchInput.addEventListener("input", () => {
+                renderModelList(modelSearchInput.value);
+            });
+        }
+
+        // Composer keydown
+        textarea.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        textarea.addEventListener("focus", () => {
+            userInteracted = true;
+        });
+
+        sendBtn.addEventListener("click", () => {
+            sendMessage();
+        });
+
+        replay.addEventListener("click", () => {
+            userInteracted = false;
+            completed = false;
+            stop();
+            start();
+        });
+
+        // Keyboard shortcuts
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") {
+                closeAllPopovers();
+                return;
+            }
+            const isMod = e.metaKey || e.ctrlKey;
+            if (isMod && (e.key === "b" || e.key === "B")) {
+                e.preventDefault();
+                toggleLeftSidebar();
+            } else if (isMod && (e.key === "j" || e.key === "J")) {
+                e.preventDefault();
+                toggleRightPane("terminal");
+            } else if (isMod && e.shiftKey && (e.key === "d" || e.key === "D")) {
+                e.preventDefault();
+                toggleRightPane("diff");
+            } else if (isMod && (e.key === "n" || e.key === "N")) {
+                e.preventDefault();
+                switchSession("new");
+            }
+        });
+
+        // Auto-run animation on viewport intersection
+        let visible = false;
+        const sync = () => {
+            if (visible && !document.hidden) start();
+            else stop();
+        };
+
+        new IntersectionObserver((entries) => {
+            visible = entries[0].isIntersecting;
+            sync();
+        }, { threshold: 0.2 }).observe(root);
+
+        document.addEventListener("visibilitychange", sync);
+        reducedMotion.addEventListener("change", () => {
+            stop();
+            sync();
+        });
+
+        // Initial setup
+        renderModelList();
+        updateModelChip();
+    })();
+</script>
