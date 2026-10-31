@@ -59,6 +59,8 @@ pub mod transcript;
 pub mod turn_review;
 pub mod typography;
 mod watch_coordinator;
+mod workflow;
+mod workflow_graph;
 
 use std::path::PathBuf;
 

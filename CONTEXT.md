@@ -155,6 +155,10 @@ one word could mean two things. How a term behaves lives on its
 - **Task brief**: the goal, necessary background, and acceptance criteria a parent agent supplies to a Subagent. It does not include the parent's entire History.
 - **Explorer**: a Subagent that investigates and reports findings using only reading, Content search, another Chat's Transcript, and the web tools; it cannot change files or execute commands.
 - **Worker**: a Subagent that can change files and execute commands under its parent Turn's Permission mode.
+- **Workflow**: a script a main-chat agent writes to orchestrate many Subagents in the background; it returns at once, and its return value comes back later as a Workflow report.
+- **Workflow run**: one execution of a Workflow, identified by the tool call that launched it; it can be stopped, and relaunched with `resume` to reuse the Subagents that already finished.
+- **Workflow report**: the engine-queued Turn that hands a finished Workflow run's value (or failure) back to its Chat.
+  _Avoid_: workflow message, callback
 
 ## Routines
 

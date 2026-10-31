@@ -101,8 +101,89 @@ pub(super) fn is_spawn_link(item: &ToolItem) -> bool {
     is_agent_call(&item.call) && item.subagent_ref.is_some()
 }
 
-/// Ordinary tool groups fold behind a summary header; agent/spawn chips
-/// render as their own always-open row.
+/// A `Workflow` call's part: bare while its arguments stream, `Workflow:
+/// <name>` once the engine launched the run.
+pub(super) fn is_workflow_call(call: &ToolCall) -> bool {
+    matches!(call, ToolCall::Unknown { name, .. } if name == "Workflow" || name.starts_with("Workflow: "))
+}
+
+/// The workflow step a child's chip was started under (the kept spawn
+/// input; `phase` on runs from before plans), which splits a workflow's
+/// children into one row per step.
+pub(super) fn tool_phase(call: &ToolCall) -> Option<&str> {
+    match call {
+        ToolCall::Unknown {
+            input: Some(input), ..
+        } if call.is_subagent_spawn() => input.get("step").or_else(|| input.get("phase"))?.as_str(),
+        _ => None,
+    }
+}
+
+/// The plan a `Workflow` chip carries once its run launched.
+fn workflow_plan(call: &ToolCall) -> Option<holt_proto::WorkflowPlan> {
+    match call {
+        ToolCall::Unknown {
+            input: Some(input), ..
+        } => serde_json::from_value(input.get("plan")?.clone()).ok(),
+        _ => None,
+    }
+}
+
+/// A workflow call's graph: its plan with the agents started so far, or —
+/// for a run without one, or a record that leaves its plan — the agents
+/// alone, layered by phase.
+fn workflow_graph(
+    parts: &[MessagePart],
+    id: &str,
+    call: &ToolCall,
+) -> Option<crate::workflow_graph::WorkflowGraph> {
+    use crate::workflow_graph::{WorkflowGraph, agent_graph, plan_graph};
+    let agents = workflow_agent_nodes(parts, id);
+    workflow_plan(call)
+        .and_then(|plan| plan_graph(plan, &agents))
+        .map(WorkflowGraph::Plan)
+        .or_else(|| agent_graph(&agents).map(WorkflowGraph::Agents))
+}
+
+fn workflow_agent_nodes(
+    parts: &[MessagePart],
+    container: &str,
+) -> Vec<crate::workflow_graph::AgentNode> {
+    let prefix = format!("{container}#item-");
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::Tool {
+                id: agent_id,
+                call,
+                subagent_ref,
+                subagent_status,
+                subagent_usage,
+                ..
+            } if agent_id.starts_with(&prefix) && call.is_subagent_spawn() => {
+                Some(crate::workflow_graph::AgentNode {
+                    call_id: agent_id.clone().into(),
+                    subagent_ref: subagent_ref.clone().map(SharedString::from),
+                    label: tool_chip_content(call).1.to_string(),
+                    phase: tool_phase(call).map(str::to_owned),
+                    status: *subagent_status,
+                    tokens: *subagent_usage,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_fanout_container(parts: &[MessagePart], id: &str) -> bool {
+    let prefix = format!("{id}#item-");
+    parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::Tool { id, .. } if id.starts_with(&prefix)))
+}
+
+/// Ordinary tool groups fold behind a summary header; agent-only groups use
+/// the renderer's one-line expandable fan-out row.
 pub(super) fn tool_group_collapses(tools: &[ToolItem]) -> bool {
     tools.iter().any(|t| !is_agent_tool(t))
 }
@@ -237,6 +318,33 @@ fn home_dir() -> Option<String> {
         .filter(|home| !home.is_empty())
 }
 
+/// The directive a user bubble chips inline at its head — icon gutter +
+/// bare name, the composer's own treatment — lifted from the send's
+/// trailing marker block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectiveChip {
+    /// The `/goal <objective>` arming send.
+    Goal,
+    /// A `/workflow <task>` send.
+    Workflow,
+}
+
+impl DirectiveChip {
+    pub(super) fn icon(self) -> &'static str {
+        match self {
+            DirectiveChip::Goal => crate::icons::TARGET,
+            DirectiveChip::Workflow => crate::icons::WIDGET,
+        }
+    }
+
+    pub(super) fn label(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            DirectiveChip::Goal => crate::i18n::t!("conversation_transcript.goal.chip"),
+            DirectiveChip::Workflow => crate::i18n::t!("conversation_transcript.workflow.label"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum RowKind {
     User {
@@ -258,10 +366,9 @@ pub enum RowKind {
         badges: Arc<Vec<crate::badges::MessageBadge>>,
         /// Skill invocation metadata when the turn was launched via `/skill`.
         skill: Option<Arc<UserSkill>>,
-        /// The arming send (`/goal <objective>`): the bubble heads its text
-        /// with the white `goal` chip (icon gutter + bare name — the
-        /// composer's own treatment) instead of a pill above it.
-        goal_chip: bool,
+        /// A `/goal` arming or `/workflow` send: the bubble heads its text
+        /// with the directive's white chip instead of a pill above it.
+        directive_chip: Option<DirectiveChip>,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -328,6 +435,17 @@ pub enum RowKind {
     /// not the user. Drawn as a light, foldable loop row — round label and
     /// the verifier's missing piece — instead of a user bubble; the fold
     /// shows the full prompt the model got.
+    /// A background workflow run (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation):
+    /// the `Workflow` call's own row — its name, lifecycle, tokens, and a
+    /// read-only graph of its plan and agents; without a graph, detailed
+    /// fan-out rows follow.
+    Workflow {
+        call_id: SharedString,
+        name: SharedString,
+        status: Option<SubagentStatus>,
+        tokens: Option<u64>,
+        graph: Option<Arc<crate::workflow_graph::WorkflowGraph>>,
+    },
     GoalRound {
         label: SharedString,
         reason: SharedString,
@@ -652,16 +770,38 @@ pub fn rows_for_entry(
         // A loop-queued continuation carries its round as a part (ADR-goal-mode-verified-loop-at-turn-settle):
         // it is the loop speaking, so it never draws as a user bubble.
         let goal_round = entry.parts.iter().find_map(|p| match p {
-            MessagePart::GoalRound { round, reason, .. } => Some((*round, reason.clone())),
+            MessagePart::GoalRound { round, reason, .. } => {
+                Some((crate::goal::round_label(round), reason.clone()))
+            }
             _ => None,
         });
-        if let Some((round, reason)) = goal_round {
+        // A workflow's report (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation) is
+        // the engine speaking too: the same light, foldable row, whose fold
+        // shows the result the model received.
+        let goal_round = goal_round.or_else(|| {
+            entry.parts.iter().find_map(|p| match p {
+                MessagePart::WorkflowResult { name, failed, .. } => Some((
+                    if *failed {
+                        crate::i18n::t!(
+                            "conversation_transcript.workflow.report_failed",
+                            name = name
+                        )
+                    } else {
+                        crate::i18n::t!("conversation_transcript.workflow.report", name = name)
+                    }
+                    .into_owned(),
+                    String::new(),
+                )),
+                _ => None,
+            })
+        });
+        if let Some((label, reason)) = goal_round {
             rows.push(Row {
                 id: entry.id.clone().into(),
                 version: (raw.len() as u64) << 1 | pending as u64,
                 turn_start: true,
                 kind: RowKind::GoalRound {
-                    label: crate::goal::round_label(&round).into(),
+                    label: label.into(),
                     reason: reason.into(),
                     prompt: raw.into(),
                     footer_owner: None,
@@ -691,11 +831,15 @@ pub fn rows_for_entry(
         // Lifted before the mention projection, so a comment body's own
         // Markdown never lands in the bubble.
         let (body, badges) = crate::badges::split(&body);
-        // No pill replaces the goal marker: the renderer chips the `goal`
-        // directive inline at the bubble's head (the composer's treatment).
-        let (body, goal_chip) = match crate::goal::strip_block(&body) {
-            Some(objective) => (objective, true),
-            None => (body, false),
+        // No pill replaces the goal or workflow marker: the renderer chips
+        // the directive inline at the bubble's head (the composer's
+        // treatment).
+        let (body, directive_chip) = if let Some(objective) = crate::goal::strip_block(&body) {
+            (objective, Some(DirectiveChip::Goal))
+        } else if let Some(task) = crate::workflow::strip_block(&body) {
+            (task, Some(DirectiveChip::Workflow))
+        } else {
+            (body, None)
         };
         parsed.attachments.extend(
             references
@@ -767,7 +911,7 @@ pub fn rows_for_entry(
                     attachments: Arc::new(parsed.attachments),
                     badges: Arc::new(badges),
                     skill,
-                    goal_chip,
+                    directive_chip,
                     pending,
                 },
                 entry_id,
@@ -782,7 +926,20 @@ pub fn rows_for_entry(
 
     // Assistant/system: split parts into block rows, folding consecutive
     // ordinary tools. Agent/spawn chips flush into their own group so they
-    // never share a collapse with Reads/Runs.
+    // never share a collapse with Reads/Runs. Workflow graphs replace only
+    // their own successfully projected phase rows, never the fallback list.
+    let workflow_graph_containers: Vec<String> = entry
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::Tool { id, call, .. }
+                if is_workflow_call(call) && workflow_graph(&entry.parts, id, call).is_some() =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
     let last_part_ix = entry.parts.len().saturating_sub(1);
     let mut group_ix = 0usize;
     let mut pending_group: Vec<ToolItem> = Vec::new();
@@ -863,6 +1020,48 @@ pub fn rows_for_entry(
                 subagent_usage,
                 gate,
             } => {
+                // A workflow call is its run's own row; its agents follow.
+                if is_workflow_call(call) {
+                    flush_group(
+                        &mut rows,
+                        &mut pending_group,
+                        &mut group_ix,
+                        group_last_part_ix,
+                    );
+                    let (_, name) = tool_chip_content(call);
+                    let graph = workflow_graph(&entry.parts, id, call).map(Arc::new);
+                    rows.push(Row {
+                        id: format!("{}#{}", entry.id, id).into(),
+                        version: fnv1a(
+                            format!("{name}\0{subagent_status:?}\0{subagent_usage:?}\0{graph:?}")
+                                .as_bytes(),
+                        ),
+                        turn_start: false,
+                        kind: RowKind::Workflow {
+                            call_id: id.clone().into(),
+                            name: name.into(),
+                            status: *subagent_status,
+                            tokens: *subagent_usage,
+                            graph,
+                        },
+                        entry_id: entry.id.clone().into(),
+                        timestamp: None,
+                        copy_text: None,
+                    });
+                    continue;
+                }
+                // A fan-out `Agent` call is drawn by its per-item spawn parts
+                // (`{id}#item-{n}`, engine `subagents::execute_fanout`); the
+                // container chip itself would only repeat them.
+                if call.is_subagent_spawn() && is_fanout_container(&entry.parts, id) {
+                    continue;
+                }
+                if workflow_graph_containers.iter().any(|container| {
+                    id.strip_prefix(container)
+                        .is_some_and(|rest| rest.starts_with("#item-"))
+                }) {
+                    continue;
+                }
                 let item = ToolItem {
                     call: call.clone(),
                     call_id: Some(SharedString::from(id.clone())),
@@ -908,10 +1107,11 @@ pub fn rows_for_entry(
                 }
                 // Agent chips don't share a fold with ordinary tools: flush
                 // whenever the genus flips so each group is uniform.
-                if pending_group
-                    .first()
-                    .is_some_and(|head| is_agent_tool(head) != is_agent_tool(&item))
-                {
+                // A workflow's agents split further, one row per phase.
+                if pending_group.first().is_some_and(|head| {
+                    is_agent_tool(head) != is_agent_tool(&item)
+                        || tool_phase(&head.call) != tool_phase(&item.call)
+                }) {
                     flush_group(
                         &mut rows,
                         &mut pending_group,
@@ -1131,6 +1331,7 @@ pub fn rows_for_entry(
                     MessagePart::Tool { .. }
                     | MessagePart::Reasoning { .. }
                     | MessagePart::GoalRound { .. }
+                    | MessagePart::WorkflowResult { .. }
                     | MessagePart::TodoCard { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
@@ -1981,6 +2182,193 @@ mod tests {
     }
 
     #[test]
+    fn a_fanout_call_is_drawn_by_its_item_parts_alone() {
+        // The engine lands one display part per fan-out item right after
+        // the `Agent` call; the container chip would repeat them.
+        let entry = assistant(
+            "m-fanout",
+            MessageStatus::Complete,
+            vec![
+                agent_part("spawn-1", "audit {{item}}"),
+                agent_part("spawn-1#item-0", "audit auth"),
+                agent_part("spawn-1#item-1", "audit billing"),
+                agent_part("spawn-2", "unrelated single spawn"),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::ToolGroup { tools, .. } = &rows[0].kind else {
+            panic!("agent group expected")
+        };
+        let ids: Vec<&str> = tools
+            .iter()
+            .map(|t| t.call_id.as_deref().unwrap())
+            .collect();
+        assert_eq!(ids, ["spawn-1#item-0", "spawn-1#item-1", "spawn-2"]);
+    }
+
+    fn phased(id: &str, label: &str, phase: &str) -> MessagePart {
+        let mut part = agent_part(id, label);
+        if let MessagePart::Tool { call, .. } = &mut part {
+            *call = ToolCall::Unknown {
+                name: format!("Agent: {label}"),
+                input: Some(serde_json::json!({ "phase": phase })),
+            };
+        }
+        part
+    }
+
+    #[test]
+    fn a_workflow_graph_replaces_its_agent_phase_rows() {
+        let mut container = tool_part("wf-1", "ignored");
+        if let MessagePart::Tool {
+            call,
+            subagent_status,
+            subagent_usage,
+            ..
+        } = &mut container
+        {
+            *call = ToolCall::Unknown {
+                name: "Workflow: audit".into(),
+                input: None,
+            };
+            *subagent_status = Some(SubagentStatus::Running);
+            *subagent_usage = Some(1200);
+        }
+        let entry = assistant(
+            "m-wf",
+            MessageStatus::Complete,
+            vec![
+                container,
+                phased("wf-1#item-0", "a", "Find"),
+                phased("wf-1#item-1", "b", "Find"),
+                phased("wf-1#item-2", "verify", "Verify"),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::Workflow {
+            call_id,
+            name,
+            status,
+            tokens,
+            graph,
+        } = &rows[0].kind
+        else {
+            panic!("workflow row expected")
+        };
+        assert_eq!(call_id.as_ref(), "wf-1");
+        assert_eq!(name.as_ref(), "audit");
+        assert_eq!(*status, Some(SubagentStatus::Running));
+        assert_eq!(*tokens, Some(1200));
+        let graph = graph.as_ref().expect("workflow agent graph");
+        assert_eq!(graph.nodes().len(), 3);
+        assert_eq!(
+            graph.node(0).and_then(|node| node.subagent_ref.as_deref()),
+            Some("chat--sub--wf-1#item-0")
+        );
+    }
+
+    #[test]
+    fn a_planned_workflow_draws_every_step_before_its_agents_run() {
+        let plan = serde_json::json!({"steps": [
+            {"id": "find", "title": "Find"},
+            {"id": "verify", "title": "Verify", "after": ["find"]},
+        ]});
+        let workflow = |parts: Vec<MessagePart>| {
+            let mut container = tool_part("wf-1", "ignored");
+            if let MessagePart::Tool { call, .. } = &mut container {
+                *call = ToolCall::Unknown {
+                    name: "Workflow: audit".into(),
+                    input: Some(serde_json::json!({ "plan": plan })),
+                };
+            }
+            let mut all = vec![container];
+            all.extend(parts);
+            let entry = assistant("m-wf", MessageStatus::Complete, all);
+            rows_for_entry(&entry, false, &mut parse)
+        };
+        let rows = workflow(Vec::new());
+        assert_eq!(rows.len(), 1);
+        let RowKind::Workflow { graph, .. } = &rows[0].kind else {
+            panic!("workflow row expected")
+        };
+        assert!(matches!(
+            graph.as_deref(),
+            Some(crate::workflow_graph::WorkflowGraph::Plan(_))
+        ));
+
+        // Step-tagged agents land on the plan and leave no fan-out rows.
+        let mut agent = phased("wf-1#item-0", "a", "ignored");
+        if let MessagePart::Tool { call, .. } = &mut agent {
+            *call = ToolCall::Unknown {
+                name: "Agent: a".into(),
+                input: Some(serde_json::json!({ "step": "find" })),
+            };
+        }
+        let rows = workflow(vec![agent]);
+        assert_eq!(rows.len(), 1);
+        let RowKind::Workflow { graph, .. } = &rows[0].kind else {
+            panic!("workflow row expected")
+        };
+        assert_eq!(graph.as_ref().unwrap().nodes().len(), 1);
+    }
+
+    #[test]
+    fn an_over_budget_workflow_graph_keeps_the_agent_rows() {
+        let mut container = tool_part("wf-wide", "ignored");
+        if let MessagePart::Tool { call, .. } = &mut container {
+            *call = ToolCall::Unknown {
+                name: "Workflow: wide".into(),
+                input: None,
+            };
+        }
+        let mut parts = vec![container];
+        parts.extend(
+            (0..129).map(|ix| phased(&format!("wf-wide#item-{ix}"), &format!("a{ix}"), "Find")),
+        );
+        let entry = assistant("m-wide", MessageStatus::Complete, parts);
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 2);
+        let RowKind::Workflow { graph, .. } = &rows[0].kind else {
+            panic!("workflow row expected")
+        };
+        assert!(graph.is_none());
+        let RowKind::ToolGroup { tools, .. } = &rows[1].kind else {
+            panic!("fallback agent rows expected")
+        };
+        assert_eq!(tools.len(), 129);
+    }
+
+    #[test]
+    fn a_workflow_report_draws_as_a_light_row() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let entry = SessionMessageEntry {
+            id: "m-report".into(),
+            role: MessageRole::User,
+            parts: vec![
+                text_part("t0", "Workflow \"audit\" (run x) finished. …"),
+                MessagePart::WorkflowResult {
+                    id: "w0".into(),
+                    name: "audit".into(),
+                    failed: false,
+                },
+            ],
+            created_at: 0,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        };
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::GoalRound { label, prompt, .. } = &rows[0].kind else {
+            panic!("report row expected, not a user bubble")
+        };
+        assert_eq!(label.as_ref(), "Workflow “audit” finished");
+        assert!(prompt.starts_with("Workflow \"audit\" (run x)"));
+    }
+
+    #[test]
     fn stray_subagent_ref_on_a_run_chip_stays_an_ordinary_tool() {
         // Docs written before the claude-driver fix carry subagent refs on
         // ordinary Run chips (a background shell's task_notification was
@@ -2156,13 +2544,17 @@ mod tests {
             text,
             raw,
             badges,
-            goal_chip,
+            directive_chip,
             ..
         } = &rows[0].kind
         else {
             panic!("expected a user row");
         };
-        assert!(goal_chip, "the row chips the goal directive inline");
+        assert_eq!(
+            *directive_chip,
+            Some(DirectiveChip::Goal),
+            "the row chips the goal directive inline"
+        );
         assert!(badges.is_empty(), "no pill rides above the bubble");
         assert_eq!(text.as_ref(), "ship the login page");
         assert_eq!(raw.as_ref(), "ship the login page");
@@ -2184,21 +2576,52 @@ mod tests {
         entry.parts = vec![text_part("t0", &with_refs)];
         let rows = rows_for_entry(&entry, false, &mut parse);
         let RowKind::User {
-            text, goal_chip, ..
+            text,
+            directive_chip,
+            ..
         } = &rows[0].kind
         else {
             panic!("expected a user row");
         };
-        assert!(goal_chip, "the chip survives an appended path list");
+        assert_eq!(
+            *directive_chip,
+            Some(DirectiveChip::Goal),
+            "the chip survives an appended path list"
+        );
         assert_eq!(text.as_ref(), "ship the login page");
 
         // An ordinary prompt never chips.
         entry.parts = vec![text_part("t0", "just a prompt")];
         let rows = rows_for_entry(&entry, false, &mut parse);
-        let RowKind::User { goal_chip, .. } = &rows[0].kind else {
+        let RowKind::User { directive_chip, .. } = &rows[0].kind else {
             panic!("expected a user row");
         };
-        assert!(!goal_chip);
+        assert_eq!(*directive_chip, None);
+    }
+
+    /// A `/workflow <task>` send chips `Workflow` the same way, and the
+    /// model-facing marker sentence never reaches the bubble.
+    #[test]
+    fn user_rows_chip_the_workflow_directive_inline() {
+        let mut entry = assistant("u9", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part(
+            "t0",
+            &crate::workflow::with_workflow_block("audit the engine"),
+        )];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User {
+            text,
+            directive_chip,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert_eq!(*directive_chip, Some(DirectiveChip::Workflow));
+        assert_eq!(text.as_ref(), "audit the engine");
+        assert_eq!(rows[0].copy_text.as_deref(), Some("audit the engine"));
     }
 
     #[test]

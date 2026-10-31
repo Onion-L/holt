@@ -2209,14 +2209,17 @@ impl Shell {
                     // status strip above it is empty air), zero at the
                     // underlay's bottom edge.
                     let bottom_band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
+                    // An expanded workflow canvas is a spatial surface, not
+                    // scrolling content: it meets the chrome unfaded.
+                    let faded = !self.transcript.read(cx).workflow_expanded();
                     div()
                         .absolute()
                         .inset_0()
                         .child(
                             crate::edge_fade::edge_faded(
                                 Theme::TRANSCRIPT_FADE_BAND,
-                                true,
-                                true,
+                                faded,
+                                faded,
                                 div().size_full().child(outlet),
                             )
                             // Fully faded BY the titlebar's bottom edge (the

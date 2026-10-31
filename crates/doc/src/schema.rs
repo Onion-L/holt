@@ -266,6 +266,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             goal_reason: Some(reason.clone()),
             ..Default::default()
         },
+        MessagePart::WorkflowResult { id, name, failed } => DocPartJson {
+            id: id.clone(),
+            kind: "workflowResult".into(),
+            name: Some(name.clone()),
+            is_error: Some(*failed),
+            ..Default::default()
+        },
         MessagePart::CompactionDivider {
             id,
             summary,
@@ -388,6 +395,17 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 id: p.id,
                 round,
                 reason: p.goal_reason.unwrap_or_default(),
+            },
+            None => MessagePart::Text {
+                id: p.id,
+                text: String::new(),
+            },
+        },
+        "workflowResult" => match p.name {
+            Some(name) => MessagePart::WorkflowResult {
+                id: p.id,
+                name,
+                failed: p.is_error.unwrap_or_default(),
             },
             None => MessagePart::Text {
                 id: p.id,
@@ -1559,6 +1577,30 @@ mod tests {
         })
         .unwrap();
         assert_eq!(doc.read_entries().unwrap()[0].parts, cards);
+    }
+
+    #[test]
+    fn workflow_result_parts_map_through_the_doc_part_shape() {
+        let part = MessagePart::WorkflowResult {
+            id: "w0".into(),
+            name: "audit".into(),
+            failed: true,
+        };
+        let json = serde_json::to_value(to_doc_part(&part).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"id": "w0", "kind": "workflowResult", "name": "audit", "isError": true})
+        );
+        assert_eq!(from_doc_part(serde_json::from_value(json).unwrap()), part);
+        // Without its name the row degrades to an empty text part.
+        let bare = serde_json::json!({"id": "w0", "kind": "workflowResult"});
+        assert_eq!(
+            from_doc_part(serde_json::from_value(bare).unwrap()),
+            MessagePart::Text {
+                id: "w0".into(),
+                text: String::new()
+            }
+        );
     }
 
     /// A card that does not decode — a damaged card, or a card kind this

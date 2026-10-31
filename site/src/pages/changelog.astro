@@ -11,94 +11,82 @@ import ChangelogController from '../components/ChangelogController';
 <link rel="icon" type="image/png" href="/assets/favicon.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style is:inline>
   *, *::before, *::after { box-sizing: border-box; }
   :root {
-    --ink: #17233b; --cream: #f6f1e6; --paper: #fffdf8;
-    --blue: #0a4c9c; --deep: #072f66; --pink: #e34d83; --grey: #8a867c; --line: rgba(23,35,59,.14);
+    --page: #121316; --surface: #1a1c20; --ink: #ece9e2;
+    --muted: #979ba3; --coral: #ed9b7f; --line: rgba(255,255,255,.1);
   }
   html, body { margin: 0; }
   body {
-    font-family: Geist, -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: Archivo, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased; color: var(--ink);
-    background: var(--cream);
+    background: var(--page);
   }
   a { color: inherit; text-decoration: none; }
-  a:focus-visible { outline: 2px solid var(--pink); outline-offset: 3px; }
-  .mono { font-family: "Geist Mono", Menlo, monospace; }
+  a:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; }
+  .mono { font-family: "IBM Plex Mono", Menlo, monospace; }
+  .icon { display: inline-block; flex-shrink: 0; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
+  .icon-download { --icon: url("/assets/icons/download.svg"); }
+  .icon-left { --icon: url("/assets/icons/arrow-left.svg"); }
 
-  .wrap { width: min(var(--ww, 760px), 100% - 32px); margin: 0 auto; padding-bottom: 90px; }
+  .site-head { border-bottom: 1px solid var(--line); }
+  .nav { display: flex; align-items: center; gap: clamp(28px,4vw,56px); padding: 24px clamp(20px,3vw,44px); }
+  .brand { display: inline-flex; align-items: center; gap: 9px; font-size: 20px; font-weight: 900; letter-spacing: -.06em; }
+  .brand img { width: 28px; height: 28px; border-radius: 6px; }
+  .nav-links, .nav-actions { display: flex; align-items: center; gap: 28px; font-size: 14px; }
+  .nav-links { color: var(--muted); }
+  .nav-links a, .nav-actions a { transition: color .15s, opacity .15s; }
+  .nav-links a:hover, .nav-links a[aria-current="page"], .download:hover { color: var(--ink); }
+  .nav-actions { margin-left: auto; }
+  .nav-icon { display: inline-flex; opacity: .6; }
+  .nav-icon:hover { opacity: 1; }
+  .nav-icon img { width: 20px; height: 20px; display: block; }
+  .download { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+
+  .page-head { width: min(1040px, 100% - 48px); margin: 0 auto; padding: 72px 0 48px; }
+  .kicker { margin: 0 0 18px; color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+  .kicker b { color: var(--coral); font-weight: 500; }
+  .page-head h1 { margin: 0; font-size: clamp(52px,8vw,84px); line-height: .98; letter-spacing: -.055em; }
+  .page-head h1 span { color: var(--coral); }
+  .intro { max-width: 480px; margin: 24px 0 0; color: var(--muted); font-size: 15px; line-height: 1.7; }
+
+  .wrap { width: min(1040px, 100% - 48px); margin: 0 auto; padding-bottom: 72px; }
   .vers { list-style: none; margin: 0; padding: 0; }
+  .ver { display: grid; grid-template-columns: 170px minmax(0,1fr); gap: 48px; padding: 40px 0; border-bottom: 1px solid var(--line); }
+  .vhead { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+  .vnum { font-size: 28px; font-weight: 700; line-height: 1; letter-spacing: -.04em; transition: color .15s; }
+  .vnum:hover { color: var(--coral); }
+  .vdate { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .stamp { margin-top: 4px; color: var(--coral); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+  .vgrid { display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 32px; }
   .vcol ul { margin: 0; padding: 0; list-style: none; }
   .vcol li { position: relative; }
+  .cat { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: 10px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
+  .f .cat { color: var(--coral); }
+  .x .cat { color: var(--muted); }
+  .cat::before, .vcol li::before { content: ""; display: block; width: 12px; height: 12px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
+  .f .cat::before, .f li::before { --icon: url("/assets/icons/plus.svg"); }
+  .x .cat::before, .x li::before { --icon: url("/assets/icons/minus.svg"); }
+  .vcol li { padding-left: 17px; margin-bottom: 11px; color: #b0b4bb; font-size: 14px; line-height: 1.7; }
+  .vcol li::before { position: absolute; left: 0; top: .45em; }
+  .f li::before { color: var(--coral); }
+  .x li::before { color: var(--muted); }
+  .vcol code { padding: .08em .3em; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); color: var(--ink); font: .9em "IBM Plex Mono", Menlo, monospace; }
 
-  /* ============ hero band — same artwork, scrim, and type as the landing ============ */
-  .hero { position: relative; overflow: hidden; display: flex; flex-direction: column;
-    min-height: clamp(280px, 38vh, 360px); color: #fff; }
-  .hero-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 38%; }
-  .hero-scrim { position: absolute; inset: 0;
-    background: linear-gradient(180deg, rgba(5,25,55,.42) 0%, rgba(5,25,55,.12) 32%, rgba(5,20,50,.34) 62%, rgba(5,20,50,.76) 100%); }
-  .hero-top { position: relative; z-index: 2; display: flex; justify-content: flex-end; align-items: center;
-    padding: 26px 2px; width: min(var(--ww, 760px), 100% - 32px); margin: 0 auto; }
-  .nav {
-    display: flex; align-items: center; gap: 22px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
-    background: rgba(5,25,55,.28); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255,255,255,.18); padding: 8px 18px; border-radius: 999px;
-  }
-  .nav a { color: rgba(255,255,255,.88); border-bottom: 1px solid transparent; padding-bottom: 1px;
-    transition: color .15s, border-color .15s; }
-  .nav a:hover { color: #fff; border-color: rgba(255,255,255,.6); }
-  .hero-inner { position: relative; z-index: 2; margin-top: auto;
-    width: min(var(--ww, 760px), 100% - 32px); margin-left: auto; margin-right: auto;
-    padding: 0 2px clamp(24px, 4vh, 38px) 38px; }
-  .kicker { margin: 0; font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
-    color: rgba(255,255,255,.9); text-shadow: 0 1px 12px rgba(5,25,55,.6); }
-  .kicker b { color: #fff; font-weight: 500; }
-  .hero h1 { margin: 10px 0 0; font: 700 clamp(40px, 6.8vw, 84px)/0.96 Geist, sans-serif; letter-spacing: -.045em;
-    text-shadow: 0 2px 18px rgba(5,25,55,.65), 0 8px 40px rgba(5,25,55,.45); }
-  .hero h1 span { color: var(--pink); }
-
-  /* shared +/– semantics (restyled per variant) */
-  .f .cat { color: var(--pink); }
-  .f li::before { content: "+"; color: var(--pink); }
-  .x li::before { content: "–"; color: var(--grey); }
-
-  .foot { text-align: center; margin-top: 60px; font-size: 11.5px; color: var(--grey); letter-spacing: .04em; }
-  .foot a { text-decoration: underline; text-underline-offset: 3px; }
-  .foot a:hover { color: var(--blue); }
-
-  /* ============ D — Coast road ============ */
-  [data-variant="d"] { --ww: 860px; }
-  [data-variant="d"] .vers { position: relative; padding-left: 36px; margin-top: 34px; }
-  [data-variant="d"] .vers::before { content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px; border-left: 2px dashed rgba(10,76,156,.45); }
-  [data-variant="d"] .ver {
-    position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
-    padding: 22px 26px 24px; margin-bottom: 20px; box-shadow: 0 12px 32px -20px rgba(23,35,59,.35);
-  }
-  [data-variant="d"] .ver::before {
-    content: ""; position: absolute; left: -34px; top: 30px; width: 11px; height: 11px; border-radius: 50%;
-    background: var(--pink); border: 2.5px solid #fff; box-shadow: 0 0 0 2px rgba(10,76,156,.35);
-  }
-  [data-variant="d"] .vhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; }
-  [data-variant="d"] .vnum { font: 700 26px/1 Geist, sans-serif; letter-spacing: -.03em; color: var(--blue); }
-  [data-variant="d"] .vnum:hover { color: var(--pink); }
-  [data-variant="d"] .vdate { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--grey); }
-  [data-variant="d"] .stamp { margin-left: auto; align-self: center; padding: 3px 10px; border: 1.5px solid var(--pink); border-radius: 999px; color: var(--pink); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
-  [data-variant="d"] .vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px 40px; margin-top: 16px; }
-  [data-variant="d"] .cat { margin: 0 0 9px; font-size: 10.5px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; }
-  [data-variant="d"] .x .cat { color: #5b6472; }
-  [data-variant="d"] .cat::before { margin-right: .6em; }
-  [data-variant="d"] .f .cat::before { content: "+"; }
-  [data-variant="d"] .x .cat::before { content: "–"; }
-  [data-variant="d"] .vcol li { padding-left: 16px; margin-bottom: 7px; font: 500 12.5px/1.55 "Geist Mono", Menlo, monospace; color: #3c4658; }
-  [data-variant="d"] .vcol li::before { position: absolute; left: 0; }
+  .foot { display: flex; justify-content: space-between; gap: 20px; padding-top: 28px; color: var(--muted); font-size: 10px; letter-spacing: .04em; }
+  .foot a { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+  .foot a:hover { color: var(--coral); }
 
   @media (max-width: 720px) {
-    .hero { min-height: clamp(260px, 34vh, 320px); }
-    .hero-top { padding: 16px 2px; }
-    .nav { gap: 14px; padding: 6px 14px; font-size: 11px; }
-    .hero h1 { font-size: clamp(34px, 10vw, 44px); }
+    .nav-links { display: none; }
+    .page-head { padding: 52px 0 40px; }
+    .ver { grid-template-columns: 1fr; gap: 28px; padding: 32px 0; }
+    .vhead { flex-direction: row; align-items: baseline; flex-wrap: wrap; }
+    .stamp { margin: 0 0 0 auto; }
+    .vgrid { grid-template-columns: 1fr; }
+    .foot { flex-direction: column; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -106,21 +94,29 @@ import ChangelogController from '../components/ChangelogController';
   }
 </style>
 </head>
-<body data-variant="d">
+<body>
 
-<header class="hero">
-  <img class="hero-bg" src="/assets/hero-coast.webp" alt="" />
-  <div class="hero-scrim"></div>
-  <div class="hero-top">
-    <nav class="nav mono">
-      <a href="/">← Home</a>
-      <a href="/download">Download ↓</a>
-      <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
-    </nav>
-  </div>
-  <div class="hero-inner">
+<header class="site-head">
+  <nav class="nav" aria-label="Primary">
+    <a class="brand" href="/">
+      <img src="/assets/app-icon.webp" alt="" width="28" height="28" />
+      holt
+    </a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/changelog" aria-current="page">Changelog</a>
+    </div>
+    <div class="nav-actions">
+      <a class="nav-icon" href="https://github.com/Onion-L/holt" aria-label="GitHub">
+        <img src="/assets/github.svg" alt="" width="20" height="20" />
+      </a>
+      <a class="download" href="/download">Download <span class="icon icon-download" aria-hidden="true"></span></a>
+    </div>
+  </nav>
+  <div class="page-head">
     <p class="kicker mono">Every release · latest <b>v<span data-version>x.x.x</span></b></p>
     <h1>Changelog<span>.</span></h1>
+    <p class="intro">New features, important fixes, and every Holt release in one place.</p>
   </div>
 </header>
 
@@ -868,7 +864,7 @@ import ChangelogController from '../components/ChangelogController';
 
   </ol>
 
-  <div class="foot mono">v<span data-version>x.x.x</span> · signed &amp; notarized · GPL-3.0 · <a href="/">back to the coast ↖</a></div>
+  <div class="foot mono"><span>v<span data-version>x.x.x</span> · GPL-3.0</span><a href="/"><span class="icon icon-left" aria-hidden="true"></span>Back home</a></div>
 </div>
 <ChangelogController client:load />
 </body>

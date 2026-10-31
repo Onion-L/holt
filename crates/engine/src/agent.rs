@@ -844,6 +844,8 @@ pub(crate) struct AgentRuntime {
     pub(crate) sessions_tx: watch::Sender<serde_json::Value>,
     chat_runtime: Mutex<HashMap<String, Arc<ChatRuntime>>>,
     pub(crate) subagents: crate::subagents::Subagents,
+    /// Live background workflow runs (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation).
+    pub(crate) workflows: crate::workflow::Workflows,
     /// Open confirm-changes approvals across all chats (ADR-permission-modes-gate-mutations-no-os-sandbox), keyed
     /// by approval id — the registry the `ResolveApproval` RPC addresses.
     /// Entries live only while their gate is open.
@@ -874,6 +876,7 @@ impl AgentRuntime {
         let _chats_store = self.chats_store.lock().unwrap_or_else(|e| e.into_inner());
         self.stopping
             .store(true, std::sync::atomic::Ordering::Release);
+        self.workflows.stop_all();
         for chat in self
             .chat_runtime
             .lock()
@@ -933,6 +936,7 @@ impl AgentRuntime {
             sessions_tx,
             chat_runtime: Mutex::new(HashMap::new()),
             subagents: crate::subagents::Subagents::default(),
+            workflows: crate::workflow::Workflows::default(),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             // The injected transport gets the same idle watchdog as the
             // built-in one: every request path (Turns, subagents,
@@ -1019,6 +1023,7 @@ impl AgentRuntime {
         crate::turn_change_store::delete_chat(&self.data_dir, chat_id);
         crate::checkpoints::delete_chat(&self.data_dir, chat_id);
         crate::provider_mode::delete(&self.data_dir, chat_id);
+        self.workflows.stop_chat(chat_id);
         self.subagents.remove_parent(&self.data_dir, chat_id);
         // The usage ledger archives before it dies: the chat's records move
         // into the device-level stream, then the per-chat file and its
@@ -1721,9 +1726,14 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
     let (mut system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
     if let Some(child) = &chat.child {
-        system_prompt =
-            crate::subagents::system_prompt(&child.role, &cwd, &catalog, search_backend.is_some())
-                .await;
+        system_prompt = crate::subagents::system_prompt(
+            &child.role,
+            &cwd,
+            &catalog,
+            search_backend.is_some(),
+            child.output.is_some(),
+        )
+        .await;
     }
     let skill_files: HashMap<String, String> = catalog
         .winners
@@ -2040,6 +2050,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         if child.role == "explorer" {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }
+        if let Some(output) = &child.output {
+            tools.push(crate::subagents::submit_result_tool(output.clone()));
+        }
     } else if provider_mode {
         // The Provider Mode surface (ADR-provider-mode-is-a-chat-mode): web research plus the
         // read-only proposal tool and the Key request (ADR-api-keys-collected-through-key-requests) — no file
@@ -2066,7 +2079,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     } else if !plan_mode {
         // A planning Turn delegates nothing (ADR-plan-mode-is-an-independent-approval-checkpoint): the whitelist below
         // would drop the tool anyway, so it is simply never mounted.
-        tools.push(crate::subagents::tool(crate::subagents::Delegation {
+        let delegation = crate::subagents::Delegation {
             runtime: runtime.clone(),
             parent: chat.clone(),
             parent_parts: base_parts.clone(),
@@ -2081,12 +2094,21 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
             attribution: attribution.clone(),
-        }));
+        };
+        // Workflows (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation) mount
+        // with delegation: main-chat Turns only, never planning or Provider
+        // Mode (this branch), never inside a child.
+        tools.push(crate::workflow::tool(delegation.clone()));
+        tools.push(crate::subagents::tool(delegation));
         // The task list (issue #47) mounts on main-chat Turns only — the
         // MCP policy: subagent, planning, and Provider Mode Turns keep
         // their curated toolsets (this branch already excludes all three).
         tools.push(crate::tools::create_todo_tool());
         if let Some(routines) = runtime.routines.get().cloned() {
+            // The clock's pull channel (ADR-model-facing-time-is-pulled-not-embedded):
+            // mounted beside its consumer so "now" never enters a
+            // prefix-position description.
+            tools.push(crate::tools::create_current_time_tool(routines.clock()));
             tools.push(crate::tools::create_schedule_routine_tool(
                 runtime.clone(),
                 routines,
@@ -2635,7 +2657,7 @@ mod tests {
         let mounted: Vec<&str> = tools
             .iter()
             .map(|tool| tool.name.as_str())
-            .chain(["read_chat", "web_search", "Agent", "todo"])
+            .chain(["read_chat", "web_search", "Agent", "Workflow", "todo"])
             .collect();
         assert!(!mounted.is_empty());
         for name in &mounted {

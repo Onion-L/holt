@@ -58,9 +58,10 @@ unserved RPC, or "fixing" an `UnknownMethod` reply, is work on code that
 does not run.
 
 - **Served**: the whole chat/space/session surface, the queue and Turn loop,
-  provider configuration, the git surface (branches, all four diff modes,
-  history, fetch), the file sidebar, terminals, usage, Turn change sets,
-  plan/provider/goal modes, routines, self-update.
+  subagents and background workflows, provider configuration, the git
+  surface (branches, all four diff modes, history, fetch), the file
+  sidebar, terminals, usage, Turn change sets, plan/provider/goal modes,
+  routines, self-update.
 - **Deliberately unserved** (the UI keeps rendering them; `UnknownMethod`
   is the contract, not a regression): the sync and account surface —
   sign-in, orgs, repos, clone, uploads — and worktree lifecycle beyond
@@ -81,6 +82,10 @@ does not run.
 
 ## Facts with no other home
 
+- UI prototypes go in `crates/ui/prototypes/` by default; use standalone
+  HTML files unless another format or location is requested. After a variant
+  is chosen and implemented, delete the prototype files so old variants do
+  not get confused with current work.
 - Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in
   use: core, engine, ui — comma-joined when a change spans several.
 - Releases: a pushed `v*` tag must match the workspace `version` in the

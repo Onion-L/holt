@@ -31,22 +31,17 @@ as 'in two hours' (stored as an absolute UTC instant), `at` for one local wall-c
 different zone. The tool returns the persisted routine \
 id and its actual nextFireAt; relay that time in your answer.";
 
-/// The description states the device zone and the Turn-start local time:
-/// nothing else tells the model either (the system prompt carries neither),
-/// so without them a wall-clock request resolves against a guessed zone —
-/// typically UTC — and fires at the wrong hour.
-fn description(device_zone: &str, now: DateTime<Utc>) -> String {
-    let local = device_zone
-        .parse::<chrono_tz::Tz>()
-        .map(|zone| {
-            now.with_timezone(&zone)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|_| format!("{} UTC", now.format("%Y-%m-%d %H:%M")));
+/// The description states only static facts — the device zone and where
+/// "now" comes from. Tool descriptions sit in the provider's cached
+/// prefix ahead of the conversation, so a time-varying byte here re-keys
+/// the cache and re-bills the whole conversation as fresh input
+/// (ADR-model-facing-time-is-pulled-not-embedded); the clock reaches the
+/// model through the `current_time` call instead.
+fn description(device_zone: &str) -> String {
     format!(
-        "{DESCRIPTION} The device time zone is {device_zone} and the local time now is {local}; \
-resolve 'today' and 'tomorrow' against it."
+        "{DESCRIPTION} The device time zone is {device_zone}. Resolve 'today', 'tomorrow', and \
+wall-clock schedules against the current time from the `current_time` tool; for a relative delay \
+prefer `delayMinutes` — the tool resolves it against the actual clock."
     )
 }
 
@@ -181,7 +176,7 @@ pub(crate) fn create_schedule_routine_tool(
     AgentTool {
         name: "schedule_routine".into(),
         label: "Schedule Routine".into(),
-        description: description(&local_time_zone(), routines.now()),
+        description: description(&local_time_zone()),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -314,13 +309,23 @@ mod tests {
     }
 
     #[test]
-    fn the_description_states_the_device_zone_and_local_time() {
-        let text = description("Asia/Shanghai", now());
+    fn the_description_is_static_and_points_at_the_clock_source() {
+        let text = description("Asia/Shanghai");
+        // The zone stays — a model that never calls current_time still
+        // must not guess UTC for a wall-clock schedule.
         assert!(text.contains("device time zone is Asia/Shanghai"), "{text}");
-        // 09:00Z is 17:00 in Asia/Shanghai — the model reads local, not UTC.
-        assert!(text.contains("2026-10-07 17:00"), "{text}");
-        let unreadable = description("Not/AZone", now());
-        assert!(unreadable.contains("UTC"), "{unreadable}");
+        assert!(text.contains("`current_time`"), "{text}");
+        // The clock never embeds: no digit:digit wall-clock shape may
+        // appear, or the prefix re-keys with every Turn.
+        assert!(!has_wall_clock_time(&text), "{text}");
+    }
+
+    /// A digit:digit window — the shape any embedded HH:MM time must take.
+    fn has_wall_clock_time(text: &str) -> bool {
+        text.chars()
+            .collect::<Vec<_>>()
+            .windows(3)
+            .any(|w| w[0].is_ascii_digit() && w[1] == ':' && w[2].is_ascii_digit())
     }
 
     #[test]

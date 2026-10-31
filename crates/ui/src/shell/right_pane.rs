@@ -568,6 +568,9 @@ impl Shell {
             } => {
                 self.plan_rewind(chat_id.clone(), tool_call_id.clone(), cx);
             }
+            TranscriptEvent::StopWorkflow { chat_id, call_id } => {
+                self.stop_workflow(chat_id.clone(), call_id.clone(), cx);
+            }
             TranscriptEvent::EditLastMessage {
                 chat_id,
                 message_id,
@@ -660,6 +663,39 @@ impl Shell {
                 }
                 Err(message) => this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx),
             });
+        })
+        .detach();
+    }
+
+    /// A workflow row's Stop (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation): the run
+    /// row settles from the transcript once the engine cancels it.
+    pub(super) fn stop_workflow(
+        &mut self,
+        chat_id: String,
+        call_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.push_holt_notice(
+                HoltNoticeKind::Error,
+                crate::state::engine_not_connected().into(),
+                cx,
+            );
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    holt_rpc::methods::STOP_WORKFLOW,
+                    serde_json::json!({ "chatId": chat_id, "callId": call_id }),
+                )
+                .await;
+            if let Err(error) = result {
+                let _ = this.update(cx, |this, cx| {
+                    this.push_holt_notice(HoltNoticeKind::Error, error.to_string().into(), cx)
+                });
+            }
         })
         .detach();
     }

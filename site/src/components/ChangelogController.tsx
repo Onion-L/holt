@@ -1,9 +1,8 @@
 import { useEffect } from 'react';
 
-// React controller for the changelog page (/changelog, Coast road layout).
-// The entry list is the prototype's own HTML rendered statically by Astro;
-// this island renders nothing and resolves the current version from the
-// latest GitHub release, exactly like the prototype's script.
+// React controller for the changelog page (/changelog).
+// The entry list is rendered statically by Astro; this island renders
+// nothing and resolves the current version from the latest GitHub release.
 
 export default function ChangelogController() {
   useEffect(() => {

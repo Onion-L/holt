@@ -1,5 +1,5 @@
 //! Slash-command interception (ADR-metadata-only-skill-advertising/0035): the composer recognizes
-//! `/compact`, `/plan`, `/init`, and `/provider` on submit and handles them itself — the
+//! `/compact`, `/plan`, `/init`, `/provider`, `/goal`, and `/workflow` on submit and handles them itself — the
 //! raw directive never becomes a prompt. Skill invocation is NOT a slash
 //! directive anymore (ADR-skill-invocation-is-an-inline-mention): skills ride ordinary messages as inline `$`
 //! mentions, and the `/` popup below just inserts their link form. Pure over
@@ -19,13 +19,15 @@ use crate::i18n::t;
 /// AGENTS.md itself. Bundled, never read from the filesystem.
 pub(crate) const INIT_PROMPT: &str = include_str!("init_prompt.md");
 
-/// The mode directives' identity glyphs (the state card's icons): the slash
-/// menu's rows and the composer's directive chip share them, so picking
-/// `/goal` reads the same as the goal card it arms.
-pub(crate) const MODE_COMMANDS: [(&str, &str); 3] = [
+/// The chipped directives' identity glyphs (the state card's icons, the
+/// workflow row's for `/workflow`): the slash menu's rows and the
+/// composer's directive chip share them, so picking `/goal` reads the same
+/// as the goal card it arms.
+pub(crate) const MODE_COMMANDS: [(&str, &str); 4] = [
     ("goal", crate::icons::TARGET),
     ("plan", crate::icons::CHECKLIST),
     ("provider", crate::icons::CLOUD),
+    ("workflow", crate::icons::WIDGET),
 ];
 
 /// What the composer learned from one input string.
@@ -56,6 +58,11 @@ pub(crate) enum Parsed {
     /// `/goal` with nothing after it — intercepted, with the usage message
     /// for the composer to surface.
     MalformedGoal,
+    /// `/workflow <task>` — sent as an ordinary message carrying the
+    /// workflow marker block (`crate::workflow`); no chat state changes.
+    Workflow(String),
+    /// `/workflow` with nothing after it — the usage message.
+    MalformedWorkflow,
 }
 
 /// One `/goal` form (ADR-goal-mode-verified-loop-at-turn-settle).
@@ -329,7 +336,7 @@ fn parse_provider(text: &str) -> Parsed {
 /// `/goalkeeper`-style longer words stay ordinary text.
 fn parse_goal(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/goal") else {
-        return Parsed::Plain;
+        return parse_workflow(text);
     };
     if rest.trim().is_empty() {
         return Parsed::MalformedGoal;
@@ -345,6 +352,21 @@ fn parse_goal(text: &str) -> Parsed {
         _ => GoalAction::Set(rest.to_string()),
     };
     Parsed::Goal { action }
+}
+
+/// `/workflow <task>`: the task is required — a bare `/workflow` is the
+/// usage message; `/workflows`-style longer words stay ordinary text.
+fn parse_workflow(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/workflow") else {
+        return Parsed::Plain;
+    };
+    if rest.trim().is_empty() {
+        return Parsed::MalformedWorkflow;
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return Parsed::Plain;
+    }
+    Parsed::Workflow(rest.trim().to_string())
 }
 
 #[cfg(test)]
@@ -435,6 +457,18 @@ mod tests {
         assert_eq!(parse("/goal   "), Parsed::MalformedGoal);
         assert_eq!(parse("/goalkeeper"), Parsed::Plain);
         assert_eq!(parse("please /goal off"), Parsed::Plain);
+    }
+
+    #[test]
+    fn recognizes_workflow_and_requires_a_task() {
+        assert_eq!(
+            parse("  /workflow  audit the engine "),
+            Parsed::Workflow("audit the engine".into())
+        );
+        assert_eq!(parse("/workflow"), Parsed::MalformedWorkflow);
+        assert_eq!(parse("/workflow   "), Parsed::MalformedWorkflow);
+        assert_eq!(parse("/workflows"), Parsed::Plain);
+        assert_eq!(parse("run /workflow x"), Parsed::Plain);
     }
 
     #[test]

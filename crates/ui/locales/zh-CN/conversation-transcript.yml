@@ -99,6 +99,20 @@ conversation_transcript:
       zh-CN: "… 还有 %{count} 行"
     subagent:
       zh-CN: Subagent
+    subagent_fanout:
+      count:
+        one:
+          zh-CN: "%{count} 个 subagent"
+        other:
+          zh-CN: "%{count} 个 subagent"
+      running:
+        zh-CN: "%{count} 个运行中"
+      queued:
+        zh-CN: "%{count} 个排队中"
+      done:
+        zh-CN: "%{count} 个完成"
+      failed:
+        zh-CN: "%{count} 个失败"
   turn_card:
     edited_files:
       one:
@@ -164,6 +178,41 @@ conversation_transcript:
         zh-CN: "已回退对话和 %{count} 个文件。"
       other:
         zh-CN: "已回退对话和 %{count} 个文件。"
+  workflow:
+    label:
+      zh-CN: Workflow
+    running:
+      zh-CN: "运行中"
+    queued:
+      zh-CN: "排队中"
+    done:
+      zh-CN: "已完成"
+    failed:
+      zh-CN: "失败"
+    zoom_in:
+      zh-CN: "放大"
+    zoom_out:
+      zh-CN: "缩小"
+    fit:
+      zh-CN: "重置视图"
+    expand:
+      zh-CN: "展开"
+    collapse:
+      zh-CN: "收起"
+    step_waiting:
+      zh-CN: "等待中"
+    more:
+      zh-CN: "还有 %{count} 个"
+    show_fewer:
+      zh-CN: "收起"
+    loop:
+      zh-CN: "↺ ≤%{max}"
+    stop:
+      zh-CN: "停止 workflow"
+    report:
+      zh-CN: Workflow「%{name}」已完成
+    report_failed:
+      zh-CN: Workflow「%{name}」失败
   goal:
     chip:
       zh-CN: 目标

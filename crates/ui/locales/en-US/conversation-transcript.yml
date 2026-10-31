@@ -99,6 +99,20 @@ conversation_transcript:
       en-US: "… %{count} more lines"
     subagent:
       en-US: Subagent
+    subagent_fanout:
+      count:
+        one:
+          en-US: "%{count} subagent"
+        other:
+          en-US: "%{count} subagents"
+      running:
+        en-US: "%{count} running"
+      queued:
+        en-US: "%{count} queued"
+      done:
+        en-US: "%{count} done"
+      failed:
+        en-US: "%{count} failed"
   turn_card:
     edited_files:
       one:
@@ -164,6 +178,41 @@ conversation_transcript:
         en-US: "Rewound the conversation and %{count} file."
       other:
         en-US: "Rewound the conversation and %{count} files."
+  workflow:
+    label:
+      en-US: Workflow
+    running:
+      en-US: "running"
+    queued:
+      en-US: "queued"
+    done:
+      en-US: "done"
+    failed:
+      en-US: "failed"
+    zoom_in:
+      en-US: "Zoom in"
+    zoom_out:
+      en-US: "Zoom out"
+    fit:
+      en-US: "Reset view"
+    expand:
+      en-US: "Expand"
+    collapse:
+      en-US: "Collapse"
+    step_waiting:
+      en-US: "waiting"
+    more:
+      en-US: "%{count} more"
+    show_fewer:
+      en-US: "Show fewer"
+    loop:
+      en-US: "↺ ≤%{max}"
+    stop:
+      en-US: "Stop workflow"
+    report:
+      en-US: Workflow “%{name}” finished
+    report_failed:
+      en-US: Workflow “%{name}” failed
   goal:
     chip:
       en-US: goal

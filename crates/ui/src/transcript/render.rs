@@ -30,8 +30,8 @@ use holt_proto::view::tool_chip_content_in;
 
 use super::agent_avatar::{AgentIdentity, AvatarMood, agent_avatar};
 use super::model::{
-    Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
-    is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
+    DirectiveChip, Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp,
+    is_agent_call, is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
 };
 use super::question_card;
 use super::tool::{
@@ -200,7 +200,7 @@ impl Transcript {
                 attachments,
                 badges,
                 skill,
-                goal_chip,
+                directive_chip,
                 pending,
             } => {
                 let attachments = attachments.clone();
@@ -209,7 +209,7 @@ impl Transcript {
                 let raw = raw.clone();
                 let mentions = mentions.clone();
                 let skill = skill.clone();
-                let goal_chip = *goal_chip;
+                let directive_chip = *directive_chip;
                 let pending = *pending;
                 let mut targets: Vec<crate::image_viewer::ViewerTarget> = attachments
                     .iter()
@@ -401,14 +401,14 @@ impl Transcript {
                             skill_open: Some(skill_open),
                             copy_map,
                         };
-                        match (skill, goal_chip) {
+                        match (skill, directive_chip) {
                             (Some(skill), _) => self.render_user_skill(
                                 &row.id, &skill, &text, &mentions, &theme, clicks,
                             ),
-                            (None, true) => {
-                                render_user_goal(&row.id, text, mentions, &theme, clicks)
+                            (None, Some(chip)) => {
+                                render_user_directive(&row.id, chip, text, mentions, &theme, clicks)
                             }
-                            (None, false) => user_bubble_text_with_chip(
+                            (None, None) => user_bubble_text_with_chip(
                                 &row.id, text, mentions, None, &theme, clicks,
                             )
                             .into_any_element(),
@@ -629,6 +629,13 @@ impl Transcript {
                 error,
             } => retry_chip(*attempt, *max_retries, *retry_at_ms, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
+            RowKind::Workflow {
+                call_id,
+                name,
+                status,
+                tokens,
+                graph,
+            } => self.render_workflow_row(call_id, name, *status, *tokens, graph.as_ref(), cx),
             RowKind::GoalEnd { message, event } => goal_end_row(message.clone(), *event, &theme),
             RowKind::GoalRound {
                 label,
@@ -1102,14 +1109,15 @@ struct SkillChipRun {
 /// icon in the gutter — the composer's own treatment, never the accent).
 enum LeadingChip {
     Skill(SkillChipRun),
-    Goal(std::ops::Range<usize>),
+    /// A `/goal` or `/workflow` directive: its label range and gutter glyph.
+    Directive(std::ops::Range<usize>, &'static str),
 }
 
 impl LeadingChip {
     fn range(&self) -> std::ops::Range<usize> {
         match self {
             LeadingChip::Skill(chip) => chip.range.clone(),
-            LeadingChip::Goal(range) => range.clone(),
+            LeadingChip::Directive(range, _) => range.clone(),
         }
     }
 }
@@ -1186,7 +1194,7 @@ fn user_bubble_text_with_chip(
             LeadingChip::Skill(_) => skill_run(range.len()),
             // White sans ink — the body's own run. The neutral wash and the
             // gutter icon carry the chip's identity (the composer's recipe).
-            LeadingChip::Goal(_) => body_run(range.len()),
+            LeadingChip::Directive(..) => body_run(range.len()),
         });
         at = range.end;
     }
@@ -1255,9 +1263,9 @@ fn user_bubble_text_with_chip(
     };
     let wash = theme.code_wash;
     let skill_wash = theme.accent_wash;
-    // The goal chip's neutral fill — white ink, never the skill's accent
-    // (the composer's `element_hover`).
-    let goal_wash = theme.element_hover;
+    // The directive chip's neutral fill — white ink, never the skill's
+    // accent (the composer's `element_hover`).
+    let directive_wash = theme.element_hover;
     let sel_key: std::sync::Arc<str> = format!("{row_id}:u").into();
     let sel_theme = theme.clone();
     let underlay = canvas(
@@ -1276,12 +1284,23 @@ fn user_bubble_text_with_chip(
                 }
             };
             if let Some(range) = &leading_range {
-                let goal = matches!(leading, Some(LeadingChip::Goal(_)));
-                paint(window, range, if goal { goal_wash } else { skill_wash });
-                // The goal chip leads with the mode's target glyph — painted
-                // in the label's gutter NBSPs, white like the ink (the
-                // composer's recipe; the display text is the bare name).
-                if goal
+                let directive_icon = match leading {
+                    Some(LeadingChip::Directive(_, icon)) => Some(icon),
+                    _ => None,
+                };
+                paint(
+                    window,
+                    range,
+                    if directive_icon.is_some() {
+                        directive_wash
+                    } else {
+                        skill_wash
+                    },
+                );
+                // The directive chip leads with its glyph — painted in the
+                // label's gutter NBSPs, white like the ink (the composer's
+                // recipe; the display text is the bare name).
+                if let Some(icon_path) = directive_icon
                     && let Some(rect) = render::range_rects(&layout, range, 0.0, 2.0)
                         .first()
                         .copied()
@@ -1295,7 +1314,7 @@ fn user_bubble_text_with_chip(
                             ),
                             size(icon, icon),
                         ),
-                        crate::icons::TARGET.into(),
+                        icon_path.into(),
                         None,
                         gpui::TransformationMatrix::unit(),
                         sel_theme.text,
@@ -1359,8 +1378,9 @@ fn user_bubble_text_with_chip(
 /// composer's own projection, never the accent), then the objective. The
 /// arming marker itself never reaches the bubble (`model.rs` strips it), and
 /// no pill rides above it — the chip IS the provenance.
-fn render_user_goal(
+fn render_user_directive(
     row_id: &SharedString,
+    directive: DirectiveChip,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
     theme: &Theme,
@@ -1371,9 +1391,9 @@ fn render_user_goal(
     // must exist in Geist (exotic whitespace collapsed a chip once already).
     let label = format!(
         "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}{}\u{00A0}",
-        t!("conversation_transcript.goal.chip")
+        directive.label()
     );
-    let chip = LeadingChip::Goal(0..label.len());
+    let chip = LeadingChip::Directive(0..label.len(), directive.icon());
     let (full, mentions) = if text.is_empty() {
         (label, Vec::new())
     } else {
@@ -1581,6 +1601,352 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
                 .child(message),
         )
         .into_any_element()
+}
+
+impl Transcript {
+    /// A workflow run's own row: glyph, "Workflow", the run's name, its
+    /// lifecycle and spend, and — while it runs, in the main chat — Stop.
+    fn render_workflow_row(
+        &mut self,
+        call_id: &SharedString,
+        name: &SharedString,
+        status: Option<SubagentStatus>,
+        tokens: Option<u64>,
+        graph: Option<&Arc<crate::workflow_graph::WorkflowGraph>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let running = matches!(status, Some(SubagentStatus::Running));
+        let state = match status {
+            Some(SubagentStatus::Running) => Some(t!("conversation_transcript.workflow.running")),
+            Some(SubagentStatus::Done) => Some(t!("conversation_transcript.workflow.done")),
+            Some(SubagentStatus::Failed) => Some(t!("conversation_transcript.workflow.failed")),
+            None => None,
+        };
+        let mut detail: Vec<String> = state.into_iter().map(|s| s.into_owned()).collect();
+        if let Some(tokens) = tokens.filter(|t| *t > 0) {
+            detail.push(
+                t!(
+                    "conversation_transcript.tool.tokens",
+                    count = crate::token_display::compact_tokens(tokens)
+                )
+                .into_owned(),
+            );
+        }
+        let stop = self
+            .chat_id
+            .clone()
+            .filter(|_| running && self.doc_override.is_none())
+            .map(|chat_id| {
+                let call_id = call_id.to_string();
+                let hint: SharedString = t!("conversation_transcript.workflow.stop").into();
+                div()
+                    .id(SharedString::from(format!("workflow-stop-{call_id}")))
+                    .debug_selector(|| "workflow-stop".to_string())
+                    .flex_none()
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(crate::theme::ink(0.06)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::popover::TextTooltip(hint.clone())).into()
+                    })
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TranscriptEvent::StopWorkflow {
+                            chat_id: chat_id.clone(),
+                            call_id: call_id.clone(),
+                        });
+                    }))
+                    .child(
+                        crate::icons::icon(crate::icons::STOP)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                    )
+            });
+        let graph = graph.map(|graph| self.render_workflow_graph(call_id, graph, false, cx));
+        let header = div()
+            .h(px(CHIP_HEIGHT))
+            .px(px(4.0))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(px(12.0))
+            .font_family(theme.font_sans_fixed.clone())
+            .debug_selector(|| "workflow-row".to_string())
+            .child(
+                crate::icons::icon(crate::icons::WIDGET)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme.text)
+                    .child(SharedString::from(t!(
+                        "conversation_transcript.workflow.label"
+                    ))),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.text_muted)
+                    .child(name.clone()),
+            )
+            .when(!detail.is_empty(), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(detail.join(" · "))),
+                )
+            })
+            .child(div().flex_1())
+            .children(stop);
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(header)
+            .when_some(graph, |row, graph| row.child(graph))
+            .into_any_element()
+    }
+
+    /// A workflow run's canvas, inline under its row or (`expanded`) filling
+    /// the transcript-covering overlay. Both share the run's viewport.
+    fn render_workflow_graph(
+        &mut self,
+        call_id: &SharedString,
+        graph: &Arc<crate::workflow_graph::WorkflowGraph>,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let viewport = self
+            .workflow_graph_viewports
+            .get(call_id)
+            .copied()
+            .unwrap_or_default();
+        let entity = cx.weak_entity();
+        let graph_id = call_id.clone();
+        let on_zoom = Rc::new(
+            move |factor: f32, _window: &mut Window, cx: &mut gpui::App| {
+                entity
+                    .update(cx, |this, cx| {
+                        let viewport = this
+                            .workflow_graph_viewports
+                            .entry(graph_id.clone())
+                            .or_default();
+                        viewport.zoom = (viewport.zoom * factor).clamp(
+                            crate::workflow_graph::ZOOM_MIN,
+                            crate::workflow_graph::ZOOM_MAX,
+                        );
+                        if (viewport.zoom - 1.0).abs() < 0.001 {
+                            viewport.zoom = 1.0;
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+            },
+        );
+        let pan_entity = cx.weak_entity();
+        let pan_id = call_id.clone();
+        let on_pan = Rc::new(
+            move |event: crate::workflow_graph::CanvasPanEvent, cx: &mut gpui::App| {
+                pan_entity
+                    .update(cx, |this, cx| {
+                        use crate::workflow_graph::CanvasPanEvent;
+                        match event {
+                            CanvasPanEvent::Start(position) => {
+                                this.workflow_graph_drag =
+                                    Some(crate::workflow_graph::WorkflowGraphDrag {
+                                        call_id: pan_id.clone(),
+                                        last_position: position,
+                                    });
+                                cx.notify();
+                            }
+                            CanvasPanEvent::Move(position) => {
+                                let delta = this.workflow_graph_drag.as_mut().and_then(|drag| {
+                                    if drag.call_id != pan_id {
+                                        return None;
+                                    }
+                                    let delta = (
+                                        f32::from(position.x - drag.last_position.x),
+                                        f32::from(position.y - drag.last_position.y),
+                                    );
+                                    drag.last_position = position;
+                                    Some(delta)
+                                });
+                                if let Some((dx, dy)) = delta {
+                                    let viewport = this
+                                        .workflow_graph_viewports
+                                        .entry(pan_id.clone())
+                                        .or_default();
+                                    viewport.pan_x += dx;
+                                    viewport.pan_y += dy;
+                                    cx.notify();
+                                }
+                            }
+                            CanvasPanEvent::End => {
+                                if this
+                                    .workflow_graph_drag
+                                    .as_ref()
+                                    .is_some_and(|drag| drag.call_id == pan_id)
+                                {
+                                    this.workflow_graph_drag = None;
+                                    cx.notify();
+                                }
+                            }
+                            CanvasPanEvent::Reset => {
+                                let default = crate::workflow_graph::WorkflowViewport::default();
+                                let viewport = this
+                                    .workflow_graph_viewports
+                                    .entry(pan_id.clone())
+                                    .or_default();
+                                viewport.pan_x = default.pan_x;
+                                viewport.pan_y = default.pan_y;
+                                cx.notify();
+                            }
+                        }
+                    })
+                    .ok();
+            },
+        );
+        let expand_entity = cx.weak_entity();
+        let expand_id = call_id.clone();
+        let on_expand = Rc::new(move |cx: &mut gpui::App| {
+            expand_entity
+                .update(cx, |this, cx| {
+                    this.workflow_graph_expanded = (!expanded).then(|| expand_id.clone());
+                    cx.notify();
+                })
+                .ok();
+        });
+        let toggle_entity = cx.weak_entity();
+        let toggle_id = call_id.clone();
+        let on_toggle_step = Rc::new(move |step: SharedString, cx: &mut gpui::App| {
+            toggle_entity
+                .update(cx, |this, cx| {
+                    let open = this
+                        .workflow_open_steps
+                        .entry(toggle_id.clone())
+                        .or_default();
+                    if let Some(at) = open.iter().position(|id| *id == step) {
+                        open.remove(at);
+                    } else {
+                        open.push(step);
+                    }
+                    cx.notify();
+                })
+                .ok();
+        });
+        let open_steps = self
+            .workflow_open_steps
+            .get(call_id)
+            .cloned()
+            .unwrap_or_default();
+        let dragging = self
+            .workflow_graph_drag
+            .as_ref()
+            .is_some_and(|drag| drag.call_id == *call_id);
+        let identities = graph
+            .nodes()
+            .iter()
+            .map(|node| {
+                self.agent_identities
+                    .identity_for(Some(node.call_id.as_ref()), node.subagent_ref.as_deref())
+            })
+            .collect::<Vec<_>>();
+        let graph_for_open = Some(graph.clone());
+        let chat_id = self.chat_id.clone().unwrap_or_default();
+        let open_entity = cx.weak_entity();
+        let on_open = Rc::new(move |ix: usize, _window: &mut Window, cx: &mut gpui::App| {
+            let Some(node) = graph_for_open.as_ref().and_then(|graph| graph.node(ix)) else {
+                return;
+            };
+            let Some(doc_id) = node.subagent_ref.clone() else {
+                return;
+            };
+            let event = TranscriptEvent::OpenSubagent {
+                chat_id: chat_id.clone(),
+                doc_id: doc_id.to_string(),
+                title: node.label.clone(),
+                frozen: matches!(
+                    node.status,
+                    Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                ),
+            };
+            open_entity.update(cx, move |_, cx| cx.emit(event)).ok();
+        });
+        crate::workflow_graph::render_workflow_graph(
+            call_id,
+            graph,
+            viewport,
+            &theme,
+            crate::workflow_graph::GraphInteraction {
+                identities,
+                on_open,
+                on_zoom,
+                on_pan,
+                on_expand,
+                dragging,
+                expanded,
+                open_steps,
+                on_toggle_step,
+                view: cx.entity_id(),
+            },
+            cx,
+        )
+    }
+
+    /// The expanded workflow canvas: everything between the titlebar and the
+    /// composer stack, until collapsed.
+    fn render_expanded_workflow(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let expanded = self.workflow_graph_expanded.clone()?;
+        let Some(graph) = self.rows.iter().find_map(|row| match &row.kind {
+            RowKind::Workflow {
+                call_id,
+                graph: Some(graph),
+                ..
+            } if *call_id == expanded => Some(graph.clone()),
+            _ => None,
+        }) else {
+            self.workflow_graph_expanded = None;
+            return None;
+        };
+        let theme = Theme::of(cx).clone();
+        // The shell drops its edge fade while a canvas is expanded, so the
+        // canvas meets the titlebar and composer stack with hard edges.
+        let top = if self.doc_override.is_some() {
+            0.0
+        } else {
+            Theme::chrome_top_inset()
+        };
+        let graph = self.render_workflow_graph(&expanded, &graph, true, cx);
+        Some(
+            div()
+                .id("workflow-expanded")
+                .debug_selector(|| "workflow-expanded".to_string())
+                .occlude()
+                .absolute()
+                .inset_0()
+                .pt(px(top))
+                .pb(px(self.bottom_clearance))
+                .bg(theme.bg)
+                .flex()
+                .flex_col()
+                .child(graph)
+                .into_any_element(),
+        )
+    }
 }
 
 /// The hover strip's timestamp label.
@@ -1869,6 +2235,19 @@ enum ChipTrail {
     OpenArrow,
 }
 
+fn subagent_avatar_mood(tool: &ToolItem) -> AvatarMood {
+    if tool.is_error
+        || (tool.subagent_ref.is_some()
+            && matches!(tool.subagent_status, Some(SubagentStatus::Failed)))
+    {
+        AvatarMood::Failed
+    } else if matches!(tool.subagent_status, Some(SubagentStatus::Running)) || !tool.resolved {
+        AvatarMood::Running
+    } else {
+        AvatarMood::Done
+    }
+}
+
 /// The chip's content row: bare icon + label + detail line (+ inline trailing
 /// affordance when the chip expands or links out). Shared between the plain
 /// chip, the header of an expandable chip, and the spawn link chip. Flat by
@@ -1916,20 +2295,9 @@ fn chip_header_row(
     } else {
         theme.text_muted
     };
-    let avatar = identity.as_ref().map(|identity| {
-        // Running from first paint (call unresolved, ref not yet stamped)
-        // through the eager-done window (ref stamped, status Running); the
-        // status wins once it lands. Legacy docs carry no status: settled
-        // chips read as Done.
-        let mood = if failed {
-            AvatarMood::Failed
-        } else if matches!(tool.subagent_status, Some(SubagentStatus::Running)) || !tool.resolved {
-            AvatarMood::Running
-        } else {
-            AvatarMood::Done
-        };
-        agent_avatar(identity, mood, view, cx)
-    });
+    let avatar = identity
+        .as_ref()
+        .map(|identity| agent_avatar(identity, subagent_avatar_mood(tool), view, cx));
     div()
         .h(px(CHIP_HEIGHT))
         .w_full()
@@ -2273,7 +2641,8 @@ impl Render for Transcript {
                 .size_full(),
             )
             .child(content)
-            .child(rail);
+            .child(rail)
+            .children(self.render_expanded_workflow(cx));
         if let Some(preview) = self.attachment_preview.clone() {
             return root.child(preview);
         }

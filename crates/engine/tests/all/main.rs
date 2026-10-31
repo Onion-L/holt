@@ -60,6 +60,7 @@ mod usage_meters_rpc;
 mod usage_stats_rpc;
 mod web_search_rpc;
 mod web_tools_rpc;
+mod workflow_rpc;
 mod workspace_file_rpc;
 mod workspace_files_rpc;
 mod worktree_run_rpc;

@@ -1,23 +1,21 @@
 # Holt landing site
 
-Astro + React build of the City Pop landing pages, from the variant prototypes
-in `prototypes/` (kept for reference; not deployed). One design shipped per
-page, markup and CSS verbatim from the chosen variant:
+Astro + React build of the Holt landing pages. One design per page, with
+markup and CSS rendered statically by Astro:
 
-- `/` — hero, Billboard (`src/components/HeroController.tsx`)
-- `/changelog` — Coast road layout (`src/components/ChangelogController.tsx`)
+- `/` — dark Astronaut landing (`src/components/HeroController.tsx`)
+- `/changelog` — dark release index (`src/components/ChangelogController.tsx`)
 - `/download` — per-platform downloads, Coast road layout
   (`src/components/DownloadController.tsx`)
-- `/og` — 1200×630 OG card capture template (Billboard), `noindex`
+- `/og` — 1200×630 dark Astronaut OG capture template, `noindex`
 
-`/changelog` and `/download` open on the same hero-coast band as the landing —
-same artwork, scrim, nav pill, and white type — then continue on cream.
+`/` and `/og` share the astronaut artwork. `/changelog` uses the same dark
+palette, typography, and minimal navigation. `/download` keeps the Coast road
+layout.
 
 The React controllers render nothing; they resolve the version and download
-links from the latest GitHub release, like the prototypes' scripts.
-`src/components/detect.ts` holds their shared platform and chip detection. The
-prototype variant switcher (bottom bar, `?variant=`, ←/→) is intentionally not
-shipped.
+links from the latest GitHub release. `src/components/detect.ts` holds their
+shared platform and chip detection. There is no variant switcher.
 
 ## Commands
 

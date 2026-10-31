@@ -282,7 +282,7 @@ async fn interrupt_cancels_child_approval_and_restart_does_not_resume_it() {
 }
 
 #[tokio::test]
-async fn concurrent_children_are_limited_and_a_failure_does_not_cancel_siblings() {
+async fn concurrent_children_are_all_admitted_and_a_failure_does_not_cancel_siblings() {
     let fixture = Fixture::new();
     let gates: Vec<_> = (0..4)
         .map(|_| Arc::new(tokio::sync::Notify::new()))
@@ -304,15 +304,11 @@ async fn concurrent_children_are_limited_and_a_failure_does_not_cancel_siblings(
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Investigate in parallel").await;
-    common::wait_for_requests(&provider, 5).await;
-    assert_eq!(
-        provider.requests().len(),
-        5,
-        "fifth child must wait for a slot"
-    );
-    gates[0].notify_one();
+    // Five children sit under the eight-slot cap, so all five are admitted
+    // at once while the gated four still hold — parent plus five child
+    // requests — and the failing sibling never disturbs the rest.
     common::wait_for_requests(&provider, 6).await;
-    for gate in &gates[1..] {
+    for gate in gates.iter() {
         gate.notify_one();
     }
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
@@ -333,27 +329,58 @@ async fn concurrent_children_are_limited_and_a_failure_does_not_cancel_siblings(
 }
 
 #[tokio::test]
-async fn ninth_child_is_rejected_without_a_provider_request() {
+async fn the_ninth_concurrent_child_waits_for_a_free_slot_but_every_spawn_runs() {
     let fixture = Fixture::new();
+    let gates: Vec<_> = (0..8)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
     let mut script = vec![ScriptedReply::ToolCalls(
         (0..9)
             .map(|i| common::tool_call(&format!("spawn-{i}"), "Agent", brief("explorer")))
             .collect(),
     )];
-    script.extend((0..8).map(|_| ScriptedReply::text("Child done")));
+    script.extend(
+        gates
+            .iter()
+            .map(|g| ScriptedReply::gated(g.clone(), "Child done")),
+    );
+    script.push(ScriptedReply::text("Child nine done"));
     script.push(ScriptedReply::text("Parent done"));
     let provider = ScriptedProvider::new(script);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate nine").await;
+    // Eight slots admit eight children; the ninth waits — the budget bounds
+    // concurrency, not how many children the Turn may create.
+    common::wait_for_requests(&provider, 9).await;
+    assert_eq!(
+        provider.requests().len(),
+        9,
+        "ninth child must wait for a free slot"
+    );
+    gates[0].notify_one();
+    common::wait_for_requests(&provider, 10).await;
+    for gate in &gates[1..] {
+        gate.notify_one();
+    }
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
-    assert_eq!(requests.len(), 10);
+    assert_eq!(requests.len(), 11);
+    let results: Vec<_> = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolResult(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 9);
     assert!(
-        requests.last().unwrap().messages.iter().any(
-            |m| matches!(m, Message::ToolResult(r) if r.tool_call_id == "spawn-8" && r.is_error)
-        )
+        results.iter().all(|r| !r.is_error),
+        "no per-Turn budget: every spawn in the Turn runs"
     );
 }
 
@@ -643,13 +670,13 @@ async fn steer_waits_for_child_cleanup_before_starting_the_next_turn() {
 }
 
 #[tokio::test]
-async fn concurrency_limit_is_shared_between_parent_chats() {
+async fn the_concurrency_budget_is_shared_between_parent_chats() {
     let fixture = Fixture::new();
-    let gates: Vec<_> = (0..4)
+    let gates: Vec<_> = (0..8)
         .map(|_| Arc::new(tokio::sync::Notify::new()))
         .collect();
     let mut script = vec![ScriptedReply::ToolCalls(
-        (0..4)
+        (0..8)
             .map(|i| common::tool_call(&format!("spawn-{i}"), "Agent", brief("explorer")))
             .collect(),
     )];
@@ -667,16 +694,250 @@ async fn concurrency_limit_is_shared_between_parent_chats() {
     common::setup_chat(&engine, "chat-1").await;
     common::setup_chat(&engine, "chat-2").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate four").await;
-    common::wait_for_requests(&provider, 5).await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate eight").await;
+    common::wait_for_requests(&provider, 9).await;
     common::run_prompt(&engine, "chat-2", &fixture.cwd(), "Delegate one").await;
-    common::wait_for_requests(&provider, 6).await;
-    assert_eq!(provider.requests().len(), 6);
+    // Only chat-2's parent request fires: chat-1's eight children hold every
+    // slot, so its child waits — the budget is Holt-wide, not per chat.
+    common::wait_for_requests(&provider, 10).await;
+    assert_eq!(
+        provider.requests().len(),
+        10,
+        "chat-2's child must wait while chat-1 holds all eight slots"
+    );
     gates[0].notify_one();
-    common::wait_for_requests(&provider, 8).await;
+    common::wait_for_requests(&provider, 12).await;
     for gate in &gates[1..] {
         gate.notify_one();
     }
-    common::wait_for_requests(&provider, 9).await;
+    common::wait_for_requests(&provider, 13).await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+}
+
+fn result_text(requests: &[common::RecordedRequest], tool_id: &str) -> (String, bool) {
+    requests
+        .iter()
+        .rev()
+        .find_map(|request| {
+            request.messages.iter().find_map(|m| match m {
+                Message::ToolResult(r) if r.tool_call_id == tool_id => Some((
+                    r.content
+                        .iter()
+                        .filter_map(|b| match b {
+                            holt_core::ai::types::BlockContent::Text(t) => Some(t.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    r.is_error,
+                )),
+                _ => None,
+            })
+        })
+        .expect("tool result")
+}
+
+fn finding_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"risk": {"type": "string", "enum": ["low", "high"]}, "files": {"type": "array", "items": {"type": "string"}}},
+        "required": ["risk", "files"],
+        "additionalProperties": false
+    })
+}
+
+#[tokio::test]
+async fn a_structured_child_returns_its_submitted_json() {
+    let fixture = Fixture::new();
+    let mut args = brief("explorer");
+    args["output_schema"] = finding_schema();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call("spawn-1", "Agent", args),
+        // A first submit that breaks the schema is refused by validation
+        // and the child retries; the valid one ends its run.
+        ScriptedReply::tool_call("submit-bad", "submit_result", json!({"risk": "maybe"})),
+        ScriptedReply::tool_call(
+            "submit-ok",
+            "submit_result",
+            json!({"risk": "high", "files": ["src/auth.rs"]}),
+        ),
+        ScriptedReply::text("Parent done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 4, "the valid submit ends the child's run");
+    let child = &requests[1];
+    assert!(child.tool_names.iter().any(|name| name == "submit_result"));
+    assert!(
+        child
+            .system_prompt
+            .as_deref()
+            .unwrap()
+            .contains("call submit_result once")
+    );
+    let (text, is_error) = result_text(&requests, "spawn-1");
+    assert!(!is_error);
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({"risk": "high", "files": ["src/auth.rs"]})
+    );
+    let id = child_id(&engine, "spawn-1").await;
+    assert!(
+        fixture
+            .data_dir
+            .path()
+            .join("subagents/chat-1/results")
+            .join(format!("{id}.json"))
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn a_structured_child_that_never_submits_fails() {
+    let fixture = Fixture::new();
+    let mut args = brief("explorer");
+    args["output_schema"] = finding_schema();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call("spawn-1", "Agent", args),
+        ScriptedReply::text("Prose instead of the contract"),
+        ScriptedReply::text("Parent done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let (text, is_error) = result_text(&provider.requests(), "spawn-1");
+    assert!(is_error);
+    assert!(
+        text.contains("finished without calling submit_result"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn file_mode_returns_only_the_result_path() {
+    let fixture = Fixture::new();
+    let mut args = brief("explorer");
+    args["result_mode"] = json!("file");
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call("spawn-1", "Agent", args),
+        ScriptedReply::text("Findings the parent should not see inline"),
+        ScriptedReply::text("Parent done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Delegate").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let (text, is_error) = result_text(&provider.requests(), "spawn-1");
+    assert!(!is_error);
+    assert!(text.starts_with("Subagent done. Result file: "), "{text}");
+    assert!(!text.contains("should not see"));
+    let id = child_id(&engine, "spawn-1").await;
+    let file = fixture
+        .data_dir
+        .path()
+        .join("subagents/chat-1/results")
+        .join(format!("{id}.txt"))
+        .canonicalize()
+        .unwrap();
+    assert!(
+        text.contains(&common::addressed(&file)) || text.contains(file.to_str().unwrap()),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_fanout_runs_one_child_per_item_and_returns_json_lines() {
+    let fixture = Fixture::new();
+    let args = json!({
+        "subagent_type": "explorer",
+        "description": "Audit {{item}}",
+        "prompt": "Audit the {{item}} module (item {{index}})",
+        "items": ["auth", "billing", "search"],
+        "output_schema": finding_schema(),
+    });
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call("spawn-1", "Agent", args),
+        ScriptedReply::text("Parent done"),
+    ])
+    .with_chat_script(
+        "Audit the auth module (item 0)",
+        vec![ScriptedReply::tool_call(
+            "s0",
+            "submit_result",
+            json!({"risk": "high", "files": ["auth.rs"]}),
+        )],
+    )
+    .with_chat_script(
+        "Audit the billing module (item 1)",
+        vec![ScriptedReply::Failed("Child provider failure".into())],
+    )
+    .with_chat_script(
+        "Audit the search module (item 2)",
+        vec![ScriptedReply::tool_call(
+            "s2",
+            "submit_result",
+            json!({"risk": "low", "files": []}),
+        )],
+    );
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Fan out").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 5, "parent twice plus three children");
+    let (text, is_error) = result_text(&requests, "spawn-1");
+    assert!(!is_error, "a partial fan-out is not a failed call");
+    assert!(
+        text.starts_with("3 subagents: 2 done, 1 failed (items 1)"),
+        "{text}"
+    );
+    let records: Vec<Value> = text
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["item"], "auth");
+    assert_eq!(records[0]["status"], "done");
+    assert_eq!(
+        records[0]["result"],
+        json!({"risk": "high", "files": ["auth.rs"]})
+    );
+    assert_eq!(records[1]["status"], "failed");
+    assert!(
+        records[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Child provider failure")
+    );
+    assert_eq!(records[2]["result"]["risk"], "low");
+
+    // One display chip per item, right after the container, each bound to
+    // its own child doc and settled.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let ids = common::transcript_tool_ids(&snapshot);
+    let at = ids.iter().position(|id| id == "spawn-1").unwrap();
+    assert_eq!(
+        ids[at + 1..at + 4],
+        ["spawn-1#item-0", "spawn-1#item-1", "spawn-1#item-2"]
+    );
+    let all = parts(&snapshot);
+    let chip = |id: &str| *all.iter().find(|p| p["id"] == id).unwrap();
+    assert_eq!(chip("spawn-1#item-0")["call"]["name"], "Agent: Audit auth");
+    assert_eq!(chip("spawn-1#item-0")["subagentStatus"], "done");
+    assert_eq!(chip("spawn-1#item-1")["subagentStatus"], "failed");
+    assert_eq!(chip("spawn-1#item-1")["isError"], true);
+    for id in ["spawn-1#item-0", "spawn-1#item-1", "spawn-1#item-2"] {
+        assert_eq!(chip(id)["resolved"], true);
+        assert!(chip(id)["subagentRef"].as_str().is_some());
+    }
 }

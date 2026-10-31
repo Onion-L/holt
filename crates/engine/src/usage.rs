@@ -30,7 +30,10 @@
 //! call keeps whatever arrived. A request nobody ever answered (cancelled
 //! mid-flight, a transport that died silently) has no report and books
 //! nothing — waiting for one is exactly what the cancellation race exists
-//! to avoid.
+//! to avoid. A failure BEFORE the provider reported anything (a 429, an auth
+//! rejection, a refused connection) is the one shape that books zeros
+//! without moving the occupancy numerator: it never reached a usage event,
+//! so its empty report is no report at all.
 //!
 //! Deleting a chat archives before it deletes: the chat's whole ledger
 //! segment is appended — chat-attributed — to the device-level
@@ -268,6 +271,14 @@ impl LastReport {
 
     fn tokens(&self) -> u64 {
         self.input + self.cache_read + self.cache_write
+    }
+
+    /// Whether the provider reported nothing at all. A request that failed
+    /// before its stream opened (`429`, a rejected key, a refused
+    /// connection) carries an all-zero usage — that is the absence of a
+    /// report, not a context of zero tokens.
+    fn is_empty(&self) -> bool {
+        self.tokens() == 0
     }
 }
 
@@ -643,15 +654,21 @@ fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
 /// billed tool result folds in via [`merge_tool_result`]) and take its
 /// report as the occupancy numerator. The numerator is set before the frame
 /// goes out, so the chat's first report flips the status line from the
-/// History estimate to the measured number in the same frame.
+/// History estimate to the measured number in the same frame. An empty
+/// report leaves the previous numerator standing: a 429 says nothing about
+/// how full the context is, and letting its zeros through would print
+/// `0 / 272k · 0%` over a chat that still holds its History.
 pub(crate) fn capture_round_trip(chat: &ChatRuntime, message: &AssistantMessage) {
     if chat.child.is_some() {
         return;
     }
-    *chat
-        .usage_last_report
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(LastReport::of(&message.usage));
+    let report = LastReport::of(&message.usage);
+    if !report.is_empty() {
+        *chat
+            .usage_last_report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(report);
+    }
     book(chat, UsageKind::Turn, message);
 }
 
@@ -1347,5 +1364,54 @@ mod tests {
         assert_eq!(built.timestamp, 1_700_000_000_123);
         assert!(built.message_id.is_none());
         assert!(built.turn_outcome.is_none());
+    }
+
+    /// A round-trip that failed before the provider reported (a 429, an auth
+    /// rejection, a refused connection) arrives with an all-zero usage. It
+    /// still books — the errored answer is the Turn's own round-trip — but it
+    /// must not become the occupancy numerator: zero is "no report", and
+    /// taking it would print an empty context over a chat that still holds
+    /// its History.
+    #[test]
+    fn a_failed_round_trip_reporting_nothing_leaves_the_numerator_alone() {
+        let dir = temp_dir();
+        let chat = ChatRuntime::load(&dir, "chat-1", "device");
+        let measured = AssistantMessage {
+            usage: Usage {
+                input: 700,
+                output: 70,
+                cache_read: 7,
+                cache_write: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        capture_round_trip(&chat, &measured);
+        assert_eq!(
+            chat.usage_last_report.lock().unwrap().unwrap().tokens(),
+            710
+        );
+
+        let rate_limited = AssistantMessage {
+            stop_reason: holt_core::ai::types::StopReason::Error,
+            error_message: Some("429 rate_limit_error".into()),
+            ..Default::default()
+        };
+        capture_round_trip(&chat, &rate_limited);
+        assert_eq!(
+            chat.usage_last_report.lock().unwrap().unwrap().tokens(),
+            710,
+            "the 429's empty report must not overwrite the measured one"
+        );
+        // The round-trip itself still books, zeros and all.
+        assert_eq!(chat.usage_pending.lock().unwrap().len(), 2);
+
+        // With no report yet, an empty one is still no report: the frame has
+        // to keep saying "estimated" rather than claim a measured zero.
+        let fresh = ChatRuntime::load(&dir, "chat-2", "device");
+        capture_round_trip(&fresh, &rate_limited);
+        assert!(fresh.usage_last_report.lock().unwrap().is_none());
+        let frame = watch_snapshot(&fresh);
+        assert!(frame.occupancy.estimated);
     }
 }

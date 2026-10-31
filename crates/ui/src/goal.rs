@@ -21,7 +21,13 @@ pub fn with_goal_block(objective: &str) -> String {
 /// marker — or when the header merely appears mid-body (trailing text after
 /// it), which is a quote, not an arming.
 pub fn strip_block(text: &str) -> Option<String> {
-    let marker = format!("\n\n{GOAL_BLOCK_HEADER}");
+    strip_trailing_block(text, GOAL_BLOCK_HEADER)
+}
+
+/// Peel a `\n\n<header>` marker off the end of a sent message — the shared
+/// rule of the goal and workflow marker blocks (`crate::workflow`).
+pub(crate) fn strip_trailing_block(text: &str, header: &str) -> Option<String> {
+    let marker = format!("\n\n{header}");
     let at = text.rfind(&marker)?;
     if !text[at + marker.len()..].trim().is_empty() {
         return None;

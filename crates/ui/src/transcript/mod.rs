@@ -88,7 +88,7 @@ pub use tool::{
 mod markdown;
 mod model;
 
-mod agent_avatar;
+pub(crate) mod agent_avatar;
 mod approval;
 mod plan_card;
 mod provider_card;
@@ -268,6 +268,12 @@ pub struct Transcript {
     typography_generation: u32,
     highlights: HighlightStore,
     mermaids: MermaidStore,
+    workflow_graph_viewports: HashMap<SharedString, crate::workflow_graph::WorkflowViewport>,
+    workflow_graph_drag: Option<crate::workflow_graph::WorkflowGraphDrag>,
+    /// The workflow run whose canvas covers the transcript, if any.
+    workflow_graph_expanded: Option<SharedString>,
+    /// Per workflow run: the plan steps whose folded agent list is open.
+    workflow_open_steps: HashMap<SharedString, Vec<SharedString>>,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -438,6 +444,8 @@ pub enum TranscriptEvent {
         chat_id: String,
         tool_call_id: String,
     },
+    /// A running workflow row's Stop (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation).
+    StopWorkflow { chat_id: String, call_id: String },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
@@ -541,6 +549,10 @@ impl Transcript {
             typography_generation: crate::typography::generation(cx),
             highlights: HighlightStore::default(),
             mermaids: MermaidStore::default(),
+            workflow_graph_viewports: HashMap::new(),
+            workflow_graph_drag: None,
+            workflow_graph_expanded: None,
+            workflow_open_steps: HashMap::new(),
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,
@@ -1450,7 +1462,12 @@ impl Transcript {
     /// Whether the shell should float the "Scroll to bottom" pill (scrolled
     /// more than [`SCROLL_BUTTON_THRESHOLD_PX`] off the end, unpinned).
     pub fn jump_button_shown(&self) -> bool {
-        self.show_jump_button
+        self.show_jump_button && self.workflow_graph_expanded.is_none()
+    }
+
+    /// A workflow canvas covers the viewport; the host drops its edge fade.
+    pub fn workflow_expanded(&self) -> bool {
+        self.workflow_graph_expanded.is_some()
     }
 
     /// The scroll-to-bottom pill's click: glide back to the end and re-pin.
@@ -1637,6 +1654,7 @@ impl Transcript {
                 self.own_turn_last_tick = None;
             }
             self.chat_id = selected;
+            self.workflow_graph_expanded = None;
             self.rows.clear();
             self.row_cache.clear();
             self.live_parsers.clear();
@@ -3096,6 +3114,142 @@ mod tests {
         assert_eq!(engine.calls.lock().unwrap().len(), 3);
         transcript.update(cx, |this, _| {
             assert!(this.message_edit.is_none(), "the retried edit closes");
+        });
+    }
+
+    #[gpui::test]
+    fn subagent_fanout_stays_one_line_until_expanded(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        use gpui::AppContext as _;
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::default());
+            crate::motion::set_reduced_motion(cx, true);
+        });
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_chat = Some("chat-1".into());
+            state.transcript = vec![SessionMessageEntry {
+                id: "a-fanout".into(),
+                role: holt_doc::MessageRole::Assistant,
+                parts: (0..30)
+                    .map(|ix| {
+                        let (resolved, status, is_error) = match ix {
+                            0..=15 => (true, Some(holt_doc::SubagentStatus::Done), false),
+                            16 | 17 => (true, Some(holt_doc::SubagentStatus::Failed), true),
+                            18..=25 => (true, Some(holt_doc::SubagentStatus::Running), false),
+                            _ => (false, None, false),
+                        };
+                        holt_doc::MessagePart::Tool {
+                            id: format!("spawn-{ix}"),
+                            call: holt_proto::ToolCall::Unknown {
+                                name: format!("Agent: research topic {ix}"),
+                                input: None,
+                            },
+                            is_error,
+                            resolved,
+                            output: None,
+                            diff: None,
+                            output_ref: None,
+                            output_bytes: None,
+                            diff_ref: None,
+                            diff_stats: None,
+                            subagent_ref: (ix < 26).then(|| format!("chat--sub--{ix}")),
+                            subagent_status: status,
+                            subagent_tail: None,
+                            subagent_usage: None,
+                            gate: None,
+                        }
+                    })
+                    .collect(),
+                created_at: 0,
+                device_id: "dev".into(),
+                status: Some(holt_doc::MessageStatus::Complete),
+                continuation_of: None,
+            }];
+            state.transcript_replayed = true;
+            state
+        });
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+        cx.run_until_parked();
+
+        assert!(cx.debug_bounds("subagent-fanout").is_some());
+        for position in 0..5 {
+            assert!(
+                cx.debug_bounds(match position {
+                    0 => "subagent-fanout-face-0",
+                    1 => "subagent-fanout-face-1",
+                    2 => "subagent-fanout-face-2",
+                    3 => "subagent-fanout-face-3",
+                    _ => "subagent-fanout-face-4",
+                })
+                .is_some()
+            );
+        }
+        assert!(cx.debug_bounds("subagent-fanout-face-5").is_none());
+        let first = cx.debug_bounds("subagent-fanout-face-0").unwrap();
+        let second = cx.debug_bounds("subagent-fanout-face-1").unwrap();
+        assert_eq!(
+            f32::from(second.origin.x - first.origin.x),
+            26.0,
+            "22px faces sit 4px apart, never overlapping"
+        );
+        let faces = cx.debug_bounds("subagent-fanout-faces").unwrap();
+        let summary = cx.debug_bounds("subagent-fanout-summary").unwrap();
+        assert!(
+            summary.origin.x >= faces.origin.x + faces.size.width,
+            "the summary starts after the avatar group, never inside it"
+        );
+        transcript.update(cx, |this, _| {
+            assert_eq!(this.folds["a-fanout#g0#agents-fanout"].last_target, 0.0);
+        });
+
+        let header = cx.debug_bounds("subagent-fanout").unwrap();
+        cx.simulate_click(header.center(), Default::default());
+        // Expire the click tween, then render its static body; the test driver
+        // does not schedule a post-tween entity notification by itself.
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        transcript.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        transcript.update(cx, |this, _| {
+            let fold = this.folds["a-fanout#g0#agents-fanout"];
+            assert_eq!(fold.open, Some(true));
+        });
+        let chip = cx
+            .debug_bounds("subagent-chip-a-fanout#g0#fanout-s0")
+            .unwrap();
+        let body = cx.debug_bounds("subagent-fanout-body").unwrap();
+        assert_eq!(f32::from(body.size.height), 30.0 * CHIP_HEIGHT);
+        cx.simulate_click(
+            gpui::point(
+                chip.origin.x + gpui::px(12.0),
+                chip.origin.y + gpui::px(14.0),
+            ),
+            Default::default(),
+        );
+        cx.run_until_parked();
+        assert!(
+            matches!(
+                events.borrow().as_slice(),
+                [TranscriptEvent::OpenSubagent { chat_id, doc_id, .. }]
+                    if chat_id == "chat-1" && doc_id == "chat--sub--0"
+            ),
+            "unexpected events: {:?}",
+            events.borrow()
+        );
+
+        let header = cx.debug_bounds("subagent-fanout").unwrap();
+        cx.simulate_click(header.center(), Default::default());
+        cx.run_until_parked();
+        transcript.update(cx, |this, _| {
+            assert_eq!(this.folds["a-fanout#g0#agents-fanout"].open, Some(false));
         });
     }
 }
