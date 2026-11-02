@@ -52,8 +52,10 @@ const marks = {
 const demos = [
     {
         id: "providers",
-        label: "01 · AUTOMATED PROVIDER DISCOVERY & SETUP",
-        note: "The agent queries vendor documentation, proposes the exact catalog definition, and writes provider endpoints and models into the picker in one click.",
+        step: "01",
+        kicker: "PROVIDER DISCOVERY",
+        title: "Autonomous catalog proposal & configuration",
+        note: "The agent queries vendor documentation, proposes the exact catalog definition, and writes endpoints and model definitions into the picker in one click.",
         session: "Set up Moonshot AI",
         sessionProvider: "zai",
         titleIcon: "zai",
@@ -62,8 +64,10 @@ const demos = [
     },
     {
         id: "workflow",
-        label: "02 · GRAPH-DRIVEN PARALLEL SUBAGENTS",
-        note: "Workflows declare an explicit plan up front, then spawn, coordinate, and review specialized subagents on an interactive execution graph.",
+        step: "02",
+        kicker: "MULTI-AGENT WORKFLOWS",
+        title: "Plan-driven parallel execution graph",
+        note: "Workflows declare an explicit plan up front, then spawn, coordinate, and review specialized subagents on an interactive visual canvas.",
         session: "Rust actor shootout",
         sessionProvider: "zai",
         titleIcon: "zai",
@@ -72,8 +76,10 @@ const demos = [
     },
     {
         id: "durable",
-        label: "03 · JOURNAL-BACKED RESTART RESILIENCE",
-        note: "Quitting mid-turn loses nothing: on restart, the agent reconstructs its execution state from the local intent journal and finishes the task.",
+        step: "03",
+        kicker: "RESTART RESILIENCE",
+        title: "Crash-proof resumption from intent journal",
+        note: "Quitting mid-turn loses nothing: on restart, the agent reconstructs its runtime state from the local intent journal and finishes the task.",
         session: "Auth migration",
         sessionProvider: "openai",
         titleIcon: "openai",
@@ -86,13 +92,20 @@ const demos = [
 <section class="hx-section">
     {demos.map((d) => (
         <figure class="hx-demo" data-fd={d.id} data-phase="idle">
-            <div class="hx-caption">
-                <div class="hx-caption-label">{d.label}</div>
-                <p class="hx-caption-note">{d.note}</p>
+            <div class="hx-demo-bar">
+                <div class="hx-caption-info">
+                    <div class="hx-caption-tag">
+                        <span class="hx-caption-step">{d.step}</span>
+                        <span class="hx-caption-sep">/</span>
+                        <span class="hx-caption-kicker">{d.kicker}</span>
+                    </div>
+                    <h3 class="hx-caption-title">{d.title}</h3>
+                    <p class="hx-caption-note">{d.note}</p>
+                </div>
+                <button class="hx-replay-btn" type="button" aria-label={`Replay ${d.title} animation`} data-hx-replay title="Replay demo animation">
+                    <span class="hx-icon hx-i-refresh" aria-hidden="true"></span>
+                </button>
             </div>
-            <button class="hx-replay" type="button" aria-label={`Replay ${d.label} animation`} data-hx-replay title="Replay demo animation">
-                <span class="hx-icon hx-i-refresh" aria-hidden="true"></span>
-            </button>
             <div class="hx-viewport" data-hx-viewport>
                 <div class="hx-app" data-hx-app>
                     <!-- Titlebar -->
@@ -113,6 +126,7 @@ const demos = [
                             <span class="hx-session-target">holt</span>
                         </div>
                         <div class="hx-title-actions" data-hx-title-actions>
+                            <button class="hx-control" type="button" data-hx-replay title="Replay demo animation" aria-label="Replay demo animation"><span class="hx-icon hx-i-refresh"></span></button>
                             <span class="hx-control"><span class="hx-icon hx-i-terminal"></span></span>
                             <span class="hx-control"><span class="hx-icon hx-i-split-columns"></span></span>
                         </div>
@@ -217,16 +231,22 @@ const demos = [
     @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist-SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 600; font-display: swap; }
     @font-face { font-family: "Holt Geist Mono"; src: url("/assets/fonts/GeistMono.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
 
-    .hx-section { display: flex; flex-direction: column; gap: 72px; }
+    .hx-section { display: flex; flex-direction: column; gap: 64px; }
     .hx-demo { position: relative; width: 100%; max-width: 1180px; margin: 0 auto; }
-    .hx-caption { display: flex; align-items: baseline; gap: 18px; margin: 0 0 14px; }
-    .hx-caption-label { flex-shrink: 0; color: var(--coral); font: 500 10px/1 var(--mono); letter-spacing: .08em; }
-    .hx-caption-note { margin: 0; max-width: 620px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-    .hx-replay { position: absolute; z-index: 2; top: -12px; right: 0; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #979ba3; cursor: pointer; transition: color .15s, background .15s; }
-    .hx-replay:hover { color: #ece9e2; background: rgba(255,255,255,.05); }
-    .hx-replay:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; }
-    .hx-viewport { position: relative; width: 100%; aspect-ratio: 59 / 40; overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; background: #0d0d0d; box-shadow: 0 36px 100px rgba(0,0,0,.36); }
-    .hx-app { position: absolute; top: 0; left: 0; width: 1180px; height: 800px; overflow: hidden; transform-origin: top left; background: #0d0d0d; color: #e8e8ea; font-family: "Holt Geist", sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; transition: opacity .45s ease; }
+    .hx-demo-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 14px; }
+    .hx-caption-info { display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
+    .hx-caption-tag { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; font-weight: 500; color: var(--coral); letter-spacing: .08em; text-transform: uppercase; }
+    .hx-caption-step { color: var(--coral); font-weight: 700; }
+    .hx-caption-sep { opacity: .4; }
+    .hx-caption-kicker { color: #d0d0d5; }
+    .hx-caption-title { margin: 0; font-size: 18px; font-weight: 700; color: #f0eff4; letter-spacing: -.02em; }
+    .hx-caption-note { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+    .hx-replay-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; background: transparent; color: #85858a; cursor: pointer; transition: color .15s ease, opacity .15s ease; flex-shrink: 0; }
+    .hx-replay-btn:hover { color: #ece9e2; }
+    .hx-replay-btn:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+    .hx-replay-btn .hx-icon { width: 14px; height: 14px; }
+    .hx-viewport { position: relative; width: 100%; aspect-ratio: 59 / 40; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: #08080a; box-shadow: 0 32px 80px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.04); }
+    .hx-app { position: absolute; top: 0; left: 0; width: 1180px; height: 800px; overflow: hidden; transform-origin: top left; background: #0a0a0c; color: #e8e8ea; font-family: "Holt Geist", sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; transition: opacity .45s ease; }
     .hx-app.is-quitting { opacity: .3; }
     .hx-app *, .hx-app *::before, .hx-app *::after { box-sizing: border-box; }
     .hx-app img { filter: grayscale(1) brightness(0) invert(1) !important; opacity: .75; }
@@ -267,10 +287,10 @@ const demos = [
 
     /* Titlebar */
     .hx-titlebar { position: absolute; z-index: 10; top: 0; left: 0; right: 0; height: 38px; color: #a9a9ae; display: flex; align-items: center; border-bottom: 1px solid rgba(255,255,255,.05); }
-    .hx-traffic { position: absolute; top: 14px; left: 14px; display: flex; gap: 8px; }
-    .hx-traffic i { width: 10px; height: 10px; border-radius: 50%; transition: transform .18s, box-shadow .18s; }
-    .traffic-close { background: #ff5f57; } .traffic-min { background: #febc2e; } .traffic-max { background: #28c840; }
-    .hx-traffic.is-quitting .traffic-close { transform: scale(1.25); box-shadow: 0 0 10px rgba(255,95,87,.8); }
+    .hx-traffic { position: absolute; top: 13px; left: 14px; display: flex; gap: 8px; }
+    .hx-traffic i { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); transition: transform .18s, box-shadow .18s; }
+    .traffic-close { background: #ff5f56; } .traffic-min { background: #ffbd2e; } .traffic-max { background: #27c93f; }
+    .hx-traffic.is-quitting .traffic-close { transform: scale(1.25); box-shadow: 0 0 10px rgba(255,95,86,.8); }
     .hx-title-controls { position: absolute; top: 7px; left: 88px; display: flex; align-items: center; gap: 2px; }
     .hx-control { display: grid; place-items: center; flex-shrink: 0; width: 24px; height: 24px; border-radius: 6px; color: #a9a9ae; }
     .hx-control .hx-icon { width: 14px; height: 14px; }
@@ -567,9 +587,9 @@ const demos = [
     .hx-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
     @media (max-width: 520px) {
-        .hx-caption { flex-direction: column; gap: 6px; }
-        .hx-viewport { border-radius: 7px; }
-        .hx-replay { top: -8px; }
+        .hx-demo-bar { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+        .hx-caption-title { font-size: 16px; }
+        .hx-viewport { border-radius: 8px; }
     }
     @media (prefers-reduced-motion: reduce) {
         .hx-demo *, .hx-demo *::before, .hx-demo *::after { animation: none !important; transition: none !important; }
@@ -624,7 +644,7 @@ const demos = [
                 titlePlus: one("[data-hx-title-plus]"),
                 titleActions: one("[data-hx-title-actions]"),
                 traffic: one("[data-hx-close-dot]").parentElement,
-                replay: one("[data-hx-replay]"),
+                replays: root.querySelectorAll("[data-hx-replay]"),
                 modelChip: one("[data-hx-model-chip]"),
                 modelIcon: one("[data-hx-model-icon]"),
                 modelLabel: one("[data-hx-model-label]"),
@@ -1545,10 +1565,12 @@ const demos = [
                 ui.modelLabel.textContent = initialModel.label;
             };
 
-            ui.replay.addEventListener("click", () => {
-                stop();
-                completed = false;
-                start();
+            ui.replays.forEach((btn) => {
+                btn.addEventListener("click", () => {
+                    stop();
+                    completed = false;
+                    start();
+                });
             });
 
             let visible = false;
