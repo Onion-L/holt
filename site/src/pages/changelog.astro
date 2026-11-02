@@ -123,11 +123,38 @@ import ChangelogController from '../components/ChangelogController';
 <div class="wrap">
   <ol class="vers">
 
+    <li class="ver" id="v0.7.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.7.0">0.7.0</a>
+        <span class="vdate mono">Nov 2, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Subagents fan out from one call — <code>Agent</code> takes an <code>items</code> list and runs one explorer or worker per item, <code>output_schema</code> returns a validated JSON result through <code>submit_result</code>, <code>result_mode: "file"</code> keeps wide results on disk, and the transcript folds the whole fan-out into one row with a lifecycle count and its children's token total</li>
+            <li>A new <code>Workflow</code> tool orchestrates subagents from model-written JavaScript in the background — <code>agent()</code>, <code>parallel()</code>, and <code>pipeline()</code> run on an embedded QuickJS, the call returns at once, and the run's return value arrives as a new message in the same chat; <code>/workflow</code> in the composer asks for one</li>
+            <li>Every workflow declares its plan up front — the transcript draws each declared step as a card before the first agent starts, with dependency links, loop arcs, pan and zoom, and a full-window expanded view; a script that leaves its plan fails the run with the reason in its report</li>
+            <li>Eight subagents run at once across Holt and a Turn may start any number — spend is shown on each row instead of a token cap, and a running workflow can be stopped without ending the chat</li>
+            <li>A <code>current_time</code> tool answers with the device's time zone and local time on demand, so <code>schedule_routine</code>'s description no longer carries a moving clock that re-keyed the provider's prefix cache every Turn</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>A round-trip that fails before the provider reports usage — a 429, an auth rejection — no longer collapses the context gauge to <code>0 / 272k · 0%</code>; the previous measurement stands</li>
+            <li>A workflow that finishes after its chat was deleted no longer recreates the run directory or the queue file, its log output is bounded, and a call the engine rejected shows its error instead of an empty row</li>
+            <li>Hitting the 1,000-agent workflow ceiling ends the run — <code>parallel()</code> can no longer swallow the error and keep a loop going, and a wide fan-out can no longer drop its overflow and report success</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.6.3">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.6.3">0.6.3</a>
         <span class="vdate mono">Oct 27, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
