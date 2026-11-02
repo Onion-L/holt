@@ -28,7 +28,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::update_platform::{self, InstallTarget};
 
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Onion-L/holt/releases/latest";
+// The latest release's tag comes from the releases/latest page (the
+// download page's own URL) answered as JSON — not from the REST API:
+// an anonymous API call shares the 60-requests-per-hour per-IP limit
+// every other unauthenticated caller of that address consumes, and an
+// update check must not break when they exhaust it. The page route
+// carries no asset list; assets are named from the tag instead
+// ([`DOWNLOAD_URL_BASE`]).
+const LATEST_RELEASE_URL: &str = "https://github.com/Onion-L/holt/releases/latest";
+/// Every release asset's fixed download path: `{base}/{tag}/{name}`.
+const DOWNLOAD_URL_BASE: &str = "https://github.com/Onion-L/holt/releases/download";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Minimum gap between download-progress frames.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -83,17 +92,10 @@ struct Inner {
     cancel: Option<CancellationToken>,
 }
 
+/// The releases/latest page's JSON answer; only the tag matters here.
 #[derive(Deserialize)]
-struct Release {
+struct LatestRelease {
     tag_name: String,
-    #[serde(default)]
-    assets: Vec<Asset>,
-}
-
-#[derive(Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
 }
 
 /// The `manifest.json` release asset: the release's own version plus a
@@ -464,10 +466,23 @@ async fn run_check(updater: &Updater) -> Result<(), String> {
 /// round found, nor overwrite the digest it recorded.
 async fn availability_round(updater: &Updater) -> Result<(), String> {
     let release = latest_release().await?;
-    let manifest = fetch_manifest(&release.assets).await?;
+    let tag = release.tag_name;
+    let manifest = fetch_manifest(&tag).await?;
+    // The tag route carries no asset list, so this platform's asset is
+    // probed on its download URL: an update that would 404 on apply must
+    // not be offered.
+    let version = manifest
+        .as_ref()
+        .map(|manifest| manifest.version.as_str())
+        .unwrap_or_else(|| tag.trim_start_matches('v'));
+    let asset_found = asset_exists(&asset_url(
+        &tag,
+        &asset_name(version, ARCH, update_platform::asset_suffix()),
+    ))
+    .await?;
     let decision = decide(
-        &release.tag_name,
-        &release.assets,
+        &tag,
+        asset_found,
         manifest.as_ref(),
         CURRENT_VERSION,
         ARCH,
@@ -507,7 +522,7 @@ struct Decision {
 
 fn decide(
     tag_name: &str,
-    assets: &[Asset],
+    asset_found: bool,
     manifest: Option<&Manifest>,
     current_version: &str,
     arch: &str,
@@ -520,7 +535,6 @@ fn decide(
         .map(|manifest| manifest.version.clone())
         .unwrap_or_else(|| tag_name.trim_start_matches('v').to_string());
     let name = asset_name(&version, arch, suffix);
-    let asset = assets.iter().find(|asset| asset.name == name);
     let digest = manifest
         .and_then(|manifest| manifest.digest_for(&name))
         .map(str::to_string);
@@ -528,32 +542,31 @@ fn decide(
     // verifies a signature may offer the update.
     let provable = digest.is_some() || !digest_required;
     Decision {
-        available: (is_newer(&version, current_version) && asset.is_some() && provable)
+        available: (is_newer(&version, current_version) && asset_found && provable)
             .then_some(version),
-        asset_url: asset.map(|asset| asset.browser_download_url.clone()),
+        asset_url: asset_found.then(|| asset_url(tag_name, &name)),
         digest,
     }
 }
 
-/// Download and parse the release's `manifest.json`. `Ok(None)` when the
-/// release ships none (a release cut before the pipeline published one):
-/// the caller falls back to the API's tag, and digest-requiring platforms
-/// stay unavailable — fail closed. An error fetching one that does exist
-/// is the round's failure, not an absence.
-async fn fetch_manifest(assets: &[Asset]) -> Result<Option<Manifest>, String> {
-    let Some(url) = assets
-        .iter()
-        .find(|asset| asset.name == MANIFEST_ASSET)
-        .map(|asset| asset.browser_download_url.clone())
-    else {
-        return Ok(None);
-    };
+/// Download and parse the release's `manifest.json` from its fixed
+/// download path under the tag. `Ok(None)` when the release ships none —
+/// the 404 of a release cut before the pipeline published one — not an
+/// error: the caller falls back to the tag, and digest-requiring
+/// platforms stay unavailable, fail closed. Any other fetch failure is
+/// the round's failure.
+async fn fetch_manifest(tag: &str) -> Result<Option<Manifest>, String> {
     let response = client()?
-        .get(url)
+        .get(asset_url(tag, MANIFEST_ASSET))
         .timeout(Duration::from_secs(30))
         .send()
         .await
-        .and_then(|response| response.error_for_status())
+        .map_err(|error| format!("manifest fetch failed: {error}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let response = response
+        .error_for_status()
         .map_err(|error| format!("manifest fetch failed: {error}"))?;
     if let Some(length) = response.content_length()
         && length > MANIFEST_LIMIT as u64
@@ -583,10 +596,14 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn latest_release() -> Result<Release, String> {
+/// The latest stable release, from the releases/latest page answered as
+/// JSON (its redirect to the tag page is followed): `tag_name` and page
+/// bookkeeping, no asset list. Not the REST API — see
+/// [`LATEST_RELEASE_URL`] for why the quota rules it out.
+async fn latest_release() -> Result<LatestRelease, String> {
     client()?
         .get(LATEST_RELEASE_URL)
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", "application/json")
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -594,6 +611,32 @@ async fn latest_release() -> Result<Release, String> {
         .map_err(|e| e.to_string())?
         .json()
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// `…/releases/download/<tag>/<name>` — assets are named from the tag,
+/// the same fixed path a browser hits.
+fn asset_url(tag: &str, name: &str) -> String {
+    format!("{DOWNLOAD_URL_BASE}/{tag}/{name}")
+}
+
+/// Whether this platform's release asset exists: a HEAD on its download
+/// URL (redirected to the CDN, no rate limit). `false` only on a 404;
+/// any other failure could not ask and is the round's failure, so an
+/// update whose download would 404 is never offered.
+async fn asset_exists(url: &str) -> Result<bool, String> {
+    let response = client()?
+        .head(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    response
+        .error_for_status()
+        .map(|_| true)
         .map_err(|e| e.to_string())
 }
 
@@ -698,6 +741,16 @@ mod tests {
         );
     }
 
+    /// The constructed download path must stay the fixed one a browser
+    /// hits — the tag route carries no URLs to copy out.
+    #[test]
+    fn asset_urls_are_the_fixed_download_path() {
+        assert_eq!(
+            asset_url("v0.7.0", "Holt-0.7.0-arm64.dmg"),
+            "https://github.com/Onion-L/holt/releases/download/v0.7.0/Holt-0.7.0-arm64.dmg"
+        );
+    }
+
     /// The staging directory's name is built from the release manifest's
     /// version and then removed recursively — keep it a single, plain
     /// path segment whatever the metadata says.
@@ -710,37 +763,18 @@ mod tests {
         assert_eq!(safe_component(""), "release");
     }
 
-    fn asset(name: &str) -> Asset {
-        Asset {
-            name: name.to_string(),
-            browser_download_url: format!("https://example.invalid/{name}"),
-        }
-    }
-
-    fn manifest(version: &str, digest: Option<&str>) -> Manifest {
-        let mut artifacts = HashMap::new();
-        if let Some(digest) = digest {
-            artifacts.insert(format!("Holt-{version}-x64-win.zip"), digest.to_string());
-        }
-        Manifest {
-            version: version.to_string(),
-            artifacts,
-        }
-    }
-
     /// The round's fail-closed table: what the release metadata alone
     /// decides, with no network in the way.
     #[test]
     fn availability_fails_closed_without_a_digest() {
         const CURRENT: &str = "0.6.2";
-        let zip = vec![asset("Holt-0.7.0-x64-win.zip")];
         let digest = "ab".repeat(32);
         let digests = manifest("0.7.0", Some(&digest));
 
-        // Newer release, this arch's archive, its digest: offered.
+        // Newer release, this arch's archive present with its digest: offered.
         let decision = decide(
             "v0.7.0",
-            &zip,
+            true,
             Some(&digests),
             CURRENT,
             "x64",
@@ -750,20 +784,33 @@ mod tests {
         assert_eq!(decision.available.as_deref(), Some("0.7.0"));
         assert_eq!(
             decision.asset_url.as_deref(),
-            Some("https://example.invalid/Holt-0.7.0-x64-win.zip")
+            Some("https://github.com/Onion-L/holt/releases/download/v0.7.0/Holt-0.7.0-x64-win.zip")
         );
         assert_eq!(decision.digest, Some(digest.clone()));
+
+        // An asset the release does not carry is neither offered nor given
+        // a download URL, whatever the rest of the metadata says.
+        let missing = decide(
+            "v0.7.0",
+            false,
+            Some(&digests),
+            CURRENT,
+            "x64",
+            "-win.zip",
+            true,
+        );
+        assert_eq!(missing.available, None);
+        assert_eq!(missing.asset_url, None);
 
         // No manifest at all: a digest-requiring platform is not offered
         // the update, while macOS — whose gate is the DMG's signature —
         // still is.
         assert_eq!(
-            decide("v0.7.0", &zip, None, CURRENT, "x64", "-win.zip", true).available,
+            decide("v0.7.0", true, None, CURRENT, "x64", "-win.zip", true).available,
             None
         );
-        let dmg = vec![asset("Holt-0.7.0-x64.dmg")];
         assert_eq!(
-            decide("v0.7.0", &dmg, None, CURRENT, "x64", ".dmg", false)
+            decide("v0.7.0", true, None, CURRENT, "x64", ".dmg", false)
                 .available
                 .as_deref(),
             Some("0.7.0")
@@ -775,7 +822,7 @@ mod tests {
         assert_eq!(
             decide(
                 "v0.7.0",
-                &zip,
+                true,
                 Some(&undigested),
                 CURRENT,
                 "x64",
@@ -786,29 +833,15 @@ mod tests {
             None
         );
 
-        // The running version, an archive this arch is not shipped, and
-        // the manifest's version disagreeing with the tag (the asset name
-        // is built from the former) all yield nothing.
-        let current_zip = vec![asset("Holt-0.6.2-x64-win.zip")];
+        // The running version, and a stale manifest — whose version names
+        // an asset the release does not carry, so the probe comes back
+        // empty — yield nothing.
         let current_manifest = manifest("0.6.2", Some(&digest));
         assert_eq!(
             decide(
                 "v0.6.2",
-                &current_zip,
+                true,
                 Some(&current_manifest),
-                CURRENT,
-                "x64",
-                "-win.zip",
-                true
-            )
-            .available,
-            None
-        );
-        assert_eq!(
-            decide(
-                "v0.7.0",
-                &[],
-                Some(&digests),
                 CURRENT,
                 "x64",
                 "-win.zip",
@@ -821,16 +854,27 @@ mod tests {
         assert_eq!(
             decide(
                 "v0.7.0",
-                &zip,
+                false,
                 Some(&stale),
                 CURRENT,
                 "x64",
                 "-win.zip",
-                false
+                true
             )
             .available,
             None
         );
+    }
+
+    fn manifest(version: &str, digest: Option<&str>) -> Manifest {
+        let mut artifacts = HashMap::new();
+        if let Some(digest) = digest {
+            artifacts.insert(format!("Holt-{version}-x64-win.zip"), digest.to_string());
+        }
+        Manifest {
+            version: version.to_string(),
+            artifacts,
+        }
     }
 
     #[test]
