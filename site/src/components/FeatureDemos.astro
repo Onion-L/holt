@@ -52,8 +52,8 @@ const marks = {
 const demos = [
     {
         id: "providers",
-        label: "01 · PROVIDERS THAT SET THEMSELVES UP",
-        note: "The agent researches the vendor, proposes the exact catalog change, and one click writes provider and models into the picker.",
+        label: "01 · AUTOMATED PROVIDER DISCOVERY & SETUP",
+        note: "The agent queries vendor documentation, proposes the exact catalog definition, and writes provider endpoints and models into the picker in one click.",
         session: "Set up Moonshot AI",
         sessionProvider: "zai",
         titleIcon: "zai",
@@ -62,8 +62,8 @@ const demos = [
     },
     {
         id: "workflow",
-        label: "02 · WORKFLOWS THAT RUN THEMSELVES",
-        note: "A workflow declares its plan up front, then spawns, verifies, and revises its own agents on a live graph — off the Turn, in the background.",
+        label: "02 · GRAPH-DRIVEN PARALLEL SUBAGENTS",
+        note: "Workflows declare an explicit plan up front, then spawn, coordinate, and review specialized subagents on an interactive execution graph.",
         session: "Rust actor shootout",
         sessionProvider: "zai",
         titleIcon: "zai",
@@ -72,8 +72,8 @@ const demos = [
     },
     {
         id: "durable",
-        label: "03 · RUNS THAT SURVIVE A RESTART",
-        note: "Quitting mid-Turn loses nothing: on relaunch the run resumes from its journal and finishes the work it started.",
+        label: "03 · JOURNAL-BACKED RESTART RESILIENCE",
+        note: "Quitting mid-turn loses nothing: on restart, the agent reconstructs its execution state from the local intent journal and finishes the task.",
         session: "Auth migration",
         sessionProvider: "openai",
         titleIcon: "openai",
