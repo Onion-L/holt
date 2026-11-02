@@ -1,0 +1,1564 @@
+---
+// Three desktop-capture animations, one per capability:
+//   providers  — a Provider-Mode proposal writes the provider + its models
+//                into the catalog and the picker (provider_card.rs).
+//   workflow   — a Workflow run declares its plan, then drives its own
+//                agents on the plan graph (workflow_graph*.rs).
+//   durable    — a quit mid-Turn resumes after restart from the intent
+//                journal (agent.rs push_resumed_notice).
+// Each plays once on scroll-in and replays on demand. The chrome mirrors
+// DesktopDemo.astro 1:1; the new surfaces mirror the GPUI sources cited
+// above (colors from Theme::dark, copy from locales/en-US).
+
+const sidebarSessions = [
+    { id: "checklist", title: "Refine the release checklist", time: "42m", provider: "anthropic" },
+    { id: "resize", title: "Fix sidebar resizing", time: "3h", provider: "openai" },
+    { id: "provset", title: "Add provider settings", time: "Tue", provider: "deepseek" },
+];
+
+// New-chat marks from holt_proto::motion (820×940 canvas, 120px grid):
+// ghost, ring, signal. The shell picks one at random per visit.
+const marks = {
+    ghost: [
+        [2, 0], [3, 0], [4, 0],
+        [1, 1], [2, 1], [3, 1], [4, 1], [5, 1],
+        [0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2],
+        [0, 3], [1, 3], [3, 3], [5, 3], [6, 3],
+        [0, 4], [1, 4], [2, 4], [3, 4], [4, 4], [5, 4], [6, 4],
+        [0, 5], [1, 5], [2, 5], [3, 5], [4, 5], [5, 5], [6, 5],
+        [0, 6], [1, 6], [2, 6], [3, 6], [4, 6], [5, 6], [6, 6],
+        [0, 7], [2, 7], [4, 7], [6, 7],
+    ],
+    ring: [
+        [2, 1], [3, 1], [4, 1],
+        [1, 2], [2, 2], [4, 2], [5, 2],
+        [0, 3], [1, 3], [5, 3], [6, 3],
+        [0, 4], [1, 4], [5, 4], [6, 4],
+        [1, 5], [2, 5], [4, 5], [5, 5],
+        [2, 6], [3, 6], [4, 6],
+    ],
+    signal: [
+        [6, 0],
+        [6, 1],
+        [4, 2], [5, 2], [6, 2],
+        [4, 3], [5, 3], [6, 3],
+        [2, 4], [3, 4], [4, 4], [5, 4], [6, 4],
+        [2, 5], [3, 5], [4, 5], [5, 5], [6, 5],
+        [0, 6], [1, 6], [2, 6], [3, 6], [4, 6], [5, 6], [6, 6],
+        [0, 7], [1, 7], [2, 7], [3, 7], [4, 7], [5, 7], [6, 7],
+    ],
+};
+
+const demos = [
+    {
+        id: "providers",
+        label: "01 · PROVIDERS THAT SET THEMSELVES UP",
+        note: "The agent researches the vendor, proposes the exact catalog change, and one click writes provider and models into the picker.",
+        session: "Set up Moonshot AI",
+        sessionProvider: "zai",
+        titleIcon: "zai",
+        modelChip: "GLM-5.3-Flash Max",
+        mark: "ring",
+    },
+    {
+        id: "workflow",
+        label: "02 · WORKFLOWS THAT RUN THEMSELVES",
+        note: "A workflow declares its plan up front, then spawns, verifies, and revises its own agents on a live graph — off the Turn, in the background.",
+        session: "Rust actor shootout",
+        sessionProvider: "zai",
+        titleIcon: "zai",
+        modelChip: "GLM-5.3-Flash Max",
+        mark: "signal",
+    },
+    {
+        id: "durable",
+        label: "03 · RUNS THAT SURVIVE A RESTART",
+        note: "Quitting mid-Turn loses nothing: on relaunch the run resumes from its journal and finishes the work it started.",
+        session: "Auth migration",
+        sessionProvider: "openai",
+        titleIcon: "openai",
+        modelChip: "GPT-5.2",
+        mark: "ghost",
+    },
+];
+---
+
+<section class="hx-section">
+    {demos.map((d) => (
+        <figure class="hx-demo" data-fd={d.id} data-phase="idle">
+            <div class="hx-caption">
+                <div class="hx-caption-label">{d.label}</div>
+                <p class="hx-caption-note">{d.note}</p>
+            </div>
+            <button class="hx-replay" type="button" aria-label={`Replay ${d.label} animation`} data-hx-replay title="Replay demo animation">
+                <span class="hx-icon hx-i-refresh" aria-hidden="true"></span>
+            </button>
+            <div class="hx-viewport" data-hx-viewport>
+                <div class="hx-app" data-hx-app>
+                    <!-- Titlebar -->
+                    <div class="hx-titlebar">
+                        <div class="hx-traffic">
+                            <i class="traffic-close" data-hx-close-dot></i><i class="traffic-min"></i><i class="traffic-max"></i>
+                        </div>
+                        <div class="hx-title-controls">
+                            <span class="hx-control hx-sidebar-glyph"></span>
+                            <span class="hx-control"><span class="hx-icon hx-i-arrow-left"></span></span>
+                            <span class="hx-control hx-control-dim"><span class="hx-icon hx-i-arrow-right"></span></span>
+                            <span class="hx-control hx-title-plus" data-hx-title-plus><span class="hx-icon hx-i-plus"></span></span>
+                            <span class="hx-control hx-title-menu"><span class="hx-icon hx-i-menu-dots"></span></span>
+                        </div>
+                        <div class="hx-session-title" data-hx-session-title>
+                            <img class="hx-title-provider-icon" src={`/assets/providers/${d.titleIcon}.svg`} alt="" width="14" height="14" />
+                            <span class="hx-title-text">{d.session}</span>
+                            <span class="hx-session-target">holt</span>
+                        </div>
+                        <div class="hx-title-actions" data-hx-title-actions>
+                            <span class="hx-control"><span class="hx-icon hx-i-terminal"></span></span>
+                            <span class="hx-control"><span class="hx-icon hx-i-split-columns"></span></span>
+                        </div>
+                    </div>
+
+                    <!-- Left sidebar -->
+                    <aside class="hx-sidebar">
+                        <div class="sidebar-filter">
+                            <span class="hx-icon hx-i-folder"></span>
+                            <span class="sidebar-workspace-name">holt</span>
+                            <span class="hx-icon hx-i-alt-arrow-down sidebar-filter-chevron"></span>
+                            <span class="hx-icon hx-i-sort sidebar-sort"></span>
+                        </div>
+                        <div class="sidebar-sessions">
+                            <div class="sidebar-session sidebar-session-new" data-hx-new-session data-session-id={d.id}>
+                                <div class="session-context"><span>holt</span><span>Now</span></div>
+                                <div class="session-name">
+                                    <img class="session-provider-img" src={`/assets/providers/${d.sessionProvider}.svg`} alt="" width="13" height="13" />
+                                    <span class="session-title-label">{d.session}</span>
+                                </div>
+                                <div class="session-meta"><span class="hx-icon hx-i-git-branch"></span><span>main</span></div>
+                            </div>
+                            {sidebarSessions.map((s) => (
+                                <div class="sidebar-session">
+                                    <div class="session-context"><span>holt</span><span>{s.time}</span></div>
+                                    <div class="session-name">
+                                        <img src={`/assets/providers/${s.provider}.svg`} alt="" width="13" height="13" />
+                                        <span>{s.title}</span>
+                                    </div>
+                                    <div class="session-meta"><span class="hx-icon hx-i-git-branch"></span><span>main</span></div>
+                                </div>
+                            ))}
+                        </div>
+                        <div class="sidebar-settings">
+                            <span class="hx-icon hx-i-settings-minimalistic"></span>
+                            <span>Settings</span>
+                        </div>
+                    </aside>
+
+                    <!-- Main -->
+                    <main class="hx-main">
+                        <div class="hx-canvas" data-hx-canvas>
+                            <div class="hx-canvas-inner">
+                                <div class="hx-mark">
+                                    {marks[d.mark].map(([x, y]) => (
+                                        <span style={`grid-column:${x + 1};grid-row:${y + 1};--cell-delay:-${(((6 - x + y) / 14) * 1.32).toFixed(3)}s`}></span>
+                                    ))}
+                                </div>
+                                <div class="hx-canvas-title">What should we build in holt?</div>
+                            </div>
+                        </div>
+
+                        <div class="hx-transcript" data-hx-transcript>
+                            <div class="hx-transcript-column" data-hx-column></div>
+                        </div>
+
+                        <div class="hx-composer-stack">
+                            <div class="hx-status" data-hx-status>
+                                <span class="hx-status-spinner"></span><span data-hx-status-text>Sending…</span>
+                            </div>
+                            <div class="hx-composer-column">
+                                <div class="hx-project-selector" data-hx-project-selector>
+                                    <span class="hx-icon hx-i-folder"></span><span class="project-name-label">holt</span><span class="hx-icon hx-i-alt-arrow-down hx-chip-chevron"></span>
+                                </div>
+                                <div class="hx-composer" data-hx-composer>
+                                    <div class="hx-composer-input">
+                                        <textarea class="hx-composer-textarea" data-hx-textarea placeholder="Do anything…" rows="1" aria-label="Composer input"></textarea>
+                                    </div>
+                                    <div class="hx-composer-actions">
+                                        <div class="hx-model-chip" data-hx-model-chip title="Select Model">
+                                            <img class="hx-model-icon" data-hx-model-icon src={`/assets/providers/${d.sessionProvider}.svg`} alt="" width="14" height="14" />
+                                            <span class="hx-model-label" data-hx-model-label>{d.modelChip}</span>
+                                            <span class="hx-icon hx-i-alt-arrow-down hx-chip-chevron"></span>
+                                        </div>
+                                        <span class="hx-attach"><span class="hx-icon hx-i-paperclip"></span></span>
+                                        <button class="hx-send" type="button" data-hx-send aria-label="Send prompt">
+                                            <span class="hx-icon hx-i-arrow-up hx-send-arrow"></span>
+                                            <span class="hx-send-stop"></span>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="hx-composer-footer">
+                                    <div class="hx-footer-left">
+                                        <span class="hx-footer-chip hx-permission"><span class="hx-icon hx-i-lock-open"></span><span>Full access</span><span class="hx-icon hx-i-alt-arrow-down hx-chip-chevron"></span></span>
+                                        <span class="hx-footer-chip"><span class="hx-icon hx-i-folder"></span><span>Current checkout</span><span class="hx-icon hx-i-alt-arrow-down hx-chip-chevron"></span></span>
+                                    </div>
+                                    <span class="hx-footer-chip"><span class="hx-icon hx-i-git-branch"></span><span>main</span><span class="hx-icon hx-i-alt-arrow-down hx-chip-chevron"></span></span>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            </div>
+            <figcaption class="hx-sr-only">{d.note}</figcaption>
+        </figure>
+    ))}
+</section>
+
+<style is:inline>
+    @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+    @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist-Medium.ttf") format("truetype"); font-style: normal; font-weight: 500; font-display: swap; }
+    @font-face { font-family: "Holt Geist"; src: url("/assets/fonts/Geist-SemiBold.ttf") format("truetype"); font-style: normal; font-weight: 600; font-display: swap; }
+    @font-face { font-family: "Holt Geist Mono"; src: url("/assets/fonts/GeistMono.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+
+    .hx-section { display: flex; flex-direction: column; gap: 72px; }
+    .hx-demo { position: relative; width: 100%; max-width: 1180px; margin: 0 auto; }
+    .hx-caption { display: flex; align-items: baseline; gap: 18px; margin: 0 0 14px; }
+    .hx-caption-label { flex-shrink: 0; color: var(--coral); font: 500 10px/1 var(--mono); letter-spacing: .08em; }
+    .hx-caption-note { margin: 0; max-width: 620px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .hx-replay { position: absolute; z-index: 2; top: -12px; right: 0; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #979ba3; cursor: pointer; transition: color .15s, background .15s; }
+    .hx-replay:hover { color: #ece9e2; background: rgba(255,255,255,.05); }
+    .hx-replay:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; }
+    .hx-viewport { position: relative; width: 100%; aspect-ratio: 59 / 40; overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; background: #0d0d0d; box-shadow: 0 36px 100px rgba(0,0,0,.36); }
+    .hx-app { position: absolute; top: 0; left: 0; width: 1180px; height: 800px; overflow: hidden; transform-origin: top left; background: #0d0d0d; color: #e8e8ea; font-family: "Holt Geist", sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; transition: opacity .45s ease; }
+    .hx-app.is-quitting { opacity: .3; }
+    .hx-app *, .hx-app *::before, .hx-app *::after { box-sizing: border-box; }
+    .hx-app img { filter: grayscale(1) brightness(0) invert(1) !important; opacity: .75; }
+    .hx-app .hx-model-chip img { opacity: .95; }
+
+    .hx-icon { display: inline-block; flex-shrink: 0; width: 16px; height: 16px; background: currentColor; -webkit-mask: var(--hx-icon) center / contain no-repeat; mask: var(--hx-icon) center / contain no-repeat; }
+    .hx-i-refresh { --hx-icon: url("/assets/icons/refresh.svg"); }
+    .hx-i-arrow-left { --hx-icon: url("/assets/icons/arrow-left.svg"); }
+    .hx-i-arrow-right { --hx-icon: url("/assets/icons/arrow-right.svg"); }
+    .hx-i-plus { --hx-icon: url("/assets/icons/plus.svg"); }
+    .hx-i-menu-dots { --hx-icon: url("/assets/icons/menu-dots.svg"); }
+    .hx-i-terminal { --hx-icon: url("/assets/icons/terminal.svg"); }
+    .hx-i-split-columns { --hx-icon: url("/assets/icons/split-columns.svg"); }
+    .hx-i-folder { --hx-icon: url("/assets/icons/folder.svg"); }
+    .hx-i-alt-arrow-down { --hx-icon: url("/assets/icons/alt-arrow-down.svg"); }
+    .hx-i-sort { --hx-icon: url("/assets/icons/sort.svg"); }
+    .hx-i-git-branch { --hx-icon: url("/assets/icons/git-branch.svg"); }
+    .hx-i-settings-minimalistic { --hx-icon: url("/assets/icons/settings-minimalistic.svg"); }
+    .hx-i-document { --hx-icon: url("/assets/icons/document.svg"); }
+    .hx-i-magnifer { --hx-icon: url("/assets/icons/magnifer.svg"); }
+    .hx-i-pen { --hx-icon: url("/assets/icons/pen.svg"); }
+    .hx-i-command { --hx-icon: url("/assets/icons/command.svg"); }
+    .hx-i-check { --hx-icon: url("/assets/icons/check.svg"); }
+    .hx-i-paperclip { --hx-icon: url("/assets/icons/paperclip.svg"); }
+    .hx-i-arrow-up { --hx-icon: url("/assets/icons/arrow-up.svg"); }
+    .hx-i-lock-open { --hx-icon: url("/assets/icons/lock-open.svg"); }
+    .hx-i-global { --hx-icon: url("/assets/icons/global.svg"); }
+    .hx-i-widget { --hx-icon: url("/assets/icons/widget.svg"); }
+    .hx-i-info-circle { --hx-icon: url("/assets/icons/info-circle.svg"); }
+    .hx-i-stop { --hx-icon: url("/assets/icons/stop.svg"); }
+    .hx-i-expand { --hx-icon: url("/assets/icons/expand-arrows.svg"); }
+    .hx-i-collapse { --hx-icon: url("/assets/icons/collapse-arrows.svg"); }
+    .hx-i-recenter { --hx-icon: url("/assets/icons/recenter.svg"); }
+    .hx-i-minus { --hx-icon: url("/assets/icons/minus.svg"); }
+    .hx-i-target { --hx-icon: url("/assets/icons/target.svg"); }
+    .hx-i-cloud { --hx-icon: url("/assets/icons/cloud.svg"); }
+    .hx-i-checklist { --hx-icon: url("/assets/icons/checklist.svg"); }
+
+    /* Titlebar */
+    .hx-titlebar { position: absolute; z-index: 10; top: 0; left: 0; right: 0; height: 38px; color: #a9a9ae; display: flex; align-items: center; border-bottom: 1px solid rgba(255,255,255,.05); }
+    .hx-traffic { position: absolute; top: 14px; left: 14px; display: flex; gap: 8px; }
+    .hx-traffic i { width: 10px; height: 10px; border-radius: 50%; transition: transform .18s, box-shadow .18s; }
+    .traffic-close { background: #ff5f57; } .traffic-min { background: #febc2e; } .traffic-max { background: #28c840; }
+    .hx-traffic.is-quitting .traffic-close { transform: scale(1.25); box-shadow: 0 0 10px rgba(255,95,87,.8); }
+    .hx-title-controls { position: absolute; top: 7px; left: 88px; display: flex; align-items: center; gap: 2px; }
+    .hx-control { display: grid; place-items: center; flex-shrink: 0; width: 24px; height: 24px; border-radius: 6px; color: #a9a9ae; }
+    .hx-control .hx-icon { width: 14px; height: 14px; }
+    .hx-control-dim { opacity: .38; }
+    .hx-sidebar-glyph { position: relative; }
+    .hx-sidebar-glyph::before { content: ""; position: absolute; width: 14px; height: 14px; border: 1.4px solid currentColor; border-radius: 3px; }
+    .hx-sidebar-glyph::after { content: ""; position: absolute; width: 1.4px; height: 10px; background: currentColor; transform: translateX(-3px); }
+    .hx-title-plus { visibility: hidden; }
+    .hx-title-plus.is-visible { visibility: visible; }
+    .hx-title-menu { margin-left: 22px; }
+    .hx-session-title { position: absolute; top: 9px; left: 272px; display: flex; align-items: center; gap: 6px; max-width: 390px; font-size: 12px; font-weight: 500; opacity: 0; transition: opacity .18s; }
+    .hx-session-title.is-visible { opacity: .86; }
+    .hx-session-target { margin-left: 3px; color: #85858a; font-weight: 400; opacity: .65; }
+    .hx-title-actions { position: absolute; top: 7px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .18s; }
+    .hx-title-actions.is-visible { opacity: 1; }
+
+    /* Sidebar */
+    .hx-sidebar { position: absolute; z-index: 5; top: 0; bottom: 0; left: 0; width: 256px; padding-top: 38px; background: rgba(255,255,255,.03); border-right: 1px solid rgba(255,255,255,.08); color: #a9a9ae; display: flex; flex-direction: column; }
+    .sidebar-filter { display: flex; align-items: center; gap: 7px; height: 29px; margin: 4px 8px 6px; padding: 0 8px; border-radius: 8px; color: #d0d0d3; font-size: 13px; font-weight: 500; }
+    .sidebar-filter > .hx-icon:first-child { width: 15px; height: 15px; color: #85858a; }
+    .sidebar-filter-chevron { width: 11px; height: 11px; color: #85858a; }
+    .sidebar-sort { margin-left: auto; color: #85858a; }
+    .sidebar-sessions { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+    .sidebar-session { flex-shrink: 0; height: 63px; padding: 6px 8px; overflow: hidden; border-radius: 8px; }
+    .sidebar-session-new { max-height: 0; height: 63px; padding-top: 0; padding-bottom: 0; opacity: 0; background: rgba(235,235,239,.11); transition: max-height .26s cubic-bezier(.22,1,.36,1), opacity .18s, padding .26s; }
+    .sidebar-session-new.is-visible { max-height: 63px; padding-top: 6px; padding-bottom: 6px; opacity: 1; }
+    .session-context { display: flex; align-items: center; justify-content: space-between; height: 14px; color: #85858a; font-size: 11px; line-height: 14px; }
+    .session-name { display: flex; align-items: center; gap: 8px; height: 19px; margin-top: 2px; overflow: hidden; color: #dedee1; font-size: 13px; line-height: 17px; white-space: nowrap; }
+    .session-name span { overflow: hidden; text-overflow: ellipsis; }
+    .session-meta { display: flex; align-items: center; gap: 5px; height: 16px; color: #85858a; font-size: 10px; line-height: 14px; }
+    .session-meta .hx-icon { width: 11px; height: 11px; }
+    .sidebar-settings { margin: 8px 8px 12px; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: 8px; font-size: 13px; color: #85858a; }
+    .sidebar-settings .hx-icon { width: 15px; height: 15px; }
+
+    /* Main / canvas */
+    .hx-main { position: absolute; top: 0; right: 0; bottom: 0; left: 256px; overflow: hidden; background: #070707; }
+    .hx-canvas { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding-bottom: 132px; opacity: 1; transition: opacity .2s; }
+    .hx-canvas.is-hidden { opacity: 0; pointer-events: none; }
+    .hx-canvas-inner { display: flex; flex-direction: column; align-items: center; text-align: center; }
+    .hx-mark { display: grid; grid-template-columns: repeat(7,5px); grid-template-rows: repeat(8,5px); gap: 2px; width: 47px; height: 54px; }
+    .hx-mark span { width: 5px; height: 5px; background: #e8e8ea; opacity: .1; animation: hxMarkPulse 2.4s var(--cell-delay) ease-in-out infinite; }
+    @keyframes hxMarkPulse { 0%,100% { opacity: .08; transform: scale(.9); } 50% { opacity: 1; transform: scale(1); } }
+    .hx-canvas-title { margin-top: 16px; color: #e8e8ea; font-size: 16px; font-weight: 500; }
+
+    /* Transcript */
+    .hx-transcript { position: absolute; inset: 0; overflow-y: auto; padding: 64px 48px 156px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .hx-transcript.is-visible { opacity: 1; pointer-events: auto; }
+    .hx-transcript.is-covered { opacity: 0; pointer-events: none; overflow: hidden; }
+    .hx-transcript-column { width: 100%; max-width: 736px; margin: 0 auto; display: flex; flex-direction: column; }
+    .hx-user-row { display: flex; justify-content: flex-end; opacity: 0; transition: opacity .16s; }
+    .hx-user-row.is-visible { opacity: 1; }
+    .hx-user-bubble { max-width: 80%; padding: 10px 16px; border-radius: 16px; background: rgba(235,235,235,.08); color: #e8e8ea; font-size: 14px; line-height: 22px; opacity: .65; transition: opacity .2s; }
+    .hx-user-bubble.is-confirmed { opacity: 1; }
+    .hx-user-meta-space { height: 32px; }
+    .hx-block { opacity: 0; transform: translateY(4px); transition: opacity .22s ease-out, transform .22s ease-out; }
+    .hx-block.is-visible { opacity: 1; transform: none; }
+
+    .hx-tool-group { max-height: 0; overflow: hidden; opacity: 0; transition: max-height .22s ease-out, opacity .16s; border-radius: 8px; }
+    .hx-tool-group.is-open { max-height: 220px; opacity: 1; }
+    .hx-tool-group.is-collapsed { max-height: 28px; opacity: 1; }
+    .hx-tool-header { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 4px; color: #a9a9ae; font-size: 12px; line-height: 18px; cursor: default; }
+    .hx-tool-disclosure { display: grid; place-items: center; width: 18px; color: #85858a; font-size: 10px; }
+    .hx-tool-list { margin-left: 12px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,.08); }
+    .hx-tool-row { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; color: #a9a9ae; font-size: 12px; line-height: 18px; opacity: 0; transition: opacity .16s; }
+    .hx-tool-row.is-visible { opacity: 1; }
+    .hx-tool-icon { width: 13px; height: 13px; color: #a9a9ae; }
+    .hx-tool-label { flex-shrink: 0; color: #c4c4c8; font-weight: 500; }
+    .hx-tool-detail { min-width: 0; overflow: hidden; color: #85858a; text-overflow: ellipsis; white-space: nowrap; font-family: "Holt Geist Mono", monospace; font-size: 11px; }
+    .hx-tool-state { display: grid; place-items: center; flex-shrink: 0; width: 16px; height: 16px; margin-left: auto; }
+    .hx-tool-spinner { display: none; grid-template-columns: repeat(3,2px); grid-template-rows: repeat(3,2px); gap: 1px; width: 8px; height: 8px; }
+    .hx-tool-spinner i { width: 2px; height: 2px; background: #b6d3ef; opacity: .1; animation: hxMatrixPulse .75s calc(var(--matrix-index) * -.075s) linear infinite; }
+    .hx-tool-spinner i:nth-child(n+4):nth-child(-n+6) { background: #edb185; }
+    .hx-tool-spinner i:nth-child(n+7) { background: #f888a0; }
+    @keyframes hxMatrixPulse { 0% { opacity: 1; } 45%,92% { opacity: .1; } 100% { opacity: 1; } }
+    .hx-tool-row.is-pending .hx-tool-spinner { display: grid; }
+    .hx-tool-check { display: none; width: 12px; height: 12px; color: #85858a; }
+    .hx-tool-row.is-done .hx-tool-check { display: block; }
+    .hx-tool-row.is-done .hx-tool-spinner { display: none; }
+
+    .hx-notice { display: flex; align-items: flex-start; gap: 6px; padding: 4px 0; width: 100%; font-size: 12px; line-height: 17px; color: rgba(169,169,174,.9); }
+    .hx-notice .hx-icon { width: 12px; height: 12px; flex-shrink: 0; margin-top: 3px; color: rgba(169,169,174,.55); }
+
+    .hx-working { display: none; align-items: center; gap: 7px; padding-top: 16px; color: #a9a9ae; font-size: 12px; line-height: 18px; }
+    .hx-working.is-visible { display: flex; }
+    .hx-working-dots { display: flex; align-items: center; gap: 3px; }
+    .hx-working-dots i { width: 3px; height: 3px; border-radius: 1px; background: #aba1f9; animation: hxWorkingPulse .9s ease-in-out infinite; }
+    .hx-working-dots i:nth-child(2) { background: #8b7cf6; animation-delay: -.15s; }
+    .hx-working-dots i:nth-child(3) { background: #7266ca; animation-delay: -.3s; }
+    @keyframes hxWorkingPulse { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+    .hx-working-elapsed { color: #85858a; opacity: .7; }
+
+    /* Assistant response */
+    .hx-response { margin-top: 12px; color: #e8e8ea; font-size: 14px; line-height: 22px; }
+    .hx-response p { margin: 0 0 12px; }
+    .hx-response ul { margin: 0 0 12px; padding-left: 19px; }
+    .hx-response li { margin-bottom: 4px; padding-left: 2px; }
+    .hx-response li::marker { color: #85858a; }
+    .hx-response code { padding: 1px 4px; border-radius: 4px; background: rgba(139,124,246,.09); color: #aba1f9; font-family: "Holt Geist Mono", monospace; font-size: 12.5px; }
+    .hx-response .hx-result { color: #a9a9ae; }
+
+    /* Provider proposal card (transcript/provider_card.rs) */
+    .hx-card { width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; border: 1px solid; margin: 4px 0; transition: border-color .2s, background .2s; }
+    .hx-card.is-pending { background: rgba(167,139,250,.07); border-color: rgba(167,139,250,.45); }
+    .hx-card.is-settled { background: transparent; border-color: rgba(255,255,255,.12); }
+    .hx-card.is-settled .hx-diff-panel { opacity: .7; }
+    .hx-card-targets { display: flex; flex-wrap: wrap; column-gap: 12px; row-gap: 4px; }
+    .hx-card-target { display: flex; align-items: center; gap: 6px; }
+    .hx-card-target img { width: 14px; height: 14px; opacity: .9; }
+    .hx-card-target-name { font-size: 12px; font-weight: 500; color: #e8e8ea; }
+    .hx-card-target-id { font-family: "Holt Geist Mono", monospace; font-size: 11px; color: #a9a9ae; }
+    .hx-card-summary { font-size: 12.5px; color: #e8e8ea; }
+    .hx-diff-panel { display: flex; flex-direction: column; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); transition: opacity .2s; }
+    .hx-diff-line { display: flex; gap: 6px; }
+    .hx-diff-detail + .hx-diff-head { margin-top: 6px; }
+    .hx-diff-marker { width: 10px; flex-shrink: 0; font-family: "Holt Geist Mono", monospace; font-size: 11.5px; line-height: 17px; font-weight: 700; }
+    .hx-diff-marker.is-add { color: #34d399; }
+    .hx-diff-head-text { min-width: 0; flex: 1; font-family: "Holt Geist Mono", monospace; font-size: 11.5px; line-height: 17px; font-weight: 500; color: #e8e8ea; }
+    .hx-diff-detail { padding-left: 16px; font-family: "Holt Geist Mono", monospace; font-size: 11.5px; line-height: 17px; color: #a9a9ae; }
+    .hx-card-actions { display: flex; align-items: center; gap: 8px; }
+    .hx-btn-primary { display: flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 6px; background: #a78bfa; color: #fbfbfc; font-size: 12px; font-weight: 500; transition: filter .12s, opacity .12s; }
+    .hx-btn-primary.is-pressed { filter: brightness(.82); }
+    .hx-btn-ghost { display: flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 6px; color: #a9a9ae; font-size: 12px; }
+    .hx-card-settled-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .hx-card-state { font-size: 11.5px; color: #a9a9ae; }
+    .hx-card-open-settings { padding: 2px 4px; border-radius: 4px; color: #a9a9ae; font-size: 11.5px; }
+
+    /* Slash-command popup (composer/popups.rs render_slash_popup) */
+    .hx-slash-popover { position: absolute; z-index: 50; left: 334px; bottom: 176px; width: 768px; max-height: 320px; overflow: hidden; background: #1a1b1e; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; box-shadow: 0 20px 48px rgba(0,0,0,.75); padding: 4px; font-size: 13px; display: none; }
+    .hx-slash-popover.is-open { display: block; }
+    .hx-slash-header { padding: 8px 12px 3px; font-size: 10.5px; font-weight: 500; color: rgba(169,169,174,.6); }
+    .hx-slash-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+    .hx-slash-row.is-selected { background: rgba(235,235,239,.11); }
+    .hx-slash-row.is-accepted { background: rgba(235,235,239,.2); }
+    .hx-slash-row .hx-icon { width: 15px; height: 15px; color: #a9a9ae; flex-shrink: 0; }
+    .hx-slash-name { flex-shrink: 0; font-size: 12.5px; font-weight: 500; color: #e8e8ea; }
+    .hx-slash-desc { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: rgba(169,169,174,.75); }
+    .hx-slash-empty { padding: 10px 12px; font-size: 12px; color: #a9a9ae; }
+
+    /* The accepted directive's chip in the composer input (mentions.rs —
+       the painted icon carries the identity, the `/` sigil is never shown) */
+    .hx-cmd-chip { position: absolute; z-index: 2; left: 18px; top: 13px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 5px; background: rgba(235,235,239,.11); font-size: 13px; font-weight: 500; color: #e8e8ea; }
+    .hx-cmd-chip .hx-icon { width: 12px; height: 12px; color: #a9a9ae; }
+    .hx-composer.has-cmd .hx-composer-textarea { padding-left: 106px; }
+
+    /* The sent /workflow message's leading chip (render.rs
+       render_user_directive — white ink on a neutral wash) */
+    .hx-lead-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 5px; margin-right: 7px; border-radius: 6px; background: rgba(235,235,239,.11); font-size: 13px; }
+    .hx-lead-chip .hx-icon { width: 12px; height: 12px; color: #d0d0d3; }
+
+    /* Model picker popover (as in DesktopDemo) */
+    .hx-model-popover { position: absolute; z-index: 50; bottom: 58px; right: 28px; width: 310px; background: #1a1b1e; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; box-shadow: 0 20px 48px rgba(0,0,0,.75); overflow: hidden; display: none; flex-direction: column; font-size: 13px; }
+    .hx-model-popover.is-open { display: flex; }
+    .hx-picker-tabs { display: flex; align-items: center; height: 40px; padding: 0 8px; border-bottom: 1px solid rgba(255,255,255,.08); gap: 4px; }
+    .hx-picker-tab { position: relative; display: grid; place-items: center; width: 34px; height: 32px; border-radius: 6px; }
+    .hx-picker-tab img { width: 18px; height: 18px; opacity: .75; }
+    .hx-picker-tab.is-active img { opacity: .95; }
+    .hx-picker-tab-indicator { display: none; position: absolute; bottom: -4px; left: 4px; right: 4px; height: 2px; border-radius: 1px; background: #38bdf8; }
+    .hx-picker-tab.is-active .hx-picker-tab-indicator { display: block; }
+    .hx-picker-tab.is-new { animation: hxTabPop .3s cubic-bezier(.34,1.56,.64,1); }
+    @keyframes hxTabPop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .hx-picker-search { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-bottom: 1px solid rgba(255,255,255,.08); color: #7d7d85; font-size: 13px; }
+    .hx-picker-search .hx-icon { width: 14px; height: 14px; }
+    .hx-picker-list { max-height: 200px; overflow-y: auto; padding: 4px 6px; display: flex; flex-direction: column; gap: 2px; }
+    .hx-picker-row { display: flex; align-items: center; height: 32px; padding: 0 8px; border-radius: 6px; }
+    .hx-picker-row.is-selected { background: rgba(255,255,255,.09); }
+    .hx-picker-name { font-size: 12.5px; font-weight: 600; color: #e8e8ea; }
+    .hx-picker-sub { font-size: 11px; color: #75757d; margin-left: 6px; }
+    .hx-picker-shortcut { margin-left: auto; font-family: "Holt Geist Mono", monospace; font-size: 10.5px; color: #7d7d85; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+    .hx-picker-reasoning { border-top: 1px solid rgba(255,255,255,.08); padding: 6px 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .hx-reasoning-heading { font-size: 10px; font-weight: 600; color: #7d7d85; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px 4px; }
+    .hx-reasoning-row { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 8px; border-radius: 6px; font-size: 12.5px; color: #d0d0d5; }
+    .hx-reasoning-row.is-selected { background: rgba(255,255,255,.09); color: #fff; font-weight: 500; }
+    .hx-reasoning-default-tag { font-size: 11px; color: #707077; }
+
+    /* Workflow row (transcript/render.rs render_workflow_row) */
+    .hx-wf-row { height: 28px; padding: 0 4px; width: 100%; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    .hx-wf-row .hx-i-widget { width: 14px; height: 14px; color: #a9a9ae; }
+    .hx-wf-label { flex-shrink: 0; color: #e8e8ea; }
+    .hx-wf-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9a9ae; }
+    .hx-wf-detail { flex-shrink: 0; font-size: 11px; color: #75757d; }
+    .hx-wf-stop { visibility: hidden; flex-shrink: 0; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; margin-left: auto; color: #a9a9ae; }
+    .hx-wf-stop .hx-icon { width: 12px; height: 12px; }
+    .hx-wf-row.is-running .hx-wf-stop { visibility: visible; }
+
+    /* Workflow graph canvas (workflow_graph.rs) */
+    .hx-wf-frame { position: relative; width: 100%; height: 420px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: #0d0d0d; overflow: hidden; transition: background .35s ease, border-color .35s ease; }
+    /* Expanded, the frame is reparented under .hx-main — never inside the
+       transcript it covers (opacity there would hide the canvas too).
+       The graph itself glides; the frame box snaps and the content eases. */
+    .hx-wf-frame.is-expanded { position: absolute; z-index: 6; top: 46px; left: 0; right: 0; bottom: 66px; height: auto; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
+    .hx-wf-frame.is-gliding .hx-wf-controls,
+    .hx-wf-frame.is-gliding .hx-wf-hint,
+    .hx-wf-frame.is-docking .hx-wf-controls,
+    .hx-wf-frame.is-docking .hx-wf-hint { opacity: 0; }
+    .hx-wf-frame.is-docking { background: transparent; border-color: transparent; }
+    .hx-wf-hint { position: absolute; z-index: 3; left: 12px; top: 12px; font-size: 10px; font-family: "Holt Geist Mono", monospace; color: rgba(169,169,174,.55); transition: opacity .3s ease; }
+    .hx-wf-glide { position: absolute; inset: 0; transform-origin: 0 0; }
+    .hx-wf-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; background-image: radial-gradient(circle, rgba(169,169,174,.2) 1.2px, transparent 1.3px); background-size: 20px 20px; }
+    .hx-wf-edges { position: absolute; top: 0; left: 0; overflow: visible; }
+    .hx-wf-edge { stroke: rgba(169,169,174,.4); stroke-width: 1; fill: none; transition: stroke .45s ease; }
+    .hx-wf-edge.is-active { stroke: rgba(167,139,250,.55); stroke-dasharray: 2 7; animation: hxEdgeFlow 1.4s linear infinite; }
+    @keyframes hxEdgeFlow { to { stroke-dashoffset: -9; } }
+    .hx-wf-arrow { fill: rgba(169,169,174,.4); transition: fill .45s ease; }
+    .hx-wf-arrow.is-active { fill: rgba(167,139,250,.55); }
+    .hx-wf-loop { stroke: rgba(167,139,250,.45); stroke-width: 1; fill: none; }
+    .hx-wf-loop-arrow { fill: rgba(167,139,250,.45); }
+    .hx-wf-packet { fill: #a78bfa; opacity: 0; offset-distance: 0%; transition: opacity .35s ease; }
+    .hx-wf-packet.is-flowing { opacity: 1; animation: hxPacketFlow 1.5s linear infinite; }
+    .hx-wf-packet.is-once { opacity: 1; animation: hxPacketFlow 1.25s linear 1 forwards; }
+    .hx-wf-packet.is-dim { opacity: 0; animation-play-state: paused; }
+    @keyframes hxPacketFlow { to { offset-distance: 100%; } }
+    .hx-wf-loop-label { position: absolute; width: 40px; display: flex; justify-content: center; font-size: 10px; color: #a78bfa; background: #0d0d0d; }
+    .hx-wf-card { position: absolute; width: 252px; border-radius: 10px; background: #161616; border: 1px solid rgba(255,255,255,.14); display: flex; flex-direction: column; transition: border-color .4s ease; }
+    .hx-wf-card.is-pending { border-style: dashed; }
+    .hx-wf-card.is-running { border-color: rgba(167,139,250,.55); border-style: solid; }
+    .hx-wf-card.is-done { border-color: rgba(52,211,153,.2); border-style: solid; }
+    .hx-wf-card-header { height: 42px; padding: 0 11px; display: flex; align-items: center; gap: 7px; }
+    .hx-wf-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: rgba(169,169,174,.55); }
+    .hx-wf-card.is-running .hx-wf-dot { background: #a78bfa; animation: hxDotPulse 1.2s ease-in-out infinite; }
+    .hx-wf-card.is-done .hx-wf-dot { background: #34d399; }
+    @keyframes hxDotPulse { 0%,100% { opacity: .65; } 50% { opacity: 1; } }
+    .hx-wf-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: #a9a9ae; }
+    .hx-wf-card:not(.is-pending) .hx-wf-card-title { color: #e8e8ea; }
+    .hx-wf-count { flex-shrink: 0; font-size: 11px; font-family: "Holt Geist Mono", monospace; color: rgba(169,169,174,.55); }
+    .hx-wf-card-body { padding: 0 5px 7px; display: flex; flex-direction: column; min-height: 34px; justify-content: center; }
+    .hx-wf-card.is-pending .hx-wf-card-body { padding: 0 15px 7px; font-size: 11px; color: rgba(169,169,174,.55); }
+    .hx-agent-row { height: 32px; padding: 0 7px; display: flex; align-items: center; gap: 7px; opacity: 0; transform: translateY(3px); transition: opacity .32s cubic-bezier(.22,1,.36,1), transform .32s cubic-bezier(.22,1,.36,1); }
+    .hx-agent-row.is-visible { opacity: 1; transform: none; }
+    .hx-agent-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: #e8e8ea; }
+    .hx-agent-tokens { flex-shrink: 0; font-size: 10px; color: rgba(169,169,174,.55); }
+    .hx-agent-dot { flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%; background: rgba(169,169,174,.55); }
+    .hx-agent-row.is-running .hx-agent-dot { background: #a78bfa; animation: hxDotPulse 1.2s ease-in-out infinite; }
+    .hx-agent-row.is-done .hx-agent-dot { background: #34d399; }
+    .hx-avatar { position: relative; flex-shrink: 0; width: 22px; height: 22px; border-radius: 6px; }
+    .hx-avatar::before, .hx-avatar::after { content: ""; position: absolute; top: 8px; width: 3px; height: 5px; background: #fff; }
+    .hx-avatar::before { left: 7px; border-radius: 1.5px 1.5px 0 0; }
+    .hx-avatar::after { right: 7px; border-radius: 1.5px 1.5px 0 0; }
+    .hx-agent-row.is-done .hx-avatar::before { border-radius: 0 0 1.5px 1.5px; top: 9px; height: 4px; }
+    .hx-agent-row.is-done .hx-avatar::after { border-radius: 0 0 1.5px 1.5px; top: 9px; height: 4px; }
+    .hx-wf-controls { position: absolute; z-index: 4; top: 0; bottom: 0; right: 12px; display: flex; align-items: center; transition: opacity .3s ease; }
+    .hx-wf-control-group { padding: 3px; display: flex; flex-direction: column; gap: 2px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: rgba(22,22,22,.92); }
+    .hx-wf-control { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 5px; color: #a9a9ae; transition: background .12s, color .12s; }
+    .hx-wf-control:hover, .hx-wf-control.is-hovered { background: rgba(255,255,255,.08); color: #e8e8ea; }
+    .hx-wf-control .hx-icon { width: 14px; height: 14px; }
+    .hx-wf-control-divider { margin: 0 4px; height: 1px; background: rgba(255,255,255,.14); }
+
+    /* Workflow report row (renders as the goal-round row) */
+    .hx-report-row { height: 28px; width: 100%; display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 18px; }
+    .hx-report-row .hx-icon { width: 13px; height: 13px; color: rgba(169,169,174,.85); margin-left: 4px; }
+    .hx-report-label { flex-shrink: 0; font-weight: 500; color: #a9a9ae; }
+    .hx-report-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(169,169,174,.65); }
+    .hx-report-caret { flex-shrink: 0; font-size: 10px; color: rgba(169,169,174,.8); }
+
+    /* Composer */
+    .hx-composer-stack { position: absolute; z-index: 8; right: 0; bottom: 0; left: 0; padding: 0 16px 16px; background: linear-gradient(180deg, rgba(7,7,7,0), #070707 72px); }
+    .hx-status { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 768px; height: 24px; margin: 0 auto; padding: 0 24px; color: #a9a9ae; font-size: 12px; opacity: 0; transition: opacity .15s; }
+    .hx-status.is-visible { opacity: 1; }
+    .hx-status-spinner { width: 10px; height: 10px; border: 1.5px solid rgba(139,124,246,.25); border-top-color: #aba1f9; border-radius: 50%; animation: hxSpin .75s linear infinite; }
+    @keyframes hxSpin { to { transform: rotate(360deg); } }
+    .hx-composer-column { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 768px; margin: 0 auto; }
+    .hx-project-selector { display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 10px; color: #a9a9ae; font-size: 11px; }
+    .hx-project-selector.is-hidden { display: none; }
+    .hx-project-selector > .hx-icon:first-child { width: 13px; height: 13px; }
+    .hx-chip-chevron { width: 10px; height: 10px; color: #85858a; }
+    .hx-composer { position: relative; flex-shrink: 0; width: 100%; height: 124px; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 26px; background: rgba(52,52,56,.72); box-shadow: 0 12px 32px rgba(0,0,0,.2); transition: height .18s ease-out; }
+    .hx-composer.is-compact { height: 49px; }
+    .hx-composer-input { position: absolute; inset: 0; padding: 14px 220px 12px 18px; transition: padding .18s ease-out; }
+    .hx-composer.is-compact .hx-composer-input { padding: 12px 242px 10px 18px; }
+    .hx-composer-textarea { width: 100%; height: 100%; background: transparent; border: none; outline: none; resize: none; color: #e8e8ea; font-family: inherit; font-size: 14px; line-height: 22.75px; padding: 0; }
+    .hx-composer-textarea::placeholder { color: #85858a; }
+    .hx-composer-actions { position: absolute; right: 12px; bottom: 10px; display: flex; align-items: center; gap: 8px; height: 32px; transition: bottom .18s ease-out; }
+    .hx-composer.is-compact .hx-composer-actions { bottom: 8px; }
+    .hx-model-chip { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 16px; color: #d0d0d3; font-size: 12px; white-space: nowrap; transition: background .15s, box-shadow .2s; }
+    .hx-model-chip.is-highlighted { box-shadow: 0 0 0 2px rgba(167,139,250,.5); }
+    .hx-attach { display: grid; place-items: center; width: 28px; height: 28px; color: #a9a9ae; }
+    .hx-attach .hx-icon { width: 14px; height: 14px; }
+    .hx-send { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #ebebef; color: #17171a; cursor: pointer; border: 0; padding: 0; }
+    .hx-send-arrow { width: 14px; height: 14px; }
+    .hx-send-stop { display: none; width: 11px; height: 11px; border-radius: 3px; background: #17171a; }
+    .hx-send.is-running .hx-send-arrow { display: none; }
+    .hx-send.is-running .hx-send-stop { display: block; }
+    .hx-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 20px; margin-bottom: -2px; padding: 0 10px; color: #85858a; font-size: 11px; }
+    .hx-footer-left { display: flex; align-items: center; gap: 12px; }
+    .hx-footer-chip { display: flex; align-items: center; gap: 5px; white-space: nowrap; padding: 2px 4px; border-radius: 4px; }
+    .hx-footer-chip > .hx-icon:first-child { width: 12px; height: 12px; }
+    .hx-permission > .hx-icon:first-child { color: #b69268; }
+
+    /* The quit/restart moment (durable): a dimmed app behind a centered
+       boot mark — never a bare black void. */
+    .hx-restart { position: absolute; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; background: rgba(7,7,7,.72); opacity: 0; transition: opacity .3s; }
+    .hx-restart.is-visible { display: flex; }
+    .hx-restart.is-on { opacity: 1; }
+
+    .hx-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+    @media (max-width: 520px) {
+        .hx-caption { flex-direction: column; gap: 6px; }
+        .hx-viewport { border-radius: 7px; }
+        .hx-replay { top: -8px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .hx-demo *, .hx-demo *::before, .hx-demo *::after { animation: none !important; transition: none !important; }
+        .hx-mark span { opacity: .9; }
+        .hx-block { opacity: 1; transform: none; }
+    }
+</style>
+
+<script is:inline>
+    (() => {
+        const roots = document.querySelectorAll("[data-fd]");
+        if (!roots.length) return;
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+        // ---- shared helpers -------------------------------------------------
+
+        const el = (html) => {
+            const t = document.createElement("template");
+            t.innerHTML = html.trim();
+            return t.content.firstElementChild;
+        };
+        const spinner = () => {
+            const s = el(`<span class="hx-tool-spinner">${Array.from({ length: 9 }, (_, i) => `<i style="--matrix-index:${i}"></i>`).join("")}</span>`);
+            return s;
+        };
+        const toolRow = (icon, label, detail) => el(`
+            <div class="hx-tool-row">
+                <span class="hx-icon hx-i-${icon} hx-tool-icon"></span>
+                <span class="hx-tool-label">${label}</span>
+                <span class="hx-tool-detail">${detail}</span>
+                <span class="hx-tool-state"><span class="hx-tool-spinner">${Array.from({ length: 9 }, (_, i) => `<i style="--matrix-index:${i}"></i>`).join("")}</span><span class="hx-icon hx-i-check hx-tool-check"></span></span>
+            </div>`);
+
+        const bind = (root) => {
+            const one = (sel) => root.querySelector(sel);
+            return {
+                root,
+                app: one("[data-hx-app]"),
+                viewport: one("[data-hx-viewport]"),
+                canvas: one("[data-hx-canvas]"),
+                transcript: one("[data-hx-transcript]"),
+                column: one("[data-hx-column]"),
+                main: one(".hx-main"),
+                textarea: one("[data-hx-textarea]"),
+                send: one("[data-hx-send]"),
+                status: one("[data-hx-status]"),
+                statusText: one("[data-hx-status-text]"),
+                projectSelector: one("[data-hx-project-selector]"),
+                composer: one("[data-hx-composer]"),
+                newSession: one("[data-hx-new-session]"),
+                sessionTitle: one("[data-hx-session-title]"),
+                titlePlus: one("[data-hx-title-plus]"),
+                titleActions: one("[data-hx-title-actions]"),
+                traffic: one("[data-hx-close-dot]").parentElement,
+                replay: one("[data-hx-replay]"),
+                modelChip: one("[data-hx-model-chip]"),
+                modelIcon: one("[data-hx-model-icon]"),
+                modelLabel: one("[data-hx-model-label]"),
+            };
+        };
+
+        const makeRunner = (ui, promptText, fast) => {
+            let runId = 0;
+            let elapsedTimer = null;
+
+            // Under reduced motion every wait resolves at once, so the same
+            // timeline lands on its full final state with nothing animating.
+            const wait = (ms, id) => {
+                if (fast) return Promise.resolve();
+                return new Promise((resolve, reject) => {
+                    window.setTimeout(() => {
+                        if (id === runId) resolve();
+                        else reject(new DOMException("replaced", "AbortError"));
+                    }, ms);
+                });
+            };
+            const stopElapsed = () => {
+                if (elapsedTimer !== null) window.clearInterval(elapsedTimer);
+                elapsedTimer = null;
+            };
+            const startElapsed = (node) => {
+                stopElapsed();
+                const startedAt = Date.now();
+                node.textContent = "0s";
+                elapsedTimer = window.setInterval(() => {
+                    node.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s`;
+                }, 500);
+            };
+            const scrollEnd = () => {
+                ui.transcript.scrollTop = ui.transcript.scrollHeight;
+            };
+
+            const begin = () => {
+                ui.canvas.classList.add("is-hidden");
+                ui.transcript.classList.add("is-visible");
+                ui.transcript.classList.remove("is-covered");
+                ui.projectSelector.classList.add("is-hidden");
+                ui.composer.classList.add("is-compact");
+                ui.newSession.classList.add("is-visible");
+                ui.sessionTitle.classList.add("is-visible");
+                ui.titlePlus.classList.add("is-visible");
+                ui.titleActions.classList.add("is-visible");
+            };
+
+            const userBubble = (leadChip = "") => {
+                const row = el(`<div class="hx-user-row"><div class="hx-user-bubble">${leadChip}${promptText}</div></div>`);
+                ui.column.appendChild(row);
+                ui.column.appendChild(el(`<div class="hx-user-meta-space"></div>`));
+                requestAnimationFrame(() => row.classList.add("is-visible"));
+                return row.firstElementChild;
+            };
+
+            const toolGroup = (rows, summary) => {
+                const group = el(`<div class="hx-tool-group">
+                    <div class="hx-tool-header"><span class="hx-tool-disclosure">▾</span><span class="hx-tool-summary">${summary}</span></div>
+                    <div class="hx-tool-list"></div>
+                </div>`);
+                const list = group.querySelector(".hx-tool-list");
+                ui.column.appendChild(group);
+                return { group, rows: rows.map((r) => { const row = toolRow(r[0], r[1], r[2]); list.appendChild(row); return row; }) };
+            };
+
+            const working = () => {
+                const node = el(`<div class="hx-working"><span class="hx-working-dots"><i></i><i></i><i></i></span><span class="hx-working-label">Thinking…</span><span class="hx-working-elapsed">0s</span></div>`);
+                ui.column.appendChild(node);
+                return node;
+            };
+
+            const notice = (text) => {
+                const node = el(`<div class="hx-notice hx-block"><span class="hx-icon hx-i-info-circle"></span><span>${text}</span></div>`);
+                ui.column.appendChild(node);
+                requestAnimationFrame(() => { node.classList.add("is-visible"); scrollEnd(); });
+                return node;
+            };
+
+            const response = (chunks) => {
+                const node = el(`<div class="hx-response"></div>`);
+                const parts = chunks.map((c) => {
+                    const html = c.result
+                        ? `<p class="hx-result">${c.html}</p>`
+                        : (c.html.trim().startsWith("<") ? c.html : `<p>${c.html}</p>`);
+                    return el(html);
+                });
+                node.append(...parts);
+                ui.column.appendChild(node);
+                return parts;
+            };
+
+            const typePrompt = async (id) => {
+                for (let i = 0; i < promptText.length; i += 1) {
+                    ui.textarea.value = promptText.slice(0, i + 1);
+                    await wait(promptText[i] === " " ? 18 : 28, id);
+                }
+            };
+
+            const send = async (id, bubble) => {
+                ui.textarea.value = "";
+                ui.composer.classList.remove("has-cmd");
+                ui.composer.querySelectorAll(".hx-cmd-chip").forEach((n) => n.remove());
+                begin();
+                ui.send.classList.add("is-running");
+                ui.status.classList.add("is-visible");
+                scrollEnd();
+                await wait(500, id);
+                ui.status.classList.remove("is-visible");
+                bubble.classList.add("is-confirmed");
+            };
+
+            const revealBlocks = async (blocks, step, id) => {
+                for (const block of blocks) {
+                    block.classList.add("is-visible");
+                    scrollEnd();
+                    await wait(step, id);
+                }
+            };
+
+            return {
+                currentId: () => runId,
+                bump: () => { runId += 1; stopElapsed(); },
+                wait, stopElapsed, startElapsed, scrollEnd, begin, userBubble, toolGroup, working, notice, response, typePrompt, send, revealBlocks,
+            };
+        };
+
+        // ---- slash commands (composer/slash.rs + engine LIST_COMMANDS) ----
+
+        const SLASH_COMMANDS = [
+            { name: "compact", icon: "hx-i-command", desc: "Summarize the older conversation and keep only a recent tail" },
+            { name: "init", icon: "hx-i-command", desc: "Generate or update AGENTS.md for this repository" },
+            { name: "plan", icon: "hx-i-checklist", desc: "Plan Mode: explore read-only, submit a plan for approval", hint: "[task]" },
+            { name: "provider", icon: "hx-i-cloud", desc: "Provider Mode: add or update providers and models by conversation", hint: "[task | off]" },
+            { name: "goal", icon: "hx-i-target", desc: "Goal Mode: loop on an objective until a verifier says it holds", hint: "[objective | off | pause | resume]" },
+            { name: "workflow", icon: "hx-i-widget", desc: "Run the task as a background workflow that orchestrates subagents", hint: "<task>" },
+        ];
+
+        const makeSlash = (ui) => {
+            const popup = el(`<div class="hx-slash-popover"><div></div></div>`);
+            const list = popup.firstElementChild;
+            let rows = [];
+            const render = (query) => {
+                const q = query.toLowerCase();
+                const matches = SLASH_COMMANDS.filter((c) =>
+                    c.name.includes(q) || c.desc.toLowerCase().includes(q));
+                list.innerHTML = "";
+                rows = matches.map((c) => {
+                    const desc = c.hint ? `${c.desc} · <${c.hint}>` : c.desc;
+                    const row = el(`<div class="hx-slash-row">
+                        <span class="hx-icon ${c.icon}"></span>
+                        <span class="hx-slash-name">${c.name}</span>
+                        <span class="hx-slash-desc">${desc}</span>
+                    </div>`);
+                    list.appendChild(row);
+                    return row;
+                });
+                if (!rows.length) {
+                    list.appendChild(el(`<div class="hx-slash-empty">No matching commands or skills</div>`));
+                    return;
+                }
+                const exact = matches.findIndex((c) => c.name === query);
+                rows[exact >= 0 ? exact : 0].classList.add("is-selected");
+            };
+            return {
+                popup,
+                open: (query) => { render(query); ui.app.appendChild(popup); popup.classList.add("is-open"); },
+                update: (query) => render(query),
+                accept: () => {
+                    const selected = list.querySelector(".hx-slash-row.is-selected");
+                    if (selected) selected.classList.add("is-accepted");
+                },
+                close: () => popup.remove(),
+            };
+        };
+
+        // Type `/name` with the live slash menu, accept it (the composer
+        // swaps the sigil for its chip), then type the task after the chip.
+        const typeDirective = async (ui, r, name, task, id) => {
+            const slash = makeSlash(ui);
+            ui.textarea.value = "/";
+            slash.open("");
+            await r.wait(650, id);
+            for (const letter of name) {
+                ui.textarea.value += letter;
+                slash.update(ui.textarea.value.slice(1));
+                await r.wait(120, id);
+            }
+            await r.wait(500, id);
+            slash.accept();
+            await r.wait(320, id);
+            slash.close();
+            const command = SLASH_COMMANDS.find((c) => c.name === name);
+            ui.composer.classList.add("has-cmd");
+            ui.composer.querySelector(".hx-composer-input").appendChild(el(`<span class="hx-cmd-chip"><span class="hx-icon ${command.icon}"></span>${name}</span>`));
+            ui.textarea.value = " ";
+            await r.wait(350, id);
+            for (let i = 0; i < task.length; i += 1) {
+                ui.textarea.value = ` ${task.slice(0, i + 1)}`;
+                await r.wait(task[i] === " " ? 18 : 28, id);
+            }
+        };
+
+        // ---- demo: providers -------------------------------------------------
+
+        const providerDiff = [
+            { marker: "+", text: "provider moonshot", detail: `{"id":"moonshot","name":"Moonshot AI","baseUrl":"https://api.moonshot.ai/v1","defaultApi":"openai-completions"}` },
+            { marker: "+", text: "moonshot/kimi-k2.5", detail: `{"api":"openai-completions","reasoning":true,"input":262144,"maxTokens":16384}` },
+            { marker: "+", text: "moonshot/kimi-k2-thinking", detail: `{"api":"openai-completions","reasoning":true,"input":131072,"maxTokens":32768}` },
+            { marker: "+", text: "moonshot/moonshot-v1-8k", detail: `{"api":"openai-completions","reasoning":false,"input":8192}` },
+        ];
+
+        const runProviders = async (ui, r) => {
+            const id = r.currentId();
+            ui.root.dataset.phase = "typing";
+            await r.wait(400, id);
+            await typeDirective(ui, r, "provider", "Add Moonshot AI and bring in their Kimi coding models.", id);
+            await r.wait(350, id);
+            const bubble = r.userBubble();
+            ui.root.dataset.phase = "sent";
+            await r.send(id, bubble);
+            await r.wait(500, id);
+
+            const trailer = r.working();
+            trailer.classList.add("is-visible");
+            r.startElapsed(trailer.querySelector(".hx-working-elapsed"));
+            ui.root.dataset.phase = "working";
+            await r.wait(700, id);
+
+            const group = r.toolGroup([
+                ["global", "Web", "Moonshot AI models API reference"],
+                ["widget", "Tool", "model_proposal"],
+            ], "2 tool calls");
+            group.group.classList.add("is-open");
+            for (const row of group.rows) {
+                row.classList.add("is-visible", "is-pending");
+                r.scrollEnd();
+                await r.wait(750, id);
+                row.classList.remove("is-pending");
+                row.classList.add("is-done");
+            }
+
+            await r.wait(350, id);
+            group.group.classList.remove("is-open");
+            group.group.classList.add("is-collapsed");
+            group.group.querySelector(".hx-tool-disclosure").textContent = "▸";
+            trailer.classList.remove("is-visible");
+            r.stopElapsed();
+
+            // The proposal card (provider_card.rs).
+            const diffHtml = providerDiff.map((line) => `
+                <div class="hx-diff-line hx-diff-head"><span class="hx-diff-marker is-add">${line.marker}</span><span class="hx-diff-head-text">${line.text}</span></div>
+                <div class="hx-diff-detail">${line.detail}</div>`).join("");
+            const card = el(`<div class="hx-card is-pending hx-block">
+                <div class="hx-card-targets">
+                    <div class="hx-card-target"><img src="/assets/providers/moonshot.svg" alt="" /><span class="hx-card-target-name">Moonshot AI</span><span class="hx-card-target-id">moonshot</span></div>
+                </div>
+                <div class="hx-card-summary">Apply 4 catalog changes for moonshot</div>
+                <div class="hx-diff-panel">${diffHtml}</div>
+                <div class="hx-card-actions">
+                    <span class="hx-btn-primary">Write</span>
+                    <span class="hx-btn-ghost">Discard</span>
+                </div>
+            </div>`);
+            ui.column.appendChild(card);
+            requestAnimationFrame(() => { card.classList.add("is-visible"); r.scrollEnd(); });
+            ui.root.dataset.phase = "proposal";
+            await r.wait(1400, id);
+
+            // Write applies the stored proposal.
+            const writeBtn = card.querySelector(".hx-btn-primary");
+            writeBtn.classList.add("is-pressed");
+            await r.wait(220, id);
+            writeBtn.classList.remove("is-pressed");
+            writeBtn.textContent = "Writing…";
+            card.querySelector(".hx-btn-ghost").style.opacity = "0.4";
+            await r.wait(950, id);
+
+            card.classList.remove("is-pending");
+            card.classList.add("is-settled");
+            card.querySelector(".hx-card-actions").replaceWith(el(`<div class="hx-card-settled-row">
+                <span class="hx-card-state">✓ Written to Moonshot AI</span>
+                <span class="hx-card-open-settings">Open in Settings</span>
+            </div>`));
+            r.scrollEnd();
+            ui.root.dataset.phase = "written";
+            await r.wait(700, id);
+
+            const chunks = r.response([
+                { html: `Moonshot AI is set up — the provider and its models were written to your catalog:` },
+                { html: `<ul><li>Provider <code>moonshot</code> at <code>api.moonshot.ai/v1</code> (openai-completions).</li><li>Models <code>kimi-k2.5</code>, <code>kimi-k2-thinking</code>, and <code>moonshot-v1-8k</code>.</li></ul>` },
+                { result: true, html: `Pick one from the model picker whenever you're ready.` },
+            ]);
+            await r.revealBlocks(chunks, 420, id);
+            ui.root.dataset.phase = "answered";
+            await r.wait(800, id);
+
+            // The picker now carries the new provider and its models.
+            const popover = el(`<div class="hx-model-popover">
+                <div class="hx-picker-tabs">
+                    ${["deepseek", "gemini", "kimi", "minimax", "xiaomi", "zai"].map((p) => `<div class="hx-picker-tab" data-tab="${p}"><img src="/assets/providers/${p === "gemini" ? "gemini" : p}.svg" alt="" width="18" height="18" /><span class="hx-picker-tab-indicator"></span></div>`).join("")}
+                </div>
+                <div class="hx-picker-search"><span class="hx-icon hx-i-magnifer"></span><span>Search models…</span></div>
+                <div class="hx-picker-list"></div>
+                <div class="hx-picker-reasoning">
+                    <div class="hx-reasoning-heading">Reasoning</div>
+                    <div class="hx-reasoning-row"><span>Low</span></div>
+                    <div class="hx-reasoning-row"><span>High</span><span class="hx-reasoning-default-tag">Default</span></div>
+                    <div class="hx-reasoning-row is-selected"><span>Max</span></div>
+                </div>
+            </div>`);
+            ui.app.appendChild(popover);
+            await r.wait(100, id);
+
+            ui.modelChip.classList.add("is-highlighted");
+            await r.wait(500, id);
+            popover.classList.add("is-open");
+            await r.wait(450, id);
+
+            const tabs = popover.querySelector(".hx-picker-tabs");
+            const newTab = el(`<div class="hx-picker-tab is-new is-active" data-tab="moonshot"><img src="/assets/providers/moonshot.svg" alt="" width="18" height="18" /><span class="hx-picker-tab-indicator"></span></div>`);
+            tabs.appendChild(newTab);
+            popover.querySelectorAll(".hx-picker-tab").forEach((t) => t.classList.toggle("is-active", t === newTab));
+            await r.wait(600, id);
+
+            const list = popover.querySelector(".hx-picker-list");
+            const models = [
+                { name: "Kimi K2.5", sub: "moonshot", key: "⌘1" },
+                { name: "Kimi K2 Thinking", sub: "moonshot", key: "⌘2" },
+                { name: "moonshot-v1-8k", sub: "moonshot", key: "⌘3" },
+            ];
+            const rows = models.map((m) => { const row = el(`<div class="hx-picker-row"><span class="hx-picker-name">${m.name}</span><span class="hx-picker-sub">${m.sub}</span><span class="hx-picker-shortcut">${m.key}</span></div>`); list.appendChild(row); return row; });
+            await r.wait(400, id);
+            rows[0].classList.add("is-selected");
+            await r.wait(700, id);
+
+            popover.classList.remove("is-open");
+            popover.remove();
+            ui.modelIcon.src = "/assets/providers/moonshot.svg";
+            ui.modelLabel.textContent = "Kimi K2.5";
+            ui.modelChip.classList.remove("is-highlighted");
+            ui.root.dataset.phase = "done";
+        };
+
+        // ---- demo: workflow ---------------------------------------------------
+
+        const PLAN = {
+            steps: [
+                { id: "research", title: "Research", agents: [
+                    { name: "Ada", color: "#45c9a2", label: "benchmark repo scan", k: 8.2 },
+                    { name: "Ken", color: "#f0a244", label: "throughput notes", k: 11.4 },
+                    { name: "Grace", color: "#7f84ee", label: "ecosystem audit", k: 6.1 },
+                ] },
+                { id: "verify", title: "Verify", agents: [
+                    { name: "Alan", color: "#4f8ef2", label: "cross-check claims", k: 9.3 },
+                    { name: "Margaret", color: "#ef7470", label: "re-run benchmarks", k: 7.8 },
+                ] },
+                { id: "write", title: "Write", agents: [
+                    { name: "Donald", color: "#a171f2", label: "draft comparison", k: 12.1 },
+                ] },
+                { id: "review", title: "Review", agents: [
+                    { name: "Barbara", color: "#3fb8d4", label: "technical review", k: 4.2 },
+                    { name: "Radia", color: "#e87fb8", label: "edit pass", k: 5.5 },
+                ], loop: { to: "write", max: 2 } },
+            ],
+            cardW: 252, gap: 54, pad: 28, headerH: 42, rowH: 32, emptyH: 34, cardGap: 16, loopLane: 28,
+        };
+
+        const buildGraph = (ui) => {
+            const P = PLAN;
+            const heights = P.steps.map((s) => P.headerH + (s.agents.length ? s.agents.length * P.rowH : P.emptyH) + 7);
+            const tallest = Math.max(...heights);
+            const positions = P.steps.map((s, i) => ({
+                x: P.pad + i * (P.cardW + P.gap),
+                y: P.pad + (tallest - heights[i]) / 2,
+            }));
+            const worldW = P.pad * 2 + P.steps.length * P.cardW + (P.steps.length - 1) * P.gap;
+            const worldH = tallest + P.pad * 2 + P.loopLane;
+
+            const frame = el(`<div class="hx-wf-frame">
+                <div class="hx-wf-hint">DRAG TO PAN / 100%</div>
+                <div class="hx-wf-glide">
+                    <div class="hx-wf-world">
+                        <svg class="hx-wf-edges" width="${worldW}" height="${worldH}" viewBox="0 0 ${worldW} ${worldH}"></svg>
+                    </div>
+                </div>
+                <div class="hx-wf-controls"><div class="hx-wf-control-group">
+                    <span class="hx-wf-control"><span class="hx-icon hx-i-plus"></span></span>
+                    <span class="hx-wf-control"><span class="hx-icon hx-i-minus"></span></span>
+                    <span class="hx-wf-control"><span class="hx-icon hx-i-recenter"></span></span>
+                    <span class="hx-wf-control-divider"></span>
+                    <span class="hx-wf-control" data-hx-expand><span class="hx-icon hx-i-expand"></span></span>
+                </div></div>
+            </div>`);
+
+            const world = frame.querySelector(".hx-wf-world");
+            const svg = frame.querySelector(".hx-wf-edges");
+            const NS = "http://www.w3.org/2000/svg";
+            const anchorY = (i) => positions[i].y + P.headerH / 2;
+            const edges = [];
+            for (let i = 1; i < P.steps.length; i += 1) {
+                const from = { x: positions[i - 1].x + P.cardW, y: anchorY(i - 1) };
+                const to = { x: positions[i].x, y: anchorY(i) };
+                const bend = (to.x - from.x) * 0.5;
+                const d = `M ${from.x} ${from.y} C ${from.x + bend} ${from.y}, ${to.x - bend} ${to.y}, ${to.x} ${to.y}`;
+                const path = document.createElementNS(NS, "path");
+                path.setAttribute("d", d);
+                path.setAttribute("class", "hx-wf-edge");
+                svg.appendChild(path);
+                const arrow = document.createElementNS(NS, "path");
+                arrow.setAttribute("d", `M ${to.x} ${to.y} L ${to.x - 5} ${to.y - 3} L ${to.x - 5} ${to.y + 3} Z`);
+                arrow.setAttribute("class", "hx-wf-arrow");
+                svg.appendChild(arrow);
+                const packet = document.createElementNS(NS, "circle");
+                packet.setAttribute("r", "2.2");
+                packet.setAttribute("class", "hx-wf-packet");
+                packet.style.offsetPath = `path("${d}")`;
+                svg.appendChild(packet);
+                edges.push({ path, arrow, packet, toStep: i });
+            }
+            // The loop arc: bottom of Review back into the bottom of Write.
+            const loopStep = P.steps.findIndex((s) => s.loop);
+            if (loopStep >= 0) {
+                const target = P.steps.findIndex((s) => s.id === P.steps[loopStep].loop.to);
+                const from = { x: positions[loopStep].x + P.cardW / 2, y: positions[loopStep].y + heights[loopStep] };
+                const to = { x: positions[target].x + P.cardW / 2, y: positions[target].y + heights[target] };
+                const low = worldH - P.loopLane * 0.5;
+                const d = `M ${from.x} ${from.y} C ${from.x} ${low}, ${to.x} ${low}, ${to.x} ${to.y}`;
+                const path = document.createElementNS(NS, "path");
+                path.setAttribute("d", d);
+                path.setAttribute("class", "hx-wf-loop");
+                svg.appendChild(path);
+                const arrow = document.createElementNS(NS, "path");
+                arrow.setAttribute("d", `M ${to.x} ${to.y} L ${to.x - 3} ${to.y + 5} L ${to.x + 3} ${to.y + 5} Z`);
+                arrow.setAttribute("class", "hx-wf-loop-arrow");
+                svg.appendChild(arrow);
+                const packet = document.createElementNS(NS, "circle");
+                packet.setAttribute("r", "2.2");
+                packet.setAttribute("class", "hx-wf-packet");
+                packet.style.offsetPath = `path("${d}")`;
+                svg.appendChild(packet);
+                const label = el(`<div class="hx-wf-loop-label">↺ ≤${P.steps[loopStep].loop.max}</div>`);
+                label.style.left = `${(from.x + to.x + P.cardW) / 2 - 20}px`;
+                label.style.top = `${low - 7}px`;
+                world.appendChild(label);
+                edges.push({ path, arrow, packet, loop: true, toStep: target });
+            }
+
+            const cards = P.steps.map((s, i) => {
+                const card = el(`<div class="hx-wf-card is-pending" data-step="${s.id}">
+                    <div class="hx-wf-card-header">
+                        <span class="hx-wf-dot"></span>
+                        <span class="hx-wf-card-title">${s.title}</span>
+                        <span class="hx-wf-count"></span>
+                    </div>
+                    <div class="hx-wf-card-body"><span class="hx-wf-waiting">waiting</span></div>
+                </div>`);
+                card.style.left = `${positions[i].x}px`;
+                card.style.top = `${positions[i].y}px`;
+                card.style.height = `${heights[i]}px`;
+                world.appendChild(card);
+                return card;
+            });
+
+            const agentRow = (stepIx, agent) => {
+                const row = el(`<div class="hx-agent-row">
+                    <span class="hx-avatar" style="background:${agent.color}"></span>
+                    <span class="hx-agent-label">${agent.name} · ${agent.label}</span>
+                    <span class="hx-agent-tokens"></span>
+                    <span class="hx-agent-dot"></span>
+                </div>`);
+                const card = cards[stepIx];
+                const body = card.querySelector(".hx-wf-card-body");
+                const waiting = body.querySelector(".hx-wf-waiting");
+                if (waiting) waiting.remove();
+                body.style.justifyContent = "flex-start";
+                body.appendChild(row);
+                return row;
+            };
+
+            const view = { zoom: 1, panX: 0, panY: 0 };
+            const glideEl = frame.querySelector(".hx-wf-glide");
+            const GLIDE_MS = 680;
+            const glideEase = "transform .68s cubic-bezier(.22,1,.36,1)";
+            const apply = () => {
+                world.style.width = `${worldW}px`;
+                world.style.height = `${worldH}px`;
+                world.style.transform = `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})`;
+                frame.querySelector(".hx-wf-hint").textContent = `DRAG TO PAN / ${Math.round(view.zoom * 100)}%`;
+            };
+            const fitNumbers = (w, h) => {
+                const zoom = Math.min((w - 48) / worldW, (h - 48) / worldH);
+                return { zoom, panX: (w - worldW * zoom) / 2, panY: (h - worldH * zoom) / 2 };
+            };
+            const fit = () => {
+                const next = fitNumbers(frame.clientWidth, frame.clientHeight);
+                view.zoom = next.zoom;
+                view.panX = next.panX;
+                view.panY = next.panY;
+                apply();
+            };
+            const appScale = () => ui.app.getBoundingClientRect().width / 1180;
+            // Map the world's current screen box onto `first` while the frame
+            // is already in its target layout. Scale is around the frame
+            // origin, so the pan has to be unwound or the box drifts.
+            const invertOnto = (first) => {
+                const last = world.getBoundingClientRect();
+                const scale = appScale();
+                const s = first.width / Math.max(last.width, 1);
+                const dx = (first.left - last.left) / scale + (1 - s) * view.panX;
+                const dy = (first.top - last.top) / scale + (1 - s) * view.panY;
+                glideEl.style.transition = "none";
+                glideEl.style.transformOrigin = "0 0";
+                glideEl.style.transform = `translate(${dx}px, ${dy}px) scale(${s})`;
+                void glideEl.offsetWidth;
+                requestAnimationFrame(() => {
+                    if (!frame.isConnected) return;
+                    glideEl.style.transition = glideEase;
+                    glideEl.style.transform = "none";
+                });
+            };
+            const afterGlide = (done) => {
+                window.setTimeout(() => {
+                    glideEl.style.transition = "";
+                    frame.classList.remove("is-gliding");
+                    done();
+                }, GLIDE_MS + 40);
+            };
+            apply();
+
+            return {
+                frame, agentRow, fit,
+                setState: (ix, state) => { cards[ix].classList.remove("is-pending", "is-running", "is-done"); cards[ix].classList.add(`is-${state}`); },
+                setCount: (ix, settled, total) => { cards[ix].querySelector(".hx-wf-count").textContent = total ? `${settled}/${total}` : ""; },
+                // Light the edge into `toStep` and let the previous packet fade
+                // in place. -1 settles every forward edge.
+                activateEdge: (toStep) => {
+                    edges.forEach((edge) => {
+                        if (edge.loop) return;
+                        const on = edge.toStep === toStep;
+                        edge.path.classList.toggle("is-active", on);
+                        edge.arrow.classList.toggle("is-active", on);
+                        if (on) {
+                            edge.packet.classList.remove("is-dim");
+                            edge.packet.classList.add("is-flowing");
+                        } else if (edge.packet.classList.contains("is-flowing")) {
+                            edge.packet.classList.add("is-dim");
+                            window.setTimeout(() => {
+                                if (edge.packet.classList.contains("is-dim")) edge.packet.classList.remove("is-flowing", "is-dim");
+                            }, 380);
+                        }
+                    });
+                },
+                fireLoop: () => {
+                    const edge = edges.find((e) => e.loop);
+                    if (!edge) return;
+                    edge.packet.classList.remove("is-dim");
+                    edge.packet.classList.add("is-once");
+                    window.setTimeout(() => {
+                        edge.packet.classList.add("is-dim");
+                        window.setTimeout(() => edge.packet.classList.remove("is-once", "is-dim"), 380);
+                    }, 1280);
+                },
+                // Grow into the main canvas. `place` reparents the frame; the
+                // world eases from the slot it left.
+                expand: (place) => new Promise((resolve) => {
+                    if (reducedMotion.matches) { place(); fit(); resolve(); return; }
+                    const first = world.getBoundingClientRect();
+                    frame.classList.add("is-gliding");
+                    place();
+                    fit();
+                    invertOnto(first);
+                    afterGlide(resolve);
+                }),
+                // Dock into the transcript, then ease the graph from where it
+                // was. The frame lets the in-flight graph paint outside itself;
+                // the measured invert keeps the first frame from jumping.
+                collapse: (slotEl, place) => new Promise((resolve) => {
+                    if (reducedMotion.matches || !slotEl.isConnected) { place(); fit(); resolve(); return; }
+                    const first = world.getBoundingClientRect();
+                    frame.style.overflow = "visible";
+                    frame.classList.add("is-docking");
+                    place();
+                    fit();
+                    invertOnto(first);
+                    window.setTimeout(() => {
+                        glideEl.style.transition = "";
+                        glideEl.style.transform = "none";
+                        frame.style.overflow = "";
+                        frame.classList.remove("is-docking");
+                        resolve();
+                    }, GLIDE_MS + 40);
+                }),
+            };
+        };
+
+        const runWorkflow = async (ui, r) => {
+            const id = r.currentId();
+            ui.root.dataset.phase = "typing";
+            await r.wait(400, id);
+            await typeDirective(ui, r, "workflow", "Compare the three leading Rust actor frameworks and give me a verified recommendation.", id);
+            await r.wait(350, id);
+            const bubble = r.userBubble(`<span class="hx-lead-chip"><span class="hx-icon hx-i-widget"></span>Workflow</span>`);
+            ui.root.dataset.phase = "sent";
+            await r.send(id, bubble);
+            await r.wait(500, id);
+
+            const trailer = r.working();
+            trailer.classList.add("is-visible");
+            r.startElapsed(trailer.querySelector(".hx-working-elapsed"));
+            await r.wait(650, id);
+
+            const group = r.toolGroup([["global", "Web", "rust actor frameworks comparison"]], "1 tool call");
+            group.group.classList.add("is-open");
+            for (const row of group.rows) {
+                row.classList.add("is-visible", "is-pending");
+                r.scrollEnd();
+                await r.wait(750, id);
+                row.classList.remove("is-pending");
+                row.classList.add("is-done");
+            }
+            await r.wait(300, id);
+            group.group.classList.remove("is-open");
+            group.group.classList.add("is-collapsed");
+            group.group.querySelector(".hx-tool-disclosure").textContent = "▸";
+            trailer.classList.remove("is-visible");
+            r.stopElapsed();
+
+            // The Workflow row + its plan graph, straight from launch.
+            const graph = buildGraph(ui);
+            const row = el(`<div class="hx-wf-row is-running hx-block">
+                <span class="hx-icon hx-i-widget"></span>
+                <span class="hx-wf-label">Workflow</span>
+                <span class="hx-wf-name">rust-actors</span>
+                <span class="hx-wf-detail">running · 0</span>
+                <span class="hx-wf-stop"><span class="hx-icon hx-i-stop"></span></span>
+            </div>`);
+            const wrap = el(`<div class="hx-block" style="display:flex;flex-direction:column;gap:4px;"></div>`);
+            wrap.appendChild(row);
+            wrap.appendChild(graph.frame);
+            ui.column.appendChild(wrap);
+            graph.fit();
+            requestAnimationFrame(() => { wrap.classList.add("is-visible"); r.scrollEnd(); });
+            ui.root.dataset.phase = "workflow";
+            await r.wait(720, id);
+
+            // Expand: the frame moves under .hx-main (a covered transcript
+            // would fade the canvas with it) and the graph eases into the fit.
+            const expandBtn = graph.frame.querySelector("[data-hx-expand]");
+            const icon = expandBtn.querySelector(".hx-icon");
+            expandBtn.classList.add("is-hovered");
+            await r.wait(180, id);
+            const spacer = el(`<div style="height:${graph.frame.offsetHeight}px"></div>`);
+            await graph.expand(() => {
+                wrap.appendChild(spacer);
+                ui.main.appendChild(graph.frame);
+                graph.frame.classList.add("is-expanded");
+                ui.transcript.classList.add("is-covered");
+                expandBtn.classList.remove("is-hovered");
+                icon.classList.replace("hx-i-expand", "hx-i-collapse");
+            });
+            ui.root.dataset.phase = "graph";
+
+            const tokensEl = row.querySelector(".hx-wf-detail");
+            let tokens = 0;
+            const spend = (k) => { tokens += Math.round(k * 1000); tokensEl.textContent = `running · ${(tokens / 1000).toFixed(1)}k tokens`; };
+
+            // Agents in a step fan out together. The edge into the step
+            // starts as the first agent appears, and the previous edge fades.
+            const runStep = async (stepIx) => {
+                graph.activateEdge(stepIx);
+                const agents = PLAN.steps[stepIx].agents;
+                let settled = 0;
+                await Promise.all(agents.map(async (agent, i) => {
+                    const rowNode = graph.agentRow(stepIx, agent);
+                    await r.wait(i * 220, id);
+                    rowNode.classList.add("is-visible", "is-running");
+                    graph.setState(stepIx, "running");
+                    await r.wait(820 + i * 160, id);
+                    rowNode.classList.remove("is-running");
+                    rowNode.classList.add("is-done");
+                    rowNode.querySelector(".hx-agent-tokens").textContent = `${agent.k}k`;
+                    spend(agent.k);
+                    settled += 1;
+                    graph.setCount(stepIx, settled, agents.length);
+                }));
+                graph.setState(stepIx, "done");
+            };
+
+            await runStep(0);
+            await runStep(1);
+            await runStep(2);
+            await runStep(3);
+            graph.activateEdge(-1);
+            await r.wait(160, id);
+
+            // The loop packet travels back into Write; the card wakes as it
+            // arrives, then Review takes the revised draft.
+            graph.fireLoop();
+            await r.wait(740, id);
+            graph.setState(2, "running");
+            await r.wait(400, id);
+            const revise = { name: "Donald", color: "#a171f2", label: "apply review notes", k: 6.8 };
+            {
+                const rowNode = graph.agentRow(2, revise);
+                rowNode.classList.add("is-visible", "is-running");
+                await r.wait(860, id);
+                rowNode.classList.remove("is-running");
+                rowNode.classList.add("is-done");
+                rowNode.querySelector(".hx-agent-tokens").textContent = `${revise.k}k`;
+                spend(revise.k);
+                graph.setCount(2, 2, 2);
+                graph.setState(2, "done");
+            }
+            await r.wait(180, id);
+            graph.activateEdge(3);
+            graph.setState(3, "running");
+            const finalPass = { name: "Radia", color: "#e87fb8", label: "final pass", k: 3.9 };
+            {
+                const rowNode = graph.agentRow(3, finalPass);
+                rowNode.classList.add("is-visible", "is-running");
+                await r.wait(860, id);
+                rowNode.classList.remove("is-running");
+                rowNode.classList.add("is-done");
+                rowNode.querySelector(".hx-agent-tokens").textContent = `${finalPass.k}k`;
+                spend(finalPass.k);
+                graph.setCount(3, 3, 3);
+                graph.setState(3, "done");
+                graph.activateEdge(-1);
+            }
+            row.classList.remove("is-running");
+            tokensEl.textContent = `done · ${(tokens / 1000).toFixed(1)}k tokens`;
+            ui.root.dataset.phase = "settled";
+            await r.wait(360, id);
+
+            // Dock the graph back into the transcript as the conversation returns.
+            ui.transcript.classList.remove("is-covered");
+            await graph.collapse(spacer, () => {
+                spacer.remove();
+                wrap.appendChild(graph.frame);
+                graph.frame.classList.remove("is-expanded");
+                icon.classList.replace("hx-i-collapse", "hx-i-expand");
+            });
+            r.scrollEnd();
+            await r.wait(280, id);
+
+            // The queued report lands as its own turn.
+            const report = el(`<div class="hx-report-row hx-block">
+                <span class="hx-icon hx-i-target"></span>
+                <span class="hx-report-label">Workflow “rust-actors” finished</span>
+                <span class="hx-report-detail">run 8f2c · 10 agents · 2 loop rounds</span>
+                <span class="hx-report-caret">▸</span>
+            </div>`);
+            ui.column.appendChild(report);
+            requestAnimationFrame(() => { report.classList.add("is-visible"); r.scrollEnd(); });
+            await r.wait(700, id);
+
+            const chunks = r.response([
+                { html: `Recommendation: <strong>Tokio + Actix</strong> for the gateway, with a verified write-up at <code>docs/actor-comparison.md</code>.` },
+                { html: `<ul><li>Throughput and tail latency re-measured by two verifier agents.</li><li>The draft went through one revise round after review.</li></ul>` },
+                { result: true, html: `10 agents · 2 loop rounds · no failed children.` },
+            ]);
+            await r.revealBlocks(chunks, 420, id);
+            ui.root.dataset.phase = "done";
+        };
+
+        // ---- demo: durable ------------------------------------------------------
+
+        const runDurable = async (ui, r) => {
+            const id = r.currentId();
+            ui.root.dataset.phase = "typing";
+            await r.wait(400, id);
+            await r.typePrompt(id);
+            await r.wait(350, id);
+            const bubble = r.userBubble();
+            ui.root.dataset.phase = "sent";
+            await r.send(id, bubble);
+            await r.wait(500, id);
+
+            const trailer = r.working();
+            trailer.classList.add("is-visible");
+            r.startElapsed(trailer.querySelector(".hx-working-elapsed"));
+            ui.root.dataset.phase = "working";
+            await r.wait(650, id);
+
+            const group = r.toolGroup([
+                ["document", "Read", "crates/core/src/auth.rs"],
+                ["pen", "Edit", "crates/core/src/auth.rs"],
+                ["pen", "Edit", "crates/core/src/session.rs"],
+                ["command", "Run", "cargo test -p holt-core"],
+            ], "4 tool calls");
+            group.group.classList.add("is-open");
+            for (const [ix, row] of group.rows.entries()) {
+                row.classList.add("is-visible", "is-pending");
+                r.scrollEnd();
+                await r.wait(ix === 3 ? 1250 : 700, id);
+                if (ix < 3) {
+                    row.classList.remove("is-pending");
+                    row.classList.add("is-done");
+                }
+            }
+
+            // Holt quits mid-tool: the app dims behind a centered boot
+            // mark (a full fade-out would read as a broken black frame).
+            ui.root.dataset.phase = "quit";
+            ui.traffic.classList.add("is-quitting");
+            const bootMark = el(`<div class="hx-restart"></div>`);
+            bootMark.appendChild(ui.canvas.querySelector(".hx-mark").cloneNode(true));
+            ui.viewport.appendChild(bootMark);
+            await r.wait(600, id);
+            bootMark.classList.add("is-visible");
+            ui.app.classList.add("is-quitting");
+            await r.wait(80, id);
+            bootMark.classList.add("is-on");
+            await r.wait(1400, id);
+
+            // …and relaunches.
+            ui.app.classList.remove("is-quitting");
+            ui.traffic.classList.remove("is-quitting");
+            bootMark.classList.remove("is-on");
+            await r.wait(350, id);
+            bootMark.remove();
+            ui.root.dataset.phase = "resumed";
+            await r.wait(500, id);
+
+            r.notice("Resumed after Holt restarted");
+            trailer.querySelector(".hx-working-label").textContent = "Working…";
+            await r.wait(900, id);
+
+            const lastRow = group.rows[3];
+            lastRow.classList.remove("is-pending");
+            lastRow.classList.add("is-done");
+            await r.wait(600, id);
+            group.group.classList.remove("is-open");
+            group.group.classList.add("is-collapsed");
+            group.group.querySelector(".hx-tool-disclosure").textContent = "▸";
+            trailer.classList.remove("is-visible");
+            r.stopElapsed();
+
+            const chunks = r.response([
+                { html: `Migration finished — the interrupted run picked up from its journal and re-ran the last step.` },
+                { html: `<ul><li><code>auth.rs</code> and <code>session.rs</code> now use the session API.</li><li>The restart cut the run inside <code>cargo test</code>; nothing else re-ran.</li></ul>` },
+                { result: true, html: `<code>cargo test -p holt-core</code> — 184 passed, 0 failed.` },
+            ]);
+            await r.revealBlocks(chunks, 420, id);
+            ui.send.classList.remove("is-running");
+            ui.root.dataset.phase = "done";
+        };
+
+        // ---- driver --------------------------------------------------------------
+
+        const timelines = {
+            providers: runProviders,
+            workflow: runWorkflow,
+            durable: runDurable,
+        };
+
+        roots.forEach((root) => {
+            const ui = bind(root);
+            const initialModel = { icon: ui.modelIcon.getAttribute("src"), label: ui.modelLabel.textContent };
+            const promptFor = {
+                providers: "Add Moonshot AI and bring in their Kimi coding models.",
+                workflow: "Compare the three leading Rust actor frameworks and give me a verified recommendation.",
+                durable: "Migrate the auth module to the new session API and run the tests.",
+            };
+            const r = makeRunner(ui, promptFor[root.dataset.fd] || "", reducedMotion.matches);
+
+            const fit = () => {
+                if (!ui.viewport || !ui.app) return;
+                ui.app.style.transform = `scale(${ui.viewport.clientWidth / 1180})`;
+            };
+            new ResizeObserver(fit).observe(ui.viewport);
+            fit();
+
+            let running = false;
+            let completed = false;
+
+            const start = () => {
+                if (running || completed) return;
+                running = true;
+                ui.column.innerHTML = "";
+                resetSurfaces(ui);
+                timelines[root.dataset.fd](ui, r)
+                    .then(() => { completed = true; })
+                    .catch((error) => {
+                        if (error && error.name !== "AbortError") throw error;
+                    })
+                    .finally(() => { running = false; });
+            };
+            const stop = () => { running = false; r.bump(); };
+
+            // Drop every transient surface a previous (or aborted) run may
+            // have mounted outside the wiped transcript column, and undo the
+            // post-send chrome begin() applied — a replay must start from the
+            // fresh-session state or the typing phase plays over a black void.
+            const resetSurfaces = (ui) => {
+                ui.app.querySelectorAll(".hx-slash-popover, .hx-model-popover").forEach((n) => n.remove());
+                ui.main.querySelectorAll(".hx-wf-frame").forEach((n) => n.remove());
+                ui.viewport.querySelectorAll(".hx-restart").forEach((n) => n.remove());
+                ui.app.classList.remove("is-quitting");
+                ui.traffic.classList.remove("is-quitting");
+                ui.composer.classList.remove("has-cmd");
+                ui.composer.querySelectorAll(".hx-cmd-chip").forEach((n) => n.remove());
+                ui.textarea.value = "";
+                ui.send.classList.remove("is-running");
+                ui.status.classList.remove("is-visible");
+                ui.canvas.classList.remove("is-hidden");
+                ui.transcript.classList.remove("is-covered", "is-visible");
+                ui.projectSelector.classList.remove("is-hidden");
+                ui.composer.classList.remove("is-compact");
+                ui.newSession.classList.remove("is-visible");
+                ui.sessionTitle.classList.remove("is-visible");
+                ui.titlePlus.classList.remove("is-visible");
+                ui.titleActions.classList.remove("is-visible");
+                ui.modelChip.classList.remove("is-highlighted");
+                ui.modelIcon.src = initialModel.icon;
+                ui.modelLabel.textContent = initialModel.label;
+            };
+
+            ui.replay.addEventListener("click", () => {
+                stop();
+                completed = false;
+                start();
+            });
+
+            let visible = false;
+            const sync = () => { if (visible && !document.hidden) start(); else stop(); };
+            new IntersectionObserver((entries) => {
+                visible = entries[0].isIntersecting;
+                sync();
+            }, { threshold: 0.2 }).observe(root);
+            document.addEventListener("visibilitychange", sync);
+            reducedMotion.addEventListener("change", () => { stop(); sync(); });
+        });
+    })();
+</script>

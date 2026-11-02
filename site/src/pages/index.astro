@@ -1,6 +1,7 @@
 ---
 import HeroController from "../components/HeroController";
 import DesktopDemo from "../components/DesktopDemo.astro";
+import FeatureDemos from "../components/FeatureDemos.astro";
 ---
 
 <!doctype html>
@@ -332,6 +333,18 @@ import DesktopDemo from "../components/DesktopDemo.astro";
                     <p class="demo-intro">Follow the tools, inspect the changes, open the result. The path from a request to a finished task stays in the conversation.</p>
                 </div>
                 <DesktopDemo />
+            </section>
+
+            <!-- FEATURE DEMOS: provider self-setup · dynamic workflows · durable runs -->
+            <section class="product-demo" id="capabilities" aria-labelledby="feat-title">
+                <div class="demo-heading">
+                    <div>
+                        <div class="demo-eyebrow">03 / SETUP, ORCHESTRATE, RECOVER</div>
+                        <h2 id="feat-title">An agent that keeps<br />its own house.</h2>
+                    </div>
+                    <p class="demo-intro">Providers propose their own setup, workflows run their own agents on a live plan graph, and a run interrupted by a restart picks up where the disk left it.</p>
+                </div>
+                <FeatureDemos />
             </section>
 
             <!-- CTA -->
