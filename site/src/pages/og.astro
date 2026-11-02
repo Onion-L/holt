@@ -12,47 +12,139 @@
             rel="stylesheet"
         />
         <style is:inline>
-            *, *::before, *::after { box-sizing: border-box; }
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+            }
             :root {
                 --page: #121316;
                 --ink: #ece9e2;
                 --muted: #b0b4bb;
                 --coral: #ed9b7f;
             }
-            html, body { margin: 0; }
+            html,
             body {
-                width: 1200px; height: 630px; overflow: hidden; position: relative;
+                margin: 0;
+            }
+            body {
+                width: 1200px;
+                height: 630px;
+                overflow: hidden;
+                position: relative;
                 font-family: Archivo, system-ui, sans-serif;
                 -webkit-font-smoothing: antialiased;
-                background: var(--page); color: var(--ink);
+                background: var(--page);
+                color: var(--ink);
             }
-            img { display: block; }
-            .mono { font-family: "IBM Plex Mono", Menlo, monospace; }
-            .icon { display: inline-block; flex-shrink: 0; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
-            .icon-up-right { --icon: url("/assets/icons/arrow-up-right.svg"); }
-            .og { position: absolute; inset: 0; overflow: hidden; }
+            img {
+                display: block;
+            }
+            .mono {
+                font-family: "IBM Plex Mono", Menlo, monospace;
+            }
+            .icon {
+                display: inline-block;
+                flex-shrink: 0;
+                width: 14px;
+                height: 14px;
+                background: currentColor;
+                -webkit-mask: var(--icon) center/contain no-repeat;
+                mask: var(--icon) center/contain no-repeat;
+            }
+            .icon-up-right {
+                --icon: url("/assets/icons/arrow-up-right.svg");
+            }
+            .og {
+                position: absolute;
+                inset: 0;
+                overflow: hidden;
+            }
             .og-bg {
-                position: absolute; inset: 0; width: 100%; height: 100%;
-                object-fit: cover; object-position: 50% 30%;
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                object-position: 50% 30%;
             }
             .og-scrim {
-                position: absolute; inset: 0;
+                position: absolute;
+                inset: 0;
                 background:
-                    linear-gradient(90deg, rgba(18,19,22,.98) 0%, rgba(18,19,22,.86) 38%, rgba(18,19,22,.28) 78%, rgba(18,19,22,.5) 100%),
-                    linear-gradient(0deg, rgba(18,19,22,.92) 0%, rgba(18,19,22,0) 68%);
+                    linear-gradient(
+                        90deg,
+                        rgba(18, 19, 22, 0.98) 0%,
+                        rgba(18, 19, 22, 0.86) 38%,
+                        rgba(18, 19, 22, 0.28) 78%,
+                        rgba(18, 19, 22, 0.5) 100%
+                    ),
+                    linear-gradient(
+                        0deg,
+                        rgba(18, 19, 22, 0.92) 0%,
+                        rgba(18, 19, 22, 0) 68%
+                    );
             }
             .og-top {
-                position: absolute; top: 34px; left: 44px; right: 44px;
-                display: flex; align-items: center; justify-content: space-between;
+                position: absolute;
+                top: 34px;
+                left: 44px;
+                right: 44px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
             }
-            .brand { display: flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 900; letter-spacing: -.06em; }
-            .brand img { width: 32px; height: 32px; border-radius: 7px; }
-            .github { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
-            .og-hero { position: absolute; left: 44px; right: 44px; bottom: 46px; }
-            .kicker { margin: 0 0 18px; color: var(--coral); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
-            .og-title { margin: 0; font-size: 82px; font-weight: 900; line-height: 1; letter-spacing: -.055em; white-space: nowrap; }
-            .og-title span { color: var(--coral); }
-            .intro { max-width: 640px; margin: 20px 0 0; color: var(--muted); font-size: 17px; line-height: 1.6; }
+            .brand {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 24px;
+                font-weight: 900;
+                letter-spacing: -0.06em;
+            }
+            .brand img {
+                width: 32px;
+                height: 32px;
+                border-radius: 7px;
+            }
+            .github {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                color: var(--muted);
+                font-size: 13px;
+            }
+            .og-hero {
+                position: absolute;
+                left: 44px;
+                right: 44px;
+                bottom: 46px;
+            }
+            .kicker {
+                margin: 0 0 18px;
+                color: var(--coral);
+                font-size: 12px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+            }
+            .og-title {
+                margin: 0;
+                font-size: 82px;
+                font-weight: 900;
+                line-height: 1;
+                letter-spacing: -0.055em;
+                white-space: nowrap;
+            }
+            .og-title span {
+                color: var(--coral);
+            }
+            .intro {
+                max-width: 640px;
+                margin: 20px 0 0;
+                color: var(--muted);
+                font-size: 17px;
+                line-height: 1.6;
+            }
         </style>
     </head>
     <body>
@@ -61,15 +153,28 @@
             <div class="og-scrim"></div>
             <div class="og-top">
                 <div class="brand">
-                    <img src="/assets/holt-logo.webp" alt="" width="32" height="32" />
+                    <img
+                        src="/assets/holt-logo.webp"
+                        alt=""
+                        width="32"
+                        height="32"
+                    />
                     holt
                 </div>
-                <span class="github mono">github.com/Onion-L/holt <span class="icon icon-up-right" aria-hidden="true"></span></span>
+                <span class="github mono">
+                    github.com/Onion-L/holt{" "}
+                    <span class="icon icon-up-right" aria-hidden="true"></span>
+                </span>
             </div>
             <div class="og-hero">
-                <p class="kicker mono">Native coding agent · macOS, Windows, Linux</p>
-                <h1 class="og-title">Holt is an agent<span>.</span></h1>
-                <p class="intro">A native desktop coding agent that works directly inside your local repository. Every tool call visible, every diff under your control.</p>
+                <h1 class="og-title">
+                    Holt is an agent<span>.</span>
+                </h1>
+                <p class="intro">
+                    A native desktop coding agent that works directly inside
+                    your local repository. Every tool call visible, every diff
+                    under your control.
+                </p>
             </div>
         </section>
     </body>
