@@ -22,7 +22,9 @@ use super::plan::PlanTracker;
 
 const PRELUDE: &str = include_str!("prelude.js");
 /// Runaway guard: a script loop can spawn without a model round in between,
-/// so a run stops admitting agents past this many.
+/// so a run stops admitting agents past this many. Crossing it ends the run,
+/// the way a plan refusal does — a catchable throw would let `parallel()`
+/// keep going.
 pub(crate) const MAX_AGENTS_PER_RUN: usize = 1000;
 const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 
@@ -102,8 +104,9 @@ pub(crate) fn check_syntax(script: &str) -> Result<(), String> {
 /// `events`; the returned receiver yields the script's return value, or the
 /// error that ended it. Cancelling `cancel` interrupts the script (a busy
 /// loop included) and ends the run with an error. An `agent()` the plan
-/// refuses ends the run with that refusal — `parallel()` cannot turn it
-/// into a null, or a script drifting from its drawn graph would carry on.
+/// refuses, and one past [`MAX_AGENTS_PER_RUN`], ends the run with that
+/// reason — `parallel()` cannot turn it into a null, or a script drifting
+/// from its drawn graph, or looping past the cap, would carry on.
 pub(crate) fn spawn(
     script: String,
     args: serde_json::Value,
@@ -186,10 +189,11 @@ async fn run(
                     let refusal = agent_refusal.clone();
                     async move {
                         if spawned.fetch_add(1, Ordering::AcqRel) >= MAX_AGENTS_PER_RUN {
+                            let error =
+                                format!("a run may start at most {MAX_AGENTS_PER_RUN} agents");
+                            refusal.refuse(error.clone());
                             return Err(rquickjs::Error::new_from_js_message(
-                                "agent",
-                                "result",
-                                format!("a run may start at most {MAX_AGENTS_PER_RUN} agents"),
+                                "agent", "result", error,
                             ));
                         }
                         let options: AgentOptions =
@@ -595,6 +599,62 @@ mod tests {
         .await;
         assert_eq!(requests.len(), MAX_AGENTS_PER_RUN);
         assert!(result.unwrap_err().contains("at most 1000 agents"));
+    }
+
+    #[tokio::test]
+    async fn the_agent_cap_fails_the_run_even_inside_parallel() {
+        // parallel() catches the throw. A wide call is legal (4096 items) and
+        // used to return nulls for the overflow and succeed.
+        let (result, requests, _) = drive(
+            &format!(
+                "return await parallel(Array.from({{ length: {} }}, (_, i) => () => agent('a' + i, {{ step: 's' }})));",
+                MAX_AGENTS_PER_RUN + 1
+            ),
+            serde_json::Value::Null,
+            echo,
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(error.contains("at most 1000 agents"), "{error}");
+        assert_eq!(requests.len(), MAX_AGENTS_PER_RUN);
+    }
+
+    #[tokio::test]
+    async fn a_loop_past_the_agent_cap_ends_the_run() {
+        // `parallel` nulls the throw, so an unbounded loop never returns.
+        // Cancel only if the cap fails to stop it, so a regression cannot
+        // pin the test process.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        let plan =
+            serde_json::from_value(serde_json::json!({"steps": [{"id": "s", "title": "S"}]}))
+                .unwrap();
+        let done = spawn(
+            "while (true) await parallel([() => agent('x', { step: 's' })]);".into(),
+            serde_json::Value::Null,
+            Arc::new(Mutex::new(PlanTracker::new(plan))),
+            tx,
+            cancel.clone(),
+        );
+        let collect = async {
+            let mut requests = 0usize;
+            while let Some(event) = rx.recv().await {
+                let ScriptEvent::Agent(request) = event else {
+                    continue;
+                };
+                requests += 1;
+                let _ = request.reply.send(Some(serde_json::json!("ok")));
+            }
+            (done.await.unwrap(), requests)
+        };
+        let collected = tokio::time::timeout(std::time::Duration::from_secs(5), collect).await;
+        if collected.is_err() {
+            cancel.cancel();
+        }
+        let (result, requests) = collected.expect("looping past the agent cap must end the run");
+        let error = result.unwrap_err();
+        assert!(error.contains("at most 1000 agents"), "{error}");
+        assert_eq!(requests, MAX_AGENTS_PER_RUN);
     }
 
     #[tokio::test]
