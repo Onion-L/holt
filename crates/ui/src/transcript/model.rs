@@ -107,6 +107,14 @@ pub(super) fn is_workflow_call(call: &ToolCall) -> bool {
     matches!(call, ToolCall::Unknown { name, .. } if name == "Workflow" || name.starts_with("Workflow: "))
 }
 
+/// Whether the engine launched the run this call opened: `stamp_container`
+/// renames the call to `Workflow: <name>` only once the plan is validated
+/// and the run registered, so the prefix is the launched signal (a rejected
+/// call keeps the bare `Workflow` name — see [`is_workflow_call`]).
+fn workflow_launched(call: &ToolCall) -> bool {
+    matches!(call, ToolCall::Unknown { name, .. } if name.starts_with("Workflow: "))
+}
+
 /// The workflow step a child's chip was started under (the kept spawn
 /// input; `phase` on runs from before plans), which splits a workflow's
 /// children into one row per step.
@@ -1021,7 +1029,12 @@ pub fn rows_for_entry(
                 gate,
             } => {
                 // A workflow call is its run's own row; its agents follow.
-                if is_workflow_call(call) {
+                // A call the engine rejected never launched (its name stays
+                // bare), so it is not a run: it falls through to the
+                // ordinary chip, where its error output stays visible. A
+                // launched run keeps this row even under a synthetic
+                // interrupted result — it outlives the Turn.
+                if is_workflow_call(call) && (workflow_launched(call) || !*is_error) {
                     flush_group(
                         &mut rows,
                         &mut pending_group,
@@ -2267,6 +2280,72 @@ mod tests {
             graph.node(0).and_then(|node| node.subagent_ref.as_deref()),
             Some("chat--sub--wf-1#item-0")
         );
+    }
+
+    #[test]
+    fn a_rejected_workflow_call_keeps_its_error_visible() {
+        // A launch the engine rejects (plan missing or malformed, a script
+        // that does not parse, the tool unmounted) never stamps the run:
+        // bare name, no status, an error result. It must render as an
+        // ordinary failed tool chip so the reason stays on screen — a
+        // workflow row would draw an empty shell.
+        let mut rejected = tool_part("wf-1", "ignored");
+        if let MessagePart::Tool {
+            call,
+            is_error,
+            output,
+            ..
+        } = &mut rejected
+        {
+            *call = ToolCall::Unknown {
+                name: "Workflow".into(),
+                input: None,
+            };
+            *is_error = true;
+            *output = Some("plan is required".into());
+        }
+        let entry = assistant("m-wf", MessageStatus::Complete, vec![rejected]);
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::ToolGroup { tools, .. } = &rows[0].kind else {
+            panic!("ordinary tool row expected")
+        };
+        let tool = &tools[0];
+        assert_eq!(tool.call_id.as_deref(), Some("wf-1"));
+        assert!(tool.is_error);
+        let Some(ToolDetail::Output { lines, .. }) = tool.detail.as_deref() else {
+            panic!("error output expected")
+        };
+        assert!(lines.iter().any(|line| line.contains("plan is required")));
+    }
+
+    #[test]
+    fn a_launched_workflow_keeps_its_row_under_an_interrupted_error() {
+        // A run whose Turn was cut after launch carries a synthetic
+        // interrupted result, but the run outlives the Turn: the stamped
+        // name keeps the workflow row (graph, status, Stop) alive.
+        let mut container = tool_part("wf-2", "ignored");
+        if let MessagePart::Tool {
+            call,
+            is_error,
+            subagent_status,
+            ..
+        } = &mut container
+        {
+            *call = ToolCall::Unknown {
+                name: "Workflow: audit".into(),
+                input: None,
+            };
+            *is_error = true;
+            *subagent_status = Some(SubagentStatus::Running);
+        }
+        let entry = assistant("m-wf", MessageStatus::Complete, vec![container]);
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::Workflow { status, .. } = &rows[0].kind else {
+            panic!("workflow row expected")
+        };
+        assert_eq!(*status, Some(SubagentStatus::Running));
     }
 
     #[test]
