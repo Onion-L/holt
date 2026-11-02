@@ -86,6 +86,14 @@ mkdir -p "$STAGING"
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
+# The release runner's disk is tight, and the DMG needs room for a staging
+# copy plus the temporary read-write image: the binary is already inside the
+# app, so its object files are no longer needed. CI sets this; a local run
+# keeps its build cache.
+if [[ "${HOLT_DMG_CLEAN_TARGET:-0}" == "1" ]]; then
+  rm -rf "$OUT_DIR/deps" "$OUT_DIR/build" "$OUT_DIR/incremental"
+fi
+
 # Build a read-write image first so the Finder window can be styled (background,
 # icon layout, volume icon), then convert to the compressed read-only DMG.
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDRW "$TMP_DMG" >/dev/null

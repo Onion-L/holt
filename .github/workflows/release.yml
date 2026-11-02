@@ -125,6 +125,9 @@ jobs:
       - name: Build, sign, and notarize DMG
         env:
           NOTARY_PROFILE: holt-notary-ci
+          # The runner's disk cannot hold the release objects and the DMG's
+          # staging copy at once (hdiutil: No space left on device).
+          HOLT_DMG_CLEAN_TARGET: "1"
         run: scripts/build-dmg.sh --target aarch64-apple-darwin
 
       - name: sccache stats
@@ -203,6 +206,9 @@ jobs:
       - name: Build, sign, and notarize DMG
         env:
           NOTARY_PROFILE: holt-notary-ci
+          # Same disk bound as the arm64 job: free the release objects before
+          # the DMG's staging copy.
+          HOLT_DMG_CLEAN_TARGET: "1"
         run: scripts/build-dmg.sh --target x86_64-apple-darwin
 
       - name: sccache stats

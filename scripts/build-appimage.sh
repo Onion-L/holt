@@ -21,8 +21,10 @@ set -euo pipefail
 # desktop distro anyway.
 
 LINUXDEPLOY_URL_BASE="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous"
-LINUXDEPLOY_SHA256_X86_64="8aea8da0f7f7039d2a2cecb14657d752a222a5e1d3825caeef186c82f751cdd1"
-LINUXDEPLOY_SHA256_AARCH64="5c1fddf96066891e829831cac0d84424690f3b22846c7f8f1bb9990a5c6c73f4"
+# Re-pinned 2026-11-02: upstream republished the `continuous` assets on
+# 2026-11-01T21:01Z, and v0.7.0's build failed closed on the old pins.
+LINUXDEPLOY_SHA256_X86_64="df908b19f1ed1cdafa79508d415aa12d6c56ce4d56d4149aa8c09286718706e5"
+LINUXDEPLOY_SHA256_AARCH64="f38e4d7cebf20d8073ec4e00e0a167ac146cd8585fe2f8fe82df27d74f2bd8e1"
 
 case "$(uname -m)" in
   x86_64) ARCH="x64"; LINUXDEPLOY_ARCH="x86_64" ;;
