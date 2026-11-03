@@ -173,11 +173,6 @@ const providers = [
 ---
 
 <figure class="desktop-demo" data-desktop-demo data-phase="idle">
-    <div class="desktop-demo-bar">
-        <button class="desktop-replay-btn" type="button" aria-label="Replay demo animation" data-demo-replay title="Replay demo animation">
-            <span class="desktop-icon desktop-i-refresh" aria-hidden="true"></span>
-        </button>
-    </div>
     <div class="desktop-viewport" data-desktop-viewport>
         <div class="desktop-app" data-desktop-app>
             <!-- Titlebar -->
@@ -198,7 +193,6 @@ const providers = [
                     <span class="desktop-session-target">holt</span>
                 </div>
                 <div class="desktop-title-actions" data-title-actions>
-                    <button class="desktop-control" type="button" data-demo-replay title="Replay demo animation" aria-label="Replay demo animation"><span class="desktop-icon desktop-i-refresh"></span></button>
                     <button class="desktop-control" type="button" data-action="toggle-terminal" title="Toggle Terminal (Cmd+J)" aria-label="Toggle terminal"><span class="desktop-icon desktop-i-terminal"></span></button>
                     <button class="desktop-control" type="button" data-action="toggle-diff" title="Toggle Changes / Diff (Cmd+Shift+D)" aria-label="Toggle changes"><span class="desktop-icon desktop-i-split-columns"></span></button>
                 </div>
@@ -550,11 +544,6 @@ const providers = [
     @font-face { font-family: "Holt Geist Mono"; src: url("/assets/fonts/GeistMono.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
 
     .desktop-demo { position: relative; width: 100%; max-width: 1180px; margin: 0 auto 96px; }
-    .desktop-demo-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
-    .desktop-replay-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; background: transparent; color: #85858a; cursor: pointer; transition: color .15s ease, opacity .15s ease; }
-    .desktop-replay-btn:hover { color: #ece9e2; }
-    .desktop-replay-btn:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
-    .desktop-replay-btn .desktop-icon { width: 14px; height: 14px; }
     .desktop-viewport { position: relative; width: 100%; aspect-ratio: 59 / 40; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: #08080a; box-shadow: 0 32px 80px -16px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.04); }
     .desktop-app { position: absolute; top: 0; left: 0; width: 1180px; height: 800px; overflow: hidden; transform-origin: top left; background: #0a0a0c; color: #e8e8ea; font-family: "Holt Geist", sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
     .desktop-app *, .desktop-app *::before, .desktop-app *::after { box-sizing: border-box; }
@@ -864,7 +853,6 @@ const providers = [
 
     @media (max-width: 520px) {
         .desktop-demo { margin-bottom: 64px; }
-        .desktop-demo-bar { margin-bottom: 10px; }
         .desktop-viewport { border-radius: 8px; }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -908,8 +896,6 @@ const providers = [
         const composer = one("[data-composer]");
         const textarea = one("[data-composer-textarea]");
         const sendBtn = one("[data-send-button]");
-        const replayButtons = all("[data-demo-replay]");
-
         // Popovers
         const popovers = {
             model: one('[data-popover="model"]'),
@@ -1531,15 +1517,6 @@ const providers = [
 
         sendBtn.addEventListener("click", () => {
             sendMessage();
-        });
-
-        replayButtons.forEach((btn) => {
-            btn.addEventListener("click", () => {
-                userInteracted = false;
-                completed = false;
-                stop();
-                start();
-            });
         });
 
         // Keyboard shortcuts

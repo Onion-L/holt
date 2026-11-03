@@ -171,10 +171,9 @@ import FeatureDemos from "../components/FeatureDemos.astro";
             /* ── PRODUCT DEMO ── */
             .section { max-width: 1280px; margin: 0 auto; padding: 0 clamp(16px,3vw,40px); }
             .product-demo { margin-bottom: 96px; }
-            .demo-heading { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(24px,4vw,56px); margin-bottom: 32px; }
+            .demo-heading { margin-bottom: 32px; }
             .demo-eyebrow { margin-bottom: 20px; color: var(--coral); font: 500 10px/1 var(--mono); letter-spacing: .08em; }
             .demo-heading h2 { max-width: 580px; margin: 0; font-size: clamp(36px,4.6vw,62px); line-height: 1.04; letter-spacing: -.045em; font-weight: 700; }
-            .demo-intro { align-self: start; max-width: 500px; margin: 0; padding-top: 30px; color: var(--muted); font-size: 16px; line-height: 1.75; }
 
             /* ── CTA ── */
             .cta {
@@ -201,8 +200,6 @@ import FeatureDemos from "../components/FeatureDemos.astro";
                 .hero-copy { grid-template-columns: 1fr; gap: 20px; }
                 .band-lbl { width: 100%; justify-content: center; padding-right: 0; border-right: 0; }
                 .hero-img { aspect-ratio: 16/9; }
-                .demo-heading { grid-template-columns: 1fr; gap: 20px; margin-bottom: 64px; }
-                .demo-intro { padding-top: 0; }
                 .product-demo { margin-bottom: 64px; }
                 .cta { flex-direction: column; align-items: flex-start; }
             }
@@ -326,11 +323,8 @@ import FeatureDemos from "../components/FeatureDemos.astro";
             <!-- PRODUCT DEMO -->
             <section class="product-demo" id="why" aria-labelledby="demo-title">
                 <div class="demo-heading">
-                    <div>
-                        <div class="demo-eyebrow">01 / RESEARCH AND EXECUTION</div>
-                        <h2 id="demo-title">Inspect every step<br />behind the answer.</h2>
-                    </div>
-                    <p class="demo-intro">Follow tool calls as they execute, inspect syntax-highlighted diffs, and review changes line by line. The full execution trace stays right in the conversation.</p>
+                    <div class="demo-eyebrow">01 / RESEARCH AND EXECUTION</div>
+                    <h2 id="demo-title">Inspect every step<br />behind the answer.</h2>
                 </div>
                 <DesktopDemo />
             </section>
@@ -338,11 +332,8 @@ import FeatureDemos from "../components/FeatureDemos.astro";
             <!-- FEATURE DEMOS: provider self-setup · dynamic workflows · durable runs -->
             <section class="product-demo" id="capabilities" aria-labelledby="feat-title">
                 <div class="demo-heading">
-                    <div>
-                        <div class="demo-eyebrow">02 / SETUP, ORCHESTRATE, RECOVER</div>
-                        <h2 id="feat-title">Autonomous setup,<br />durable execution.</h2>
-                    </div>
-                    <p class="demo-intro">Providers propose and persist their own catalog definitions, multi-agent workflows execute against a live plan graph, and interrupted runs resume seamlessly from the local journal.</p>
+                    <div class="demo-eyebrow">02 / SETUP, ORCHESTRATE, RECOVER</div>
+                    <h2 id="feat-title">Autonomous setup,<br />durable execution.</h2>
                 </div>
                 <FeatureDemos />
             </section>
