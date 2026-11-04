@@ -313,6 +313,8 @@ icon_assets![
     // permission-mode tier marks (ADR-permission-modes-gate-mutations-no-os-sandbox).
     (SHIELD, "shield"),
     (LOCK_OPEN, "lock-open"),
+    // Global navigation rail glyphs.
+    (NAVIGATION_CHART, "navigation-chart"),
 ];
 
 /// An icon element for an embedded asset path. Size and colour are set by the

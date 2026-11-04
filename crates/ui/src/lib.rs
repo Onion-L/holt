@@ -255,9 +255,9 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
             titlebar: Some(TitlebarOptions {
                 title: None,
                 appears_transparent: true,
-                // Centered on the titlebar's content line (40px bar, content
-                // shifted 4px down, lights ~12px tall → center 22).
-                traffic_light_position: Some(gpui::point(px(14.), px(14.))),
+                // The app content starts immediately after the 44px
+                // navigation rail. Keep the original 14px titlebar offset.
+                traffic_light_position: Some(gpui::point(px(58.), px(14.))),
             }),
             // Our own titlebar strip drags the window (WindowControlArea::
             // Drag + start_window_move) — mark the content view app-owned

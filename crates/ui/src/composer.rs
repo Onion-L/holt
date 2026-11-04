@@ -1056,14 +1056,9 @@ impl Render for Composer {
         let ref_strip = self.render_path_ref_strip(&theme, cx);
         let comments_chip = self.render_comments_chip(&theme, cx);
 
-        // The pill chrome (holt composer.tsx): `rounded-[26px] border
-        // border-white/[0.08] bg-white/[0.03] shadow-xl` — a floating pill with
-        // a hairline over a faint wash, never a solid grey box. Picker chips,
-        // attach, and the send circle all live INSIDE the pill.
-        let pill_bg = theme.input_glass_bg();
-        // No drop shadow on glass: it paints BEHIND the translucent fill and
-        // shows through as an inner glow (theme.rs's card_selected_shadows
-        // lesson; user report).
+        // The pill chrome keeps its hairline and input tint, but the fill is
+        // opaque: the transcript scrolls underneath and must not show through.
+        let pill_bg = crate::theme::flatten(theme.input_glass_bg(), theme.bg);
         let pill = div()
             .rounded(px(26.0))
             .bg(pill_bg)

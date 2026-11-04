@@ -931,11 +931,6 @@ impl Shell {
             })
             .collect();
 
-        // Bottom-of-sidebar settings entry: same row recipe as the settings
-        // sidebar's Back row (px-8/py-6, rounded-8, 13px) so the two feel
-        // identical.
-        let settings_row = self.render_sidebar_settings_row(theme, cx);
-
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
         let filter_row = self.render_spaces_filter(theme, cx);
@@ -1050,19 +1045,17 @@ impl Shell {
             // Holt notices are rendered as top-right overlays in
             // `render_overlays`, so the sidebar column itself stays a pure
             // nav surface with no in-flow feedback strip.
-            .child(
-                div()
-                    .px(px(Theme::SPACE_SM))
-                    .pb(px(12.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(Theme::SPACE_SM))
-                    .child(div().flex_1().child(settings_row))
-                    .when_some(self.render_update_button(theme, cx), |el, button| {
-                        el.child(button)
-                    }),
-            )
+            .when_some(self.render_update_button(theme, cx), |el, button| {
+                el.child(
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .pb(px(12.0))
+                        .flex_none()
+                        .flex()
+                        .justify_end()
+                        .child(button),
+                )
+            })
             .into_any_element()
     }
 
@@ -1164,39 +1157,6 @@ impl Shell {
         self.settings.sidebar_order = order;
         self.settings.sidebar_sort = SidebarSort::Manual;
         self.schedule_save(cx);
-    }
-
-    /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
-    /// the settings page directly. Styled exactly like the settings sidebar's
-    /// Back row — same padding, height, and hover.
-    pub(super) fn render_sidebar_settings_row(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id("sidebar-settings")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .text_size(crate::typography::ui_rems(13.0))
-            .text_color(theme.text_muted)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.glass_hover()).text_color(theme.text))
-            .on_click(
-                cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::General, cx)),
-            )
-            .child(
-                icon(icons::SETTINGS_MINIMALISTIC)
-                    .size(px(16.0))
-                    .text_color(theme.text_muted),
-            )
-            .child(t!("sidebar_spaces.sidebar.settings"))
-            .into_any_element()
     }
 }
 
