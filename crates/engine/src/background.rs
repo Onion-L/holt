@@ -237,10 +237,10 @@ pub struct BackgroundProcesses {
 fn spawn_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     pipe: Option<R>,
     weak: std::sync::Weak<Process>,
-) {
+) -> Option<tokio::task::JoinHandle<()>> {
     use tokio::io::AsyncReadExt as _;
-    let Some(mut pipe) = pipe else { return };
-    tokio::spawn(async move {
+    let Some(mut pipe) = pipe else { return None };
+    Some(tokio::spawn(async move {
         let mut buffer = [0; 16384];
         loop {
             let len = match pipe.read(&mut buffer).await {
@@ -260,7 +260,7 @@ fn spawn_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
             };
             process.changed.send_replace(seq);
         }
-    });
+    }))
 }
 
 impl BackgroundProcesses {
@@ -360,8 +360,8 @@ impl BackgroundProcesses {
     /// is still running, and its members still hold the pipes open.
     fn supervise(self: &Arc<Self>, process: Arc<Process>, mut child: tokio::process::Child) {
         let weak = Arc::downgrade(&process);
-        spawn_reader(child.stdout.take(), weak.clone());
-        spawn_reader(child.stderr.take(), weak);
+        let stdout = spawn_reader(child.stdout.take(), weak.clone());
+        let stderr = spawn_reader(child.stderr.take(), weak);
         let registry = Arc::downgrade(self);
         tokio::spawn(async move {
             let code = match child.wait().await {
@@ -389,6 +389,11 @@ impl BackgroundProcesses {
                     }
                 }
                 tokio::time::sleep(GROUP_POLL).await;
+            }
+            // Both pipes must reach EOF before the exit event and notice
+            // snapshot the log; otherwise the final lines are lost from tail.
+            for reader in [stdout, stderr].into_iter().flatten() {
+                let _ = reader.await;
             }
             match registry.upgrade() {
                 Some(registry) => registry.record_exit(&process, code),
