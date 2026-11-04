@@ -25,6 +25,7 @@ use holt_proto::{HOME_SPACE_ID, Space};
 use tokio::sync::watch;
 
 mod agent;
+mod background;
 mod checkpoints;
 pub mod clock;
 pub mod compaction;
@@ -215,6 +216,10 @@ struct EngineService {
     /// Stops the Routine scheduler task on shutdown.
     scheduler: tokio_util::sync::CancellationToken,
     terminals: Arc<terminals::Terminals>,
+    /// The agent background process registry
+    /// (ADR-background-processes-are-chat-owned) — the same registry the
+    /// Turn's `spawn_background` tool writes and this surface reads.
+    background: Arc<crate::background::BackgroundProcesses>,
     /// The Turn terminal event dispatcher (ADR-turn-completion-is-an-engine-owned-event): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
     turn_events: turn_events::TurnEvents,
@@ -297,6 +302,8 @@ impl LocalEngine {
             crate::mcp::McpPool::load(&config.data_dir)?,
             config.exec_shell.clone(),
         ));
+        let background = crate::background::BackgroundProcesses::new();
+        let _ = runtime.background.set(background.clone());
         for chat_id in &retired {
             runtime.remove_chat(chat_id);
         }
@@ -356,6 +363,7 @@ impl LocalEngine {
                 routines,
                 scheduler: tokio_util::sync::CancellationToken::new(),
                 terminals: Arc::new(terminals::Terminals::default()),
+                background,
                 turn_events: turn_events::TurnEvents::new(),
                 updater: update::Updater::new(),
             },
@@ -387,6 +395,7 @@ impl LocalEngine {
         self.service.scheduler.cancel();
         self.service.runtime.shutdown();
         self.service.terminals.close_all(true);
+        self.service.background.close_all(true);
     }
 }
 

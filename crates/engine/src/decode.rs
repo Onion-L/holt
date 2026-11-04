@@ -41,6 +41,12 @@ fn decode_tool_call(
         "bash" => TranscriptToolCall::Exec {
             command: arg("command").unwrap_or_default(),
         },
+        // A background spawn gates like a command and reads like one — the
+        // chip and the approval bar show the command; the tool's own result
+        // names the process id it started.
+        "spawn_background" => TranscriptToolCall::Exec {
+            command: arg("command").unwrap_or_default(),
+        },
         "read" => TranscriptToolCall::ReadFile {
             path: arg("path").unwrap_or_default(),
         },

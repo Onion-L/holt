@@ -10,6 +10,7 @@ mod common;
 
 mod always_allow_rpc;
 mod auto_review_rpc;
+mod background_process_rpc;
 mod chat_usage_watch_rpc;
 mod compact_command_rpc;
 mod compaction_rpc;

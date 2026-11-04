@@ -15,6 +15,7 @@ use crate::agent::ChatRuntime;
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::{EngineService, LocalEngine};
 
+mod background;
 mod git_surface;
 mod images;
 mod modes;
@@ -186,6 +187,14 @@ impl RpcService for EngineService {
             methods::LIST_TERMINALS => RpcReply::value(&self.terminals.list()),
             methods::CLOSE_TERMINAL | methods::CLOSE_ALL_TERMINALS => {
                 self.close_terminal(method, params).await
+            }
+            methods::LIST_BACKGROUND_PROCESSES => RpcReply::value(&self.background.list()),
+            methods::WATCH_BACKGROUND_PROCESSES => Ok(self.watch_background_processes()),
+            methods::SUBSCRIBE_BACKGROUND_PROCESS => self.subscribe_background_process(params),
+            methods::KILL_BACKGROUND_PROCESS => self.kill_background_process(params),
+            methods::REMOVE_BACKGROUND_PROCESS => self.remove_background_process(params),
+            methods::CLEAR_EXITED_BACKGROUND_PROCESSES => {
+                self.clear_exited_background_processes(params)
             }
             methods::WATCH_MESSAGE_QUEUE => self.watch_message_queue(params),
             methods::WATCH_CHAT_USAGE => self.watch_chat_usage(params),

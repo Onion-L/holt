@@ -1,6 +1,6 @@
 //! The permission gate (ADR-permission-modes-gate-mutations-no-os-sandbox): the confirm-changes gatekeeper wired
 //! through the agent loop's before-tool-call hook. Every mutating tool
-//! call (write, edit, bash, schedule_routine) pauses the Turn behind a pending Approval the
+//! call (write, edit, bash, spawn_background, schedule_routine) pauses the Turn behind a pending Approval the
 //! UI resolves over the `ResolveApproval` RPC; denials settle as error
 //! tool results the model reads, and interrupt cancels the wait. Reads
 //! and content search are never gated, and full-access never reaches this
@@ -26,7 +26,10 @@ use crate::agent::ChatRuntime;
 /// `mcp__`-prefixed call is presumed mutating — never trusting a server's
 /// own hints about itself.
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
-    matches!(name, "write" | "edit" | "bash" | "schedule_routine") || name.starts_with("mcp__")
+    matches!(
+        name,
+        "write" | "edit" | "bash" | "spawn_background" | "schedule_routine"
+    ) || name.starts_with("mcp__")
 }
 
 /// Tools whose calls always meet the HUMAN gatekeeper, whatever the chat's
@@ -70,7 +73,7 @@ impl GateGrants {
             return;
         }
         match tool {
-            "bash" => {
+            "bash" | "spawn_background" => {
                 if let Some(command) = arg_str(arguments, "command")
                     && !self.bash_prefixes.iter().any(|p| p == &command)
                 {
@@ -98,7 +101,7 @@ impl GateGrants {
             return self.mcp_tools.iter().any(|name| name == tool);
         }
         match tool {
-            "bash" => arg_str(arguments, "command").is_some_and(|command| {
+            "bash" | "spawn_background" => arg_str(arguments, "command").is_some_and(|command| {
                 self.bash_prefixes
                     .iter()
                     .any(|p| bash_prefix_matches(p, &command))
@@ -954,6 +957,7 @@ mod tests {
         assert!(is_mutating_tool("write"));
         assert!(is_mutating_tool("edit"));
         assert!(is_mutating_tool("bash"));
+        assert!(is_mutating_tool("spawn_background"));
         assert!(is_mutating_tool("schedule_routine"));
         assert!(!is_mutating_tool("read"));
         assert!(!is_mutating_tool("grep"));

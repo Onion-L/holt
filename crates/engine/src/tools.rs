@@ -11,6 +11,7 @@
 //! and the model's clock pull channel in [`current_time`].
 
 pub(crate) mod ask_user;
+pub(crate) mod background;
 pub(crate) mod current_time;
 mod grep;
 mod ls;
@@ -833,7 +834,7 @@ impl Drop for ShellProcessGroup {
 /// Closing that window would take CREATE_SUSPENDED + resume, which tokio's
 /// `Command` does not expose; the binding is best-effort by construction.
 #[cfg(windows)]
-struct ShellJob(Option<windows_sys::Win32::Foundation::HANDLE>);
+pub(crate) struct ShellJob(Option<windows_sys::Win32::Foundation::HANDLE>);
 
 #[cfg(windows)]
 impl ShellJob {
@@ -1395,6 +1396,18 @@ pub use web_search::{SearchBackend, SearchHit, SearchResults};
 /// recursive scan over `target/`, a server process inheriting the output
 /// pipe — would otherwise hang the tool until the user aborts.
 const DEFAULT_BASH_TIMEOUT_SECONDS: f64 = 300.0;
+
+/// The shell agent commands run under: the `exec_shell` override when set
+/// (the crash eval's container wrapper), else the user's agent shell. The
+/// same resolution `LocalExecutionEnv::with_exec_shell` applies — kept as
+/// its own helper so the background process tools spawn with byte-identical
+/// shell semantics.
+pub(crate) fn resolved_agent_shell(exec_shell: Option<&str>) -> String {
+    exec_shell
+        .filter(|shell| !shell.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(agent_shell)
+}
 
 /// Injected at the params level, not the exec layer, so holt-core's timeout
 /// validation and its "timed out after N seconds" message report the

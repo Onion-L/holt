@@ -866,6 +866,12 @@ pub(crate) struct AgentRuntime {
     /// The Routine store (ADR-routines-fire-in-process-and-coalesce-missed-fires), set once at boot: the gate moves a
     /// run Chat's record to waiting while its Approval is open.
     pub(crate) routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
+    /// The agent background process registry
+    /// (ADR-background-processes-are-chat-owned), set once at boot. Turns
+    /// mount the `spawn_background` toolset only when it is present —
+    /// runtimes assembled without it (narrow tests) simply never see the
+    /// tools.
+    pub(crate) background: std::sync::OnceLock<Arc<crate::background::BackgroundProcesses>>,
     /// `EngineConfig::exec_shell`: when set, agent commands run through this
     /// program instead of the user's login shell. The app leaves it unset.
     pub(crate) exec_shell: Option<String>,
@@ -947,6 +953,7 @@ impl AgentRuntime {
             mcp,
             retry_events: crate::retry_events::RetryEvents::new(),
             routines: std::sync::OnceLock::new(),
+            background: std::sync::OnceLock::new(),
             exec_shell,
         }
     }
@@ -1734,6 +1741,32 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             child.output.is_some(),
         )
         .await;
+    } else if let Some(background) = runtime.background.get() {
+        // Background process exits since this chat's last Turn
+        // (ADR-background-processes-are-chat-owned): the notice block is
+        // appended only when there is one, so an uneventful Turn never
+        // changes the prompt (and never re-keys the provider's cached
+        // prefix). Subagent Turns never consume notices — only the
+        // main-chat Turn start drains them.
+        let notices = background.take_exit_notices(&chat_id);
+        if !notices.is_empty() {
+            system_prompt.push_str("\n\n## Background process exits since your last turn\n\n");
+            for notice in notices {
+                system_prompt.push_str(&format!(
+                    "- `{}` exited with code {}.\n",
+                    notice.command, notice.exit_code
+                ));
+                if !notice.tail.trim().is_empty() {
+                    let indented = notice
+                        .tail
+                        .lines()
+                        .map(|line| format!("    {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    system_prompt.push_str(&format!("    Last output:\n{indented}\n"));
+                }
+            }
+        }
     }
     let skill_files: HashMap<String, String> = catalog
         .winners
@@ -2026,7 +2059,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         allow_images,
         search_backend.clone(),
         attribution.clone(),
-        shell_registry,
+        shell_registry.clone(),
         runtime.exec_shell.clone(),
     );
     let current_chat_id = chat
@@ -2034,6 +2067,19 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         .as_ref()
         .map(|child| child.parent.chat_id.clone())
         .unwrap_or_else(|| chat_id.clone());
+    // The background process tools (ADR-background-processes-are-chat-owned) attribute to
+    // the OWNING chat — a subagent's or workflow's spawns land on the
+    // parent chat the user is watching. Plan Mode, Provider Mode, and
+    // Explorer retains drop them with the rest of the executing surface.
+    if let Some(background) = runtime.background.get() {
+        tools.extend(crate::tools::background::create_background_tools(
+            background.clone(),
+            current_chat_id.clone(),
+            &cwd,
+            runtime.exec_shell.clone(),
+            shell_registry.clone(),
+        ));
+    }
     tools.push(crate::tools::create_read_chat_tool(
         runtime.clone(),
         current_chat_id,
