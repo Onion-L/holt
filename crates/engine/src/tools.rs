@@ -838,7 +838,7 @@ pub(crate) struct ShellJob(Option<windows_sys::Win32::Foundation::HANDLE>);
 
 #[cfg(windows)]
 impl ShellJob {
-    fn assign(child: &tokio::process::Child) -> Self {
+    pub(crate) fn assign(child: &tokio::process::Child) -> Self {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -875,7 +875,7 @@ impl ShellJob {
 
     /// Processes still alive in the job. Called after the direct child was
     /// reaped, so any count is descendants the command left behind.
-    fn active_processes(&self) -> u32 {
+    pub(crate) fn active_processes(&self) -> u32 {
         use windows_sys::Win32::System::JobObjects::{
             JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
             QueryInformationJobObject,
