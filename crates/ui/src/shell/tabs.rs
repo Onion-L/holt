@@ -473,6 +473,7 @@ impl Shell {
     fn render_background_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let statuses = self.background_processes(cx);
         let running = statuses.iter().filter(|status| status.running).count();
+        let menu_open = self.background_menu.is_open();
         let closing = self.background_menu.closing_since();
 
         let mut trigger = header_icon_button(
@@ -495,6 +496,7 @@ impl Shell {
                 }
             }),
         )
+        .when(menu_open, |el| el.bg(theme.glass_hover()))
         .tooltip(|_, cx| {
             cx.new(|_| {
                 crate::popover::TextTooltip(t!("shell_chrome.titlebar.tooltip_background").into())
@@ -515,7 +517,7 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(theme.success)
+                    .bg(theme.busy)
                     .text_size(px(9.0))
                     .font_family(theme.font_mono.clone())
                     .text_color(theme.bg)
