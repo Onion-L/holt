@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
+pub mod background;
 mod client;
 pub mod images;
 pub mod retries;
@@ -451,6 +452,20 @@ pub mod methods {
     pub const LIST_TERMINALS: &str = "ListTerminals";
     /// End and release all terminals; used after window-close confirmation.
     pub const CLOSE_ALL_TERMINALS: &str = "CloseAllTerminals";
+    // Agent background processes (ADR-background-processes-are-chat-owned). List/watch
+    // reply `Vec<holt_rpc::background::BackgroundProcessStatus>` — every
+    // chat's processes, running and exited-retained; the UI filters by the
+    // selected chat. `SubscribeBackgroundProcess` streams the same
+    // `TerminalEvent` log contract terminals serve (replay from `afterSeq`,
+    // `Gap` on eviction, `Exit` last). Kill is TERM→KILL on the whole
+    // process group. Remove/clear drop EXITED entries only (a running one
+    // refuses) — an exited process stays listed until the user clears it.
+    pub const LIST_BACKGROUND_PROCESSES: &str = "ListBackgroundProcesses";
+    pub const WATCH_BACKGROUND_PROCESSES: &str = "WatchBackgroundProcesses";
+    pub const SUBSCRIBE_BACKGROUND_PROCESS: &str = "SubscribeBackgroundProcess";
+    pub const KILL_BACKGROUND_PROCESS: &str = "KillBackgroundProcess";
+    pub const REMOVE_BACKGROUND_PROCESS: &str = "RemoveBackgroundProcess";
+    pub const CLEAR_EXITED_BACKGROUND_PROCESSES: &str = "ClearExitedBackgroundProcesses";
     /// Checkout-diff stream for the target device's chats (DataRpc,
     /// relay-forwardable — diffs are produced where the checkout lives).
     pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
