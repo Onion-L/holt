@@ -69,6 +69,13 @@ intuition — three strikes is the only gate.
   pre-split `conversation-runtime`, `toolset`, and `ui-shell` pages
   (cffdd0c, fixed again in 9219a26). Seen 1× (2026-10-14).
 
+- An "unused variable" warning for state created on purpose is a feature
+  missing its wiring — investigate before deleting. The background-process
+  titlebar button computed `menu_open` for its active highlight and never
+  wired it; the compiler flagged the variable, the variable was deleted to
+  silence the warning, and the button shipped never highlighting while its
+  popover was open — found by the user's eye, not by any check (user report).
+  Seen 1× (2026-11-04).
 - A flaky test is diagnosed by tracing the frames it actually waits for, never
   by widening its timeout. The engine harness's 10 s → 30 s bump on a
   cross-platform CI hang (ec5f19c) read the symptom as a slow runner; the test
