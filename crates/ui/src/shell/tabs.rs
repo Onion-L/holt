@@ -6,6 +6,8 @@
 
 use super::*;
 use crate::i18n::t;
+use holt_rpc::background::BackgroundProcessStatus;
+use holt_rpc::methods;
 
 /// The chat one step from `selected` in the sidebar `order`, wrapping at both
 /// ends. Pure.
@@ -30,6 +32,26 @@ pub(super) fn cycle_target(
         (None, false) => order.len() - 1,
     };
     Some(order[next].clone())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `1h 04m` / `3m 12s` / `45s`.
+fn elapsed_text(started_at: u64, now: u64) -> SharedString {
+    let secs = now.saturating_sub(started_at) / 1000;
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m").into()
+    } else if m > 0 {
+        format!("{m}m {s:02}s").into()
+    } else {
+        format!("{s}s").into()
+    }
 }
 
 pub(super) fn right_pane_expand_icon(expanded: bool) -> &'static str {
@@ -240,6 +262,12 @@ impl Shell {
                 cfg!(target_os = "macos") && !self.external_apps.is_empty(),
                 |el| el.child(self.render_external_app_picker(cx)),
             )
+            // The background-process popover sits LEFT of the terminal
+            // toggle (user request). Chat-scoped like the terminals: the
+            // canvas owns no processes, so no entry there either.
+            .when(!on_canvas, |cluster| {
+                cluster.child(self.render_background_menu(theme, cx))
+            })
             // Terminals are chat-scoped: the new-chat canvas carries no
             // working terminal to toggle. This toggles the BOTTOM terminal
             // panel (⌘J), not the right pane's terminal surface.
@@ -421,6 +449,296 @@ impl Shell {
         // separation; the glass gutter shows between.
         let bar = div().h(px(Theme::TITLEBAR_HEIGHT)).flex_none().child(inner);
         self.titlebar_drag_region("chat-titlebar", bar, cx)
+            .into_any_element()
+    }
+
+    /// This chat's background processes — possibly empty (the canvas).
+    fn background_processes(&self, cx: &App) -> Vec<BackgroundProcessStatus> {
+        let Some(chat) = self.state.read(cx).selected_chat.clone() else {
+            return Vec::new();
+        };
+        self.state
+            .read(cx)
+            .background_processes
+            .iter()
+            .filter(|status| status.chat_id == chat)
+            .cloned()
+            .collect()
+    }
+
+    /// The titlebar's background-process entry (left of the terminal
+    /// toggle, user request): an icon with the running-count badge; the
+    /// click opens a popover listing the processes with stop/remove and a
+    /// live log tail for the hovered one. No processes, no entry.
+    fn render_background_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let statuses = self.background_processes(cx);
+        let running = statuses.iter().filter(|status| status.running).count();
+        let closing = self.background_menu.closing_since();
+
+        let mut trigger = header_icon_button(
+            "background-processes",
+            icons::BACKGROUND_TASKS,
+            theme,
+            cx.listener(|this, _, window, cx| {
+                window.prevent_default();
+                this.background_menu.note_trigger_press();
+                if this.background_menu.take_press_was_open() {
+                    if this.background_menu.begin_close() {
+                        crate::popover::reap_popup(cx, |shell: &mut Self| {
+                            &mut shell.background_menu
+                        });
+                        cx.notify();
+                    }
+                } else {
+                    this.background_menu.open(());
+                    cx.notify();
+                }
+            }),
+        )
+        .tooltip(|_, cx| {
+            cx.new(|_| {
+                crate::popover::TextTooltip(t!("shell_chrome.titlebar.tooltip_background").into())
+            })
+            .into()
+        });
+        // The running count rides the glyph's corner, the sidebar-dot idiom.
+        if running > 0 {
+            trigger = trigger.child(
+                div()
+                    .absolute()
+                    .top(px(-3.0))
+                    .right(px(-3.0))
+                    .min_w(px(13.0))
+                    .h(px(13.0))
+                    .px(px(3.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(theme.success)
+                    .text_size(px(9.0))
+                    .font_family(theme.font_mono.clone())
+                    .text_color(theme.bg)
+                    .child(SharedString::from(running.to_string())),
+            );
+        }
+        let mut trigger = div().relative().child(trigger);
+
+        if self.background_menu.get().is_some() {
+            let selected = statuses
+                .iter()
+                .position(|status| status.running)
+                .unwrap_or(0);
+            let card = self.render_background_menu_card(&statuses, selected, theme, cx);
+            trigger = trigger.relative().child(popover::anchored_menu_below_gap(
+                "background-menu-card",
+                card,
+                closing,
+                8.0,
+            ));
+        }
+        trigger.into_any_element()
+    }
+
+    /// The popover card, sized and styled after the user's reference: a
+    /// narrow card, a muted header line, and each process as a raised
+    /// two-line block — the command on top, pid · time beneath, stop or
+    /// remove at the right end. No log area.
+    fn render_background_menu_card(
+        &mut self,
+        statuses: &[BackgroundProcessStatus],
+        _selected: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let engine = self.state.read(cx).engine().cloned();
+        let now = now_ms();
+        let running = statuses.iter().filter(|status| status.running).count();
+
+        let mut card = popover::popover_card_flush(theme)
+            .bg(theme.surface_card)
+            .w(px(272.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(px(10.0))
+                    .pt(px(10.0))
+                    .pb(px(6.0))
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_faint)
+                    .child(t!("shell_chrome.titlebar.tooltip_background"))
+                    .child(div().flex_1())
+                    .when(running > 0, |el| {
+                        el.child(SharedString::from(t!(
+                            "shell_chrome.titlebar.background_count",
+                            count = running
+                        )))
+                    }),
+            );
+
+        if statuses.is_empty() {
+            // ONE quiet line — no header, no close chrome: a click outside
+            // dismisses the card (user request).
+            return popover::popover_card_flush(theme)
+                .bg(theme.surface_card)
+                .w(px(272.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(36.0))
+                        .px(px(10.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_muted)
+                        .child(t!("shell_chrome.titlebar.background_empty")),
+                )
+                .into_any_element();
+        }
+
+        card = card.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .px(px(10.0))
+                .pb(px(10.0))
+                .children(statuses.iter().map(|status| {
+                    self.render_background_row(status, engine.clone(), now, theme, cx)
+                })),
+        );
+        card.into_any_element()
+    }
+
+    /// One raised two-line block: the command over `pid · time`, stop or
+    /// remove at the right end.
+    fn render_background_row(
+        &mut self,
+        status: &BackgroundProcessStatus,
+        engine: Option<crate::state::EngineHandle>,
+        now: u64,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = status.process_id.clone();
+        // The command tooltip needs its own copy; the action button moves
+        // `id` into its spawn.
+        let tooltip_id = id.clone();
+        let dot = if status.running {
+            theme.success
+        } else if status.exit_code.unwrap_or(-1) == 0 {
+            theme.text_faint
+        } else {
+            theme.danger
+        };
+        let time = if status.running {
+            elapsed_text(status.started_at, now)
+        } else {
+            SharedString::from(t!(
+                "shell_chrome.titlebar.background_exited",
+                code = status.exit_code.unwrap_or(-1)
+            ))
+        };
+        let mut block = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .rounded(px(popover::CARD_RADIUS))
+            .bg(theme.surface_raised)
+            .hover(move |s| s.bg(theme.surface_raised_hover));
+        // Stop (running) or remove (exited) at the right end.
+        if let Some(engine) = engine {
+            let is_running = status.running;
+            let act = div()
+                .id(SharedString::from(format!("bg-act-{id}")))
+                .size(px(24.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(Theme::CONTROL_RADIUS))
+                .cursor_pointer()
+                .tooltip(move |_, cx| {
+                    let key = if is_running {
+                        "shell_chrome.titlebar.background_stop"
+                    } else {
+                        "shell_chrome.titlebar.background_clear"
+                    };
+                    cx.new(|_| crate::popover::TextTooltip(t!(key).into()))
+                        .into()
+                })
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    let method = if is_running {
+                        methods::KILL_BACKGROUND_PROCESS
+                    } else {
+                        methods::REMOVE_BACKGROUND_PROCESS
+                    };
+                    let engine = engine.clone();
+                    let process_id = id.clone();
+                    cx.spawn(async move |_, _| {
+                        if let Err(error) = engine
+                            .client()
+                            .call(method, serde_json::json!({ "processId": process_id }))
+                            .await
+                        {
+                            tracing::warn!(%error, "background process action failed");
+                        }
+                    })
+                    .detach();
+                }))
+                .child(
+                    icons::icon(if is_running {
+                        icons::STOP
+                    } else {
+                        icons::CLOSE
+                    })
+                    .size_3()
+                    .text_color(theme.text_muted),
+                );
+            block = block.child(act);
+        }
+        block
+            .child(div().size(px(5.0)).flex_none().rounded_full().bg(dot))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("bg-cmd-{}", tooltip_id)))
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .line_height(px(15.0))
+                            .text_color(theme.text)
+                            .font_family(theme.font_mono.clone())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .tooltip({
+                                let command = status.command.clone();
+                                move |_, cx| {
+                                    cx.new(|_| crate::popover::TextTooltip(command.clone().into()))
+                                        .into()
+                                }
+                            })
+                            .child(status.command.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(theme.text_faint)
+                            .child(status.pid.map(|pid| pid.to_string()).unwrap_or_default())
+                            .child(time),
+                    ),
+            )
             .into_any_element()
     }
 }

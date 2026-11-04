@@ -348,6 +348,10 @@ pub struct Shell {
     new_chat_mark: usize,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
+    /// The titlebar's background-process popover (the icon next to the
+    /// terminal toggle). The process LIST stays a watch frame away —
+    /// [`AppState::background_processes`].
+    background_menu: popover::Popup<()>,
     /// Embedded terminal host for right-pane Terminal surfaces — a SEPARATE
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
@@ -800,6 +804,7 @@ impl Shell {
             jump_hints: false,
             new_chat_mark: random_mark_index(),
             terminal: None,
+            background_menu: popover::Popup::default(),
             right_terminal: None,
             right_plus: popover::Popup::default(),
             external_app_menu: popover::Popup::default(),

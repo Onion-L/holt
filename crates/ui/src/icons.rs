@@ -279,6 +279,7 @@ icon_assets![
     // Hand-drawn holt glyphs (terminal-panel.tsx / composer-actions.tsx /
     // menu-check.tsx / logo.tsx).
     (TERMINAL, "terminal"),
+    (BACKGROUND_TASKS, "background-tasks"),
     (PLUS, "plus"),
     // plus without its upright, and a ticked crosshair — the
     // workflow canvas's zoom-out and reset-view controls (the set has neither).

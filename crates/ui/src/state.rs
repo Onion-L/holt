@@ -235,6 +235,9 @@ pub struct AppState {
     pub sessions: Vec<Session>,
     /// Routines with their next fire (WatchRoutines), in creation order.
     pub routines: Vec<holt_proto::RoutineView>,
+    /// The engine's background processes (WatchBackgroundProcesses), all
+    /// chats — the titlebar's popover filters per chat.
+    pub background_processes: Vec<holt_rpc::background::BackgroundProcessStatus>,
     /// The project the new-session canvas mints into. Healed by
     /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
     /// its project.
@@ -342,6 +345,7 @@ impl AppState {
             update: holt_proto::UpdateStatus::default(),
             spaces: Vec::new(),
             routines: Vec::new(),
+            background_processes: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
             selected_space: None,
@@ -475,6 +479,25 @@ impl AppState {
 
     pub fn apply_routines(&mut self, routines: Vec<holt_proto::RoutineView>) {
         self.routines = routines;
+    }
+
+    pub fn apply_background_processes(
+        &mut self,
+        processes: Vec<holt_rpc::background::BackgroundProcessStatus>,
+    ) {
+        self.background_processes = processes;
+    }
+
+    /// Running background processes of the selected chat — the titlebar
+    /// badge's count.
+    pub fn running_background_count(&self) -> usize {
+        let Some(chat) = self.selected_chat.as_deref() else {
+            return 0;
+        };
+        self.background_processes
+            .iter()
+            .filter(|status| status.chat_id == chat && status.running)
+            .count()
     }
 
     pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
@@ -1230,6 +1253,12 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_ROUTINES,
                 AppState::apply_routines,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_BACKGROUND_PROCESSES,
+                AppState::apply_background_processes,
             ),
             // Auth frames parse tolerantly — engine and proto tags differ today.
             spawn_watch(

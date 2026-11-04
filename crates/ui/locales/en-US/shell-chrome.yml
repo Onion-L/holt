@@ -76,6 +76,20 @@ shell_chrome:
       en-US: Chat manager
     update_pill:
       en-US: Update
+    tooltip_background:
+      en-US: background processes
+    background_stop:
+      en-US: Stop process
+    background_clear:
+      en-US: Remove from list
+    background_count:
+      en-US: "%{count} running"
+    background_empty:
+      en-US: No background processes
+    background_tail_empty:
+      en-US: No output yet
+    background_exited:
+      en-US: "exit %{code}"
     tooltip_toggle_terminal:
       en-US: Toggle terminal
     tooltip_expand_panel:

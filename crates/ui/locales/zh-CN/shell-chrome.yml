@@ -76,6 +76,20 @@ shell_chrome:
       zh-CN: 会话管理
     update_pill:
       zh-CN: 更新
+    tooltip_background:
+      zh-CN: 后台进程
+    background_stop:
+      zh-CN: 停止进程
+    background_clear:
+      zh-CN: 移除
+    background_count:
+      zh-CN: "%{count} 个运行中"
+    background_empty:
+      zh-CN: 没有后台进程
+    background_tail_empty:
+      zh-CN: 暂无输出
+    background_exited:
+      zh-CN: "退出码 %{code}"
     tooltip_toggle_terminal:
       zh-CN: 切换终端
     tooltip_expand_panel:
