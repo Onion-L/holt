@@ -1,7 +1,7 @@
 //! PTY ownership and bounded replay, independent of agent tool execution.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     io::{Read, Write},
     path::Path,
     sync::{
@@ -16,8 +16,17 @@ use holt_rpc::{RpcError, RpcReply, terminals::TerminalStatus};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::watch;
 
-const REPLAY_BYTES: usize = 1024 * 1024;
+use crate::output_log::OutputLog;
+
 const MAX_WRITE_BYTES: usize = 256 * 1024;
+
+fn event_seq(event: &TerminalEvent) -> u64 {
+    match event {
+        TerminalEvent::Data { seq, .. }
+        | TerminalEvent::Exit { seq, .. }
+        | TerminalEvent::Gap { seq } => *seq,
+    }
+}
 
 #[derive(Default)]
 struct Registry {
@@ -37,54 +46,9 @@ struct Session {
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     jobs_cleaned: AtomicBool,
-    replay: Mutex<Replay>,
+    replay: Mutex<OutputLog>,
+    exited: Mutex<bool>,
     changed: watch::Sender<u64>,
-}
-
-#[derive(Default)]
-struct Replay {
-    seq: u64,
-    bytes: usize,
-    events: VecDeque<(TerminalEvent, usize)>,
-    exited: bool,
-}
-
-fn event_seq(event: &TerminalEvent) -> u64 {
-    match event {
-        TerminalEvent::Data { seq, .. }
-        | TerminalEvent::Exit { seq, .. }
-        | TerminalEvent::Gap { seq } => *seq,
-    }
-}
-
-impl Replay {
-    fn push(&mut self, data: &[u8]) {
-        self.seq += 1;
-        self.bytes += data.len();
-        self.events.push_back((
-            TerminalEvent::Data {
-                seq: self.seq,
-                data: STANDARD.encode(data),
-            },
-            data.len(),
-        ));
-        while self.bytes > REPLAY_BYTES || self.events.len() > 4096 {
-            if let Some((_, len)) = self.events.pop_front() {
-                self.bytes -= len;
-            }
-        }
-    }
-
-    fn next(&self, after: u64) -> Option<TerminalEvent> {
-        let first = self.events.front().map(|(event, _)| event_seq(event))?;
-        if after.saturating_add(1) < first {
-            return Some(TerminalEvent::Gap { seq: first - 1 });
-        }
-        self.events
-            .iter()
-            .find(|(e, _)| event_seq(e) > after)
-            .map(|(e, _)| e.clone())
-    }
 }
 
 fn size(cols: u16, rows: u16) -> Result<PtySize, RpcError> {
@@ -158,7 +122,8 @@ impl Terminals {
             writer: Mutex::new(writer),
             child: Mutex::new(child),
             jobs_cleaned: AtomicBool::new(false),
-            replay: Mutex::new(Replay::default()),
+            replay: Mutex::new(OutputLog::default()),
+            exited: Mutex::new(false),
             changed,
         });
         let id = uuid::Uuid::new_v4().to_string();
@@ -177,11 +142,11 @@ impl Terminals {
                             };
                             let mut replay =
                                 session.replay.lock().unwrap_or_else(|e| e.into_inner());
-                            if replay.exited {
+                            if *session.exited.lock().unwrap_or_else(|e| e.into_inner()) {
                                 return;
                             }
                             replay.push(&buffer[..len]);
-                            session.changed.send_replace(replay.seq);
+                            session.changed.send_replace(replay.seq());
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
@@ -269,7 +234,10 @@ impl Terminals {
                     receiver.borrow_and_update();
                     let (next, exited) = {
                         let replay = session.replay.lock().unwrap_or_else(|e| e.into_inner());
-                        (replay.next(after), replay.exited)
+                        (
+                            replay.next(after),
+                            *session.exited.lock().unwrap_or_else(|e| e.into_inner()),
+                        )
                     };
                     if let Some(event) = next {
                         after = event_seq(&event);
@@ -296,12 +264,7 @@ impl Terminals {
             .decode(encoded)
             .map_err(|e| RpcError::BadParams(e.to_string()))?;
         let session = self.session(id)?;
-        if session
-            .replay
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .exited
-        {
+        if *session.exited.lock().unwrap_or_else(|e| e.into_inner()) {
             return Err(failed("terminal has exited"));
         }
         session
@@ -330,11 +293,7 @@ impl Terminals {
             .map(|(id, session)| TerminalStatus {
                 terminal_id: id.clone(),
                 chat_id: session.chat_id.clone(),
-                running: !session
-                    .replay
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .exited,
+                running: !*session.exited.lock().unwrap_or_else(|e| e.into_inner()),
                 has_running_jobs: session.has_running_jobs(),
             })
             .collect()
@@ -406,21 +365,17 @@ impl Session {
     }
 
     fn finish(&self, code: i32) {
-        let mut replay = self.replay.lock().unwrap_or_else(|e| e.into_inner());
-        if replay.exited {
+        let mut exited = self.exited.lock().unwrap_or_else(|e| e.into_inner());
+        if *exited {
             return;
         }
-        replay.exited = true;
-        replay.seq += 1;
-        let seq = replay.seq;
-        replay.events.push_back((
-            TerminalEvent::Exit {
-                seq,
-                exit_code: code,
-                signal: None,
-            },
-            0,
-        ));
+        *exited = true;
+        drop(exited);
+        let seq = self
+            .replay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_exit(code);
         self.changed.send_replace(seq);
     }
 
@@ -684,21 +639,6 @@ mod tests {
             !dir.path().join("survived").exists(),
             "background job survived shell exit"
         );
-    }
-
-    #[test]
-    fn replay_eviction_is_explicit_and_storage_is_bounded() {
-        let mut replay = Replay::default();
-        for _ in 0..200 {
-            replay.push(&[b'x'; 16384]);
-        }
-        assert!(replay.bytes <= REPLAY_BYTES);
-        let gap = replay.next(0).unwrap();
-        assert!(matches!(gap, TerminalEvent::Gap { .. }));
-        assert!(matches!(
-            replay.next(event_seq(&gap)),
-            Some(TerminalEvent::Data { .. })
-        ));
     }
 
     #[test]
