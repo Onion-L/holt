@@ -2,7 +2,7 @@
 
 User-operated PTYs the app owns: each terminal belongs to a chat (or, chat-less, to the terminal panel itself), lives only as long as the app does, and never touches the agent. This page covers session lifecycle, bounded replay, and the close-confirmation path.
 
-Not here: the agent's `bash` tool (`engine::tools` — a separate execution path, separately gated by the permission modes) and the window/dock chrome the terminal panel sits in (`ui::shell`).
+Not here: the agent's `bash` tool (`engine::tools` — a separate execution path, separately gated by the permission modes), the agent's background processes (`engine::background` — pipes, not PTYs; see [background-processes](background-processes.md)), and the window/dock chrome the terminal panel sits in (`ui::shell`).
 
 ## Responsibilities and sources of truth
 

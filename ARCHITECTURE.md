@@ -51,6 +51,7 @@ Method names live in `rpc::methods` (code is the contract). Each family's behavi
 | Workspace files and images | `ListWorkspaceEntries`, `ReadWorkspaceFile`, `SaveWorkspaceFile`, `StageImage`, `SearchFiles` | [workspace-files](docs/subsystems/workspace-files.md) |
 | Git and Turn change sets | `ListRefs`, `GetCheckoutDiff`, `GetTurnChangeSet`, `RestoreTurnChanges` | [workspace-git](docs/subsystems/workspace-git.md) |
 | Terminals | `OpenTerminal`, `WriteTerminal`, `SubscribeTerminal`, `CloseTerminal` | [terminals](docs/subsystems/terminals.md) |
+| Background processes | `ListBackgroundProcesses`, `WatchBackgroundProcesses`, `SubscribeBackgroundProcess`, `KillBackgroundProcess` | [background-processes](docs/subsystems/background-processes.md) |
 | Transcript and subagent blobs | `WatchDocMessages`, `FetchToolBlob` | [persistence](docs/subsystems/persistence.md), [subagents](docs/subsystems/subagents.md) |
 | Workflow runs | `StopWorkflow` | [workflows](docs/subsystems/workflows.md) |
 | Usage | `WatchChatUsage`, `UsageStats` | [persistence](docs/subsystems/persistence.md) |

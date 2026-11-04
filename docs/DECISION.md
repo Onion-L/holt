@@ -32,6 +32,7 @@ in the same commit.
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [agent-schedules-routines-through-a-tool](#agent-schedules-routines-through-a-tool) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
 | [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
+| [background-processes](subsystems/background-processes.md) | [background-processes-are-chat-owned](#background-processes-are-chat-owned) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
@@ -804,3 +805,35 @@ and a pointer to `current_time`). Rejected: a day-granularity timestamp
 in the description (one full-prefix bust per chat per day, and the
 Turn-frozen date still goes stale across midnight) and putting "now" in
 the system prompt (same prefix position, same bust, for every chat).
+
+## background-processes-are-chat-owned
+
+Agent long-running commands run as tracked process groups in an
+engine-owned registry keyed by chat, exposed through three dedicated
+tools (`spawn_background`, `process_status`, `kill_background_process`),
+detached from Turn cancellation, and ended only by the user, the agent,
+chat deletion, or app exit. The mainstream survey (Claude Code, Codex
+CLI, opencode, Gemini CLI, ZCode, Cursor, Amp, Droid — 82 verified
+facts) shaped the semantics: detached-from-turn is the majority
+(Codex's interrupt-kills-background is the recorded counterexample),
+no caps/timeout/reaping is the majority (Codex's 64 cap the lone
+exception), group-kill with a TERM→KILL grace inside 200 ms–3 s is the
+convergent shape, and one-shot reads over polling is where the leaders
+landed (Claude Code deleted its polling tool; ZCode deprecated theirs).
+
+Rejected: a `run_in_background` parameter on the `bash` tool (the
+majority shape — but `bash.rs` is a pi-core port, and the parameter
+would drift it upstream while giving spawn the wrong return shape);
+reusing the PTY terminal subsystem (conflates user terminals with agent
+processes, and the agent reading output back would need new plumbing
+anyway); passive discovery of surviving orphans (no spawn-time intent,
+no output — the orphan's pipes are already gone); auto-converting a
+timed-out foreground command to background (Claude Code/Cursor do this;
+it rewrites `bash` semantics rather than teaching the model the explicit
+tool); stdin interaction (interactive processes belong in the terminal
+panel — a background process is pipes by construction).
+
+Exit notices ride the next main-chat Turn's system prompt, and only
+when the queue is non-empty, for the prefix-cache reason
+`model-facing-time-is-pulled-not-embedded` records: an uneventful Turn
+must not change one byte ahead of the messages.
