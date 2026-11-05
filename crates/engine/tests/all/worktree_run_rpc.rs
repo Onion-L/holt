@@ -295,7 +295,7 @@ async fn isolation_persists_across_queued_and_specless_sends() {
 
     let row = chat_row(&engine, "chat-1").await;
     assert_eq!(row.cwd.as_deref(), Some(wt.display().to_string().as_str()));
-    assert_eq!(row.branch.as_deref(), Some("holt/chat-1"));
+    assert_eq!(row.branch.as_deref(), Some("holt/humble-falcon-9111b1c6"));
     assert_eq!(row.space_id.as_deref(), Some("wt-chat-1"));
     let space = space_row(&engine, "wt-chat-1").await;
     assert_eq!(space.path, wt.display().to_string());
@@ -390,14 +390,15 @@ async fn failed_preparation_fails_loudly_and_stays_isolated() {
 }
 
 #[tokio::test]
-async fn existing_branch_without_worktree_completes_materialization() {
+async fn legacy_branch_without_worktree_completes_materialization() {
     let fixture = Fixture::new();
     let repo_dir = TempDir::new().unwrap();
     setup_repo(repo_dir.path());
     let repo_path = repo_dir.path().display().to_string();
 
-    // Half-created state: the creation branch exists, the worktree does not.
-    // Its tip is feature, NOT the base the spec names.
+    // Half-created state from before readable branch names: the legacy
+    // creation branch exists, the worktree does not. Its tip is feature, NOT
+    // the base the spec names.
     let repo = Repository::open(repo_dir.path()).unwrap();
     let feature_tip = repo.refname_to_id("refs/heads/feature").unwrap();
     {
@@ -564,12 +565,13 @@ async fn worktree_reuse_ignores_the_creation_branch() {
 
     // The user switches the worktree to feature and deletes the creation
     // branch — a valid registered worktree must still be reused as-is.
+    let creation_branch = chat_row(&engine, "chat-1").await.branch.unwrap();
     let wt = wt_path(&fixture, "chat-1");
     let wt_repo = Repository::open(&wt).unwrap();
     wt_repo.set_head("refs/heads/feature").unwrap();
     let main_repo = Repository::open(repo_dir.path()).unwrap();
     main_repo
-        .find_branch("holt/chat-1", git2::BranchType::Local)
+        .find_branch(&creation_branch, git2::BranchType::Local)
         .unwrap()
         .delete()
         .unwrap();

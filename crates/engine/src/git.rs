@@ -25,6 +25,28 @@ use sha2::{Digest, Sha256};
 pub(crate) const MAX_PATCH_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) const MAX_FILE_SIDE_BYTES: usize = 1024 * 1024;
 
+const SESSION_BRANCH_ADJECTIVES: [&str; 32] = [
+    "amber", "brave", "bright", "calm", "clever", "crisp", "eager", "gentle", "golden", "happy",
+    "humble", "keen", "kind", "lively", "lucky", "merry", "nimble", "noble", "polite", "proud",
+    "quick", "quiet", "shiny", "silent", "smart", "steady", "sunny", "swift", "tidy", "warm",
+    "wise", "witty",
+];
+const SESSION_BRANCH_NOUNS: [&str; 32] = [
+    "badger", "bear", "bird", "bison", "cat", "crane", "crow", "deer", "dolphin", "dove", "eagle",
+    "falcon", "finch", "fox", "gecko", "hare", "hawk", "heron", "koala", "lemur", "lion", "lynx",
+    "otter", "owl", "panda", "puma", "raven", "robin", "seal", "sparrow", "tiger", "wolf",
+];
+
+/// A readable branch name derived from the chat id, stable across admissions
+/// and restarts without another persisted field. The digest suffix keeps
+/// identical word pairs distinct.
+fn session_branch_name(chat_id: &str) -> String {
+    let digest = Sha256::digest(chat_id.as_bytes());
+    let adjective = SESSION_BRANCH_ADJECTIVES[digest[0] as usize % SESSION_BRANCH_ADJECTIVES.len()];
+    let noun = SESSION_BRANCH_NOUNS[digest[1] as usize % SESSION_BRANCH_NOUNS.len()];
+    format!("holt/{adjective}-{noun}-{}", hex(&digest[2..6]))
+}
+
 /// Serves the git surface for space folders. One per engine; cheap to clone
 /// (the per-checkout locks are shared).
 #[derive(Clone, Default)]
@@ -591,8 +613,8 @@ impl Git {
     }
 
     /// Materialize (or reuse) a chat's session worktree (ADR-session-worktrees-are-chat-owned-isolation): a linked
-    /// worktree of `repo_path` at `<worktrees_root>/<chat_id>` on the
-    /// `holt/<chat_id>` branch. The base ref applies only when the branch must
+    /// worktree of `repo_path` at `<worktrees_root>/<chat_id>` on a readable
+    /// `holt/<adjective>-<noun>-<short_id>` branch. The base ref applies only when the branch must
     /// be created; an existing, correctly-registered worktree is reused as-is —
     /// dirty files, extra commits, and a user's branch switch are never
     /// undone, and the creation branch may be long gone. Registration damage
@@ -618,7 +640,6 @@ impl Git {
             )
         })?;
         self.with_repo(repo_path, move |repo| {
-            let branch_name = format!("holt/{chat_id}");
             let common = normalize(repo.commondir());
             // A directory already at the target path must be this chat's own
             // registered worktree of THIS repo — anything else is a collision
@@ -660,19 +681,29 @@ impl Git {
                 }
                 wt.prune(None).map_err(git_message)?;
             }
-            match repo.find_branch(&branch_name, git2::BranchType::Local) {
-                // The branch exists: reuse it — `base` never re-applies.
-                Ok(_) => {}
-                Err(_) => {
-                    let commit = repo
-                        .revparse_single(&base)
-                        .map_err(|error| format!("base ref {base} does not resolve: {error}"))?
-                        .peel_to_commit()
-                        .map_err(|error| format!("base ref {base} is not a commit: {error}"))?;
-                    repo.branch(&branch_name, &commit, false)
-                        .map_err(git_message)?;
-                }
-            }
+            let generated_branch = session_branch_name(&chat_id);
+            let legacy_branch = format!("holt/{chat_id}");
+            let branch_name = if repo
+                .find_branch(&generated_branch, git2::BranchType::Local)
+                .is_ok()
+            {
+                generated_branch
+            } else if repo
+                .find_branch(&legacy_branch, git2::BranchType::Local)
+                .is_ok()
+            {
+                // Preserve branches created before readable names were introduced.
+                legacy_branch
+            } else {
+                let commit = repo
+                    .revparse_single(&base)
+                    .map_err(|error| format!("base ref {base} does not resolve: {error}"))?
+                    .peel_to_commit()
+                    .map_err(|error| format!("base ref {base} is not a commit: {error}"))?;
+                repo.branch(&generated_branch, &commit, false)
+                    .map_err(git_message)?;
+                generated_branch
+            };
             let reference = repo
                 .find_reference(&format!("refs/heads/{branch_name}"))
                 .map_err(git_message)?;
@@ -2323,7 +2354,7 @@ fn history_page(
 mod tests {
     use super::{
         MAX_PATCH_BYTES, checkout_identity, classify_status, default_branch, diff_checksum,
-        filter_turn_patch, status_sides, truncate_patch, turn_start_content,
+        filter_turn_patch, session_branch_name, status_sides, truncate_patch, turn_start_content,
     };
     #[cfg(unix)]
     use super::{normalize_path, resolve_existing};
@@ -2334,6 +2365,15 @@ mod tests {
 
     fn names(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    // ---- session-worktree branch names ----
+
+    #[test]
+    fn session_branch_name_is_readable_and_stable() {
+        assert_eq!(session_branch_name("chat-1"), "holt/humble-falcon-9111b1c6");
+        assert_eq!(session_branch_name("chat-1"), session_branch_name("chat-1"));
+        assert_ne!(session_branch_name("chat-1"), session_branch_name("chat-2"));
     }
 
     // ---- truncate_patch ----
