@@ -2426,13 +2426,13 @@ fn merged_from_trailer(worktree: &str) -> String {
 /// relative to it. One pass under the checkout lock; a worktree that cannot
 /// be read reports as `missing` instead of failing the whole snapshot.
 fn integration_snapshot(
-    _repo: &Repository,
+    repo: &Repository,
     trunk_override: Option<&str>,
 ) -> Result<holt_proto::IntegrationSnapshot, String> {
     // The discovered repository may be a linked worktree; worktree listing
     // and refs are common-dir-backed, but the main checkout's path and HEAD
     // come from the main repository itself.
-    let main_repo = Repository::open(_repo.commondir()).map_err(git_message)?;
+    let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
     let names = local_branch_names(&main_repo)?;
     let trunk_name = match trunk_override {
         Some(name) => {
@@ -2553,8 +2553,9 @@ fn integration_main_checkout(
 }
 
 /// Fill one linked worktree's git facts from its own repository handle. A
-/// directory that opens but cannot be read counts as missing — the snapshot
-/// stays whole.
+/// directory that opens but cannot be read — a corrupt index, an unreadable
+/// object store — counts as missing too: the snapshot stays whole, one
+/// worktree's failure never fails the call.
 fn integration_fill_worktree(
     row: &mut holt_proto::IntegrationWorktree,
     path: &Path,
@@ -2565,47 +2566,65 @@ fn integration_fill_worktree(
         row.missing = true;
         return Ok(());
     };
-    if let Ok(head) = worktree_repo.head() {
-        if head.is_branch()
-            && let Ok(shorthand) = head.shorthand()
-            && !shorthand.is_empty()
-        {
-            row.branch = Some(shorthand.to_string());
-        }
-        if let Ok(head_commit) = head.peel_to_commit() {
-            let head_oid = head_commit.id();
-            row.head_sha = Some(head_oid.to_string());
-            row.fork_sha = worktree_repo
-                .merge_base(trunk_oid, head_oid)
-                .ok()
-                .map(|oid| oid.to_string());
-            if let Ok((ahead, behind)) = worktree_repo.graph_ahead_behind(head_oid, trunk_oid) {
-                row.ahead = ahead;
-                row.behind = behind;
+    let mut read = || -> Result<(), String> {
+        if let Ok(head) = worktree_repo.head() {
+            if head.is_branch()
+                && let Ok(shorthand) = head.shorthand()
+                && !shorthand.is_empty()
+            {
+                row.branch = Some(shorthand.to_string());
             }
-            let (commits, truncated) = walk_commits(
-                &worktree_repo,
-                head_oid,
-                Some(trunk_oid),
-                INTEGRATION_COMMIT_CAP,
-                refs,
-            )?;
-            row.commits = commits;
-            row.truncated = truncated;
-            // Merged means Holt's own marker ref still points at this head —
-            // ancestry cannot say it after a squash.
-            row.merged = worktree_repo
-                .find_reference(&format!("refs/holt/merged/{}", row.name))
-                .and_then(|reference| reference.peel_to_commit())
-                .is_ok_and(|commit| commit.id() == head_oid);
+            if let Ok(head_commit) = head.peel_to_commit() {
+                let head_oid = head_commit.id();
+                row.head_sha = Some(head_oid.to_string());
+                row.fork_sha = worktree_repo
+                    .merge_base(trunk_oid, head_oid)
+                    .ok()
+                    .map(|oid| oid.to_string());
+                if let Ok((ahead, behind)) = worktree_repo.graph_ahead_behind(head_oid, trunk_oid) {
+                    row.ahead = ahead;
+                    row.behind = behind;
+                }
+                let (commits, truncated) = walk_commits(
+                    &worktree_repo,
+                    head_oid,
+                    Some(trunk_oid),
+                    INTEGRATION_COMMIT_CAP,
+                    refs,
+                )?;
+                row.commits = commits;
+                row.truncated = truncated;
+                // Merged means Holt's own marker ref still points at this
+                // head — ancestry cannot say it after a squash.
+                row.merged = worktree_repo
+                    .find_reference(&format!("refs/holt/merged/{}", row.name))
+                    .and_then(|reference| reference.peel_to_commit())
+                    .is_ok_and(|commit| commit.id() == head_oid);
+            }
         }
+        let mut options = git2::StatusOptions::new();
+        options.include_untracked(true);
+        let statuses = worktree_repo
+            .statuses(Some(&mut options))
+            .map_err(git_message)?;
+        row.dirty = !statuses.is_empty();
+        Ok(())
+    };
+    if read().is_err() {
+        // Unreadable: report missing with the identity fields intact and
+        // nothing half-filled.
+        row.branch = None;
+        row.head_sha = None;
+        row.fork_sha = None;
+        row.ahead = 0;
+        row.behind = 0;
+        row.dirty = false;
+        row.merged = false;
+        row.merge_sha = None;
+        row.commits.clear();
+        row.truncated = false;
+        row.missing = true;
     }
-    let mut options = git2::StatusOptions::new();
-    options.include_untracked(true);
-    let statuses = worktree_repo
-        .statuses(Some(&mut options))
-        .map_err(git_message)?;
-    row.dirty = !statuses.is_empty();
     Ok(())
 }
 

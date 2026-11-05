@@ -586,3 +586,59 @@ async fn trunk_commit_cap_marks_truncation() {
     assert!(snapshot.trunk_truncated);
     assert_eq!(snapshot.trunk_commits[0].sha, tip.to_string());
 }
+
+// Unix-only: an unreadable index is a chmod away; Windows hosts would need
+// an ACL dance the fixture harness cannot do portably.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_worktree_reports_missing_without_failing_the_call() {
+    let fixture = Fixture::new();
+    let wt_dir = TempDir::new().unwrap();
+    let repo = fixture.repo();
+    let main_tip = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    let healthy_path = add_worktree(&repo, &wt_dir, "wt-ok", "branch-ok", "main");
+    let broken_path = add_worktree(&repo, &wt_dir, "wt-broken", "branch-broken", "main");
+    {
+        let broken_repo = Repository::open(&broken_path).unwrap();
+        common::commit_on(
+            &broken_repo,
+            "refs/heads/wt-broken",
+            Some(main_tip),
+            &[("README.md", "hello\n"), ("broken.txt", "work\n")],
+            "work in the broken worktree",
+        );
+    }
+    drop(repo);
+    // Make the broken worktree's index unreadable: opening the worktree
+    // succeeds, the status pass does not.
+    let index = fixture
+        .repo_dir
+        .path()
+        .join(".git/worktrees/wt-broken/index");
+    let mut permissions = std::fs::metadata(&index).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o000);
+    std::fs::set_permissions(&index, permissions).unwrap();
+
+    let engine = fixture.engine();
+    let snapshot = list_integration(&engine, &fixture.repo_path(), None).await;
+
+    // Restore before any assertion can strand the mode for TempDir cleanup.
+    let mut permissions = std::fs::metadata(&index).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
+    std::fs::set_permissions(&index, permissions).unwrap();
+
+    let snapshot = snapshot.expect("one broken worktree must not fail the snapshot");
+    let broken = worktree(&snapshot, "wt-broken");
+    assert!(broken.missing, "the unreadable worktree reports missing");
+    assert!(broken.head_sha.is_none(), "nothing half-filled");
+    assert!(broken.commits.is_empty());
+    let healthy = worktree(&snapshot, "wt-ok");
+    assert!(!healthy.missing);
+    assert!(healthy.head_sha.is_some(), "the sibling worktree is whole");
+    let _ = healthy_path;
+}
