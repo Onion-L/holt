@@ -353,6 +353,12 @@ pub mod methods {
     pub const LIST_BRANCHES: &str = "ListBranches";
     pub const LIST_REFS: &str = "ListRefs";
     pub const LIST_GIT_HISTORY: &str = "ListGitHistory";
+    /// The integration view's snapshot: params `{repoPath, trunk?}` →
+    /// `holt_proto::IntegrationSnapshot`. `trunk` defaults to the repo's
+    /// default branch; a trunk that does not resolve fails. Read-only —
+    /// computed in one pass under the checkout lock, missing worktree
+    /// directories report as `missing` instead of failing the call.
+    pub const LIST_INTEGRATION: &str = "ListIntegration";
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";

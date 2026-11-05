@@ -284,6 +284,9 @@ pub enum Route {
     ChatManager,
     /// The Scheduled page (glossary: Routine).
     Scheduled,
+    /// The integration page (glossary: integration view) — a repo's trunk
+    /// and worktrees.
+    Integration,
 }
 
 /// The chat-row Rename dialog.
@@ -462,6 +465,8 @@ pub struct Shell {
     chat_manager_sub: Option<Subscription>,
     scheduled_page: Option<Entity<ScheduledPage>>,
     scheduled_sub: Option<Subscription>,
+    integration_page: Option<Entity<crate::integration::IntegrationPage>>,
+    integration_sub: Option<Subscription>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -759,6 +764,8 @@ impl Shell {
             // `chats` boots straight into the Chat manager page.
             Some("chats") => Route::ChatManager,
             Some("scheduled") => Route::Scheduled,
+            // `integration` boots straight into the integration page.
+            Some("integration") => Route::Integration,
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
@@ -785,6 +792,7 @@ impl Shell {
             Route::Settings(section) => NavEntry::Settings(section),
             Route::ChatManager => NavEntry::ChatManager,
             Route::Scheduled => NavEntry::Scheduled,
+            Route::Integration => NavEntry::Integration,
         });
         Self {
             state,
@@ -856,6 +864,8 @@ impl Shell {
             chat_manager_page: None,
             chat_manager_sub: None,
             scheduled_page: None,
+            integration_page: None,
+            integration_sub: None,
             scheduled_sub: None,
             provider_error: None,
             provider_error_timer: None,
@@ -1292,6 +1302,70 @@ impl Shell {
         ));
         self.scheduled_page = Some(page.clone());
         page
+    }
+
+    /// Show the integration page (navigation rail / back-forward).
+    pub(super) fn open_integration(&mut self, cx: &mut Context<Self>) {
+        self.route = Route::Integration;
+        self.nav.push(NavEntry::Integration);
+        self.reveal_integration(cx);
+        self.close_chat_menu(cx);
+        self.close_menu_bar(cx);
+        cx.notify();
+    }
+
+    /// Re-land keyboard focus on a cached integration page.
+    fn reveal_integration(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &self.integration_page {
+            page.update(cx, |page, cx| page.reveal(cx));
+        }
+    }
+
+    /// The integration page, created on first use. Opening a worktree's
+    /// chat lands on the Chat route; the terminal request routes through
+    /// the chat's own terminal (the worktree's root).
+    fn integration_page(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::integration::IntegrationPage> {
+        if let Some(page) = &self.integration_page {
+            return page.clone();
+        }
+        let state = self.state.clone();
+        let page = cx.new(|cx| crate::integration::IntegrationPage::new(state, cx));
+        self.integration_sub = Some(cx.subscribe(
+            &page,
+            |this: &mut Shell, _, event: &crate::integration::IntegrationEvent, cx| match event {
+                crate::integration::IntegrationEvent::OpenChat(chat_id) => {
+                    this.open_chat(chat_id.clone(), cx);
+                }
+                crate::integration::IntegrationEvent::OpenTerminal { chat_id, .. } => {
+                    this.open_worktree_terminal(chat_id.clone(), cx);
+                }
+            },
+        ));
+        self.integration_page = Some(page.clone());
+        page
+    }
+
+    /// The integration page's “open in terminal”: the worktree's chat owns
+    /// the terminal, and the chat's working directory IS the worktree — open
+    /// the chat, then its terminal drawer. Focus lands through the panel's
+    /// own `track_focus` on the next paint (no window handle here).
+    pub(super) fn open_worktree_terminal(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.open_chat(chat_id.clone(), cx);
+        let key = self.panel_key(cx);
+        if !self.panels.get(&key).terminal_open {
+            let from = self.terminal_target(cx);
+            let open = self.panels.toggle_terminal(&key);
+            self.terminal_tween = Some(WidthTween::new(from, self.terminal_target(cx)));
+            let panel = self.terminal_panel(cx);
+            panel.update(cx, |panel, cx| {
+                panel.set_resize_suspended(false);
+                panel.set_open(open, cx);
+            });
+        }
+        cx.notify();
     }
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
@@ -2035,6 +2109,7 @@ impl Shell {
             Route::Settings(section) => Some(self.settings_outlet(section, cx)),
             Route::ChatManager => Some(self.chat_manager_page(cx).into_any_element()),
             Route::Scheduled => Some(self.scheduled_page(cx).into_any_element()),
+            Route::Integration => Some(self.integration_page(cx).into_any_element()),
             Route::Chat => None,
         };
         if let Some(outlet) = page_outlet {
@@ -2703,7 +2778,10 @@ impl Render for Shell {
                     // reads None (the render hook below re-lands focus when the
                     // route returns to Chat; a lingering unmounted handle would
                     // otherwise dead-end keyboard dispatch for good).
-                    Route::Settings(_) | Route::ChatManager | Route::Scheduled => window.blur(),
+                    Route::Settings(_)
+                    | Route::ChatManager
+                    | Route::Scheduled
+                    | Route::Integration => window.blur(),
                 }
             }));
         }
@@ -3743,5 +3821,276 @@ mod tests {
             Some(NavEntry::Settings(SettingsSection::Providers))
         );
         assert_eq!(nav.back(), Some(chat("a")));
+    }
+
+    use super::{Route, Shell};
+    use crate::state::AppState;
+    use crate::theme::Theme;
+    use std::sync::{Arc, Mutex};
+
+    /// A minimal engine answering the integration page's reads. Everything
+    /// else (the watch surface) reports UnknownMethod, which the client
+    /// treats as absent.
+    struct IntegrationEngine {
+        repo_path: String,
+        trunk: String,
+        worktrees: serde_json::Value,
+    }
+
+    impl IntegrationEngine {
+        fn snapshot(&self) -> serde_json::Value {
+            let commits = |shas: &[(&str, i64)]| {
+                shas.iter()
+                    .map(|(sha, minutes)| {
+                        serde_json::json!({
+                            "sha": sha,
+                            "parentShas": [],
+                            "subject": format!("subject {sha}"),
+                            "authorName": "a",
+                            "authorEmail": "e",
+                            "authoredAt": format!("2026-11-05T{:02}:00:00Z", 10 + minutes),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            serde_json::json!({
+                "repoPath": self.repo_path,
+                "trunk": {"name": self.trunk, "headSha": "c2"},
+                "trunkCommits": commits(&[("c2", 1), ("c1", 0)]),
+                "trunkTruncated": false,
+                "mainCheckout": {"path": self.repo_path, "branch": self.trunk, "dirty": false},
+                "worktrees": self.worktrees,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl holt_rpc::RpcService for IntegrationEngine {
+        async fn handle(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+            match method {
+                holt_rpc::methods::LIST_INTEGRATION => {
+                    Ok(holt_rpc::RpcReply::value(&self.snapshot()).unwrap())
+                }
+                holt_rpc::methods::LIST_REFS => Ok(holt_rpc::RpcReply::value(&vec![
+                    holt_proto::RepoRef {
+                        name: "main".into(),
+                        current: true,
+                        worktree_path: None,
+                    },
+                    holt_proto::RepoRef {
+                        name: "feature".into(),
+                        current: false,
+                        worktree_path: None,
+                    },
+                ])
+                .unwrap()),
+                holt_rpc::methods::FETCH_ALL => {
+                    Ok(holt_rpc::RpcReply::value(&serde_json::json!({})).unwrap())
+                }
+                _ => {
+                    let _ = params;
+                    Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn the_page_loads_and_selects_a_worktree(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+
+        let worktrees = serde_json::json!([
+            {
+                "name": "chat-1",
+                "path": "/data/worktrees/chat-1",
+                "branch": "holt/eager-falcon-1",
+                "headSha": "w1",
+                "forkSha": "c1",
+                "ahead": 2,
+                "behind": 0,
+                "dirty": false,
+                "merged": false,
+                "missing": false,
+                "chatId": "chat-1",
+                "commits": [
+                    {
+                        "sha": "w1", "parentShas": [], "subject": "work one",
+                        "authorName": "a", "authorEmail": "e",
+                        "authoredAt": "2026-11-05T12:00:00Z",
+                    },
+                ],
+                "truncated": false,
+            },
+            {
+                "name": "manual",
+                "path": "/elsewhere/manual",
+                "branch": "manual-branch",
+                "headSha": "m1",
+                "forkSha": "c1",
+                "ahead": 1,
+                "behind": 1,
+                "dirty": false,
+                "merged": false,
+                "missing": false,
+                "commits": [],
+                "truncated": false,
+            },
+        ]);
+
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.spaces_synced = true;
+            state.spaces.push(holt_proto::Space {
+                id: "s1".into(),
+                device_id: "test-device".into(),
+                path: "/repo".into(),
+                name: None,
+                git_detected: true,
+                git_checked_at: None,
+                checkout_id: None,
+                created_at: chrono::Utc::now(),
+            });
+            state.chats.push(holt_proto::Chat {
+                id: "chat-1".into(),
+                device_id: "test-device".into(),
+                title: Some("Panel work".into()),
+                title_source: holt_proto::TitleSource::UserManual,
+                title_task_started: false,
+                archived: false,
+                pinned: false,
+                cwd: Some("/data/worktrees/chat-1".into()),
+                branch: Some("holt/eager-falcon-1".into()),
+                checkout_id: None,
+                source_context: None,
+                config: None,
+                last_message_preview: None,
+                last_message_at: None,
+                created_at: chrono::Utc::now(),
+                space_id: Some("wt-chat-1".into()),
+                last_seen_at: None,
+                room_gen: None,
+                compact_before_next_turn: false,
+                plan_mode: None,
+                worktree: None,
+                provider_mode: false,
+                routine_run: None,
+                goal: None,
+            });
+            state
+        });
+
+        let engine = Arc::new(IntegrationEngine {
+            repo_path: "/repo".into(),
+            trunk: "main".into(),
+            worktrees,
+        });
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let counting = CountingService {
+            inner: engine.clone(),
+            calls: calls.clone(),
+        };
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(Arc::new(counting))
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+
+        let state_for_view = state.clone();
+        let (shell, visual) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state_for_view,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        visual.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.open_integration(cx));
+        });
+        // The route renders (creating the page); the page's first render
+        // picks the repo from the seeded spaces and fetches.
+
+        // Drive the in-memory transport and the gpui executor until the
+        // snapshot lands.
+        for _ in 0..8 {
+            runtime.block_on(async {
+                tokio::task::yield_now().await;
+            });
+            visual.run_until_parked();
+        }
+
+        let (has_snapshot, error, repo) = visual.update(|_, cx| {
+            let page = shell.update(cx, |shell, cx| shell.integration_page(cx));
+            page.read_with(cx, |page, _| {
+                (
+                    page.snapshot.is_some(),
+                    page.error.clone(),
+                    page.repo_path.clone(),
+                )
+            })
+        });
+        assert!(
+            has_snapshot,
+            "snapshot missing; error={error:?} repo={repo:?}"
+        );
+        assert!(visual.debug_bounds("integration-page").is_some());
+        assert!(visual.debug_bounds("integration-repo-trigger").is_some());
+        assert!(
+            visual
+                .debug_bounds("integration-worktree-row-manual")
+                .is_some(),
+            "manual worktrees are listed too"
+        );
+        // The snapshot auto-selected the first worktree.
+        assert!(
+            visual.debug_bounds("integration-detail-chat-1").is_some(),
+            "the first worktree's detail rendered"
+        );
+
+        // Clicking another row switches the detail.
+        let manual_row = visual
+            .debug_bounds("integration-worktree-row-manual")
+            .expect("manual row bounds");
+        visual.simulate_click(manual_row.center(), Default::default());
+        for _ in 0..4 {
+            runtime.block_on(async {
+                tokio::task::yield_now().await;
+            });
+            visual.run_until_parked();
+        }
+        assert!(visual.debug_bounds("integration-detail-manual").is_some());
+
+        // The page asked the engine for the snapshot and the ref list.
+        let made = calls.lock().unwrap().clone();
+        assert!(made.contains(&"ListIntegration".to_string()));
+        assert!(made.contains(&"ListRefs".to_string()));
+    }
+
+    struct CountingService {
+        inner: Arc<IntegrationEngine>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl holt_rpc::RpcService for CountingService {
+        async fn handle(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+            self.calls.lock().unwrap().push(method.to_string());
+            self.inner.handle(method, params).await
+        }
     }
 }

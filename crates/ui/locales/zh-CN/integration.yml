@@ -1,0 +1,109 @@
+_version: 2
+integration:
+  nav:
+    zh-CN: 工作树
+  title:
+    zh-CN: 工作树
+  merge_into:
+    zh-CN: 合并到
+  repo_none:
+    zh-CN: 没有仓库
+  loading:
+    zh-CN: 正在加载集成视图…
+  empty:
+    zh-CN: 还没有工作树。用「新建工作树」开一个 chat，或用 git 手动添加。
+  refresh:
+    zh-CN: 刷新
+  refreshing:
+    zh-CN: 正在拉取…
+  orphan:
+    zh-CN: 孤立
+  filter:
+    all:
+      zh-CN: 全部
+    active:
+      zh-CN: 进行中
+    ready:
+      zh-CN: 可合并
+    blocked:
+      zh-CN: 需处理
+    merged:
+      zh-CN: 已合并
+  legend:
+    worktrees:
+      zero:
+        zh-CN: 暂无工作树
+      one:
+        zh-CN: 1 个工作树
+      other:
+        zh-CN: "%{n} 个工作树"
+    unmerged:
+      zero:
+        zh-CN: 无未合并
+      one:
+        zh-CN: 1 个未合并
+      other:
+        zh-CN: "%{n} 个未合并"
+  status:
+    missing:
+      zh-CN: 目录丢失
+    working:
+      zh-CN: 工作中
+    merged:
+      zh-CN: 已合并
+    dirty:
+      zh-CN: 有未提交改动
+    no_changes:
+      zh-CN: 无改动
+    behind:
+      zh-CN: 落后 %{trunk}
+    ready:
+      zh-CN: 可合并
+  row:
+    merged_as:
+      zh-CN: 合并为 %{sha}
+  detail:
+    none:
+      zh-CN: 选择一个工作树
+    detached:
+      zh-CN: （分离 HEAD）
+    untitled_chat:
+      zh-CN: 未命名会话
+    no_chat:
+      zh-CN: 无（手动导入的工作树）
+    open_chat:
+      zh-CN: 打开 chat
+    open_terminal:
+      zh-CN: 在终端打开
+    tab_overview:
+      zh-CN: 概览
+    tab_commits:
+      zh-CN: 提交
+    tab_changes:
+      zh-CN: 改动
+    row_branch:
+      zh-CN: 分支
+    row_path:
+      zh-CN: 路径
+    row_vs_trunk:
+      zh-CN: 相对主干
+    row_chat:
+      zh-CN: Chat
+    row_merged_as:
+      zh-CN: 合并为
+    ahead:
+      zh-CN: 领先 %{n}
+    behind:
+      zh-CN: 落后 %{n}
+    orphan_hint:
+      zh-CN: 这个工作树所属的 chat 已被删除，文件被遗留在磁盘上。
+    missing_hint:
+      zh-CN: 这个工作树的目录已从磁盘上消失。
+    no_subject:
+      zh-CN: （无标题）
+    all_commits:
+      zh-CN: 全部提交
+    no_commits:
+      zh-CN: 没有领先 %{trunk} 的提交
+    truncated:
+      zh-CN: 只显示最新的提交

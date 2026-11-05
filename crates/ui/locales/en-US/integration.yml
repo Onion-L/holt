@@ -1,0 +1,109 @@
+_version: 2
+integration:
+  nav:
+    en-US: Worktrees
+  title:
+    en-US: Worktrees
+  merge_into:
+    en-US: "Merging into"
+  repo_none:
+    en-US: No repository
+  loading:
+    en-US: Loading the integration view…
+  empty:
+    en-US: No worktrees. Start a chat with "New worktree", or add one with git.
+  refresh:
+    en-US: Refresh
+  refreshing:
+    en-US: Fetching…
+  orphan:
+    en-US: Orphaned
+  filter:
+    all:
+      en-US: All
+    active:
+      en-US: In progress
+    ready:
+      en-US: Mergeable
+    blocked:
+      en-US: Needs attention
+    merged:
+      en-US: Merged
+  legend:
+    worktrees:
+      zero:
+        en-US: No worktrees
+      one:
+        en-US: 1 worktree
+      other:
+        en-US: "%{n} worktrees"
+    unmerged:
+      zero:
+        en-US: none unmerged
+      one:
+        en-US: 1 unmerged
+      other:
+        en-US: "%{n} unmerged"
+  status:
+    missing:
+      en-US: Directory missing
+    working:
+      en-US: Working
+    merged:
+      en-US: Merged
+    dirty:
+      en-US: Uncommitted changes
+    no_changes:
+      en-US: No changes
+    behind:
+      en-US: "Behind %{trunk}"
+    ready:
+      en-US: Mergeable
+  row:
+    merged_as:
+      en-US: "merged as %{sha}"
+  detail:
+    none:
+      en-US: Select a worktree
+    detached:
+      en-US: (detached HEAD)
+    untitled_chat:
+      en-US: Untitled chat
+    no_chat:
+      en-US: None (imported worktree)
+    open_chat:
+      en-US: Open chat
+    open_terminal:
+      en-US: Open in terminal
+    tab_overview:
+      en-US: Overview
+    tab_commits:
+      en-US: Commits
+    tab_changes:
+      en-US: Changes
+    row_branch:
+      en-US: Branch
+    row_path:
+      en-US: Path
+    row_vs_trunk:
+      en-US: vs trunk
+    row_chat:
+      en-US: Chat
+    row_merged_as:
+      en-US: Merged as
+    ahead:
+      en-US: "%{n} ahead"
+    behind:
+      en-US: "%{n} behind"
+    orphan_hint:
+      en-US: The chat that owned this worktree was deleted; its files are stranded.
+    missing_hint:
+      en-US: This worktree's directory is gone from disk.
+    no_subject:
+      en-US: (no subject)
+    all_commits:
+      en-US: All commits
+    no_commits:
+      en-US: "No commits ahead of %{trunk}"
+    truncated:
+      en-US: Showing the newest commits only

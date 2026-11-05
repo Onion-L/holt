@@ -2066,8 +2066,9 @@ impl Render for Changes {
         let scope = self.scope;
         let base = self.base_ref.clone();
         // With no session selected (new-chat canvas) there is nothing to
-        // prepare — show the quiet empty state, not an endless spinner.
-        let no_chat = self.state.read(cx).selected_chat_row().is_none();
+        // prepare — show the quiet empty state, not an endless spinner. A
+        // pinned pane carries its own checkout, so it always prepares.
+        let no_chat = self.pin.is_none() && self.state.read(cx).selected_chat_row().is_none();
         let phase = if no_chat {
             DiffPhase::Clean
         } else {

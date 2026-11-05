@@ -363,6 +363,33 @@ impl EngineService {
         RpcReply::value(&page)
     }
 
+    // The integration view (the Worktrees page's feed): the git-side
+    // snapshot plus the chat backfill git cannot know — a worktree named
+    // after a live chat row carries that chat's id.
+    pub(super) async fn list_integration(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let repo_path = required_string(&params, "repoPath")?;
+        let trunk = optional_string(&params, "trunk");
+        let mut snapshot = self
+            .git
+            .integration(repo_path, trunk)
+            .await
+            .map_err(RpcError::Failed)?;
+        let chats = self
+            .runtime
+            .chats
+            .read()
+            .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
+        for worktree in &mut snapshot.worktrees {
+            if chats.iter().any(|chat| chat.id == worktree.name) {
+                worktree.chat_id = Some(worktree.name.clone());
+            }
+        }
+        RpcReply::value(&snapshot)
+    }
+
     pub(super) async fn fetch_all(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let repo_path = required_string(&params, "repoPath")?;
         tokio::time::timeout(

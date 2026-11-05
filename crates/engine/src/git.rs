@@ -193,6 +193,20 @@ impl Git {
             .await
     }
 
+    /// The integration view's snapshot ([`integration_snapshot`]): the
+    /// trunk's commits plus every linked worktree's position, all under one
+    /// hold of the checkout lock.
+    pub(crate) async fn integration(
+        &self,
+        repo_path: &str,
+        trunk: Option<String>,
+    ) -> Result<holt_proto::IntegrationSnapshot, String> {
+        self.with_repo(repo_path, move |repo| {
+            integration_snapshot(&repo, trunk.as_deref())
+        })
+        .await
+    }
+
     /// Fetch every remote with prune, using system-default credentials
     /// (credential helpers / ssh-agent — never interactive). Wrapped by the
     /// caller in a 30 s timeout.
@@ -2233,29 +2247,10 @@ fn capture_file_text(
 
 // ---- history ----
 
-/// One page of the commit graph: topologically ordered from HEAD, with
-/// branch/remote/tag refs attached to the commits they name.
-fn history_page(
+/// Ref labels by target commit, resolved once for a whole walk.
+fn refs_by_commit(
     repo: &Repository,
-    cursor: usize,
-    limit: usize,
-) -> Result<holt_proto::GitHistoryPage, String> {
-    let head_sha = repo
-        .head()
-        .ok()
-        .and_then(|head| head.peel_to_commit().ok())
-        .map(|commit| commit.id().to_string());
-    let Some(head_sha) = head_sha else {
-        return Ok(holt_proto::GitHistoryPage {
-            commits: Vec::new(),
-            head_sha: None,
-            next_cursor: None,
-            total_count: Some(0),
-            head_commit_count: Some(0),
-        });
-    };
-
-    // Ref labels by target commit, resolved once for the whole page walk.
+) -> Result<std::collections::HashMap<git2::Oid, Vec<holt_proto::GitHistoryRef>>, String> {
     let mut refs_by_commit: std::collections::HashMap<git2::Oid, Vec<holt_proto::GitHistoryRef>> =
         std::collections::HashMap::new();
     let references = repo.references().map_err(git_message)?;
@@ -2290,15 +2285,104 @@ fn history_page(
                 .push(holt_proto::GitHistoryRef { kind, label });
         }
     }
+    Ok(refs_by_commit)
+}
 
+/// One history row's model: identity, topology, author, and refs.
+fn history_row(
+    commit: &git2::Commit<'_>,
+    refs_by_commit: &std::collections::HashMap<git2::Oid, Vec<holt_proto::GitHistoryRef>>,
+) -> Result<holt_proto::GitHistoryCommit, String> {
+    let parent_shas: Vec<String> = (0..commit.parent_count())
+        .filter_map(|index| commit.parent_id(index).ok().map(|oid| oid.to_string()))
+        .collect();
+    let author = commit.author();
+    let authored_at = chrono::DateTime::from_timestamp(author.when().seconds(), 0)
+        .map(|time| time.to_rfc3339())
+        .unwrap_or_default();
+    Ok(holt_proto::GitHistoryCommit {
+        sha: commit.id().to_string(),
+        subject: commit
+            .summary()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .to_string(),
+        author_name: author.name().unwrap_or_default().to_string(),
+        author_email: author.email().unwrap_or_default().to_string(),
+        authored_at,
+        refs: refs_by_commit
+            .get(&commit.id())
+            .cloned()
+            .unwrap_or_default(),
+        parent_shas,
+    })
+}
+
+/// Up to `limit` commits from `head`, topologically, tracking whether the
+/// walk had more to give. Shared by the history page and the integration
+/// snapshot's trunk and per-worktree ranges.
+fn walk_commits(
+    repo: &Repository,
+    head: git2::Oid,
+    hide: Option<git2::Oid>,
+    limit: usize,
+    refs_by_commit: &std::collections::HashMap<git2::Oid, Vec<holt_proto::GitHistoryRef>>,
+) -> Result<(Vec<holt_proto::GitHistoryCommit>, bool), String> {
+    let mut walker = repo.revwalk().map_err(git_message)?;
+    walker
+        .set_sorting(git2::Sort::TOPOLOGICAL)
+        .map_err(git_message)?;
+    walker.push(head).map_err(git_message)?;
+    if let Some(hidden) = hide {
+        walker.hide(hidden).map_err(git_message)?;
+    }
+    let mut commits = Vec::new();
+    let mut truncated = false;
+    for oid in walker {
+        let oid = oid.map_err(git_message)?;
+        if commits.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let commit = repo.find_commit(oid).map_err(git_message)?;
+        commits.push(history_row(&commit, refs_by_commit)?);
+    }
+    Ok((commits, truncated))
+}
+
+/// One page of the commit graph: topologically ordered from HEAD, with
+/// branch/remote/tag refs attached to the commits they name.
+fn history_page(
+    repo: &Repository,
+    cursor: usize,
+    limit: usize,
+) -> Result<holt_proto::GitHistoryPage, String> {
+    let head_sha = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .map(|commit| commit.id().to_string());
+    let Some(head_sha) = head_sha else {
+        return Ok(holt_proto::GitHistoryPage {
+            commits: Vec::new(),
+            head_sha: None,
+            next_cursor: None,
+            total_count: Some(0),
+            head_commit_count: Some(0),
+        });
+    };
+
+    let refs = refs_by_commit(repo)?;
+
+    // The page collects at most `limit` commits after the cursor, but the
+    // walk runs to the end: the totals need the full count (oid walking is
+    // cheap; only the page's commits get loaded).
     let mut walker = repo.revwalk().map_err(git_message)?;
     walker
         .set_sorting(git2::Sort::TOPOLOGICAL)
         .map_err(git_message)?;
     walker.push_head().map_err(git_message)?;
-    // The page collects at most `limit` commits after the cursor, but the
-    // walk runs to the end: the totals need the full count (oid walking is
-    // cheap; only the page's commits get loaded).
     let mut commits = Vec::new();
     let mut visited = 0usize;
     let mut next_cursor = None;
@@ -2315,30 +2399,7 @@ fn history_page(
             continue;
         }
         let commit = repo.find_commit(oid).map_err(git_message)?;
-        let parent_shas: Vec<String> = (0..commit.parent_count())
-            .filter_map(|index| commit.parent_id(index).ok().map(|oid| oid.to_string()))
-            .collect();
-        let author = commit.author();
-        let authored_at = chrono::DateTime::from_timestamp(author.when().seconds(), 0)
-            .map(|time| time.to_rfc3339())
-            .unwrap_or_default();
-        commits.push(holt_proto::GitHistoryCommit {
-            sha: commit.id().to_string(),
-            subject: commit
-                .summary()
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-                .to_string(),
-            author_name: author.name().unwrap_or_default().to_string(),
-            author_email: author.email().unwrap_or_default().to_string(),
-            authored_at,
-            refs: refs_by_commit
-                .get(&commit.id())
-                .cloned()
-                .unwrap_or_default(),
-            parent_shas,
-        });
+        commits.push(history_row(&commit, &refs)?);
     }
     let total_count = visited;
     Ok(holt_proto::GitHistoryPage {
@@ -2348,6 +2409,204 @@ fn history_page(
         total_count: Some(total_count),
         head_commit_count: Some(total_count),
     })
+}
+
+/// How many trunk commits the integration snapshot carries, and the same
+/// cap for one worktree's `trunk..head` range.
+const INTEGRATION_COMMIT_CAP: usize = 200;
+
+/// The `Holt-Merged-From` trailer line a squash merge writes (and the
+/// integration view reads back to find the merge point).
+fn merged_from_trailer(worktree: &str) -> String {
+    format!("Holt-Merged-From: {worktree}")
+}
+
+/// The read-only integration snapshot (the `ListIntegration` reply's git
+/// side): the trunk's commit line plus every linked worktree's position
+/// relative to it. One pass under the checkout lock; a worktree that cannot
+/// be read reports as `missing` instead of failing the whole snapshot.
+fn integration_snapshot(
+    _repo: &Repository,
+    trunk_override: Option<&str>,
+) -> Result<holt_proto::IntegrationSnapshot, String> {
+    // The discovered repository may be a linked worktree; worktree listing
+    // and refs are common-dir-backed, but the main checkout's path and HEAD
+    // come from the main repository itself.
+    let main_repo = Repository::open(_repo.commondir()).map_err(git_message)?;
+    let names = local_branch_names(&main_repo)?;
+    let trunk_name = match trunk_override {
+        Some(name) => {
+            if !names.iter().any(|candidate| candidate == name) {
+                return Err(format!("trunk {name} does not resolve"));
+            }
+            name.to_string()
+        }
+        None => default_branch(&names, origin_head_target(&main_repo).as_deref())
+            .ok_or_else(|| "no branches to pick a trunk from".to_string())?
+            .to_string(),
+    };
+    let trunk_commit = main_repo
+        .find_reference(&format!("refs/heads/{trunk_name}"))
+        .map_err(git_message)?
+        .peel_to_commit()
+        .map_err(|_| format!("trunk {trunk_name} does not resolve"))?;
+    let trunk_oid = trunk_commit.id();
+
+    let refs = refs_by_commit(&main_repo)?;
+    let (trunk_commits, trunk_truncated) =
+        walk_commits(&main_repo, trunk_oid, None, INTEGRATION_COMMIT_CAP, &refs)?;
+
+    let main_checkout = integration_main_checkout(&main_repo)?;
+
+    let mut worktrees = Vec::new();
+    let registered = main_repo.worktrees().map_err(git_message)?;
+    for index in 0..registered.len() {
+        let Ok(Some(name)) = registered.get(index) else {
+            continue;
+        };
+        let name = name.to_string();
+        let Ok(worktree) = main_repo.find_worktree(&name) else {
+            continue;
+        };
+        let path = worktree.path().to_path_buf();
+        let mut row = holt_proto::IntegrationWorktree {
+            name,
+            path: path.display().to_string(),
+            branch: None,
+            head_sha: None,
+            fork_sha: None,
+            ahead: 0,
+            behind: 0,
+            dirty: false,
+            merged: false,
+            merge_sha: None,
+            missing: !path.is_dir(),
+            chat_id: None,
+            commits: Vec::new(),
+            truncated: false,
+        };
+        if !row.missing {
+            integration_fill_worktree(&mut row, &path, trunk_oid, &refs)?;
+        }
+        if row.merged {
+            // The squash merge point is the trunk commit carrying this
+            // worktree's trailer; a fast-forward merge writes none, and the
+            // branch head is the merge point itself.
+            let trailer = merged_from_trailer(&row.name);
+            row.merge_sha = trunk_commits
+                .iter()
+                .find(|commit| {
+                    git2::Oid::from_str(&commit.sha)
+                        .ok()
+                        .and_then(|oid| main_repo.find_commit(oid).ok())
+                        .and_then(|commit| commit.message().ok().map(str::to_string))
+                        .is_some_and(|message| message.lines().any(|line| line.trim() == trailer))
+                })
+                .map(|commit| commit.sha.clone())
+                .or_else(|| row.head_sha.clone());
+        }
+        worktrees.push(row);
+    }
+    worktrees.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(holt_proto::IntegrationSnapshot {
+        repo_path: main_repo
+            .workdir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_else(|| main_repo.path().display().to_string()),
+        trunk: holt_proto::IntegrationTrunk {
+            name: trunk_name,
+            head_sha: trunk_oid.to_string(),
+        },
+        trunk_commits,
+        trunk_truncated,
+        main_checkout,
+        worktrees,
+    })
+}
+
+/// The main checkout row: path, checked-out branch (empty for detached),
+/// and whether it holds uncommitted changes (untracked included, ignored
+/// excluded).
+fn integration_main_checkout(
+    main_repo: &Repository,
+) -> Result<holt_proto::IntegrationMainCheckout, String> {
+    let branch = current_branch(main_repo);
+    let dirty = if main_repo.workdir().is_some() {
+        let mut options = git2::StatusOptions::new();
+        options.include_untracked(true);
+        let statuses = main_repo
+            .statuses(Some(&mut options))
+            .map_err(git_message)?;
+        !statuses.is_empty()
+    } else {
+        false
+    };
+    Ok(holt_proto::IntegrationMainCheckout {
+        path: main_repo
+            .workdir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default(),
+        branch,
+        dirty,
+    })
+}
+
+/// Fill one linked worktree's git facts from its own repository handle. A
+/// directory that opens but cannot be read counts as missing — the snapshot
+/// stays whole.
+fn integration_fill_worktree(
+    row: &mut holt_proto::IntegrationWorktree,
+    path: &Path,
+    trunk_oid: git2::Oid,
+    refs: &std::collections::HashMap<git2::Oid, Vec<holt_proto::GitHistoryRef>>,
+) -> Result<(), String> {
+    let Ok(worktree_repo) = Repository::open(path) else {
+        row.missing = true;
+        return Ok(());
+    };
+    if let Ok(head) = worktree_repo.head() {
+        if head.is_branch()
+            && let Ok(shorthand) = head.shorthand()
+            && !shorthand.is_empty()
+        {
+            row.branch = Some(shorthand.to_string());
+        }
+        if let Ok(head_commit) = head.peel_to_commit() {
+            let head_oid = head_commit.id();
+            row.head_sha = Some(head_oid.to_string());
+            row.fork_sha = worktree_repo
+                .merge_base(trunk_oid, head_oid)
+                .ok()
+                .map(|oid| oid.to_string());
+            if let Ok((ahead, behind)) = worktree_repo.graph_ahead_behind(head_oid, trunk_oid) {
+                row.ahead = ahead;
+                row.behind = behind;
+            }
+            let (commits, truncated) = walk_commits(
+                &worktree_repo,
+                head_oid,
+                Some(trunk_oid),
+                INTEGRATION_COMMIT_CAP,
+                refs,
+            )?;
+            row.commits = commits;
+            row.truncated = truncated;
+            // Merged means Holt's own marker ref still points at this head —
+            // ancestry cannot say it after a squash.
+            row.merged = worktree_repo
+                .find_reference(&format!("refs/holt/merged/{}", row.name))
+                .and_then(|reference| reference.peel_to_commit())
+                .is_ok_and(|commit| commit.id() == head_oid);
+        }
+    }
+    let mut options = git2::StatusOptions::new();
+    options.include_untracked(true);
+    let statuses = worktree_repo
+        .statuses(Some(&mut options))
+        .map_err(git_message)?;
+    row.dirty = !statuses.is_empty();
+    Ok(())
 }
 
 #[cfg(test)]

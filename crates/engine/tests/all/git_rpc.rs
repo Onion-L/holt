@@ -36,7 +36,7 @@ impl Fixture {
         let repo = common::init_repo(repo_dir.path());
         repo.set_head("refs/heads/main").unwrap();
         let movable: &'static str = Box::leak(movable_body().into_boxed_str());
-        let base = commit_on(
+        let base = common::commit_on(
             &repo,
             "refs/heads/main",
             None,
@@ -45,7 +45,7 @@ impl Fixture {
         );
         // Sibling branches ahead of main, each adding its own file. Built
         // through treebuilders so the working tree stays clean on main.
-        commit_on(
+        common::commit_on(
             &repo,
             "refs/heads/feature",
             Some(base),
@@ -56,7 +56,7 @@ impl Fixture {
             ],
             "feature",
         );
-        commit_on(
+        common::commit_on(
             &repo,
             "refs/heads/alpha",
             Some(base),
@@ -104,45 +104,6 @@ impl Fixture {
     fn repo_path(&self) -> String {
         self.repo_dir.path().display().to_string()
     }
-}
-
-fn signature() -> git2::Signature<'static> {
-    git2::Signature::now("Holt Test", "holt-test@example.com").unwrap()
-}
-
-/// Commit `entries` (path → content) on top of `parent` onto
-/// `update_ref`, without touching the working tree.
-fn commit_on(
-    repo: &Repository,
-    update_ref: &str,
-    parent: Option<git2::Oid>,
-    entries: &[(&str, &str)],
-    message: &str,
-) -> git2::Oid {
-    let mut builder = match parent {
-        Some(parent) => {
-            let parent_commit = repo.find_commit(parent).unwrap();
-            repo.treebuilder(Some(&parent_commit.tree().unwrap()))
-                .unwrap()
-        }
-        None => repo.treebuilder(None).unwrap(),
-    };
-    for (path, content) in entries {
-        let blob = repo.blob(content.as_bytes()).unwrap();
-        builder.insert(*path, blob, 0o100644).unwrap();
-    }
-    let tree = repo.find_tree(builder.write().unwrap()).unwrap();
-    let parent = parent.map(|oid| repo.find_commit(oid).unwrap());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    repo.commit(
-        Some(update_ref),
-        &signature(),
-        &signature(),
-        message,
-        &tree,
-        &parents,
-    )
-    .unwrap()
 }
 
 /// Parse the wire shape the picker parses: `[{name, current, worktreePath}]`.
@@ -816,7 +777,7 @@ async fn watch_emits_snapshot_then_live_frames_and_rekeys_on_commit() {
     index.add_path(std::path::Path::new("README.md")).unwrap();
     index.write().unwrap();
     let tree_id = index.write_tree().unwrap();
-    let sig = signature();
+    let sig = common::signature();
     {
         let tree = repo.find_tree(tree_id).unwrap();
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
@@ -1106,7 +1067,7 @@ fn commit_workdir(fixture: &Fixture, message: &str) {
     index.write().unwrap();
     let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
     let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-    let sig = signature();
+    let sig = common::signature();
     repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])
         .unwrap();
 }
@@ -1242,7 +1203,7 @@ async fn branch_scope_surfaces_unrelated_history_as_an_error() {
 
     // An orphan branch with no common ancestry with main.
     let repo = fixture.repo();
-    let sig = signature();
+    let sig = common::signature();
     {
         let tree = {
             let mut builder = repo.treebuilder(None).unwrap();
@@ -1375,7 +1336,7 @@ async fn history_pages_topologically_with_refs_and_counts() {
     // A merge topology: a feature branch commit merged back into main.
     let (main_tip, merged_oid) = {
         let repo = fixture.repo();
-        let sig = signature();
+        let sig = common::signature();
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
         let feature_tip = repo
             .find_reference("refs/heads/feature")
@@ -2346,7 +2307,7 @@ async fn a_dirty_switch_refusal_names_the_blocking_files() {
         .peel_to_commit()
         .unwrap()
         .id();
-    commit_on(
+    common::commit_on(
         &repo,
         "refs/heads/delta",
         Some(base),
