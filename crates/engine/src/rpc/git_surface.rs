@@ -390,6 +390,193 @@ impl EngineService {
         RpcReply::value(&snapshot)
     }
 
+    // The merge pair behind the integration page's merge bar. Preview is
+    // read-only (the refusal arrives as `outcome.refused`); MergeIntoTrunk
+    // lands under the checkout lock and reports refusals through the
+    // stable `merge-refused:` first line. The squash default message's
+    // title is the owning chat's, when the worktree name is one.
+    pub(super) async fn preview_merge(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let repo_path = required_string(&params, "repoPath")?;
+        let worktree = required_string(&params, "worktree")?.to_string();
+        let trunk = required_string(&params, "trunk")?.to_string();
+        let mode = merge_mode_param(&params)?;
+        let title = self
+            .runtime
+            .chats
+            .read()
+            .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?
+            .iter()
+            .find(|chat| chat.id == worktree)
+            .and_then(|chat| chat.title.clone());
+        let preview = self
+            .git
+            .preview_merge(repo_path, worktree, trunk, mode, title)
+            .await
+            .map_err(RpcError::Failed)?;
+        RpcReply::value(&preview)
+    }
+
+    pub(super) async fn merge_into_trunk(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let repo_path = required_string(&params, "repoPath")?;
+        let worktree = required_string(&params, "worktree")?.to_string();
+        let trunk = required_string(&params, "trunk")?.to_string();
+        let mode = merge_mode_param(&params)?;
+        let message = optional_string(&params, "message");
+        let expect: holt_proto::MergeHeads = params
+            .get("expect")
+            .ok_or_else(|| RpcError::BadParams("expect is required".into()))
+            .and_then(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| RpcError::BadParams(error.to_string()))
+            })?;
+        let result = self
+            .git
+            .merge_into_trunk(repo_path, worktree, trunk, mode, message, expect)
+            .await
+            .map_err(RpcError::Failed)?;
+        RpcReply::value(&result)
+    }
+
+    // DeleteWorktree: the git removal plus the session-worktree
+    // bookkeeping. UI-triggered only — the agent surface never sees this
+    // method (ADR-ui-driven-merge-and-worktree-delete).
+    pub(super) async fn delete_worktree(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let repo_path = required_string(&params, "repoPath")?;
+        let worktree = required_string(&params, "worktree")?.to_string();
+        let force = params
+            .get("force")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if worktree.trim().is_empty() {
+            return Err(RpcError::BadParams("worktree must not be empty".into()));
+        }
+
+        // A live Turn in the owning chat must stop first: deleting the
+        // directory under a running agent destroys its working tree.
+        if let Some(chat) = self.runtime.loaded_chat(&worktree) {
+            let idle = chat
+                .queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .idle();
+            if !idle
+                || chat
+                    .driver_running
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(RpcError::Failed(format!(
+                    "a Turn is running in the chat that owns {worktree}; stop it first"
+                )));
+            }
+        }
+
+        // Git first, then the session bookkeeping — the design's order, and
+        // the safe one: the dirty check inside the git removal fails BEFORE
+        // any chat moves, and the bookkeeping itself is idempotent if a
+        // retry ever lands on an already-removed worktree.
+        let removed = self
+            .git
+            .remove_worktree(repo_path, worktree.clone(), force)
+            .await
+            .map_err(RpcError::Failed)?;
+        // Session semantics: the worktree's name is a chat id, or it lives
+        // under the engine's worktrees directory.
+        let session_space = format!("wt-{worktree}");
+        let owns_chat = self
+            .runtime
+            .chats
+            .read()
+            .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?
+            .iter()
+            .any(|chat| chat.id == worktree);
+        let in_engine_dir = removed.path.starts_with(
+            self.data_dir
+                .join("worktrees")
+                .display()
+                .to_string()
+                .trim_end_matches('/'),
+        );
+        if owns_chat || in_engine_dir {
+            self.retire_session_worktree(&worktree, repo_path, &session_space)?;
+        }
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Move an owning chat onto the repository's main Space (or Home), drop
+    /// its `wt-<chatId>` Space row, and archive the chat — never delete it.
+    /// The order keeps the chat findable: a chat whose space_id points at a
+    /// missing row is not rendered, so the re-home lands before the row
+    /// goes.
+    fn retire_session_worktree(
+        &self,
+        chat_id: &str,
+        main_checkout_path: &str,
+        session_space_id: &str,
+    ) -> Result<(), RpcError> {
+        let main_space_id = {
+            let spaces = self
+                .spaces
+                .read()
+                .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+            spaces
+                .iter()
+                .find(|space| {
+                    space.path.trim_end_matches('/') == main_checkout_path.trim_end_matches('/')
+                })
+                .map(|space| space.id.clone())
+                .unwrap_or_else(|| holt_proto::HOME_SPACE_ID.to_string())
+        };
+        // Re-home (and archive) the chat while it still resolves its Space.
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(chat) = chats.iter_mut().find(|chat| chat.id == chat_id) {
+                chat.space_id = Some(main_space_id.clone());
+                chat.archived = true;
+            }
+            drop(chats);
+            self.runtime
+                .persist_chats_locked()
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+            self.runtime.publish_chats();
+        }
+        // Then drop the session Space row.
+        let removed = {
+            let mut spaces = self
+                .spaces
+                .write()
+                .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+            let before = spaces.len();
+            spaces.retain(|space| space.id != session_space_id);
+            spaces.len() != before
+        };
+        if removed {
+            let spaces = self
+                .spaces
+                .read()
+                .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+            crate::store::persist_spaces(&self.data_dir, &spaces)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+            let value = serde_json::to_value(&*spaces)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+            drop(spaces);
+            self.spaces_tx.send_replace(value);
+        }
+        Ok(())
+    }
+
     pub(super) async fn fetch_all(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let repo_path = required_string(&params, "repoPath")?;
         tokio::time::timeout(
@@ -437,5 +624,16 @@ fn git_fault(fault: crate::git::GitFault) -> RpcError {
     match fault {
         crate::git::GitFault::BadParams(message) => RpcError::BadParams(message),
         crate::git::GitFault::Error(message) => RpcError::Failed(message),
+    }
+}
+
+/// The merge mode param, validated to the two shapes the merge knows.
+fn merge_mode_param(params: &serde_json::Value) -> Result<String, RpcError> {
+    match required_string(params, "mode")? {
+        "squash" => Ok("squash".to_string()),
+        "ff" => Ok("ff".to_string()),
+        other => Err(RpcError::BadParams(format!(
+            "mode must be \"squash\" or \"ff\", got {other:?}"
+        ))),
     }
 }

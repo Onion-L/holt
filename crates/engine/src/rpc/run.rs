@@ -70,6 +70,11 @@ impl EngineService {
         if let Some(spec) = &request.worktree {
             self.absorb_worktree_intent(&chat, spec)?;
         }
+        // A send revives an archived chat (the integration view's delete
+        // archives the session chat instead of destroying it): the flag is
+        // presentation state, and a queued message is the user saying this
+        // chat is alive again.
+        self.unarchive_if_archived(&chat.chat_id);
         {
             let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
             if chat.is_removed() {
@@ -87,6 +92,33 @@ impl EngineService {
         }
         self.kick_queue(chat);
         Ok(())
+    }
+
+    /// Clear the archived flag on a queued send, if it was set (see
+    /// [`Self::enqueue_run`]). Idempotent and quiet when the chat is live.
+    fn unarchive_if_archived(&self, chat_id: &str) {
+        let unarchived = {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) else {
+                return;
+            };
+            if row.archived {
+                row.archived = false;
+                true
+            } else {
+                false
+            }
+        };
+        if unarchived {
+            if let Err(error) = self.runtime.persist_chats_locked() {
+                tracing::warn!(%error, chat_id, "could not persist the unarchive");
+            }
+            self.runtime.publish_chats();
+        }
     }
 
     /// Persist the session-worktree isolation intent at acceptance: an unset
