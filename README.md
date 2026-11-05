@@ -48,14 +48,20 @@ Long tasks fail at the worst times. The build is two hours in, the agent is mid-
 
 ## Install
 
-Grab the signed and notarized DMG for your Mac (Apple Silicon or Intel) from
-[Releases](https://github.com/Onion-L/holt/releases/latest). macOS only for now.
+Download the latest build for your platform from
+[Releases](https://github.com/Onion-L/holt/releases/latest):
+
+- **macOS** (Apple Silicon or Intel): signed and notarized DMG.
+- **Windows** (x64 or ARM64): Setup installer or portable ZIP; currently unsigned.
+- **Linux** (x64 or ARM64): AppImage.
 
 Then open **Settings → Providers** and add an API key before starting a run.
 
 ### Build from source
 
-Requires macOS and stable Rust (pinned in `rust-toolchain.toml`).
+Requires stable Rust (pinned in `rust-toolchain.toml`) on macOS, Windows, or
+Linux. Linux builds also need the native gpui packages listed in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ```bash
 cargo run --release -p holt

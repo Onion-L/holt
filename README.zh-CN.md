@@ -47,14 +47,19 @@
 
 ## 安装
 
-从 [Releases](https://github.com/Onion-L/holt/releases/latest) 下载适合你 Mac
-（Apple Silicon 或 Intel）的 DMG，安装包已签名并经过公证。目前仅支持 macOS。
+从 [Releases](https://github.com/Onion-L/holt/releases/latest) 下载对应平台的安装包：
+
+- **macOS**（Apple Silicon 或 Intel）：已签名并经过公证的 DMG。
+- **Windows**（x64 或 ARM64）：Setup 安装程序或便携 ZIP，目前未签名。
+- **Linux**（x64 或 ARM64）：AppImage。
 
 开始运行前，先在 **Settings → Providers** 中添加 API key。
 
 ### 从源码构建
 
-需要 macOS 和 stable Rust（版本已在 `rust-toolchain.toml` 中固定）。
+在 macOS、Windows 或 Linux 上安装 stable Rust（版本已在
+`rust-toolchain.toml` 中固定）。Linux 还需要安装
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 中列出的 gpui 原生依赖。
 
 ```bash
 cargo run --release -p holt
