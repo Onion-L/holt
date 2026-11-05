@@ -1342,6 +1342,20 @@ impl Shell {
                 crate::integration::IntegrationEvent::OpenTerminal { chat_id, .. } => {
                     this.open_worktree_terminal(chat_id.clone(), cx);
                 }
+                crate::integration::IntegrationEvent::OpenExternally(path) => {
+                    this.open_path_externally(path.clone(), cx);
+                }
+                crate::integration::IntegrationEvent::Notice { message, success } => {
+                    this.push_holt_notice(
+                        if *success {
+                            HoltNoticeKind::Success
+                        } else {
+                            HoltNoticeKind::Error
+                        },
+                        message.clone().into(),
+                        cx,
+                    );
+                }
             },
         ));
         self.integration_page = Some(page.clone());
@@ -1352,6 +1366,45 @@ impl Shell {
     /// the terminal, and the chat's working directory IS the worktree — open
     /// the chat, then its terminal drawer. Focus lands through the panel's
     /// own `track_focus` on the next paint (no window handle here).
+    /// Open a path in the user's chosen external application (the
+    /// titlebar opener's logic, minus the selection write). Finder reveals;
+    /// other apps take the path as their opening argument.
+    pub(super) fn open_path_externally(&mut self, path: String, cx: &mut Context<Self>) {
+        let selected = self
+            .external_apps
+            .iter()
+            .copied()
+            .find(|app| app.label() == self.settings.external_app)
+            .or_else(|| self.external_apps.first().copied());
+        let Some(app) = selected else {
+            return;
+        };
+        let path = std::path::Path::new(&path);
+        if app == ExternalApp::Finder {
+            cx.reveal_path(path);
+            return;
+        }
+        let Some(bundle) = app.bundle_name() else {
+            return;
+        };
+        if let Err(error) = Command::new("open")
+            .args(["-a", bundle, "--"])
+            .arg(path)
+            .spawn()
+        {
+            self.push_holt_notice(
+                HoltNoticeKind::Error,
+                t!(
+                    "shell_chrome.titlebar.could_not_open_app",
+                    app = app.label(),
+                    error = error
+                )
+                .into(),
+                cx,
+            );
+        }
+    }
+
     pub(super) fn open_worktree_terminal(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.open_chat(chat_id.clone(), cx);
         let key = self.panel_key(cx);
@@ -3891,6 +3944,40 @@ mod tests {
                 holt_rpc::methods::FETCH_ALL => {
                     Ok(holt_rpc::RpcReply::value(&serde_json::json!({})).unwrap())
                 }
+                holt_rpc::methods::PREVIEW_MERGE => {
+                    let preview = holt_proto::MergePreview {
+                        heads: holt_proto::MergeHeads {
+                            trunk_head: "c2".into(),
+                            branch_head: "w1".into(),
+                        },
+                        outcome: holt_proto::MergeOutcome::Ok {
+                            files: vec![holt_proto::DiffFileSummary {
+                                path: "feature.txt".into(),
+                                old_path: None,
+                                status: "added".into(),
+                                additions: 1,
+                                deletions: 0,
+                                binary: false,
+                            }],
+                            patch: "diff --git a/feature.txt b/feature.txt\n--- /dev/null\n+++ b/feature.txt\n@@ -0,0 +1 @@\n+work\n".into(),
+                            truncated: false,
+                            message: "Panel work\n\nSquashed 1 commits from holt/eager-falcon-1:\n- work one\n\nHolt-Merged-From: chat-1".into(),
+                            additions: 1,
+                            deletions: 0,
+                        },
+                    };
+                    Ok(holt_rpc::RpcReply::value(&preview).unwrap())
+                }
+                holt_rpc::methods::MERGE_INTO_TRUNK => {
+                    Ok(holt_rpc::RpcReply::value(&holt_proto::MergeResult {
+                        merged_sha: "f3e1d08aabbccddee00112233445566778899aa".into(),
+                        main_checkout_synced: true,
+                    })
+                    .unwrap())
+                }
+                holt_rpc::methods::DELETE_WORKTREE => {
+                    Ok(holt_rpc::RpcReply::value(&serde_json::json!({})).unwrap())
+                }
                 _ => {
                     let _ = params;
                     Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
@@ -4071,8 +4158,50 @@ mod tests {
         }
         assert!(visual.debug_bounds("integration-detail-manual").is_some());
 
-        // The page asked the engine for the snapshot and the ref list.
+        // Back to chat-1's row, then through the whole merge flow: the bar's
+        // button previews, the dialog confirms, the merge lands and the
+        // snapshot reloads.
+        let first_row = visual
+            .debug_bounds("integration-worktree-row-chat-1")
+            .expect("chat-1 row still rendered");
+        visual.simulate_click(first_row.center(), Default::default());
+        for _ in 0..4 {
+            runtime.block_on(async {
+                tokio::task::yield_now().await;
+            });
+            visual.run_until_parked();
+        }
+        let merge_button = visual
+            .debug_bounds("integration-merge-start")
+            .expect("the merge bar renders a merge button");
+        visual.simulate_click(merge_button.center(), Default::default());
+        for _ in 0..4 {
+            runtime.block_on(async {
+                tokio::task::yield_now().await;
+            });
+            visual.run_until_parked();
+        }
+        assert!(
+            visual
+                .debug_bounds("integration-merge-dialog-card")
+                .is_some(),
+            "the preview confirm dialog opened"
+        );
+        let confirm = visual
+            .debug_bounds("integration-merge-confirm")
+            .expect("the dialog's confirm button");
+        visual.simulate_click(confirm.center(), Default::default());
+        for _ in 0..6 {
+            runtime.block_on(async {
+                tokio::task::yield_now().await;
+            });
+            visual.run_until_parked();
+        }
         let made = calls.lock().unwrap().clone();
+        assert!(made.contains(&"PreviewMerge".to_string()));
+        assert!(made.contains(&"MergeIntoTrunk".to_string()));
+
+        // The page asked the engine for the snapshot and the ref list.
         assert!(made.contains(&"ListIntegration".to_string()));
         assert!(made.contains(&"ListRefs".to_string()));
     }

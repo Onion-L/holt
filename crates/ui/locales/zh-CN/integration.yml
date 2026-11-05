@@ -107,3 +107,124 @@ integration:
       zh-CN: 没有领先 %{trunk} 的提交
     truncated:
       zh-CN: 只显示最新的提交
+  merge:
+    mode_squash:
+      zh-CN: Squash
+    mode_ff:
+      zh-CN: Fast-forward
+    merge_button:
+      zh-CN: 合并
+    merge_into:
+      zh-CN: 合并进 %{trunk}
+    working:
+      zh-CN: 正在处理合并…
+    agent_working:
+      zh-CN: agent 仍在工作，结束后再合并。
+    dirty_hint:
+      zh-CN: 只会合并已提交的内容，当前有未提交改动。
+    dirty_hint_files:
+      zh-CN: 只会合并已提交的内容，有 %{count} 个文件未提交。
+    merged_hint:
+      zh-CN: 已作为 %{sha} 合进 %{trunk}
+    delete_worktree:
+      zh-CN: 删除工作树
+    delete_worktree_branch:
+      zh-CN: 删除工作树和分支
+    cleanup:
+      zh-CN: 清理
+    no_changes_hint:
+      zh-CN: 相对主干没有改动。
+    missing_hint:
+      zh-CN: 这个工作树的目录已从磁盘上消失。
+    behind_hint:
+      zh-CN: 落后 %{trunk}，只能以 squash 合并。
+    ff_blocked:
+      zh-CN: 落后 %{trunk} 的分支无法 fast-forward
+    conflict_hint:
+      zh-CN: "%{count} 个文件会冲突"
+    open_editor:
+      zh-CN: 在编辑器打开
+    resolve_in_chat:
+      zh-CN: 交给 chat 解决
+    open_main_checkout:
+      zh-CN: 打开主 checkout
+    message_placeholder:
+      zh-CN: 提交信息
+    dialog_title:
+      zh-CN: 合并 %{branch} 进 %{trunk}
+    row_mode:
+      zh-CN: 方式
+    row_changes:
+      zh-CN: 改动
+    row_main_checkout:
+      zh-CN: 主 checkout
+    row_message:
+      zh-CN: 提交信息
+    stats:
+      zh-CN: "%{files} 个文件 · + %{additions} / − %{deletions}"
+    truncated_suffix:
+      zh-CN: （diff 已截断）
+    main_on_trunk_clean:
+      zh-CN: 在 %{branch} 上，干净 · 随合并同步
+    main_on_trunk_dirty:
+      zh-CN: 在 %{branch} 上，有未提交改动
+    main_elsewhere:
+      zh-CN: 不在主干上
+    final_diff:
+      zh-CN: 最终 diff
+    cancel:
+      zh-CN: 取消
+    confirm:
+      zh-CN: 合并
+    merged_toast:
+      zh-CN: 已合并为 %{sha}
+    no_model:
+      zh-CN: 这个 chat 没有配置模型。
+    resolve_title:
+      zh-CN: 交给 chat 解决冲突
+    resolve_body:
+      zh-CN: 会把一条可编辑的指令排进作者 chat 的队列。
+    resolve_prefix:
+      zh-CN: 把当前分支 rebase 到最新的 %{trunk}，解决这些冲突：
+    resolve_suffix:
+      zh-CN: 解决后提交，并确认测试通过。
+    resolve_send:
+      zh-CN: 发送
+    resolve_sent:
+      zh-CN: 已排进该 chat 的队列。
+    refusal:
+      nothing_to_merge:
+        zh-CN: 没有可合并的内容——分支没有领先主干的提交。
+      ff_not_possible:
+        zh-CN: 无法 fast-forward——分支落后于主干。
+      stale:
+        zh-CN: 预览之后主干或分支有更新，正在重新预览。
+      trunk_checked_out_dirty:
+        zh-CN: 主 checkout 在合并涉及的文件上有未提交改动。
+      trunk_checked_out_elsewhere:
+        zh-CN: 主干被检出到另一个工作树。
+      worktree_missing:
+        zh-CN: 工作树已不存在。
+      branch_detached:
+        zh-CN: 工作树的 HEAD 处于分离状态。
+  delete:
+    title:
+      zh-CN: 删除工作树
+    row_worktree:
+      zh-CN: 工作树
+    row_branch:
+      zh-CN: 分支
+    row_path:
+      zh-CN: 路径
+    chat_kept:
+      zh-CN: 对应的 chat 会保留并归档，移到仓库的主 Space。
+    dirty_warning:
+      zh-CN: 未提交的改动会丢失。
+    cancel:
+      zh-CN: 取消
+    confirm:
+      zh-CN: 删除
+    working:
+      zh-CN: 正在删除…
+    done_toast:
+      zh-CN: 工作树已删除。
