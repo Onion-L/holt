@@ -18,6 +18,7 @@ use crate::{EngineService, LocalEngine};
 mod background;
 mod git_surface;
 mod images;
+mod integration;
 mod modes;
 mod providers;
 pub(crate) mod routines;
@@ -381,6 +382,10 @@ impl RpcService for EngineService {
             methods::PREVIEW_MERGE => self.preview_merge(params).await,
             methods::MERGE_INTO_TRUNK => self.merge_into_trunk(params).await,
             methods::DELETE_WORKTREE => self.delete_worktree(params).await,
+            methods::RUN_CHECKS => self.run_checks(params).await,
+            methods::WATCH_CHECKS => self.watch_checks(params).await,
+            methods::STOP_CHECKS => self.stop_checks(params),
+            methods::SUBSCRIBE_CHECK_LOG => self.subscribe_check_log(params).await,
             methods::FETCH_ALL => self.fetch_all(params).await,
             // No-op liveness pokes the UI fires defensively.
             methods::PROBE_SYNC => RpcReply::value(&serde_json::json!({})),

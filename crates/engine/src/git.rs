@@ -256,6 +256,230 @@ impl Git {
         .await
     }
 
+    /// The trunk's `.holt/checks.toml` blob, read from the trunk HEAD tree —
+    /// never the working tree, so a branch cannot edit its own checks. `None`
+    /// when the trunk declares none.
+    pub(crate) async fn checks_config_blob(
+        &self,
+        repo_path: &str,
+        trunk: String,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            let trunk_commit = main_repo
+                .find_reference(&format!("refs/heads/{trunk}"))
+                .and_then(|reference| reference.peel_to_commit())
+                .map_err(|_| format!("trunk {trunk} does not resolve"))?;
+            let tree = trunk_commit.tree().map_err(git_message)?;
+            let Some(entry) = tree
+                .get_path(std::path::Path::new(".holt/checks.toml"))
+                .ok()
+                .map(|entry| entry.id())
+            else {
+                return Ok(None);
+            };
+            let blob = main_repo.find_blob(entry).map_err(git_message)?;
+            Ok(Some(blob.content().to_vec()))
+        })
+        .await
+    }
+
+    pub(crate) async fn checks_merge_tree(
+        &self,
+        repo_path: &str,
+        worktree: String,
+        trunk: String,
+    ) -> Result<ChecksMerge, String> {
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            let context = match merge_context(&main_repo, &worktree, &trunk, "squash") {
+                Ok(context) => context,
+                Err(MergeStop::Refusal(reason, detail)) => {
+                    // A conflicting or empty merge is the run's typed error,
+                    // not the caller's.
+                    return Err(merge_refusal_message(reason, &detail));
+                }
+                Err(MergeStop::Failed(message)) => return Err(message),
+            };
+            let heads = ChecksMerge {
+                tree: String::new(),
+                trunk_head: context.trunk_head.to_string(),
+                branch_head: context.branch_head.to_string(),
+            };
+            match merged_tree(&main_repo, &context, "squash") {
+                Ok(Ok(tree)) => Ok(ChecksMerge {
+                    tree: tree.to_string(),
+                    ..heads
+                }),
+                // Conflicting paths: the run's error names them.
+                Ok(Err(paths)) => Err(format!("the merge preview conflicts: {}", paths.join(", "))),
+                Err(MergeStop::Refusal(reason, detail)) => {
+                    Err(merge_refusal_message(reason, &detail))
+                }
+                Err(MergeStop::Failed(message)) => Err(message),
+            }
+        })
+        .await
+    }
+
+    /// Check `tree` out as a detached HEAD in a throwaway linked worktree at
+    /// `path` (which must not exist; its parent is created). The tree lands
+    /// through a temp commit on a temp branch — git2's `WorktreeAddOptions`
+    /// needs a branch — and the branch is deleted once the worktree stands, so
+    /// no ref is left behind while the checkout lives.
+    /// The trunk's and a worktree branch's current heads — the staleness pair
+    /// a checks run is judged against. Read-only; no merge preconditions.
+    pub(crate) async fn worktree_and_trunk_heads(
+        &self,
+        repo_path: &str,
+        worktree: &str,
+        trunk: &str,
+    ) -> Result<(String, String), String> {
+        let worktree = worktree.to_string();
+        let trunk = trunk.to_string();
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            let trunk_head = main_repo
+                .find_reference(&format!("refs/heads/{trunk}"))
+                .and_then(|reference| reference.peel_to_commit())
+                .map_err(|_| format!("trunk {trunk} does not resolve"))?
+                .id()
+                .to_string();
+            let worktree_path = main_repo
+                .find_worktree(&worktree)
+                .map_err(|_| format!("worktree {worktree} is not registered"))?
+                .path()
+                .to_path_buf();
+            let branch_head = Repository::open(&worktree_path)
+                .map_err(git_message)?
+                .head()
+                .and_then(|head| head.peel_to_commit())
+                .map_err(|_| format!("worktree {worktree} has no HEAD"))?
+                .id()
+                .to_string();
+            Ok((trunk_head, branch_head))
+        })
+        .await
+    }
+
+    pub(crate) async fn checkout_detached_tree(
+        &self,
+        repo_path: &str,
+        name: &str,
+        tree_sha: &str,
+        trunk_head: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        let name = name.to_string();
+        let tree_sha = tree_sha.to_string();
+        let trunk_head = trunk_head.to_string();
+        let path = path.to_string();
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            let tree = main_repo
+                .find_tree(git2::Oid::from_str(&tree_sha).map_err(git_message)?)
+                .map_err(git_message)?;
+            let parent = main_repo
+                .find_commit(
+                    git2::Oid::from_str(&trunk_head)
+                        .map_err(|_| "trunk head is not a sha".to_string())?,
+                )
+                .map_err(git_message)?;
+            let signature = main_repo.signature().map_err(|_| {
+                "could not read the git identity (user.name/user.email)".to_string()
+            })?;
+            // Object-store only: no ref moves while the checkout lives.
+            let commit = main_repo
+                .commit(
+                    None,
+                    &signature,
+                    &signature,
+                    "holt: checks checkout",
+                    &tree,
+                    &[&parent],
+                )
+                .map_err(git_message)?;
+            let branch = format!("refs/heads/holt/check/{name}");
+            main_repo
+                .reference(&branch, commit, true, "holt: checks checkout")
+                .map_err(git_message)?;
+            // git_worktree_add does not create intermediate directories.
+            let target = std::path::Path::new(&path);
+            if let Some(parent_dir) = target.parent() {
+                std::fs::create_dir_all(parent_dir).map_err(|error| {
+                    format!("could not create {}: {error}", parent_dir.display())
+                })?;
+            }
+            if target.exists() {
+                return Err(format!(
+                    "the checkout directory already exists: {}",
+                    target.display()
+                ));
+            }
+            let reference = main_repo.find_reference(&branch).map_err(git_message)?;
+            let mut options = git2::WorktreeAddOptions::new();
+            options.reference(Some(&reference));
+            let added = main_repo
+                .worktree(&name, target, Some(&options))
+                .map_err(|error| {
+                    let _ = main_repo.find_reference(&branch).map(|mut r| r.delete());
+                    format!("could not create the checks worktree: {error}")
+                });
+            drop(reference);
+            added?;
+            // Detach the worktree's HEAD and drop the temp branch: the checkout
+            // is content-addressed by its commit, which the worktree remembers.
+            let worktree_repo = Repository::open(target).map_err(git_message)?;
+            worktree_repo
+                .set_head_detached(commit)
+                .map_err(git_message)?;
+            if let Ok(mut temp_branch) = main_repo.find_reference(&branch) {
+                let _ = temp_branch.delete();
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// The checks store's checkout key: `sha256` of the normalized common dir —
+    /// one bucket per repository, not per checkout.
+    pub(crate) async fn checkout_key(&self, repo_path: &str) -> Result<String, String> {
+        self.with_repo(repo_path, move |repo| {
+            Ok(sha256_hex(
+                normalize(repo.commondir()).to_string_lossy().as_bytes(),
+            ))
+        })
+        .await
+    }
+
+    /// Remove a checks worktree: its directory, then its registration.
+    pub(crate) async fn remove_check_worktree(
+        &self,
+        repo_path: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let name = name.to_string();
+        self.with_repo(repo_path, move |repo| {
+        let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+        let Ok(worktree) = main_repo.find_worktree(&name) else {
+            return Ok(());
+        };
+        let path = worktree.path().to_path_buf();
+        if path.is_dir()
+            && let Err(error) = std::fs::remove_dir_all(&path)
+        {
+            tracing::warn!(path = %path.display(), %error, "could not remove the checks worktree");
+        }
+        let mut prune = git2::WorktreePruneOptions::new();
+        prune.valid(true).locked(true).working_tree(true);
+        worktree
+            .prune(Some(&mut prune))
+            .map_err(|error| format!("could not prune the checks worktree: {error}"))?;
+        Ok(())
+    })
+    .await
+    }
+
     /// Fetch every remote with prune, using system-default credentials
     /// (credential helpers / ssh-agent — never interactive). Wrapped by the
     /// caller in a 30 s timeout.
@@ -3231,6 +3455,14 @@ fn merge_into_trunk(
         merged_sha: merged_oid.to_string(),
         main_checkout_synced: synced,
     })
+}
+
+/// The squash-merged tree a checks run executes against, with the heads it
+/// was computed from (the staleness pair).
+pub(crate) struct ChecksMerge {
+    pub(crate) tree: String,
+    pub(crate) trunk_head: String,
+    pub(crate) branch_head: String,
 }
 
 /// What [`remove_worktree`] took away, for the caller's bookkeeping.

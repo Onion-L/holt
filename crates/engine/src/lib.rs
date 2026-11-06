@@ -41,6 +41,7 @@ mod goal_settings;
 mod history;
 pub mod images;
 pub mod instance_lock;
+mod integration_checks;
 mod local_fs;
 mod mcp;
 mod mode_default;
@@ -220,6 +221,9 @@ struct EngineService {
     /// (ADR-background-processes-are-chat-owned) — the same registry the
     /// Turn's `spawn_background` tool writes and this surface reads.
     background: Arc<crate::background::BackgroundProcesses>,
+    /// The integration checks executor — repository-scoped runs, never
+    /// chat-owned (deliberately outside `background`).
+    checks: Arc<integration_checks::IntegrationChecks>,
     /// The Turn terminal event dispatcher (ADR-turn-completion-is-an-engine-owned-event): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
     turn_events: turn_events::TurnEvents,
@@ -304,6 +308,8 @@ impl LocalEngine {
         ));
         let background = crate::background::BackgroundProcesses::new();
         let _ = runtime.background.set(background.clone());
+        let checks = integration_checks::IntegrationChecks::new();
+        integration_checks::IntegrationChecks::clean_checkouts(&config.data_dir);
         for chat_id in &retired {
             runtime.remove_chat(chat_id);
         }
@@ -364,6 +370,7 @@ impl LocalEngine {
                 scheduler: tokio_util::sync::CancellationToken::new(),
                 terminals: Arc::new(terminals::Terminals::default()),
                 background,
+                checks,
                 turn_events: turn_events::TurnEvents::new(),
                 updater: update::Updater::new(),
             },
@@ -396,6 +403,7 @@ impl LocalEngine {
         self.service.runtime.shutdown();
         self.service.terminals.close_all(true);
         self.service.background.close_all(true);
+        self.service.checks.shutdown();
     }
 }
 

@@ -25,6 +25,9 @@ pub(crate) enum DetailTab {
     Overview,
     Commits,
     Changes,
+    /// 审查与检查 (reviews arrive in P3; the checks card lives here and on
+    /// the overview).
+    Review,
 }
 
 /// The selected worktree's detail view. Rebuilt when the selection or the
@@ -108,6 +111,7 @@ impl Detail {
         status: WorktreeStatus,
         _snapshot: &IntegrationSnapshot,
         state: &Entity<AppState>,
+        checks_card: AnyElement,
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
@@ -115,9 +119,11 @@ impl Detail {
         let header = self.render_header(worktree, title, status, &trunk, theme, cx);
         let tabs = self.render_tabs(worktree, theme, cx);
         let body = match self.tab {
-            DetailTab::Overview => self.render_overview(worktree, state, theme, cx),
+            DetailTab::Overview => self.render_overview(worktree, state, checks_card, theme, cx),
             DetailTab::Commits => self.render_commits(worktree, theme, cx),
             DetailTab::Changes => self.render_changes(worktree, state, cx),
+            // The checks card comes from the page (it owns the watch).
+            DetailTab::Review => checks_card,
         };
         let selector_name = self.worktree.clone();
         div()
@@ -215,9 +221,9 @@ impl Detail {
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
-        use DetailTab::{Changes, Commits, Overview};
+        use DetailTab::{Changes, Commits, Overview, Review};
         let tab = self.tab;
-        let entries: [(DetailTab, SharedString, Option<usize>); 3] = [
+        let entries: [(DetailTab, SharedString, Option<usize>); 4] = [
             (Overview, t!("integration.detail.tab_overview").into(), None),
             (
                 Commits,
@@ -225,6 +231,7 @@ impl Detail {
                 Some(worktree.commits.len()),
             ),
             (Changes, t!("integration.detail.tab_changes").into(), None),
+            (Review, t!("integration.detail.tab_review").into(), None),
         ];
         div()
             .flex_none()
@@ -275,10 +282,12 @@ impl Detail {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_overview(
         &mut self,
         worktree: &IntegrationWorktree,
         state: &Entity<AppState>,
+        checks_card: AnyElement,
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
@@ -384,6 +393,7 @@ impl Detail {
                         )
                     }),
             )
+            .child(checks_card)
             .into_any_element()
     }
 

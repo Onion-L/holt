@@ -47,8 +47,10 @@ fn now_ms() -> u64 {
 
 /// One spawned command: its identity, its bounded log, and its lifetime
 /// state. Two pipe readers append concurrently; the supervisor finishes it
-/// exactly once, when the whole group is gone.
-struct Process {
+/// exactly once, when the whole group is gone. Shared by this registry and
+/// the integration checks executor ([`spawn_group_process`] +
+/// [`supervise_group`]); `chat_id` is registry-only bookkeeping.
+pub(crate) struct Process {
     id: String,
     chat_id: String,
     command: String,
@@ -77,7 +79,7 @@ struct ProcessState {
 }
 
 impl Process {
-    fn running(&self) -> bool {
+    pub(crate) fn running(&self) -> bool {
         !self.state.lock().unwrap_or_else(|e| e.into_inner()).exited
     }
 
@@ -97,8 +99,9 @@ impl Process {
     }
 
     /// The last `max_lines` lines (at most `max_bytes`) of combined output —
-    /// what `process_status` and the exit notices report.
-    fn tail(&self, max_lines: usize, max_bytes: usize) -> String {
+    /// what `process_status`, the exit notices, and the checks' `logTail`
+    /// report.
+    pub(crate) fn tail(&self, max_lines: usize, max_bytes: usize) -> String {
         let chunks: Vec<String> = {
             use base64::Engine as _;
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -138,7 +141,7 @@ impl Process {
     /// signalled (false: already gone, or nothing to signal). Signal 0 is
     /// the existence probe the supervisor polls with.
     #[cfg(unix)]
-    fn signal(&self, signal: libc::c_int) -> bool {
+    pub(crate) fn signal(&self, signal: libc::c_int) -> bool {
         let group = self.state.lock().unwrap_or_else(|e| e.into_inner()).group;
         let Some(group) = group else {
             return false;
@@ -158,7 +161,7 @@ impl Process {
     /// Close the Job Object handle — its KILL_ON_JOB_CLOSE limit takes the
     /// whole tree with it.
     #[cfg(windows)]
-    fn close_job(&self) {
+    pub(crate) fn close_job(&self) {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -167,9 +170,9 @@ impl Process {
     }
 
     /// Finish the session exactly once: publish the exit event, disarm the
-    /// group, and return what the registry owes the chat (the notice and
-    /// the shell-groups record to forget).
-    fn finish(&self, code: i32) -> Option<(ExitNotice, Option<PathBuf>)> {
+    /// group, and hand back the shell-groups record to forget. `None` on a
+    /// second observation of the same exit.
+    pub(crate) fn finish(&self, code: i32) -> Option<Option<PathBuf>> {
         let seq = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.exited {
@@ -189,19 +192,69 @@ impl Process {
             state.log.push_exit(code)
         };
         self.changed.send_replace(seq);
-        let tail = self.tail(8, 4096);
-        Some((
-            ExitNotice {
-                command: self.command.clone(),
-                exit_code: code,
-                tail,
-            },
+        Some(
             self.state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .record
                 .take(),
-        ))
+        )
+    }
+
+    /// TERM → grace → KILL the whole group, off-thread. The registry's
+    /// kill and the checks' timeout/stop paths share this.
+    pub(crate) fn kill_with_grace(self: &Arc<Self>) {
+        #[cfg(unix)]
+        {
+            let process = self.clone();
+            tokio::spawn(async move {
+                if process.signal(libc::SIGTERM) {
+                    tokio::time::sleep(KILL_GRACE).await;
+                    if process.running() {
+                        process.signal(libc::SIGKILL);
+                    }
+                } else {
+                    process.signal(libc::SIGKILL);
+                }
+            });
+        }
+        #[cfg(windows)]
+        self.close_job();
+    }
+
+    /// The log stream from `after`: replay, then follow live until the
+    /// process's exit event. The registry's `SubscribeBackgroundProcess`
+    /// and the checks' `SubscribeCheckLog` share this.
+    pub(crate) fn subscribe_events(self: &Arc<Self>, after: u64) -> RpcReply {
+        let receiver = self.changed.subscribe();
+        let stream = futures::stream::unfold(
+            (self.clone(), receiver, after),
+            |(process, mut receiver, mut after)| async move {
+                loop {
+                    receiver.borrow_and_update();
+                    let (next, exited) = {
+                        let state = process.state.lock().unwrap_or_else(|e| e.into_inner());
+                        (state.log.next(after), state.exited)
+                    };
+                    if let Some(event) = next {
+                        after = match &event {
+                            TerminalEvent::Data { seq, .. }
+                            | TerminalEvent::Exit { seq, .. }
+                            | TerminalEvent::Gap { seq } => *seq,
+                        };
+                        return Some((
+                            serde_json::to_value(event)
+                                .expect("background process event serializes"),
+                            (process, receiver, after),
+                        ));
+                    }
+                    if exited || receiver.changed().await.is_err() {
+                        return None;
+                    }
+                }
+            },
+        );
+        RpcReply::Stream(Box::pin(stream))
     }
 }
 
@@ -234,6 +287,126 @@ pub struct BackgroundProcesses {
 /// Pump one output pipe into the process's log until EOF (the pipe closes
 /// when the last group member holding it dies) or the process is finished
 /// and nobody is listening anymore.
+/// Spawn one logged command in its own process group. Command parity with
+/// the foreground `bash` tool (`Shell::exec`): the same login shell, the
+/// same flags, the same process group — a background command must not
+/// behave differently from a foreground one beyond the wait. `env` rides
+/// along (the checks executor's `CI=true`). The caller owns the returned
+/// child and hands both to [`supervise_group`].
+pub(crate) fn spawn_group_process(
+    chat_id: &str,
+    command: &str,
+    cwd: &str,
+    shell: &str,
+    shell_groups: Option<PathBuf>,
+    env: &[(&str, &str)],
+) -> Result<(Arc<Process>, tokio::process::Child), String> {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        return Err("command is required".to_string());
+    }
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(crate::shell_env::command_args(shell))
+        .arg(&command)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(crate::shell_env::CREATE_NO_WINDOW);
+    let child = cmd
+        .spawn()
+        .map_err(|error| format!("could not spawn {command:?}: {error}"))?;
+    let pid = child.id();
+    // Unix only: the crash-reap registry (Windows Job Objects cover the
+    // hard-kill case at the OS level).
+    #[cfg(unix)]
+    let record = shell_groups
+        .as_deref()
+        .zip(pid)
+        .and_then(|(dir, id)| crate::shell_groups::record(dir, id));
+    #[cfg(not(unix))]
+    let record = None;
+    #[cfg(windows)]
+    let job = crate::tools::ShellJob::assign(&child);
+    let (changed, _) = watch::channel(0);
+    let process = Arc::new(Process {
+        id: uuid::Uuid::new_v4().to_string(),
+        chat_id: chat_id.to_string(),
+        command,
+        cwd: cwd.to_string(),
+        pid,
+        started_at: now_ms(),
+        state: Mutex::new(ProcessState {
+            log: OutputLog::default(),
+            exited: false,
+            exit_code: None,
+            exited_at: None,
+            #[cfg(unix)]
+            group: pid,
+            #[cfg(windows)]
+            job: Some(job),
+            record,
+        }),
+        changed,
+    });
+    Ok((process, child))
+}
+
+/// Own a spawned group to its end: pump both pipes into the log, wait the
+/// leader, then wait the group empty — a leader-less group (`cmd &`) is
+/// still running, and its members still hold the pipes open — then hand
+/// the exit code (and the finished process) to `done` exactly once.
+pub(crate) fn supervise_group(
+    process: Arc<Process>,
+    mut child: tokio::process::Child,
+    done: impl FnOnce(Arc<Process>, i32) + Send + 'static,
+) {
+    let weak = Arc::downgrade(&process);
+    let stdout = spawn_reader(child.stdout.take(), weak.clone());
+    let stderr = spawn_reader(child.stderr.take(), weak);
+    tokio::spawn(async move {
+        let code = match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(_) => -1,
+        };
+        // The leader is gone; the group may not be. Poll until the last
+        // member exits — only then is the session finished.
+        loop {
+            #[cfg(unix)]
+            if !process.signal(0) {
+                break;
+            }
+            #[cfg(windows)]
+            {
+                let active = process
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .job
+                    .as_ref()
+                    .is_some_and(|job| job.active_processes() > 0);
+                if !active {
+                    break;
+                }
+            }
+            tokio::time::sleep(GROUP_POLL).await;
+        }
+        // Both pipes must reach EOF before the exit event and any tail
+        // snapshot; otherwise the final lines are lost.
+        for reader in [stdout, stderr].into_iter().flatten() {
+            let _ = reader.await;
+        }
+        done(process, code);
+    });
+}
+
 fn spawn_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     pipe: Option<R>,
     weak: std::sync::Weak<Process>,
@@ -292,58 +465,9 @@ impl BackgroundProcesses {
                 return Err(failed("background process owner is closed"));
             }
         }
-        // Command parity with the foreground `bash` tool (`Shell::exec`):
-        // the same login shell, the same flags, the same process group — a
-        // background command must not behave differently from a foreground
-        // one beyond the wait.
-        let mut cmd = tokio::process::Command::new(shell);
-        cmd.args(crate::shell_env::command_args(shell))
-            .arg(&command)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        cmd.process_group(0);
-        #[cfg(windows)]
-        cmd.creation_flags(crate::shell_env::CREATE_NO_WINDOW);
-        let child = cmd
-            .spawn()
-            .map_err(|error| failed(format!("could not spawn {command:?}: {error}")))?;
-        let pid = child.id();
-        // Unix only: the crash-reap registry (Windows Job Objects cover the
-        // hard-kill case at the OS level).
-        #[cfg(unix)]
-        let record = shell_groups
-            .as_deref()
-            .zip(pid)
-            .and_then(|(dir, id)| crate::shell_groups::record(dir, id));
-        #[cfg(not(unix))]
-        let record = None;
-        #[cfg(windows)]
-        let job = crate::tools::ShellJob::assign(&child);
-        let (changed, _) = watch::channel(0);
-        let process = Arc::new(Process {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id,
-            command,
-            cwd: cwd.to_string(),
-            pid,
-            started_at: now_ms(),
-            state: Mutex::new(ProcessState {
-                log: OutputLog::default(),
-                exited: false,
-                exit_code: None,
-                exited_at: None,
-                #[cfg(unix)]
-                group: pid,
-                #[cfg(windows)]
-                job: Some(job),
-                record,
-            }),
-            changed,
-        });
+        let (process, child) =
+            spawn_group_process(&chat_id, &command, cwd, shell, shell_groups, &[])
+                .map_err(failed)?;
         let status = process.status();
         self.registry
             .lock()
@@ -355,52 +479,20 @@ impl BackgroundProcesses {
         Ok(status)
     }
 
-    /// Own the process to its end: pump both pipes into the log, wait the
-    /// leader, then wait the group empty — a leader-less group (`cmd &`)
-    /// is still running, and its members still hold the pipes open.
-    fn supervise(self: &Arc<Self>, process: Arc<Process>, mut child: tokio::process::Child) {
-        let weak = Arc::downgrade(&process);
-        let stdout = spawn_reader(child.stdout.take(), weak.clone());
-        let stderr = spawn_reader(child.stderr.take(), weak);
+    /// Own the process to its end, then run the registry's exit path
+    /// (notice + publish + shell-groups forget).
+    fn supervise(self: &Arc<Self>, process: Arc<Process>, child: tokio::process::Child) {
         let registry = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let code = match child.wait().await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(_) => -1,
-            };
-            // The leader is gone; the group may not be. Poll until the last
-            // member exits — only then is the session finished.
-            loop {
-                #[cfg(unix)]
-                if !process.signal(0) {
-                    break;
-                }
-                #[cfg(windows)]
-                {
-                    let active = process
-                        .state
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .job
-                        .as_ref()
-                        .is_some_and(|job| job.active_processes() > 0);
-                    if !active {
-                        break;
-                    }
-                }
-                tokio::time::sleep(GROUP_POLL).await;
-            }
-            // Both pipes must reach EOF before the exit event and notice
-            // snapshot the log; otherwise the final lines are lost from tail.
-            for reader in [stdout, stderr].into_iter().flatten() {
-                let _ = reader.await;
-            }
+        supervise_group(process, child, move |process, code| {
             match registry.upgrade() {
                 Some(registry) => registry.record_exit(&process, code),
                 // The engine is gone; the exit event still reaches any
                 // outstanding subscriber holding the process.
                 None => {
-                    process.finish(code);
+                    if let Some(record) = process.finish(code).flatten() {
+                        #[cfg(unix)]
+                        crate::shell_groups::forget(&record);
+                    }
                 }
             }
         });
@@ -410,7 +502,7 @@ impl BackgroundProcesses {
     /// the exit, forget the shell-groups record, and wake watchers. The
     /// notice queues BEFORE the exit becomes visible (`running` flips) —
     /// a Turn starting against a just-exited row must not race past its
-    /// notice — and the tail fills in after `finish` computed it.
+    /// notice — and the tail fills in after `finish` ran.
     fn record_exit(self: &Arc<Self>, process: &Arc<Process>, code: i32) {
         {
             let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -426,7 +518,7 @@ impl BackgroundProcesses {
                 }
             }
         }
-        let Some((notice, record)) = process.finish(code) else {
+        let Some(record) = process.finish(code) else {
             // A second observation of the same exit (kill racing the
             // supervisor's poll) — the notice is already queued.
             return;
@@ -435,6 +527,11 @@ impl BackgroundProcesses {
             #[cfg(unix)]
             crate::shell_groups::forget(&record);
         }
+        let notice = ExitNotice {
+            command: process.command.clone(),
+            exit_code: code,
+            tail: process.tail(8, 4096),
+        };
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(notices) = registry.notices.get_mut(&process.chat_id)
             && let Some(last) = notices.back_mut()
@@ -473,22 +570,7 @@ impl BackgroundProcesses {
         if !process.running() {
             return Err(failed("background process has already exited"));
         }
-        #[cfg(unix)]
-        {
-            let process = process.clone();
-            tokio::spawn(async move {
-                if process.signal(libc::SIGTERM) {
-                    tokio::time::sleep(KILL_GRACE).await;
-                    if process.running() {
-                        process.signal(libc::SIGKILL);
-                    }
-                } else {
-                    process.signal(libc::SIGKILL);
-                }
-            });
-        }
-        #[cfg(windows)]
-        process.close_job();
+        process.kill_with_grace();
         Ok(())
     }
 
@@ -630,35 +712,7 @@ impl BackgroundProcesses {
             .get(id)
             .cloned()
             .ok_or_else(|| failed("background process no longer exists"))?;
-        let receiver = process.changed.subscribe();
-        let stream = futures::stream::unfold(
-            (process, receiver, after),
-            |(process, mut receiver, mut after)| async move {
-                loop {
-                    receiver.borrow_and_update();
-                    let (next, exited) = {
-                        let state = process.state.lock().unwrap_or_else(|e| e.into_inner());
-                        (state.log.next(after), state.exited)
-                    };
-                    if let Some(event) = next {
-                        after = match &event {
-                            TerminalEvent::Data { seq, .. }
-                            | TerminalEvent::Exit { seq, .. }
-                            | TerminalEvent::Gap { seq } => *seq,
-                        };
-                        return Some((
-                            serde_json::to_value(event)
-                                .expect("background process event serializes"),
-                            (process, receiver, after),
-                        ));
-                    }
-                    if exited || receiver.changed().await.is_err() {
-                        return None;
-                    }
-                }
-            },
-        );
-        Ok(RpcReply::Stream(Box::pin(stream)))
+        Ok(process.subscribe_events(after))
     }
 
     fn bump(&self) {

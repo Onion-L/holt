@@ -20,6 +20,7 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 pub mod background;
+pub mod checks;
 mod client;
 pub mod images;
 pub mod retries;
@@ -373,6 +374,24 @@ pub mod methods {
     /// the `Failed` message's first line is `merge-refused: <reason>` with
     /// one detail per following line.
     pub const MERGE_INTO_TRUNK: &str = "MergeIntoTrunk";
+    /// The local checks surface (the integration view's checks card).
+    /// `RunChecks {repoPath, worktree, trunk}` computes the squash merge in
+    /// memory, checks it out into a throwaway worktree under
+    /// `<data dir>/integration/checkouts/<runId>/`, and runs the trunk's
+    /// `.holt/checks.toml` serially with `CI=true`; replies `{runId}`. A
+    /// conflicting preview fails the run before any command runs.
+    /// `WatchChecks {repoPath, worktree}` streams the latest run's
+    /// `holt_rpc::checks::CheckRun` (or `null` when none exists). A new run
+    /// for the same worktree stops the previous one.
+    pub const RUN_CHECKS: &str = "RunChecks";
+    pub const WATCH_CHECKS: &str = "WatchChecks";
+    /// Stop one run: params `{runId}`. The running check's process group
+    /// takes TERM → grace → KILL; rows mark `stopped`.
+    pub const STOP_CHECKS: &str = "StopChecks";
+    /// One check's full live log: params `{runId, name, afterSeq}` → the
+    /// same `TerminalEvent` stream the terminals and background processes
+    /// serve (replay from `afterSeq`, `Exit` last).
+    pub const SUBSCRIBE_CHECK_LOG: &str = "SubscribeCheckLog";
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";
