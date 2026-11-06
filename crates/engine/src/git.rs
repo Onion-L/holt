@@ -200,9 +200,10 @@ impl Git {
         &self,
         repo_path: &str,
         trunk: Option<String>,
+        checks_root: PathBuf,
     ) -> Result<holt_proto::IntegrationSnapshot, String> {
         self.with_repo(repo_path, move |repo| {
-            integration_snapshot(&repo, trunk.as_deref())
+            integration_snapshot(&repo, trunk.as_deref(), &checks_root)
         })
         .await
     }
@@ -403,40 +404,20 @@ impl Git {
             main_repo
                 .reference(&branch, commit, true, "holt: checks checkout")
                 .map_err(git_message)?;
-            // git_worktree_add does not create intermediate directories.
-            let target = std::path::Path::new(&path);
-            if let Some(parent_dir) = target.parent() {
-                std::fs::create_dir_all(parent_dir).map_err(|error| {
-                    format!("could not create {}: {error}", parent_dir.display())
-                })?;
+            // From here on, every failure unwinds what the branch's
+            // existence created — the temp branch, and the worktree once
+            // it is added.
+            let outcome = checkout_detached_tree_finish(
+                &main_repo,
+                &name,
+                &branch,
+                commit,
+                std::path::Path::new(&path),
+            );
+            if outcome.is_err() {
+                let _ = main_repo.find_reference(&branch).map(|mut r| r.delete());
             }
-            if target.exists() {
-                return Err(format!(
-                    "the checkout directory already exists: {}",
-                    target.display()
-                ));
-            }
-            let reference = main_repo.find_reference(&branch).map_err(git_message)?;
-            let mut options = git2::WorktreeAddOptions::new();
-            options.reference(Some(&reference));
-            let added = main_repo
-                .worktree(&name, target, Some(&options))
-                .map_err(|error| {
-                    let _ = main_repo.find_reference(&branch).map(|mut r| r.delete());
-                    format!("could not create the checks worktree: {error}")
-                });
-            drop(reference);
-            added?;
-            // Detach the worktree's HEAD and drop the temp branch: the checkout
-            // is content-addressed by its commit, which the worktree remembers.
-            let worktree_repo = Repository::open(target).map_err(git_message)?;
-            worktree_repo
-                .set_head_detached(commit)
-                .map_err(git_message)?;
-            if let Ok(mut temp_branch) = main_repo.find_reference(&branch) {
-                let _ = temp_branch.delete();
-            }
-            Ok(())
+            outcome
         })
         .await
     }
@@ -2711,6 +2692,7 @@ fn merged_from_trailer(worktree: &str) -> String {
 fn integration_snapshot(
     repo: &Repository,
     trunk_override: Option<&str>,
+    checks_root: &Path,
 ) -> Result<holt_proto::IntegrationSnapshot, String> {
     // The discovered repository may be a linked worktree; worktree listing
     // and refs are common-dir-backed, but the main checkout's path and HEAD
@@ -2752,6 +2734,24 @@ fn integration_snapshot(
             continue;
         };
         let path = worktree.path().to_path_buf();
+        // A checks worktree (under the engine's throwaway root) never
+        // belongs in the view; a crashed run leaves its registration
+        // behind with the directory gone — prune it while we are here. A
+        // LIVE run's checkout (directory present) is left alone: pruning
+        // under a running check would break it.
+        if path.starts_with(checks_root) {
+            if !path.is_dir() {
+                let mut prune = git2::WorktreePruneOptions::new();
+                prune.valid(true).locked(true).working_tree(true);
+                let _ = worktree.prune(Some(&mut prune));
+                // A crash between the worktree add and the branch delete
+                // also strands the temp branch — take it with us.
+                let _ = main_repo
+                    .find_reference(&format!("refs/heads/holt/check/{name}"))
+                    .map(|mut reference| reference.delete());
+            }
+            continue;
+        }
         let mut row = holt_proto::IntegrationWorktree {
             name,
             path: path.display().to_string(),
@@ -3473,6 +3473,62 @@ pub(crate) struct RemovedWorktree {
 /// Remove a linked worktree: its directory, its registration, its branch,
 /// and Holt's merged marker. `force` is the only way past uncommitted
 /// changes (the caller confirmed they are disposable).
+/// The post-branch half of the checks checkout: create the parent and the
+/// worktree, detach its HEAD, drop the temp branch. The caller deletes the
+/// branch when this fails.
+fn checkout_detached_tree_finish(
+    main_repo: &Repository,
+    name: &str,
+    branch: &str,
+    commit: git2::Oid,
+    target: &Path,
+) -> Result<(), String> {
+    // git_worktree_add does not create intermediate directories.
+    if let Some(parent_dir) = target.parent() {
+        std::fs::create_dir_all(parent_dir)
+            .map_err(|error| format!("could not create {}: {error}", parent_dir.display()))?;
+    }
+    if target.exists() {
+        return Err(format!(
+            "the checkout directory already exists: {}",
+            target.display()
+        ));
+    }
+    let reference = main_repo.find_reference(branch).map_err(git_message)?;
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(&reference));
+    let added = main_repo.worktree(name, target, Some(&options));
+    drop(reference);
+    let worktree = added.map_err(|error| {
+        // The add failed before anything landed: take the directory back
+        // if a stub survived.
+        if target.exists() {
+            let _ = std::fs::remove_dir_all(target);
+        }
+        format!("could not create the checks worktree: {error}")
+    })?;
+    // Detach the worktree's HEAD: the checkout is content-addressed by its
+    // commit, which the worktree remembers. A failure here removes the
+    // worktree entirely — the branch is the caller's to drop.
+    let detached = Repository::open(target)
+        .map_err(git_message)
+        .and_then(|worktree_repo| worktree_repo.set_head_detached(commit).map_err(git_message));
+    if detached.is_err() {
+        let path = worktree.path().to_path_buf();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+        let mut prune = git2::WorktreePruneOptions::new();
+        prune.valid(true).locked(true).working_tree(true);
+        let _ = worktree.prune(Some(&mut prune));
+        return detached;
+    }
+    if let Ok(mut temp_branch) = main_repo.find_reference(branch) {
+        let _ = temp_branch.delete();
+    }
+    Ok(())
+}
+
 fn remove_worktree(
     repo: &Repository,
     worktree_name: &str,

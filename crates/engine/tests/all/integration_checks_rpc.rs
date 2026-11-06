@@ -490,3 +490,133 @@ async fn the_live_log_streams_and_the_config_rejects_unknown_fields() {
     };
     assert!(error.to_string().contains("colour"), "got: {error}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn crash_leftover_checkouts_are_pruned_and_never_listed() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+
+    // A crashed run's leftover: a registered checks worktree whose
+    // directory is gone (clean_checkouts removed the directory at boot; the
+    // registration survived).
+    let leftover = fixture
+        .data_dir
+        .path()
+        .join("integration/checkouts/dead-run");
+    std::fs::create_dir_all(leftover.parent().unwrap()).unwrap();
+    let repo = fixture.repo();
+    let tip_id = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    {
+        let tip = repo.find_commit(tip_id).unwrap();
+        repo.branch("holt/check/dead-run", &tip, false).unwrap();
+    }
+    let reference = repo
+        .find_reference("refs/heads/holt/check/dead-run")
+        .unwrap();
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(&reference));
+    repo.worktree("dead-run", &leftover, Some(&options))
+        .unwrap();
+    drop(reference);
+    drop(repo);
+    std::fs::remove_dir_all(&leftover).unwrap();
+
+    let run = list_integration(&engine, &fixture).await;
+    assert!(
+        run.worktrees.iter().all(|row| row.name != "dead-run"),
+        "crash leftovers never list: {:?}",
+        run.worktrees
+            .iter()
+            .map(|row| row.name.clone())
+            .collect::<Vec<_>>()
+    );
+    let repo = fixture.repo();
+    let names: Vec<String> = repo
+        .worktrees()
+        .unwrap()
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_string))
+        .collect();
+    assert!(
+        !names.contains(&"dead-run".to_string()),
+        "the leftover registration was pruned: {names:?}"
+    );
+    // The temp branch died with it.
+    assert!(
+        repo.find_reference("refs/heads/holt/check/dead-run")
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_checks_checkout_is_invisible_but_untouched() {
+    let fixture = Fixture::new();
+    commit_checks_config(&fixture, "[[check]]\nname = \"hang\"\nrun = \"sleep 30\"\n");
+    let engine = fixture.engine();
+    let run_id = run_checks(&engine, &fixture).await.unwrap();
+    // Wait until the run's checkout exists (the check is running in it).
+    let checkouts = fixture.data_dir.path().join("integration/checkouts");
+    let mut live = checkouts.join(&run_id);
+    for _ in 0..100 {
+        live = checkouts.join(&run_id);
+        if live.join(".git").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(live.join(".git").exists(), "the checkout exists: {live:?}");
+
+    let run = list_integration(&engine, &fixture).await;
+    assert!(
+        run.worktrees.iter().all(|row| row.name != run_id),
+        "a live checks checkout never lists: {:?}",
+        run.worktrees
+            .iter()
+            .map(|row| row.name.clone())
+            .collect::<Vec<_>>()
+    );
+    let repo = fixture.repo();
+    let names: Vec<String> = repo
+        .worktrees()
+        .unwrap()
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_string))
+        .collect();
+    assert!(
+        names.contains(&run_id),
+        "the LIVE registration is untouched: {names:?}"
+    );
+    assert!(
+        live.join(".git").exists(),
+        "the live checkout directory is untouched"
+    );
+
+    // Wind down: stop the run and let the cleanup finish.
+    engine
+        .handle(methods::STOP_CHECKS, serde_json::json!({ "runId": run_id }))
+        .await
+        .unwrap();
+    let _ = watch_until(&engine, &fixture, |run| run.finished()).await;
+}
+
+async fn list_integration(
+    engine: &LocalEngine,
+    fixture: &Fixture,
+) -> holt_proto::IntegrationSnapshot {
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::LIST_INTEGRATION,
+            serde_json::json!({ "repoPath": fixture.repo_path() }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListIntegration did not return a value");
+    };
+    serde_json::from_value(value).unwrap()
+}

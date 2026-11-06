@@ -470,12 +470,12 @@ impl IntegrationChecks {
                 _ = stopped.cancelled() => Outcome::Stopped,
             };
             let timed_out = matches!(outcome, Outcome::TimedOut);
-            if timed_out {
-                process.kill_with_grace();
-            }
             if !matches!(outcome, Outcome::Exited(_)) {
-                // StopChecks already signalled the group (or the timeout
-                // just killed it); take the exit when it lands.
+                // Timed out, or stopped — and the stop may have landed
+                // before this process reached the run's `current` slot, so
+                // nothing else is guaranteed to kill it. Take the exit when
+                // it lands.
+                process.kill_with_grace();
                 outcome = Outcome::Exited(done_rx.await.unwrap_or(-1));
             }
             let duration = began.elapsed().as_millis() as u64;
