@@ -129,6 +129,9 @@ impl Detail {
             let data_dir = state.read(cx).data_dir.clone().unwrap_or_default();
             super::worktree_is_orphan(worktree, &data_dir)
         };
+        // Start the branch diff with the detail, not on the Code click.
+        // The capture is the slow part; the tab should open onto it.
+        self.ensure_changes(worktree, state, cx);
         let header = self.render_header(worktree, title, orphan, theme, cx);
         let tabs = self.render_tabs(worktree, theme, cx);
         let body = match self.tab {
@@ -141,7 +144,7 @@ impl Detail {
                 theme,
             ),
             DetailTab::Commits => self.render_commits(worktree, theme, cx),
-            DetailTab::Changes => self.render_changes(worktree, state, cx),
+            DetailTab::Changes => self.render_changes(cx),
         };
         let selector_name = self.worktree.clone();
         div()
@@ -593,19 +596,25 @@ impl Detail {
             .into_any_element()
     }
 
-    fn render_changes(
+    /// The branch diff, created once per detail. Called from `render` so
+    /// the capture is in flight while Summary is showing.
+    fn ensure_changes(
         &mut self,
         worktree: &IntegrationWorktree,
         state: &Entity<AppState>,
         cx: &mut Context<IntegrationPage>,
-    ) -> AnyElement {
-        if self.changes.is_none() {
-            let pin = self.pin(worktree);
-            let trunk = self.trunk.clone();
-            let state = state.clone();
-            self.changes = Some(cx.new(|cx| Changes::pinned(state, pin, None, Some(trunk), cx)));
+    ) {
+        if self.changes.is_some() {
+            return;
         }
-        let changes = self.changes.clone().expect("just created");
+        let pin = self.pin(worktree);
+        let trunk = self.trunk.clone();
+        let state = state.clone();
+        self.changes = Some(cx.new(|cx| Changes::pinned(state, pin, None, Some(trunk), cx)));
+    }
+
+    fn render_changes(&mut self, cx: &mut Context<IntegrationPage>) -> AnyElement {
+        let changes = self.changes.clone().expect("ensured before render");
         if let Some(path) = self.pending_reveal.take() {
             changes.update(cx, |changes, cx| changes.reveal_file(path, cx));
         }
