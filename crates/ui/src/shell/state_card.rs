@@ -82,9 +82,9 @@ fn mode_card_for(chat: &Chat) -> Option<ModeCard> {
 }
 
 /// The floating box both card forms share — the composer pill's chrome
-/// recipe: a faint wash over the frost blur with a hairline border, never
-/// a solid slab (composer.rs; a drop shadow under the translucent fill
-/// paints through as an inner glow, so glass gets none).
+/// recipe: a faint translucent wash with a hairline border, never a solid
+/// slab (composer.rs; a drop shadow under the translucent fill paints through
+/// as an inner glow, so glass gets none).
 pub(super) fn state_card_chrome(theme: &Theme) -> gpui::Div {
     div()
         // The card floats over the transcript: keep its clicks from
@@ -102,10 +102,10 @@ pub(super) fn state_card_chrome(theme: &Theme) -> gpui::Div {
         .when(!theme.is_frost(), |el| el.shadow_lg())
 }
 
-/// The entrance fade, then the card's own frost scene layer (the
+/// The entrance fade, then the card's own glass scene layer (the
 /// BadgeCard precedent): sharing the transcript's layer lets bubble text
 /// paint over it.
-pub(super) fn fade_and_frost(
+pub(super) fn fade_card(
     el: gpui::Stateful<gpui::Div>,
     id: &'static str,
     base_opacity: f32,
@@ -113,8 +113,7 @@ pub(super) fn fade_and_frost(
     let faded = el.with_animation(id, motion::FADE_QUICK.animation(), move |el, t| {
         el.opacity(t * base_opacity)
     });
-    crate::frost::frosted(crate::popover::CARD_RADIUS, crate::frost::MENU_BLUR, faded)
-        .into_any_element()
+    crate::layer::glass_layer(faded).into_any_element()
 }
 
 /// The collapse/expand morph: the outgoing form's measured outer size at the
@@ -254,9 +253,9 @@ impl Shell {
         );
 
         // The floating box: the composer pill's chrome recipe — a faint
-        // wash over the frost blur with a hairline border, never a solid
-        // slab (composer.rs; a drop shadow under the translucent fill
-        // paints through as an inner glow, so glass gets none). Clips to
+        // wash with a hairline border, never a solid slab (composer.rs; a
+        // drop shadow under the translucent fill paints through as an inner
+        // glow, so glass gets none). Clips to
         // the morph size while the content keeps its natural size, glued
         // to the top-right (the stack's top and the column's right edge
         // are both fixed, so only the left/bottom edges sweep).
@@ -305,7 +304,7 @@ impl Shell {
         // The swap fades the content in over the morph. A paused loop stays
         // fully legible — the status word says it stopped, the card itself
         // never reads as disabled.
-        Some(fade_and_frost(card, id, 1.0))
+        Some(fade_card(card, id, 1.0))
     }
 
     /// The mode body inside the shared chrome: identity glyph, name, the
@@ -385,7 +384,7 @@ impl Shell {
                     .child(mode.blurb),
             );
         let card = state_card_chrome(theme).id("mode-card").child(content);
-        fade_and_frost(card, "mode-card", 1.0)
+        fade_card(card, "mode-card", 1.0)
     }
 
     /// `ExitPlanMode` / `ExitProviderMode` from the mode form's off button

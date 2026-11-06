@@ -71,10 +71,9 @@ pub use rows::{DiffRow, body_height, body_height_with, body_row_count, body_rows
 // ---------------------------------------------------------------------------
 
 pub const FILE_HEADER_HEIGHT: f32 = 36.0;
-const STICKY_FILE_HEADER_BLUR: f32 = 16.0;
-/// Coverage of the theme's content-plane tint over the sticky header blur.
+/// Coverage of the theme's content-plane tint over the sticky header.
 /// Light needs substantially more coverage: dark text is much more vulnerable
-/// to rows ghosting through the blur than light text is on a dark tint.
+/// to rows showing through the tint than light text is on a dark tint.
 const STICKY_FILE_HEADER_TINT_ALPHA_DARK: f32 = 0.40;
 const STICKY_FILE_HEADER_TINT_ALPHA_LIGHT: f32 = 0.85;
 pub const HUNK_HEADER_HEIGHT: f32 = 28.0;

@@ -64,9 +64,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     env:
-      # sccache caches per-rustc-call by content hash, so the third_party
-      # gpui crates (path deps outside the workspace, which rust-cache
-      # evicts) stop recompiling on every run.
+      # sccache caches per-rustc-call by content hash, complementing
+      # rust-cache's workspace and dependency cache.
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
     steps:

@@ -2138,7 +2138,7 @@ impl Render for TerminalPane {
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
                     .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
                     .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
-                    .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
+                    .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, _, cx| {
                         let lines = match event.delta {
                             ScrollDelta::Lines(delta) => delta.y,
                             ScrollDelta::Pixels(delta) => {
@@ -2255,7 +2255,7 @@ mod tests {
             );
             pane
         });
-        // Match the event shape produced by the vendored macOS backend:
+        // Match the event shape produced by GPUI's macOS backend:
         // Enter and Tab carry key_char even though they are not printable.
         for (key, key_char, expected) in [
             ("enter", Some("\n"), b"\r".as_slice()),

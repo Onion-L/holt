@@ -178,11 +178,10 @@ impl Render for BadgeCard {
             .flex_col()
             .gap(px(4.0))
             .children(self.details.iter().map(|detail| Self::row(detail, theme)));
-        // `frosted` is load-bearing beyond the blur: it gives the card its own
-        // scene layer. Sharing the transcript's layer let the bubble's text
-        // paint over the card, since equal draw orders render quads before
-        // text.
-        crate::frost::frosted(crate::popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
+        // The card needs its own scene layer on glass: sharing the transcript's
+        // layer let the bubble's text paint over it, since equal draw orders
+        // render quads before text.
+        crate::layer::glass_layer(card)
     }
 }
 

@@ -202,13 +202,12 @@ impl TurnNotificationController {
         };
         // Tagged by Chat identity: a newer result replaces the older banner
         // for that Chat while other Chats stay distinct. Every eligible event
-        // posts independently so the OS plays its sound each time.
+        // posts an independent, silent notification.
         cx.show_system_notification(SystemNotification {
             tag: event.chat_id.into(),
             title: APP_DISPLAY_NAME.into(),
             body: body.into(),
             actions: Vec::new(),
-            sound: settings.completion_notification_sound,
         });
     }
 
@@ -266,7 +265,6 @@ impl TurnNotificationController {
                 title: APP_DISPLAY_NAME.into(),
                 body: body.into(),
                 actions: Vec::new(),
-                sound: settings.completion_notification_sound,
             });
         }
     }
@@ -633,7 +631,6 @@ mod tests {
         assert_eq!(shown[0].title, "Holt");
         assert_eq!(shown[0].body, "Fix the flake completed");
         assert_eq!(shown[0].tag, "chat-1");
-        assert!(shown[0].sound);
     }
 
     #[gpui::test]
@@ -726,10 +723,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn master_toggle_off_suppresses_banner_and_sound(cx: &mut TestAppContext) {
+    async fn master_toggle_off_suppresses_banner(cx: &mut TestAppContext) {
         let harness = harness(cx, |settings| {
             settings.completion_notifications = false;
-            settings.completion_notification_sound = false;
         });
         harness
             .engine
@@ -766,20 +762,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn sound_toggle_reaches_the_platform_payload(cx: &mut TestAppContext) {
-        let harness = harness(cx, |settings| {
-            settings.completion_notification_sound = false;
-        });
-        harness
-            .engine
-            .push_event(event("event-1", "chat-1", TurnOutcome::Succeeded));
-        harness.wait_until(cx, |cx| !shown(cx).is_empty());
-        let shown = shown(cx);
-        assert_eq!(shown.len(), 1);
-        assert!(!shown[0].sound);
-    }
-
-    #[gpui::test]
     async fn same_chat_replaces_older_banner_others_stay(cx: &mut TestAppContext) {
         let harness = harness(cx, |_| {});
         for (event_id, chat_id) in [
@@ -793,9 +775,9 @@ mod tests {
         }
         harness.wait_until(cx, |cx| shown(cx).len() == 3);
 
-        // Every event posts independently (sound per completion)…
+        // Every event posts independently, but per-Chat tags replace, keeping
+        // distinct Chats separate.
         assert_eq!(shown(cx).len(), 3);
-        // …but per-Chat tags replace, keeping distinct Chats separate.
         let delivered = cx.delivered_system_notifications();
         assert_eq!(delivered.len(), 2);
         assert!(

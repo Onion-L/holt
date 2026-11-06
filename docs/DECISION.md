@@ -37,7 +37,7 @@ in the same commit.
 | [integration](subsystems/integration.md) | [ui-driven-merge-and-worktree-delete](#ui-driven-merge-and-worktree-delete) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
-| UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
+| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -875,3 +875,20 @@ merge gate reopens the PR-state-machine question the integration view
 exists to avoid); stashing or forcing a dirty main checkout (silently
 moving user data — overlapping dirt refuses, non-overlapping dirt
 survives the safe checkout).
+
+## gpui-kit-owns-the-gpui-stack
+
+Holt consumes GPUI through `gpui-kit` with the component and asset features
+disabled, and deletes the vendored GPUI fork. The existing `gpui` crate name
+is Holt's alias for the Kit facade, so ordinary views do not need import-only
+churn; the small Tokio bridge remains Holt-owned because Kit does not supply
+one. Rejected: keeping a patched fork (the maintenance cost this migration
+is intended to remove), adopting `gpui-component` at the same time (an
+independent UI migration), and porting the custom within-window blur and
+edge-fade renderers (visual parity was not worth retaining renderer patches).
+
+The accepted simplifications are explicit: native window background blur
+stays, floating cards lose their separate backdrop blur but keep scene-layer
+isolation, edge fades are removed, OS notifications become silent on macOS,
+and native Dock quit uses GPUI's non-cancellable exit path. Window chrome and
+Cmd+Q still pass through the draft/terminal confirmation gate.

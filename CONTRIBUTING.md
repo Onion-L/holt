@@ -49,9 +49,9 @@ or error handling just to make a test pass.
 - **The engine slice is intentionally narrow.** Worktrees, change requests,
   and uploads are rendered by the UI but unserved — those RPCs reply
   `UnknownMethod` by design, not regression.
-- **gpui is a frozen third-party snapshot** under `third_party/gpui`. Edit it in place
-  when needed; never resolve gpui from git, and check the vendored sources
-  rather than online docs for its API.
+- **GPUI comes from gpui-kit.** Keep its component and asset features disabled
+  unless deliberately adopting them, and check the exact sources selected by
+  `Cargo.lock` for API details.
 - **Commits** follow `type(crate): summary` — e.g. `feat(ui): …`,
   `fix(engine): …`. Keep each commit focused on one change.
 
