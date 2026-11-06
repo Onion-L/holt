@@ -1753,3 +1753,46 @@ async fn delete_worktree_refuses_a_chat_with_a_running_turn() {
         .collect();
     assert!(names.contains(&"chat-9".to_string()), "nothing removed");
 }
+
+#[tokio::test]
+async fn delete_worktree_refuses_a_worktree_holding_the_trunk() {
+    let fixture = Fixture::new();
+    let wt_dir = TempDir::new().unwrap();
+    // The main checkout moves to a side branch so the trunk (main) is free
+    // for a linked worktree to check out.
+    let repo = fixture.repo();
+    let tip_id = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    {
+        let tip = repo.find_commit(tip_id).unwrap();
+        repo.branch("side", &tip, false).unwrap();
+    }
+    repo.set_head("refs/heads/side").unwrap();
+    let path = add_worktree(&repo, &wt_dir, "wt-holds-trunk", "main", "main");
+    drop(repo);
+
+    let engine = fixture.engine();
+    let error = match delete_worktree(&engine, &fixture, "wt-holds-trunk", false).await {
+        Ok(()) => panic!("a worktree holding the trunk must refuse"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("the worktree stays"),
+        "got: {error}"
+    );
+    // The whole deletion refused: directory, registration, and branch.
+    assert!(std::path::Path::new(&path).exists());
+    let repo = fixture.repo();
+    let names: Vec<String> = repo
+        .worktrees()
+        .unwrap()
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_string))
+        .collect();
+    assert!(names.contains(&"wt-holds-trunk".to_string()));
+    assert!(repo.find_reference("refs/heads/main").is_ok());
+}

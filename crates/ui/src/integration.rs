@@ -1990,6 +1990,11 @@ impl IntegrationPage {
             return div().into_any_element();
         };
         let trunk = snapshot.trunk.name.clone();
+        let delete_hidden = delete_protected(
+            row.branch.as_deref(),
+            trunk.as_str(),
+            snapshot.main_checkout.branch.as_deref(),
+        );
         let busy = self
             .deleting
             .as_deref()
@@ -2082,15 +2087,20 @@ impl IntegrationPage {
                         trunk = trunk.as_str(),
                         sha = short_sha(row.merge_sha.as_deref().unwrap_or(""))
                     ))
-                    .child(div().flex_1())
-                    .child(
-                        popover::btn_primary(
-                            theme,
-                            &t!("integration.merge.delete_worktree_branch"),
+                    .when(!delete_hidden, |el| el.child(div().flex_1()))
+                    .when(delete_hidden, |el| {
+                        el.child(t!("integration.merge.delete_blocked_hint"))
+                    })
+                    .when(!delete_hidden, |el| {
+                        el.child(
+                            popover::btn_primary(
+                                theme,
+                                &t!("integration.merge.delete_worktree_branch"),
+                            )
+                            .id("integration-delete-wt-branch")
+                            .on_click(cx.listener(|this, _, _, cx| this.ask_delete(cx))),
                         )
-                        .id("integration-delete-wt-branch")
-                        .on_click(cx.listener(|this, _, _, cx| this.ask_delete(cx))),
-                    ),
+                    }),
                 WorktreeStatus::NoChanges => div()
                     .flex()
                     .items_center()
@@ -2098,12 +2108,16 @@ impl IntegrationPage {
                     .text_size(px(12.0))
                     .text_color(theme.text_muted)
                     .child(t!("integration.merge.no_changes_hint"))
-                    .child(div().flex_1())
-                    .child(
-                        popover::btn_primary(theme, &t!("integration.merge.delete_worktree"))
-                            .id("integration-delete-wt")
-                            .on_click(cx.listener(|this, _, _, cx| this.ask_delete(cx))),
-                    ),
+                    .when(delete_hidden, |el| {
+                        el.child(t!("integration.merge.delete_blocked_hint"))
+                    })
+                    .when(!delete_hidden, |el| {
+                        el.child(div().flex_1()).child(
+                            popover::btn_primary(theme, &t!("integration.merge.delete_worktree"))
+                                .id("integration-delete-wt")
+                                .on_click(cx.listener(|this, _, _, cx| this.ask_delete(cx))),
+                        )
+                    }),
                 WorktreeStatus::Missing => div()
                     .flex()
                     .items_center()
@@ -2910,6 +2924,17 @@ fn kv_row(theme: &Theme, label: &str, value: String) -> AnyElement {
         .into_any_element()
 }
 
+/// Whether deleting this worktree would take the trunk or the main
+/// checkout's own branch with it — the engine refuses the deletion, so the
+/// bar does not offer it.
+pub(crate) fn delete_protected(
+    row_branch: Option<&str>,
+    trunk: &str,
+    main_branch: Option<&str>,
+) -> bool {
+    row_branch.is_some_and(|branch| branch == trunk || Some(branch) == main_branch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3020,6 +3045,19 @@ mod tests {
         assert!(!filter_matches(Filter::Ready, Dirty));
         assert!(filter_matches(Filter::Merged, Merged));
         assert!(!filter_matches(Filter::Merged, Ready));
+    }
+
+    #[test]
+    fn delete_is_hidden_when_the_branch_is_the_trunk_or_the_main_checkouts() {
+        use super::delete_protected;
+        // The trunk.
+        assert!(delete_protected(Some("main"), "main", Some("side")));
+        // The main checkout's own branch.
+        assert!(delete_protected(Some("side"), "main", Some("side")));
+        // An ordinary branch deletes.
+        assert!(!delete_protected(Some("feature"), "main", Some("main")));
+        // Detached or missing worktrees have nothing to protect.
+        assert!(!delete_protected(None, "main", Some("main")));
     }
 
     // ---- repo selection ----

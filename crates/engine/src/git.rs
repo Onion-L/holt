@@ -3285,6 +3285,23 @@ fn remove_worktree(
     } else {
         None
     };
+    // A worktree holding the trunk (the repo's default branch) or the main
+    // checkout's own branch strands the repository when its branch goes —
+    // refuse the whole deletion. (The second half is unreachable through
+    // git's own checkout rules — a branch checked out twice is refused —
+    // kept as a guard.)
+    if let Some(branch) = branch.as_deref() {
+        let trunk = local_branch_names(&main_repo).ok().and_then(|names| {
+            default_branch(&names, origin_head_target(&main_repo).as_deref()).map(str::to_string)
+        });
+        let main_branch = current_branch(&main_repo);
+        if trunk.as_deref() == Some(branch) || main_branch.as_deref() == Some(branch) {
+            return Err(format!(
+                "worktree {worktree_name} has {branch} checked out; that branch is \
+                 the trunk or the main checkout's branch, so the worktree stays"
+            ));
+        }
+    }
 
     // Directory first, then the registration: prune refuses a live
     // directory unless told to take it too.

@@ -132,6 +132,8 @@ integration:
       en-US: Delete worktree and branch
     cleanup:
       en-US: Clean up
+    delete_blocked_hint:
+      en-US: The branch stays — it is the trunk or the main checkout's.
     no_changes_hint:
       en-US: No changes over the trunk.
     missing_hint:

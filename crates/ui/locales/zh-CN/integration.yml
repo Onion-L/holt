@@ -132,6 +132,8 @@ integration:
       zh-CN: 删除工作树和分支
     cleanup:
       zh-CN: 清理
+    delete_blocked_hint:
+      zh-CN: 分支会被保留——它是主干或主 checkout 所在的分支。
     no_changes_hint:
       zh-CN: 相对主干没有改动。
     missing_hint:
