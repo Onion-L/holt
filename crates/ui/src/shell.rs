@@ -4141,13 +4141,12 @@ mod tests {
                 .is_some(),
             "manual worktrees are listed too"
         );
-        // The snapshot auto-selected the first worktree.
         assert!(
-            visual.debug_bounds("integration-detail-chat-1").is_some(),
-            "the first worktree's detail rendered"
+            visual.debug_bounds("integration-detail-chat-1").is_none(),
+            "the inbox does not open a worktree on its own"
         );
 
-        // Clicking another row switches the detail.
+        // Opening a row replaces the inbox with that worktree.
         let manual_row = visual
             .debug_bounds("integration-worktree-row-manual")
             .expect("manual row bounds");
@@ -4159,13 +4158,17 @@ mod tests {
             visual.run_until_parked();
         }
         assert!(visual.debug_bounds("integration-detail-manual").is_some());
+        assert!(
+            visual
+                .debug_bounds("integration-worktree-row-chat-1")
+                .is_some(),
+            "the inbox stays beside the open worktree"
+        );
 
-        // Back to chat-1's row, then through the whole merge flow: the bar's
-        // button previews, the dialog confirms, the merge lands and the
-        // snapshot reloads.
+        // The other row is still in the list. Open it and run the merge.
         let first_row = visual
             .debug_bounds("integration-worktree-row-chat-1")
-            .expect("chat-1 row still rendered");
+            .expect("chat-1 row rendered");
         visual.simulate_click(first_row.center(), Default::default());
         for _ in 0..4 {
             runtime.block_on(async {

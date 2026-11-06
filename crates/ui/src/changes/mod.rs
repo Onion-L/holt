@@ -416,6 +416,10 @@ impl Changes {
                 changes.base_ref = base;
             }
         }
+        // A pinned pane does not ride the checkout-diff watch, and nothing
+        // else observes it into a first fetch. The chat surface calls
+        // `ensure_content` when a tab is shown; this pane has no such host.
+        changes.ensure_content(cx);
         changes
     }
 

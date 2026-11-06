@@ -1,7 +1,6 @@
-//! The integration page's right column: one worktree's header, tabs
-//! (overview / commits / changes), and the embedded diff panes — pinned
-//! [`Changes`] views over the worktree's checkout, reusing the Changes
-//! pane's rendering wholesale.
+//! The integration page's detail: one worktree's title, a summary
+//! (status, review, branch, changes, checks), and the embedded diff
+//! panes. Pinned [`Changes`] views reuse the Changes pane wholesale.
 //!
 //! `Detail` is plain state owned by the page (not an entity): the listeners
 //! its render builds are page listeners (`cx.listener`), so tab switches and
@@ -22,12 +21,11 @@ use super::{IntegrationEvent, IntegrationPage, WorktreeStatus};
 /// Which detail tab is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DetailTab {
-    Overview,
-    Commits,
+    /// Status, review, branch, checks. The page opens here.
+    Summary,
+    /// The branch diff against the trunk.
     Changes,
-    /// 审查与检查 (the review card; the checks card lives here and on the
-    /// overview too).
-    Review,
+    Commits,
 }
 
 /// The selected worktree's detail view. Rebuilt when the selection or the
@@ -67,7 +65,7 @@ impl Detail {
         Some(Detail {
             worktree: worktree.to_string(),
             trunk,
-            tab: DetailTab::Overview,
+            tab: DetailTab::Summary,
             changes: None,
             commit: None,
             pending_reveal: None,
@@ -123,27 +121,27 @@ impl Detail {
         state: &Entity<AppState>,
         checks_card: AnyElement,
         review_card: AnyElement,
+        review_line: SharedString,
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
-        let trunk = self.trunk.clone();
-        let header = self.render_header(worktree, title, status, &trunk, theme, cx);
+        let orphan = worktree.chat_id.is_none() && {
+            let data_dir = state.read(cx).data_dir.clone().unwrap_or_default();
+            super::worktree_is_orphan(worktree, &data_dir)
+        };
+        let header = self.render_header(worktree, title, orphan, theme, cx);
         let tabs = self.render_tabs(worktree, theme, cx);
         let body = match self.tab {
-            DetailTab::Overview => self.render_overview(worktree, state, checks_card, theme, cx),
+            DetailTab::Summary => self.render_summary(
+                worktree,
+                status,
+                review_line,
+                checks_card,
+                review_card,
+                theme,
+            ),
             DetailTab::Commits => self.render_commits(worktree, theme, cx),
             DetailTab::Changes => self.render_changes(worktree, state, cx),
-            // The checks card and the review card come from the page (it
-            // owns the watches).
-            DetailTab::Review => div()
-                .id("integration-review-scroll")
-                .flex()
-                .flex_col()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(checks_card)
-                .child(review_card)
-                .into_any_element(),
         };
         let selector_name = self.worktree.clone();
         div()
@@ -154,8 +152,8 @@ impl Detail {
             .flex()
             .flex_col()
             .child(header)
-            .child(tabs)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
+            .child(tabs)
             .into_any_element()
     }
 
@@ -163,31 +161,27 @@ impl Detail {
         &mut self,
         worktree: &IntegrationWorktree,
         title: SharedString,
-        status: WorktreeStatus,
-        trunk: &str,
+        orphan: bool,
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
-        let branch = worktree
-            .branch
-            .clone()
-            .unwrap_or_else(|| t!("integration.detail.detached").into_owned());
+        let age = worktree
+            .commits
+            .first()
+            .and_then(|commit| chrono::DateTime::parse_from_rfc3339(&commit.authored_at).ok())
+            .map(|time| {
+                crate::state::format_time_ago(time.with_timezone(&chrono::Utc), chrono::Utc::now())
+            })
+            .unwrap_or_default();
         let mut meta = div()
             .mt(px(6.0))
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(12.0))
-            .text_size(px(11.5))
-            .text_color(theme.text_muted)
-            .child(IntegrationPage::status_chip(status, trunk, theme))
-            .child(
-                div()
-                    .flex_none()
-                    .font_family(theme.font_mono.clone())
-                    .text_color(theme.text_dim)
-                    .child(format!("{branch} → {trunk}")),
-            );
+            .text_size(px(12.0))
+            .text_color(theme.text_faint)
+            .when(!age.is_empty(), |el| el.child(age));
         if let Some(chat_id) = worktree.chat_id.clone() {
             let path = worktree.path.clone();
             let terminal_chat = chat_id.clone();
@@ -222,16 +216,36 @@ impl Detail {
         }
         div()
             .flex_none()
-            .pb(px(12.0))
+            .pt(px(4.0))
+            .pb(px(10.0))
             .child(
                 div()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(16.0))
+                    .text_size(px(20.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text)
                     .child(title),
             )
             .child(meta)
+            .when(worktree.missing, |el| {
+                el.child(
+                    div()
+                        .mt(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(theme.danger)
+                        .child(t!("integration.detail.missing_hint")),
+                )
+            })
+            .when(orphan, |el| {
+                el.child(
+                    div()
+                        .mt(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(theme.warning)
+                        .child(t!("integration.detail.orphan_hint")),
+                )
+            })
             .into_any_element()
     }
 
@@ -241,178 +255,174 @@ impl Detail {
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
-        use DetailTab::{Changes, Commits, Overview, Review};
+        use DetailTab::{Changes, Commits, Summary};
         let tab = self.tab;
-        let entries: [(DetailTab, SharedString, Option<usize>); 4] = [
-            (Overview, t!("integration.detail.tab_overview").into(), None),
+        let entries: [(DetailTab, SharedString, Option<usize>); 3] = [
+            (Summary, t!("integration.detail.tab_summary").into(), None),
+            (Changes, t!("integration.detail.tab_code").into(), None),
             (
                 Commits,
-                t!("integration.detail.tab_commits").into(),
+                t!("integration.detail.tab_activity").into(),
                 Some(worktree.commits.len()),
             ),
-            (Changes, t!("integration.detail.tab_changes").into(), None),
-            (Review, t!("integration.detail.tab_review").into(), None),
         ];
         div()
             .flex_none()
             .flex()
-            .items_center()
-            .p(px(3.0))
-            .rounded(px(10.0))
-            .bg(crate::theme::wash(0.06))
-            .children(entries.into_iter().map(|(entry, label, count)| {
-                let active = entry == tab;
+            .justify_center()
+            .py(px(10.0))
+            .child(
                 div()
-                    .id(SharedString::from(format!(
-                        "integration-detail-tab-{entry:?}"
-                    )))
-                    .h(px(24.0))
-                    .px(px(10.0))
                     .flex()
                     .items_center()
-                    .gap(px(5.0))
-                    .rounded(px(7.0))
-                    .cursor_pointer()
-                    .text_size(px(11.5))
-                    .when(active, |el| {
-                        el.bg(theme.surface_raised)
-                            .shadow_sm()
-                            .text_color(theme.text)
-                    })
-                    .when(!active, |el| {
-                        el.hover(|style| style.text_color(theme.text))
-                            .text_color(theme.text_muted)
-                    })
-                    .on_click(cx.listener(move |page, _, _, cx| {
-                        if let Some(detail) = &mut page.detail {
-                            detail.set_tab(entry);
-                        }
-                        cx.notify();
-                    }))
-                    .child(label)
-                    .when_some(count, |el, count| {
-                        el.child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(theme.text_faint)
-                                .child(SharedString::from(count.to_string())),
-                        )
-                    })
-            }))
+                    .gap(px(2.0))
+                    .p(px(2.0))
+                    .rounded(px(9.0))
+                    .bg(crate::theme::wash(0.06))
+                    .children(entries.into_iter().map(|(entry, label, count)| {
+                        let active = entry == tab;
+                        div()
+                            .id(SharedString::from(format!(
+                                "integration-detail-tab-{entry:?}"
+                            )))
+                            .h(px(28.0))
+                            .px(px(12.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .rounded(px(7.0))
+                            .cursor_pointer()
+                            .text_size(px(12.5))
+                            .when(active, |el| {
+                                el.bg(theme.surface_raised).text_color(theme.text)
+                            })
+                            .when(!active, |el| {
+                                el.hover(|style| style.text_color(theme.text))
+                                    .text_color(theme.text_muted)
+                            })
+                            .on_click(cx.listener(move |page, _, _, cx| {
+                                if let Some(detail) = &mut page.detail {
+                                    detail.set_tab(entry);
+                                }
+                                cx.notify();
+                            }))
+                            .child(label)
+                            .when_some(count, |el, count| {
+                                el.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.text_faint)
+                                        .child(SharedString::from(count.to_string())),
+                                )
+                            })
+                    })),
+            )
             .into_any_element()
     }
 
-    fn render_overview(
-        &mut self,
+    fn render_summary(
+        &self,
         worktree: &IntegrationWorktree,
-        state: &Entity<AppState>,
+        status: WorktreeStatus,
+        review_line: SharedString,
         checks_card: AnyElement,
+        review_card: AnyElement,
         theme: &Theme,
-        cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
-        let app = state.read(cx);
-        let (chat_value, orphan) = match worktree.chat_id.as_deref() {
-            Some(chat_id) => {
-                let title = app
-                    .chat_row(chat_id)
-                    .and_then(|chat| chat.title.clone())
-                    .unwrap_or_else(|| t!("integration.detail.untitled_chat").into_owned());
-                (title, false)
-            }
-            None => (t!("integration.detail.no_chat").into_owned(), {
-                let data_dir = app.data_dir.clone().unwrap_or_default();
-                super::worktree_is_orphan(worktree, &data_dir)
-            }),
-        };
-        let ahead_behind = format!(
-            "{} · {}",
-            t!("integration.detail.ahead", n = worktree.ahead),
-            t!("integration.detail.behind", n = worktree.behind),
-        );
-        let rows: Vec<(SharedString, String)> = vec![
-            (
-                t!("integration.detail.row_branch").into(),
-                worktree
-                    .branch
-                    .clone()
-                    .unwrap_or_else(|| t!("integration.detail.detached").into_owned()),
-            ),
-            (
-                t!("integration.detail.row_path").into(),
-                worktree.path.clone(),
-            ),
-            (t!("integration.detail.row_vs_trunk").into(), ahead_behind),
-            (t!("integration.detail.row_chat").into(), chat_value),
-        ]
-        .into_iter()
-        .chain(
-            worktree
-                .merged
-                .then(|| worktree.merge_sha.clone())
-                .flatten()
-                .map(|sha| {
-                    (
-                        t!("integration.detail.row_merged_as").into(),
-                        sha.chars().take(12).collect(),
-                    )
-                }),
-        )
-        .collect();
-
         div()
-            .id("integration-overview")
+            .id("integration-summary")
             .size_full()
             .overflow_y_scroll()
-            .child(
-                div()
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(theme.border.opacity(0.6))
-                    .p(px(16.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.0))
-                    .children(rows.into_iter().map(|(label, value)| {
-                        div()
-                            .flex()
-                            .gap(px(14.0))
-                            .text_size(px(12.0))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(96.0))
-                                    .text_color(theme.text_faint)
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(px(11.5))
-                                    .text_color(theme.text_muted)
-                                    .child(value),
-                            )
-                    }))
-                    .when(orphan, |el| {
-                        el.child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(theme.warning)
-                                .child(t!("integration.detail.orphan_hint")),
-                        )
-                    })
-                    .when(worktree.missing, |el| {
-                        el.child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(theme.danger)
-                                .child(t!("integration.detail.missing_hint")),
-                        )
-                    }),
-            )
+            .flex()
+            .flex_col()
+            .child(self.property_card(worktree, status, review_line, theme))
             .child(checks_card)
+            .child(review_card)
+            .into_any_element()
+    }
+
+    fn property_card(
+        &self,
+        worktree: &IntegrationWorktree,
+        status: WorktreeStatus,
+        review_line: SharedString,
+        theme: &Theme,
+    ) -> AnyElement {
+        let trunk = self.trunk.clone();
+        let branch = worktree
+            .branch
+            .clone()
+            .unwrap_or_else(|| t!("integration.detail.detached").into_owned());
+        let changes = t!(
+            "integration.detail.changes_line",
+            commits = worktree.commits.len(),
+            ahead = worktree.ahead,
+            behind = worktree.behind
+        );
+        let row = |label: SharedString, value: AnyElement| {
+            div()
+                .h(px(36.0))
+                .flex()
+                .items_center()
+                .gap(px(16.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(88.0))
+                        .text_size(px(12.5))
+                        .text_color(theme.text_faint)
+                        .child(label),
+                )
+                .child(value)
+        };
+        div()
+            .flex_none()
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border.opacity(0.55))
+            .px(px(16.0))
+            .py(px(4.0))
+            .flex()
+            .flex_col()
+            .child(row(
+                t!("integration.detail.prop_status").into(),
+                IntegrationPage::status_badge(status, &trunk, theme),
+            ))
+            .child(row(
+                t!("integration.detail.prop_review").into(),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.5))
+                    .text_color(theme.text)
+                    .child(review_line)
+                    .into_any_element(),
+            ))
+            .child(row(
+                t!("integration.detail.prop_branch").into(),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(theme.font_mono.clone())
+                    .text_size(px(12.0))
+                    .text_color(theme.text)
+                    .child(format!("{branch} → {trunk}"))
+                    .into_any_element(),
+            ))
+            .child(row(
+                t!("integration.detail.prop_changes").into(),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.5))
+                    .text_color(theme.text)
+                    .child(if worktree.missing {
+                        t!("integration.detail.missing_hint").into_owned()
+                    } else {
+                        changes.to_string()
+                    })
+                    .into_any_element(),
+            ))
             .into_any_element()
     }
 

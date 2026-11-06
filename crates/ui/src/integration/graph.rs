@@ -1,24 +1,11 @@
-//! Branch-tree layout for the integration page's left column: the row order
-//! (trunk commits interleaved with worktree heads) and the swim-lane each
-//! branch occupies. Pure row-index math — the page paints it, the tests pin
-//! it.
+//! Row order for the integration page's worktree list. Trunk commits stay
+//! in the layout so a worktree sorts under its fork (missing ones float
+//! first); the page renders only the worktree rows. Swim lanes are computed
+//! for the tests and are not painted.
 
 use std::collections::HashMap;
 
 use holt_proto::{GitHistoryCommit, IntegrationSnapshot};
-
-/// The branch tree's paint geometry (the prototype's rhythm): row height,
-/// the trunk's x offset, the lane pitch, and the right padding after the
-/// outermost lane.
-pub(crate) const ROW_HEIGHT: f32 = 54.0;
-pub(crate) const TRUNK_X: f32 = 18.0;
-pub(crate) const LANE_WIDTH: f32 = 22.0;
-pub(crate) const GRAPH_RIGHT_PAD: f32 = 14.0;
-
-/// The horizontal room the tree needs — the rows' left padding.
-pub(crate) fn graph_width(lane_count: usize) -> f32 {
-    TRUNK_X + lane_count.max(1) as f32 * LANE_WIDTH + GRAPH_RIGHT_PAD
-}
 
 /// One list row: a trunk commit (by index into `trunk_commits`) or a
 /// worktree's head (by index into `worktrees`).
