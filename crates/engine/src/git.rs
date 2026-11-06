@@ -330,6 +330,87 @@ impl Git {
     /// no ref is left behind while the checkout lives.
     /// The trunk's and a worktree branch's current heads — the staleness pair
     /// a checks run is judged against. Read-only; no merge preconditions.
+    pub(crate) async fn worktree_path(
+        &self,
+        repo_path: &str,
+        worktree: &str,
+    ) -> Result<String, String> {
+        let worktree = worktree.to_string();
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            Ok(registered_worktree_path(&main_repo, &worktree)?
+                .display()
+                .to_string())
+        })
+        .await
+    }
+
+    /// The reviewer names declared on the trunk's `.holt/reviewers/`
+    /// directory (`.md` files, sorted). `None` when the repo declares none.
+    pub(crate) async fn reviewers_in_trunk(
+        &self,
+        repo_path: &str,
+        trunk: &str,
+    ) -> Result<Option<Vec<String>>, String> {
+        let trunk = trunk.to_string();
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            let trunk_commit = main_repo
+                .find_reference(&format!("refs/heads/{trunk}"))
+                .and_then(|reference| reference.peel_to_commit())
+                .map_err(|_| format!("trunk {trunk} does not resolve"))?;
+            let tree = trunk_commit.tree().map_err(git_message)?;
+            let Ok(entry) = tree.get_path(std::path::Path::new(".holt/reviewers")) else {
+                return Ok(None);
+            };
+            let subtree = main_repo.find_tree(entry.id()).map_err(git_message)?;
+            let mut names: Vec<String> = (0..subtree.len())
+                .filter_map(|index| subtree.get(index))
+                .filter_map(|entry| {
+                    entry
+                        .name()
+                        .ok()
+                        .and_then(|name| name.strip_suffix(".md"))
+                        .map(str::to_string)
+                })
+                .collect();
+            names.sort();
+            Ok(Some(names))
+        })
+        .await
+    }
+
+    /// One reviewer's prompt text: the trunk's `.holt/reviewers/<name>.md`
+    /// blob, `None` when the repo does not define that reviewer.
+    pub(crate) async fn reviewer_prompt(
+        &self,
+        repo_path: &str,
+        trunk: &str,
+        reviewer: &str,
+    ) -> Result<Option<String>, String> {
+        let trunk = trunk.to_string();
+        let reviewer = reviewer.to_string();
+        self.with_repo(repo_path, move |repo| {
+            let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+            let trunk_commit = main_repo
+                .find_reference(&format!("refs/heads/{trunk}"))
+                .and_then(|reference| reference.peel_to_commit())
+                .map_err(|_| format!("trunk {trunk} does not resolve"))?;
+            let tree = trunk_commit.tree().map_err(git_message)?;
+            let path = format!(".holt/reviewers/{reviewer}.md");
+            let Some(entry) = tree
+                .get_path(std::path::Path::new(&path))
+                .ok()
+                .map(|entry| entry.id())
+            else {
+                return Ok(None);
+            };
+            let blob = main_repo.find_blob(entry).map_err(git_message)?;
+            Ok(Some(String::from_utf8_lossy(blob.content()).into_owned()))
+        })
+        .await
+    }
+
     pub(crate) async fn worktree_and_trunk_heads(
         &self,
         repo_path: &str,
@@ -1115,6 +1196,19 @@ fn origin_head_target(repo: &Repository) -> Option<String> {
         .ok()??
         .strip_prefix("refs/remotes/origin/")
         .map(str::to_string)
+}
+
+/// A registered worktree's path, trailing slash stripped (libgit2 spells
+/// worktree paths with one).
+fn registered_worktree_path(main_repo: &Repository, worktree: &str) -> Result<PathBuf, String> {
+    let path = main_repo
+        .find_worktree(worktree)
+        .map_err(|_| format!("worktree {worktree} is not registered"))?
+        .path()
+        .to_path_buf();
+    Ok(PathBuf::from(
+        path.display().to_string().trim_end_matches('/'),
+    ))
 }
 
 /// `(branch, worktree path)` for every linked worktree with a branch (not a

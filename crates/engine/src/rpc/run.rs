@@ -184,6 +184,7 @@ impl EngineService {
                     worktree: Some(spec.clone()),
                     routine_run: None,
                     goal: None,
+                    review: None,
                 }),
             }
         }
@@ -650,6 +651,10 @@ impl EngineService {
         // The Turn's Provider Mode snapshot (ADR-provider-mode-is-a-chat-mode), taken at
         // acceptance like the permission mode and Plan Mode.
         let mut provider_mode = false;
+        // The review snapshot (the integration view's reviewer chat): a
+        // chat carrying review state runs the read-only review toolset.
+        let mut reviewing = false;
+        let mut review_prompt = None;
         {
             let mut chats = self
                 .runtime
@@ -675,6 +680,8 @@ impl EngineService {
                 }
                 planning = row.plan_mode.is_some();
                 provider_mode = row.provider_mode;
+                reviewing = row.review.is_some();
+                review_prompt = row.review.as_ref().map(|review| review.prompt.clone());
                 // The permission mode is NOT the
                 // request's to move (ADR-permission-modes-gate-mutations-no-os-sandbox): the stored mode is
                 // authoritative — switches land through the mode RPC and
@@ -842,6 +849,8 @@ impl EngineService {
             permission_mode: mode,
             plan_mode: planning,
             provider_mode,
+            review_mode: reviewing,
+            review_prompt,
             // The admission-time backend snapshot (ADR-web-tools-full-text-ungated-pluggable-search): resolved
             // once here, so a settings change mid-Turn lands from the
             // next Turn — the same snapshot semantics as the mode.

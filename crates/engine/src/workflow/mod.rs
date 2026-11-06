@@ -756,6 +756,7 @@ mod delivery_tests {
             worktree: None,
             routine_run: None,
             goal: None,
+            review: None,
         }
     }
 

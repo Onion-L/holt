@@ -253,3 +253,26 @@ integration:
       en-US: Deleting…
     done_toast:
       en-US: Worktree deleted.
+  review:
+    title:
+      en-US: Review
+    none:
+      en-US: Not reviewed yet. Reviews are on demand and never block a merge.
+    stale:
+      en-US: stale
+    send_back:
+      en-US: Send findings to chat
+    send_prefix:
+      en-US: "Review (%{reviewer}) found the following issues, please fix:"
+    verdict_clean:
+      en-US: "Review: clean"
+    verdict_issues:
+      en-US: "Review: issues"
+    summary_running:
+      en-US: "Review running"
+    summary_stale:
+      en-US: "Review stale"
+    summary_clean:
+      en-US: "Review: clean"
+    summary_issues:
+      en-US: "Review: %{count} issues"

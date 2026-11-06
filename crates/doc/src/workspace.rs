@@ -767,6 +767,7 @@ impl From<RawChat> for Chat {
             worktree: raw.worktree,
             routine_run: None,
             goal: None,
+            review: None,
         }
     }
 }
@@ -842,6 +843,7 @@ mod tests {
             provider_mode: false,
             routine_run: None,
             goal: None,
+            review: None,
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),

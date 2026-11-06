@@ -386,6 +386,9 @@ impl RpcService for EngineService {
             methods::WATCH_CHECKS => self.watch_checks(params).await,
             methods::STOP_CHECKS => self.stop_checks(params),
             methods::SUBSCRIBE_CHECK_LOG => self.subscribe_check_log(params).await,
+            methods::LIST_REVIEWERS => self.list_reviewers(params).await,
+            methods::START_REVIEW => self.start_review(params).await,
+            methods::LIST_REVIEWS => self.list_reviews(params).await,
             methods::FETCH_ALL => self.fetch_all(params).await,
             // No-op liveness pokes the UI fires defensively.
             methods::PROBE_SYNC => RpcReply::value(&serde_json::json!({})),

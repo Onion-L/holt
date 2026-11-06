@@ -344,6 +344,7 @@ impl EngineService {
                     manual: fire.manual,
                 }),
                 goal: None,
+                review: None,
             });
         let started = self
             .runtime

@@ -253,3 +253,26 @@ integration:
       zh-CN: 正在删除…
     done_toast:
       zh-CN: 工作树已删除。
+  review:
+    title:
+      zh-CN: 审查
+    none:
+      zh-CN: 还没审查。审查是按需的，不会拦住合并。
+    stale:
+      zh-CN: 已过期
+    send_back:
+      zh-CN: 发回 chat
+    send_prefix:
+      zh-CN: "审查（%{reviewer}）发现以下问题，请修复："
+    verdict_clean:
+      zh-CN: "审查：无问题"
+    verdict_issues:
+      zh-CN: "审查：有问题"
+    summary_running:
+      zh-CN: "审查中"
+    summary_stale:
+      zh-CN: "审查已过期"
+    summary_clean:
+      zh-CN: "审查：无问题"
+    summary_issues:
+      zh-CN: "审查：%{count} 个问题"

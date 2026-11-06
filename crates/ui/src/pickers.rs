@@ -1485,6 +1485,7 @@ mod tests {
             provider_mode: false,
             routine_run: None,
             goal: None,
+            review: None,
         }
     }
 

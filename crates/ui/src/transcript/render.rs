@@ -629,6 +629,77 @@ impl Transcript {
                 error,
             } => retry_chip(*attempt, *max_retries, *retry_at_ms, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
+            RowKind::ReviewSubmitted { verdict, findings } => {
+                let clean = verdict.as_ref() == "clean";
+                div()
+                    .max_w(px(560.0))
+                    .w_full()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.border.opacity(0.7))
+                    .bg(theme.surface_raised.opacity(0.6))
+                    .px(px(14.0))
+                    .py(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .text_size(px(12.0))
+                            .text_color(if clean { theme.success } else { theme.warning })
+                            .child(if clean {
+                                t!("integration.review.verdict_clean")
+                            } else {
+                                t!("integration.review.verdict_issues")
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_faint)
+                                    .child(format!("{}", findings.len())),
+                            ),
+                    )
+                    .children(findings.iter().map(|(severity, path, title, detail)| {
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(px(8.0))
+                            .text_size(px(11.5))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(match severity.as_ref() {
+                                        "high" => theme.danger,
+                                        "medium" => theme.warning,
+                                        _ => theme.text_muted,
+                                    })
+                                    .child(severity.clone()),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .child(
+                                        div()
+                                            .font_family(theme.font_mono.clone())
+                                            .text_size(px(10.5))
+                                            .text_color(theme.text_dim)
+                                            .child(path.clone()),
+                                    )
+                                    .child(div().text_color(theme.text).child(title.clone()))
+                                    .child(
+                                        div().text_color(theme.text_muted).child(detail.clone()),
+                                    ),
+                            )
+                    }))
+                    .into_any_element()
+            }
             RowKind::Workflow {
                 call_id,
                 name,

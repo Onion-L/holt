@@ -73,6 +73,7 @@ mod tests {
             provider_mode: false,
             routine_run: None,
             goal: None,
+            review: None,
         };
         let session = Session {
             chat_id: chat.id.clone(),

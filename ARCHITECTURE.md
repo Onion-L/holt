@@ -50,7 +50,7 @@ Method names live in `rpc::methods` (code is the contract). Each family's behavi
 | Catalog: models, commands, skills | `ListModels`, `ListCommands`, `ListSkills` | [prompts-skills](docs/subsystems/prompts-skills.md), [provider-transport](docs/subsystems/provider-transport.md) |
 | Workspace files and images | `ListWorkspaceEntries`, `ReadWorkspaceFile`, `SaveWorkspaceFile`, `StageImage`, `SearchFiles` | [workspace-files](docs/subsystems/workspace-files.md) |
 | Git and Turn change sets | `ListRefs`, `GetCheckoutDiff`, `GetTurnChangeSet`, `RestoreTurnChanges` | [workspace-git](docs/subsystems/workspace-git.md) |
-| Integration view (trunk + worktrees, local merge, worktree delete, local checks) | `ListIntegration`, `PreviewMerge`, `MergeIntoTrunk`, `DeleteWorktree`, `RunChecks`, `WatchChecks`, `StopChecks`, `SubscribeCheckLog` | [integration](docs/subsystems/integration.md) |
+| Integration view (trunk + worktrees, local merge, worktree delete, local checks, reviews) | `ListIntegration`, `PreviewMerge`, `MergeIntoTrunk`, `DeleteWorktree`, `RunChecks`, `WatchChecks`, `StopChecks`, `SubscribeCheckLog`, `ListReviewers`, `StartReview`, `ListReviews` | [integration](docs/subsystems/integration.md) |
 | Terminals | `OpenTerminal`, `WriteTerminal`, `SubscribeTerminal`, `CloseTerminal` | [terminals](docs/subsystems/terminals.md) |
 | Background processes | `ListBackgroundProcesses`, `WatchBackgroundProcesses`, `SubscribeBackgroundProcess`, `KillBackgroundProcess` | [background-processes](docs/subsystems/background-processes.md) |
 | Transcript and subagent blobs | `WatchDocMessages`, `FetchToolBlob` | [persistence](docs/subsystems/persistence.md), [subagents](docs/subsystems/subagents.md) |

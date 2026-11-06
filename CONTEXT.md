@@ -76,8 +76,16 @@ one word could mean two things. How a term behaves lives on its
 - **Worktree**: a linked git work tree. It is a Space-level concept: a worktree joins holt by being imported as its own Space, and chats under it switch branches inside it like any other working directory. The one automatic import is the session worktree (ADR-session-worktrees-are-chat-owned-isolation): a chat created with the "New worktree" checkout kind binds an isolation intent at send acceptance, and the engine materializes `<data dir>/worktrees/<chat id>` on a fresh `holt/<adjective>-<noun>-<shortHash>` branch (deterministically derived from the chat id; legacy `holt/<chat id>` branches are reused) at first admission — reusing an existing, correctly-registered worktree as-is — registers it as its own Space, and moves the chat there. A failed materialization fails the message visibly and never falls back to the main checkout.
 - **Trunk**: a repository's merge target branch — the thing the integration view draws everything against. Defaults to the repo's default branch; the integration page lets the user swap it per view (never persisted).
   _Avoid_: mainline, base branch (Base ref is the branch-diff vocabulary)
-- **Integration view**: the Worktrees page's read-only picture of one repository: the trunk's commit line plus every linked worktree as a branch off it, each with its derived status, commits, and branch diff. Scoped to a repository, never to a Space.
+- **Integration view**: the Worktrees page's picture of one repository: the trunk's commit line plus every linked worktree as a branch off it, each with its derived status, commits, branch diff, local checks, and reviews. Scoped to a repository, never to a Space.
   _Avoid_: branch manager, PR list (there is no PR object)
+- **Trunk**: a repository's merge target branch — the thing the integration view draws everything against. Defaults to the repo's default branch; the integration page lets the user swap it per view (never persisted).
+  _Avoid_: mainline, base branch (Base ref is the branch-diff vocabulary)
+- **Merge preview**: the in-memory result of squashing or fast-forwarding a worktree's branch onto the trunk — a tree and a diff, never a working-tree write.
+  _Avoid_: dry run
+- **Check**: one command from the trunk's `.holt/checks.toml`, run against the merge preview in a throwaway checkout. Checks inform the merge bar; they never gate a merge.
+  _Avoid_: CI (the cloud kind), test (a check may be any command)
+- **Review**: one reviewer chat's read-only pass over a worktree's branch diff, producing typed findings submitted through `submit_review`. Reviews are on demand and never gate a merge.
+  _Avoid_: code review pass, PR review (there is no PR object)
 - **Source context**: the repository identity a chat's Turn is stamped with when it starts — repo root, branch, checkout id. It is the only branch metadata trusted for identity; the chat's scalar branch field just echoes the most recent Turn's stamp.
 - **Diff scope**: which comparison a Changes pane shows. Four flavors: **working tree** (uncommitted changes vs HEAD), **branch** (everything the branch adds over the merge-base with a base ref, working tree included), **latest turn** (net changes since the chat's last turn started), **history** (the commit graph); a fifth, **commit**, exists only as a pinned per-commit pane.
 - **Base ref**: the branch a branch diff is taken against; defaults to the repo's default branch.

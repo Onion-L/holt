@@ -844,6 +844,8 @@ pub(crate) async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOu
                 invocation: Vec::new(),
                 permission_mode: d.permission_mode,
                 plan_mode: false,
+                review_mode: false,
+                review_prompt: None,
                 provider_mode: false,
                 search_backend: d.search_backend.clone(),
                 providers: None,

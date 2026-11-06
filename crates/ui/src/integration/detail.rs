@@ -112,6 +112,7 @@ impl Detail {
         _snapshot: &IntegrationSnapshot,
         state: &Entity<AppState>,
         checks_card: AnyElement,
+        review_card: AnyElement,
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
@@ -122,8 +123,17 @@ impl Detail {
             DetailTab::Overview => self.render_overview(worktree, state, checks_card, theme, cx),
             DetailTab::Commits => self.render_commits(worktree, theme, cx),
             DetailTab::Changes => self.render_changes(worktree, state, cx),
-            // The checks card comes from the page (it owns the watch).
-            DetailTab::Review => checks_card,
+            // The checks card and the review card come from the page (it
+            // owns the watches).
+            DetailTab::Review => div()
+                .id("integration-review-scroll")
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(checks_card)
+                .child(review_card)
+                .into_any_element(),
         };
         let selector_name = self.worktree.clone();
         div()
@@ -282,7 +292,6 @@ impl Detail {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_overview(
         &mut self,
         worktree: &IntegrationWorktree,

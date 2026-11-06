@@ -627,7 +627,7 @@ fn no_turn_recorded() -> RpcError {
 
 /// Report git capture faults at the right RPC severity: caller-input
 /// problems are bad params, repository failures are opaque errors.
-fn git_fault(fault: crate::git::GitFault) -> RpcError {
+pub(super) fn git_fault(fault: crate::git::GitFault) -> RpcError {
     match fault {
         crate::git::GitFault::BadParams(message) => RpcError::BadParams(message),
         crate::git::GitFault::Error(message) => RpcError::Failed(message),
