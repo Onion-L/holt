@@ -276,3 +276,39 @@ integration:
       zh-CN: "审查：无问题"
     summary_issues:
       zh-CN: "审查：%{count} 个问题"
+    summary_none:
+      zh-CN: "未审查"
+    summary_incomplete:
+      zh-CN: "审查未完成"
+    clean:
+      zh-CN: 无问题
+    issues:
+      zh-CN: 有问题
+    incomplete:
+      zh-CN: 未完成
+    running:
+      zh-CN: 审查中
+    custom:
+      zh-CN: 自定义…
+    custom_title:
+      zh-CN: 自定义审查
+    custom_body:
+      zh-CN: 这段文字作为这一次审查的 reviewer prompt。
+    custom_start:
+      zh-CN: 开始审查
+    chat_title:
+      zh-CN: "审查：%{branch} · %{reviewer}"
+    open_chat:
+      zh-CN: 打开审查 chat
+    send_title:
+      zh-CN: 发回作者 chat
+    send_body:
+      zh-CN: 编辑后排进作者 chat 的队列。是否复审由你决定。
+    send_confirm:
+      zh-CN: 发送
+    send_selected:
+      zh-CN: "发回所选（%{count}）"
+    sent:
+      zh-CN: 已排进作者 chat
+    no_model:
+      zh-CN: 没有可用的模型，先在输入框里选一个模型。

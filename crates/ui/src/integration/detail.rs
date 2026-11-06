@@ -25,8 +25,8 @@ pub(crate) enum DetailTab {
     Overview,
     Commits,
     Changes,
-    /// 审查与检查 (reviews arrive in P3; the checks card lives here and on
-    /// the overview).
+    /// 审查与检查 (the review card; the checks card lives here and on the
+    /// overview too).
     Review,
 }
 
@@ -42,6 +42,9 @@ pub(crate) struct Detail {
     pub(crate) changes: Option<Entity<Changes>>,
     /// A pinned commit diff while one commit is open from the Commits tab.
     pub(crate) commit: Option<(GitHistoryCommit, Entity<Changes>)>,
+    /// A file to scroll the Changes pane to once it exists (a review
+    /// finding's click).
+    pub(crate) pending_reveal: Option<String>,
 }
 
 impl Detail {
@@ -67,6 +70,7 @@ impl Detail {
             tab: DetailTab::Overview,
             changes: None,
             commit: None,
+            pending_reveal: None,
         })
     }
 
@@ -91,6 +95,12 @@ impl Detail {
                 self.commit = None;
             }
         }
+    }
+
+    /// Open the Changes tab scrolled to `path`.
+    pub(crate) fn reveal_in_changes(&mut self, path: String) {
+        self.set_tab(DetailTab::Changes);
+        self.pending_reveal = Some(path);
     }
 
     /// Refetch the embedded panes after a snapshot refresh.
@@ -586,6 +596,9 @@ impl Detail {
             self.changes = Some(cx.new(|cx| Changes::pinned(state, pin, None, Some(trunk), cx)));
         }
         let changes = self.changes.clone().expect("just created");
+        if let Some(path) = self.pending_reveal.take() {
+            changes.update(cx, |changes, cx| changes.reveal_file(path, cx));
+        }
         div().size_full().child(changes).into_any_element()
     }
 }

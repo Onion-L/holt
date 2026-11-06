@@ -323,24 +323,25 @@ impl Git {
         .await
     }
 
-    /// Check `tree` out as a detached HEAD in a throwaway linked worktree at
-    /// `path` (which must not exist; its parent is created). The tree lands
-    /// through a temp commit on a temp branch — git2's `WorktreeAddOptions`
-    /// needs a branch — and the branch is deleted once the worktree stands, so
-    /// no ref is left behind while the checkout lives.
-    /// The trunk's and a worktree branch's current heads — the staleness pair
-    /// a checks run is judged against. Read-only; no merge preconditions.
-    pub(crate) async fn worktree_path(
+    /// A registered worktree's path and its checked-out branch (short
+    /// name; `None` on a detached HEAD).
+    pub(crate) async fn worktree_path_and_branch(
         &self,
         repo_path: &str,
         worktree: &str,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         let worktree = worktree.to_string();
         self.with_repo(repo_path, move |repo| {
             let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
-            Ok(registered_worktree_path(&main_repo, &worktree)?
-                .display()
-                .to_string())
+            let path = registered_worktree_path(&main_repo, &worktree)?;
+            let branch = Repository::open(&path).ok().and_then(|worktree_repo| {
+                let head = worktree_repo.head().ok()?;
+                if !head.is_branch() {
+                    return None;
+                }
+                head.shorthand().ok().map(str::to_string)
+            });
+            Ok((path.display().to_string(), branch))
         })
         .await
     }
@@ -411,6 +412,8 @@ impl Git {
         .await
     }
 
+    /// The trunk's and a worktree branch's current heads — the staleness pair
+    /// a checks run is judged against. Read-only; no merge preconditions.
     pub(crate) async fn worktree_and_trunk_heads(
         &self,
         repo_path: &str,
@@ -444,6 +447,11 @@ impl Git {
         .await
     }
 
+    /// Check `tree` out as a detached HEAD in a throwaway linked worktree at
+    /// `path` (which must not exist; its parent is created). The tree lands
+    /// through a temp commit on a temp branch — git2's `WorktreeAddOptions`
+    /// needs a branch — and the branch is deleted once the worktree stands, so
+    /// no ref is left behind while the checkout lives.
     pub(crate) async fn checkout_detached_tree(
         &self,
         repo_path: &str,
@@ -3564,9 +3572,6 @@ pub(crate) struct RemovedWorktree {
     pub path: String,
 }
 
-/// Remove a linked worktree: its directory, its registration, its branch,
-/// and Holt's merged marker. `force` is the only way past uncommitted
-/// changes (the caller confirmed they are disposable).
 /// The post-branch half of the checks checkout: create the parent and the
 /// worktree, detach its HEAD, drop the temp branch. The caller deletes the
 /// branch when this fails.
@@ -3623,6 +3628,9 @@ fn checkout_detached_tree_finish(
     Ok(())
 }
 
+/// Remove a linked worktree: its directory, its registration, its branch,
+/// and Holt's merged marker. `force` is the only way past uncommitted
+/// changes (the caller confirmed they are disposable).
 fn remove_worktree(
     repo: &Repository,
     worktree_name: &str,

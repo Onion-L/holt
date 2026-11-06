@@ -398,15 +398,17 @@ pub mod methods {
     /// shadows a same-name builtin).
     pub const LIST_REVIEWERS: &str = "ListReviewers";
     /// `StartReview {repoPath, worktree, trunk, reviewer, customPrompt?,
-    /// model?}` → `{chatId}`: creates a review chat in the worktree's
+    /// model?, title?}` → `{chatId}`: creates a review chat in the worktree's
     /// Space, stamps the review state (diff endpoints, resolved reviewer
     /// prompt), and queues the engine-generated first message — branch,
     /// trunk, the branch diff, and the author chat's title; never the
-    /// author conversation. The model defaults to the author chat's, else
-    /// the engine default.
+    /// author conversation. The model defaults to the author chat's; a
+    /// chatless worktree must pass `model`. Unknown reviewers and unusable
+    /// models refuse before any chat is created.
     pub const START_REVIEW: &str = "StartReview";
-    /// `ListReviews {repoPath, worktree}` → `[{chatId, reviewer, trunkHead,
-    /// branchHead, stale, verdict?, findingCount, status}]`.
+    /// `ListReviews {repoPath, worktree, trunk?}` → `[{chatId, reviewer,
+    /// trunkHead, branchHead, stale, verdict?, findingCount, status, state}]`
+    /// — `state` is `running`, `submitted`, or `incomplete`.
     pub const LIST_REVIEWS: &str = "ListReviews";
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";

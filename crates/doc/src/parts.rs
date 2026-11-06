@@ -424,11 +424,6 @@ pub enum MessagePart {
         id: String,
         message: String,
     },
-    /// A quiet housekeeping row addressed to the reader, never the model
-    /// (ADR-history-is-a-separate-persisted-record): the legacy-chat and damaged-History notices here — the
-    /// compaction divider, overflow, and failed-compaction notices join as
-    /// their own shapes later. Persisted with the Transcript like any part;
-    /// not an `Error`: nothing went wrong with the Turn the row sits in.
     /// A reviewer's submitted findings (the review Turn's `submit_review`
     /// call): verdict plus the typed findings — a read-only card.
     ReviewSubmitted {
@@ -438,6 +433,11 @@ pub enum MessagePart {
         #[serde(default)]
         findings: Vec<holt_proto::ReviewFinding>,
     },
+    /// A quiet housekeeping row addressed to the reader, never the model
+    /// (ADR-history-is-a-separate-persisted-record): the legacy-chat and damaged-History notices here — the
+    /// compaction divider, overflow, and failed-compaction notices join as
+    /// their own shapes later. Persisted with the Transcript like any part;
+    /// not an `Error`: nothing went wrong with the Turn the row sits in.
     Notice {
         id: String,
         message: String,

@@ -177,6 +177,8 @@ impl EngineService {
         let reviewer = required_string(&params, "reviewer")?.to_string();
         let custom_prompt = optional_string(&params, "customPrompt");
         let model_override = optional_string(&params, "model");
+        // The UI's localized title; the engine has no locale.
+        let title_override = optional_string(&params, "title");
 
         // The reviewed pair and the branch diff (merge-base → workdir).
         let heads = self
@@ -185,7 +187,11 @@ impl EngineService {
             .await
             .map_err(RpcError::Failed)?;
         let (trunk_head, branch_head) = heads.clone();
-        let worktree_path = self.worktree_path(repo_path, &worktree).await?;
+        let (worktree_path, branch) = self
+            .git
+            .worktree_path_and_branch(repo_path, &worktree)
+            .await
+            .map_err(RpcError::Failed)?;
         let diff = self
             .git
             .capture(
@@ -200,21 +206,20 @@ impl EngineService {
         // Resolve the reviewer's prompt: the custom text, else the trunk's
         // override, else the builtin.
         let (reviewer_name, prompt) = match custom_prompt {
+            Some(prompt) if prompt.trim().is_empty() => {
+                return Err(RpcError::BadParams("the custom prompt is empty".into()));
+            }
             Some(prompt) => ("custom".to_string(), prompt),
             None => {
-                let builtin = match reviewer.as_str() {
-                    "security" => include_str!("../reviewers/security.md").to_string(),
-                    _ => include_str!("../reviewers/bugbot.md").to_string(),
-                };
-                match self
+                let repo_text = self
                     .git
                     .reviewer_prompt(repo_path, &trunk, &reviewer)
                     .await
-                    .map_err(RpcError::Failed)?
-                {
-                    Some(text) => (reviewer.clone(), text),
-                    None => (reviewer.clone(), builtin),
-                }
+                    .map_err(RpcError::Failed)?;
+                let text = repo_text
+                    .or_else(|| builtin_reviewer(&reviewer).map(str::to_string))
+                    .ok_or_else(|| RpcError::BadParams(format!("unknown reviewer: {reviewer}")))?;
+                (reviewer.clone(), text)
             }
         };
 
@@ -228,29 +233,66 @@ impl EngineService {
                 .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
             chats.iter().find(|row| row.id == worktree).cloned()
         };
-        let space = self
-            .ensure_review_space(&worktree_path)
-            .map_err(RpcError::Failed)?;
-
-        // The catalog's model spelling is `provider/model`; the config
-        // carries it whole (provider rides alongside for resolution).
-        let config = match model_override {
-            Some(model) => {
+        // The model: the explicit pick, else the author chat's. A review
+        // with neither (a hand-made worktree) needs the caller to name one —
+        // the UI passes its composer's resolved model. Checked before any
+        // row exists, so a bad model never leaves an empty chat behind.
+        let base_config = author_chat.as_ref().and_then(|chat| chat.config.clone());
+        let config = match (model_override, base_config) {
+            (Some(model), base) => {
                 let provider = model
                     .split_once('/')
                     .map(|(provider, _)| provider.to_string())
                     .ok_or_else(|| RpcError::BadParams("model must be provider/model".into()))?;
+                let base = base.unwrap_or_else(|| holt_proto::ChatConfig {
+                    provider: provider.clone().into(),
+                    model: String::new(),
+                    reasoning: None,
+                    model_options: Default::default(),
+                    permission_mode: holt_proto::PermissionMode::ConfirmChanges,
+                    scope: Default::default(),
+                });
+                let same_model = base.model == model;
                 holt_proto::ChatConfig {
                     provider: provider.into(),
                     model,
-                    ..self.default_review_config(&author_chat)
+                    // Options and reasoning belong to the author's model.
+                    reasoning: base.reasoning.filter(|_| same_model),
+                    model_options: if same_model {
+                        base.model_options
+                    } else {
+                        Default::default()
+                    },
+                    ..base
                 }
             }
-            None => self.default_review_config(&author_chat),
+            (None, Some(base)) => base,
+            (None, None) => {
+                return Err(RpcError::BadParams(
+                    "no author chat to take a model from; pass model".into(),
+                ));
+            }
         };
+        // Tools are read-only, so the mode never fires; ConfirmChanges is
+        // the safe stamp.
+        let config = holt_proto::ChatConfig {
+            permission_mode: holt_proto::PermissionMode::ConfirmChanges,
+            ..config
+        };
+        if let Some(reason) = self.model_unavailable(&config).await {
+            return Err(RpcError::Failed(reason));
+        }
+        let space = self
+            .ensure_review_space(&worktree_path)
+            .map_err(RpcError::Failed)?;
 
         let chat_id = uuid::Uuid::new_v4().to_string();
-        let title = format!("{worktree} · {reviewer_name}");
+        let title = title_override.unwrap_or_else(|| {
+            format!(
+                "Review: {} · {reviewer_name}",
+                branch.as_deref().unwrap_or(&worktree)
+            )
+        });
         let chat = holt_proto::Chat {
             id: chat_id.clone(),
             device_id: self.engine_info.device_id.clone(),
@@ -308,9 +350,10 @@ impl EngineService {
             .and_then(|chat| chat.title.clone())
             .unwrap_or_default();
         let mut prompt = format!(
-            "Review the diff of worktree `{worktree}` against `{trunk}`.\n\n\
+            "Review the diff of branch `{branch}` (worktree `{worktree}`) against `{trunk}`.\n\n\
              Trunk head: {trunk_head}\n\
              Branch head: {branch_head}\n",
+            branch = branch.as_deref().unwrap_or("(detached)"),
             trunk_head = heads.0,
             branch_head = heads.1,
         );
@@ -319,9 +362,25 @@ impl EngineService {
         }
         prompt.push_str("\nRead the surrounding code as needed. Report only what this diff introduces; submit your findings with `submit_review`.\n\n");
         if diff.truncated {
+            // Files whose section never made it into the capped patch.
+            let missing: Vec<&str> = diff
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .filter(|path| !diff.patch.contains(&format!(" b/{path}\n")))
+                .collect();
             prompt.push_str(
-                "The diff below was truncated; read the remaining changed files yourself.\n\n",
+                "The diff below was truncated; read the remaining changed files yourself",
             );
+            if missing.is_empty() {
+                prompt.push_str(".\n\n");
+            } else {
+                prompt.push_str(":\n");
+                for path in missing {
+                    prompt.push_str(&format!("- {path}\n"));
+                }
+                prompt.push('\n');
+            }
         }
         prompt.push_str("```diff\n");
         prompt.push_str(&diff.patch);
@@ -358,6 +417,28 @@ impl EngineService {
             .filter_map(|chat| {
                 let review = chat.review.as_ref()?;
                 (review.repo_path == repo_path && review.worktree == worktree).then(|| {
+                    let status = sessions
+                        .iter()
+                        .find(|session| session.chat_id == chat.id)
+                        .map(|session| session.status)
+                        .unwrap_or(holt_proto::SessionStatus::Idle);
+                    // Work still ahead: a live Turn, or queued work whose
+                    // session has not flipped yet (the queue settles before
+                    // the session goes idle).
+                    let queued = self.runtime.loaded_chat(&chat.id).is_some_and(|runtime| {
+                        runtime
+                            .queue
+                            .lock()
+                            .map(|queue| queue.next_request().is_some())
+                            .unwrap_or(false)
+                    });
+                    let busy = queued
+                        || matches!(
+                            status,
+                            holt_proto::SessionStatus::Working
+                                | holt_proto::SessionStatus::Compacting
+                                | holt_proto::SessionStatus::AwaitingInput
+                        );
                     let stale = match &heads {
                         Ok((trunk_head, branch_head)) => {
                             *trunk_head != review.trunk_head || *branch_head != review.branch_head
@@ -372,25 +453,21 @@ impl EngineService {
                         "stale": stale,
                         "verdict": review.verdict,
                         "findingCount": review.findings.as_ref().map_or(0, Vec::len),
-                        "status": sessions
-                            .iter()
-                            .find(|session| session.chat_id == chat.id)
-                            .map(|session| session.status)
-                            .unwrap_or(holt_proto::SessionStatus::Idle),
+                        "status": status,
+                        "state": if review.verdict.is_some() {
+                            "submitted"
+                        } else if busy {
+                            "running"
+                        } else {
+                            // Settled without a submission.
+                            "incomplete"
+                        },
                     })
                 })
             })
             .collect();
         rows.reverse();
         RpcReply::value(&rows)
-    }
-
-    /// A registered worktree's path.
-    async fn worktree_path(&self, repo_path: &str, worktree: &str) -> Result<String, RpcError> {
-        self.git
-            .worktree_path(repo_path, worktree)
-            .await
-            .map_err(RpcError::Failed)
     }
 
     /// A Space for the review chat to live in: the worktree's own row when
@@ -430,25 +507,14 @@ impl EngineService {
         self.spaces_tx.send_replace(value);
         Ok(space)
     }
+}
 
-    /// The review chat's baseline config: the author chat's when it has
-    /// one, else the sticky permission-mode default with no provider —
-    /// the first run resolves the default model.
-    fn default_review_config(
-        &self,
-        author_chat: &Option<holt_proto::Chat>,
-    ) -> holt_proto::ChatConfig {
-        author_chat
-            .as_ref()
-            .and_then(|chat| chat.config.clone())
-            .unwrap_or_else(|| holt_proto::ChatConfig {
-                provider: "openai".into(),
-                model: String::new(),
-                reasoning: None,
-                model_options: Default::default(),
-                permission_mode: self.mode_default.get(),
-                scope: Default::default(),
-            })
+/// A built-in reviewer's prompt text, `None` for an unknown name.
+fn builtin_reviewer(name: &str) -> Option<&'static str> {
+    match name {
+        "bugbot" => Some(include_str!("../reviewers/bugbot.md")),
+        "security" => Some(include_str!("../reviewers/security.md")),
+        _ => None,
     }
 }
 

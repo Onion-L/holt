@@ -76,7 +76,7 @@ Plain JSON/JSONL under the data dir; each record written by the engine, atomical
 - `provider-mode/<chatId>.json` — modes
 - `turn-changes/<chatId>/<messageId>.json` — workspace-git
 - `subagents/<parentChatId>/` — subagents; its `workflows/<runId>/` — workflows
-- `integration/checkouts/` (throwaway, per run) and `integration/checks/<checkoutKey>/` — integration
+- `integration/checkouts/` (throwaway, per run) and `integration/checks/<checkoutKey>/` — integration; review state rides each review chat's row in `chats.json`
 - `images/` — workspace-files
 - `mcp.json`, `web-search.json`, `search-backends.json` (user-written), `title-settings.json`, `goal-settings.json`, `permission-mode-default.json`, `routines.json` — their owning pages
 - `device-id` (plain text), `engine.lock`, `logs/` — shell-registry

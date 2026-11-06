@@ -78,8 +78,6 @@ one word could mean two things. How a term behaves lives on its
   _Avoid_: mainline, base branch (Base ref is the branch-diff vocabulary)
 - **Integration view**: the Worktrees page's picture of one repository: the trunk's commit line plus every linked worktree as a branch off it, each with its derived status, commits, branch diff, local checks, and reviews. Scoped to a repository, never to a Space.
   _Avoid_: branch manager, PR list (there is no PR object)
-- **Trunk**: a repository's merge target branch — the thing the integration view draws everything against. Defaults to the repo's default branch; the integration page lets the user swap it per view (never persisted).
-  _Avoid_: mainline, base branch (Base ref is the branch-diff vocabulary)
 - **Merge preview**: the in-memory result of squashing or fast-forwarding a worktree's branch onto the trunk — a tree and a diff, never a working-tree write.
   _Avoid_: dry run
 - **Check**: one command from the trunk's `.holt/checks.toml`, run against the merge preview in a throwaway checkout. Checks inform the merge bar; they never gate a merge.

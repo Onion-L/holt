@@ -276,3 +276,39 @@ integration:
       en-US: "Review: clean"
     summary_issues:
       en-US: "Review: %{count} issues"
+    summary_none:
+      en-US: "Not reviewed"
+    summary_incomplete:
+      en-US: "Review incomplete"
+    clean:
+      en-US: clean
+    issues:
+      en-US: issues
+    incomplete:
+      en-US: incomplete
+    running:
+      en-US: running
+    custom:
+      en-US: Custom…
+    custom_title:
+      en-US: Custom review
+    custom_body:
+      en-US: This text becomes the reviewer prompt for this one review.
+    custom_start:
+      en-US: Start review
+    chat_title:
+      en-US: "Review: %{branch} · %{reviewer}"
+    open_chat:
+      en-US: Open review chat
+    send_title:
+      en-US: Send to the author chat
+    send_body:
+      en-US: Edit, then queue it into the author chat. Re-reviewing is up to you.
+    send_confirm:
+      en-US: Send
+    send_selected:
+      en-US: "Send selected (%{count})"
+    sent:
+      en-US: Queued into the author chat
+    no_model:
+      en-US: No model available; pick one in the composer first.
