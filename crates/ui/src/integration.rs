@@ -10,11 +10,12 @@ mod graph;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
+use std::time::Instant;
 
 use chrono::Utc;
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable, Render, SharedString, Subscription,
-    Task, Window, div, prelude::*, px,
+    AnyElement, App, Context, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent, Render, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 use holt_proto::{IntegrationSnapshot, IntegrationWorktree, SessionStatus, Space};
 use holt_rpc::methods;
@@ -30,9 +31,57 @@ use crate::theme::Theme;
 use detail::Detail;
 use graph::{RowKind, TreeLayout};
 
+/// Width of the navigation rail the page sits beside. The page fills the
+/// rest of the window.
+const NAVIGATION_RAIL: f32 = 44.0;
+
+/// 0 = centered inbox, 1 = inbox pinned left. Manual clock: a
+/// `with_animation` wrapper replays whenever this tree remounts.
+#[derive(Clone, Copy)]
+struct SplitTween {
+    from: f32,
+    to: f32,
+    started: Instant,
+}
+
 /// The inbox column. Wider than a chat transcript, narrow enough that a
 /// row still reads as one line.
 const INBOX_MAX_W: f32 = 720.0;
+
+/// Open inbox before a drag, and the floor while dragging. The five filter
+/// labels stay on one row at this width.
+const INBOX_OPEN_DEFAULT: f32 = 400.0;
+
+/// Detail pane floor. The summary, review actions, and merge bar crush
+/// below it. The ceiling is whatever the inbox floor leaves.
+const DETAIL_MIN: f32 = 480.0;
+
+/// Drag marker for the seam between the inbox and the detail.
+struct DetailResize;
+
+/// Invisible drag ghost — a resize drag renders nothing at the cursor.
+struct DetailResizeGhost;
+
+impl Render for DetailResizeGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+/// `(min, max)` for the detail pane. When the window cannot hold both
+/// floors, the range collapses and the inbox keeps its row.
+fn detail_pane_bounds(available: f32) -> (f32, f32) {
+    let inbox_floor = INBOX_OPEN_DEFAULT.min(available);
+    let max = (available - inbox_floor).max(0.0);
+    let min = DETAIL_MIN.min(max);
+    (min, max)
+}
+
+/// The detail width to paint. `None` fills beside the default inbox.
+fn detail_pane_width(stored: Option<f32>, available: f32) -> f32 {
+    let (min, max) = detail_pane_bounds(available);
+    stored.unwrap_or(max).clamp(min, max)
+}
 
 pub enum IntegrationEvent {
     OpenChat(String),
@@ -313,6 +362,11 @@ pub struct IntegrationPage {
     task: Option<Task<()>>,
     refs_task: Option<Task<()>>,
     fetch_task: Option<Task<()>>,
+    /// Last painted split progress, so a reversal starts from this frame.
+    split_shown: f32,
+    split_tween: Option<SplitTween>,
+    /// Dragged detail width. `None` fills the space beside the default inbox.
+    detail_width: Option<f32>,
     _observe: Subscription,
 }
 
@@ -361,8 +415,128 @@ impl IntegrationPage {
             task: None,
             refs_task: None,
             fetch_task: None,
+            split_shown: 0.0,
+            split_tween: None,
+            detail_width: None,
             _observe: observe,
         }
+    }
+
+    /// Start the inbox width tween. `to` is 0 (centered) or 1 (pinned).
+    fn begin_split(&mut self, to: f32) {
+        if (self.split_shown - to).abs() < 0.001 {
+            self.split_tween = None;
+            return;
+        }
+        self.split_tween = Some(SplitTween {
+            from: self.split_shown,
+            to,
+            started: Instant::now(),
+        });
+    }
+
+    /// Eased split progress. Requests another frame while the tween runs.
+    fn split_progress(&mut self, reduce_motion: bool, window: &mut Window) -> f32 {
+        let target = if self.selected.is_some() { 1.0 } else { 0.0 };
+        if reduce_motion {
+            self.split_tween = None;
+            self.split_shown = target;
+            return target;
+        }
+        let Some(tween) = self.split_tween else {
+            self.split_shown = target;
+            return target;
+        };
+        let total = crate::motion::RESIZE
+            .total()
+            .mul_f32(crate::motion::speed_scale());
+        let raw = tween.started.elapsed().as_secs_f32() / total.as_secs_f32();
+        if raw >= 1.0 || (tween.to - target).abs() > 0.001 {
+            self.split_tween = None;
+            self.split_shown = target;
+            return target;
+        }
+        window.request_animation_frame();
+        let shown = crate::motion::lerp(tween.from, tween.to, crate::motion::RESIZE.progress(raw));
+        self.split_shown = shown;
+        shown
+    }
+
+    /// The seam tracks the pointer. Width is the detail's, clamped to the
+    /// pane floors; the tween drops so the column follows this frame.
+    fn on_detail_drag(
+        &mut self,
+        event: &DragMoveEvent<DetailResize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let viewport = f32::from(window.viewport_size().width);
+        let available = (viewport - NAVIGATION_RAIL).max(0.0);
+        let width = viewport - f32::from(event.event.position.x);
+        let (min, max) = detail_pane_bounds(available);
+        self.detail_width = Some(width.clamp(min, max));
+        self.split_tween = None;
+        self.split_shown = 1.0;
+        cx.notify();
+    }
+
+    fn reset_detail_width(&mut self, cx: &mut Context<Self>) {
+        self.detail_width = None;
+        cx.notify();
+    }
+
+    /// 12px hit target centered on the seam. The inbox border stays the
+    /// resting divider; hover draws the same center highlight as the shell panes.
+    fn render_detail_handle(&self, left: f32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx);
+        let highlight = crate::motion::hover_blend(
+            "integration-detail-resize",
+            theme.border_strong.opacity(0.0),
+            theme.border_strong,
+        );
+        let clear = highlight.opacity(0.0);
+        div()
+            .id("integration-detail-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(left - 6.0))
+            .w(px(12.0))
+            .cursor_col_resize()
+            .on_hover(crate::motion::hover_listener("integration-detail-resize"))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(6.0))
+                    .w(px(1.0))
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_1().bg(gpui::linear_gradient(
+                        180.0,
+                        gpui::linear_color_stop(clear, 0.0),
+                        gpui::linear_color_stop(highlight, 1.0),
+                    )))
+                    .child(div().flex_1().bg(gpui::linear_gradient(
+                        180.0,
+                        gpui::linear_color_stop(highlight, 0.0),
+                        gpui::linear_color_stop(clear, 1.0),
+                    ))),
+            )
+            .on_drag(DetailResize, |_, _: gpui::Point<gpui::Pixels>, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| DetailResizeGhost)
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                    if event.click_count == 2 {
+                        this.reset_detail_width(cx);
+                    }
+                }),
+            )
+            .into_any_element()
     }
 
     /// The shell shows the page again — re-land keyboard focus and pull a
@@ -476,12 +650,16 @@ impl IntegrationPage {
             self.show_list(cx);
             return;
         }
+        let opening = self.selected.is_none();
         let trunk = self.trunk_of().unwrap_or_default();
         let reuse = self
             .detail
             .as_ref()
             .is_some_and(|detail| detail.worktree == name && detail.trunk == trunk);
         self.selected = Some(name.to_string());
+        if opening {
+            self.begin_split(1.0);
+        }
         if reuse {
             cx.notify();
             return;
@@ -507,6 +685,7 @@ impl IntegrationPage {
     /// built so opening the same row again does not refetch.
     fn show_list(&mut self, cx: &mut Context<Self>) {
         self.selected = None;
+        self.begin_split(0.0);
         cx.notify();
     }
 
@@ -1063,7 +1242,7 @@ impl IntegrationPage {
             .into_any_element()
     }
 
-    fn render_filters(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_filters(&mut self, open: f32, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use Filter::{Active, All, Blocked, Merged, Ready};
         let filter = self.filter;
         let entries: [(Filter, SharedString); 5] = [
@@ -1073,6 +1252,10 @@ impl IntegrationPage {
             (Blocked, t!("integration.filter.blocked").into()),
             (Merged, t!("integration.filter.merged").into()),
         ];
+        // The pinned inbox is 400px. The five labels stay on one row there
+        // by tightening the chips as the column narrows.
+        let chip_px = crate::motion::lerp(10.0, 6.0, open);
+        let text = crate::motion::lerp(12.5, 12.0, open);
         div()
             .id("integration-filters")
             .flex_none()
@@ -1087,12 +1270,13 @@ impl IntegrationPage {
                 div()
                     .id(SharedString::from(format!("integration-filter-{entry:?}")))
                     .h(px(26.0))
-                    .px(px(10.0))
+                    .px(px(chip_px))
+                    .flex_none()
                     .flex()
                     .items_center()
                     .rounded(px(6.0))
                     .cursor_pointer()
-                    .text_size(px(12.5))
+                    .text_size(px(text))
                     .when(active, |el| {
                         el.bg(theme.surface_raised).text_color(theme.text)
                     })
@@ -1133,10 +1317,12 @@ impl IntegrationPage {
 
     /// Title, filters, and the grouped list. The closed page centers this
     /// column; an open worktree pins it to the left.
-    fn render_inbox(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_inbox(&mut self, open: f32, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let header = self.render_header(theme, cx);
-        let filters = self.render_filters(theme, cx);
+        let filters = self.render_filters(open, theme, cx);
         let list = self.render_list(theme, cx);
+        let header_px = crate::motion::lerp(20.0, 12.0, open);
+        let list_px = crate::motion::lerp(16.0, 12.0, open);
         div()
             .size_full()
             .flex()
@@ -1146,7 +1332,8 @@ impl IntegrationPage {
                 div()
                     .flex_none()
                     .w_full()
-                    .px(px(20.0))
+                    .min_w_0()
+                    .px(px(header_px))
                     .pt(px(24.0))
                     .flex()
                     .flex_col()
@@ -1160,7 +1347,7 @@ impl IntegrationPage {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(div().px(px(16.0)).pt(px(16.0)).pb(px(28.0)).child(list)),
+                    .child(div().px(px(list_px)).pt(px(16.0)).pb(px(28.0)).child(list)),
             )
             .into_any_element()
     }
@@ -1437,7 +1624,7 @@ impl IntegrationPage {
     /// prompt.
     fn render_detail(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let snapshot = self.snapshot.clone();
-        let (Some(snapshot), Some(selected)) = (&snapshot, self.selected.clone()) else {
+        let (Some(snapshot), Some(selected)) = (&snapshot, self.displayed_name()) else {
             return div()
                 .size_full()
                 .flex()
@@ -1515,14 +1702,24 @@ impl IntegrationPage {
 
     // ---- merge and delete actions (§7.5) ----
 
+    /// The worktree on screen: the selection, or the one still sliding
+    /// shut after the selection cleared.
+    fn displayed_name(&self) -> Option<String> {
+        self.selected.clone().or_else(|| {
+            (self.split_shown > 0.0)
+                .then(|| self.detail.as_ref().map(|detail| detail.worktree.clone()))
+                .flatten()
+        })
+    }
+
     /// The selected worktree's row, cloned out of the snapshot.
     fn selected_row(&self) -> Option<holt_proto::IntegrationWorktree> {
         let snapshot = self.snapshot.as_ref()?;
-        let name = self.selected.as_ref()?;
+        let name = self.displayed_name()?;
         snapshot
             .worktrees
             .iter()
-            .find(|worktree| &worktree.name == name)
+            .find(|worktree| worktree.name == name)
             .cloned()
     }
 
@@ -3650,51 +3847,54 @@ impl Render for IntegrationPage {
             window.focus(&self.focus, cx);
         }
         self.ensure_started(cx);
-        let open = self.selected.is_some();
-        let inbox = self.render_inbox(&theme, cx);
-        let body = if open {
+        let open = self.split_progress(cx.reduce_motion(), window);
+        let available = (f32::from(window.viewport_size().width) - NAVIGATION_RAIL).max(0.0);
+        let closed = available.min(INBOX_MAX_W);
+        let detail = detail_pane_width(self.detail_width, available);
+        let width = crate::motion::lerp(closed, (available - detail).max(0.0), open);
+        let margin = crate::motion::lerp((available - closed).max(0.0) / 2.0, 0.0, open);
+        let inbox = self.render_inbox(open, &theme, cx);
+        let show_detail = open > 0.0 && self.detail.is_some();
+        let (detail_min, detail_max) = detail_pane_bounds(available);
+        let show_handle = self.split_tween.is_none()
+            && self.selected.is_some()
+            && detail_max - detail_min >= 24.0;
+        let handle = show_handle.then(|| self.render_detail_handle(margin + width, cx));
+        let body =
             div()
                 .size_full()
+                .relative()
                 .flex()
                 .min_h_0()
+                .overflow_hidden()
+                .child(div().w(px(margin)).flex_none())
                 .child(
                     div()
                         .id("integration-inbox-column")
-                        .w(px(400.0))
+                        .w(px(width))
                         .flex_none()
                         .min_h_0()
-                        .border_r_1()
-                        .border_color(theme.border.opacity(0.45))
+                        .when(show_detail, |el| {
+                            el.border_r_1()
+                                .border_color(theme.border.opacity(0.45 * open))
+                        })
                         .child(inbox),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .px(px(28.0))
-                        .pt(px(20.0))
-                        .pb(px(8.0))
-                        .child(self.render_detail(&theme, cx)),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .min_h_0()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .w_full()
-                        .max_w(px(INBOX_MAX_W))
-                        .mx_auto()
-                        .child(inbox),
-                )
-                .into_any_element()
-        };
+                .child(div().flex_1().min_w_0().min_h_0().overflow_hidden().when(
+                    show_detail,
+                    |el| {
+                        el.child(
+                            div()
+                                .size_full()
+                                .opacity(open)
+                                .px(px(28.0))
+                                .pt(px(20.0))
+                                .pb(px(8.0))
+                                .child(self.render_detail(&theme, cx)),
+                        )
+                    },
+                ))
+                .children(handle);
 
         div()
             .id("integration-page")
@@ -3703,6 +3903,7 @@ impl Render for IntegrationPage {
             .size_full()
             .flex()
             .flex_col()
+            .on_drag_move(cx.listener(Self::on_detail_drag))
             .when_some(self.error.clone(), |el, error| {
                 el.child(
                     crate::settings::widgets::error_strip(&theme, error)
@@ -3988,8 +4189,8 @@ pub(crate) fn delete_protected(
 #[cfg(test)]
 mod tests {
     use super::{
-        Filter, RepoOption, WorktreeStatus, default_repo, filter_matches, repo_options,
-        worktree_is_orphan, worktree_status,
+        Filter, RepoOption, WorktreeStatus, default_repo, detail_pane_bounds, detail_pane_width,
+        filter_matches, repo_options, worktree_is_orphan, worktree_status,
     };
     use crate::state::AppState;
     use holt_proto::{Chat, IntegrationWorktree, Space};
@@ -4012,6 +4213,22 @@ mod tests {
             commits: Vec::new(),
             truncated: false,
         }
+    }
+
+    #[test]
+    fn detail_pane_stays_inside_its_floor_and_the_inbox_floor() {
+        // Wide window: the default fills beside a 400px inbox, and a drag
+        // cannot push the detail under 480 or the inbox under 400.
+        let (min, max) = detail_pane_bounds(1600.0);
+        assert_eq!(min, 480.0);
+        assert_eq!(max, 1200.0);
+        assert_eq!(detail_pane_width(None, 1600.0), 1200.0);
+        assert_eq!(detail_pane_width(Some(100.0), 1600.0), 480.0);
+        assert_eq!(detail_pane_width(Some(5000.0), 1600.0), 1200.0);
+        assert_eq!(detail_pane_width(Some(700.0), 1600.0), 700.0);
+        // Both floors cannot fit: the range collapses and the inbox keeps its row.
+        let (min, max) = detail_pane_bounds(700.0);
+        assert_eq!((min, max), (300.0, 300.0));
     }
 
     // ---- §6.4 status derivation ----
