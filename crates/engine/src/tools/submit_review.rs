@@ -150,7 +150,29 @@ fn submit_review(sink: &ReviewSink, params: &serde_json::Value) -> Result<AgentT
             review.verdict = Some(verdict.to_string());
         }
         drop(chats);
-        let _ = sink.runtime.persist_chats_locked();
+        if let Err(error) = sink.runtime.persist_chats_locked() {
+            // Not submitted: the disk write failed, so the verdict would
+            // vanish on restart. Roll the row back so it never claims a
+            // submission, and keep the Turn open — the reviewer can retry —
+            // instead of terminating over a silent loss.
+            tracing::warn!(%error, chat_id = %sink.chat_id, "could not persist the review");
+            let mut chats = sink
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(row) = chats.iter_mut().find(|row| row.id == sink.chat_id)
+                && let Some(review) = &mut row.review
+            {
+                review.findings = None;
+                review.verdict = None;
+            }
+            drop(chats);
+            return Err(format!(
+                "could not persist the review ({error}); the submission did not stick — \
+                 submit again"
+            ));
+        }
         sink.runtime.publish_chats();
     }
     Ok(AgentToolResult {

@@ -467,8 +467,11 @@ impl EngineService {
             return Err(RpcError::BadParams("worktree must not be empty".into()));
         }
 
-        // A live Turn in the owning chat must stop first: deleting the
+        // A live Turn in the owning chat — or any review chat working in
+        // this worktree, which is a different chat row running read-only
+        // against the same directory — must stop first: deleting the
         // directory under a running agent destroys its working tree.
+        let mut running: Option<String> = None;
         if let Some(chat) = self.runtime.loaded_chat(&worktree) {
             let idle = chat
                 .queue
@@ -480,10 +483,45 @@ impl EngineService {
                     .driver_running
                     .load(std::sync::atomic::Ordering::Acquire)
             {
-                return Err(RpcError::Failed(format!(
-                    "a Turn is running in the chat that owns {worktree}; stop it first"
-                )));
+                running = Some(worktree.clone());
             }
+        }
+        if running.is_none() {
+            let chats = self
+                .runtime
+                .chats
+                .read()
+                .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
+            for chat in chats.iter() {
+                let Some(review) = &chat.review else {
+                    continue;
+                };
+                if review.worktree != worktree {
+                    continue;
+                }
+                let Some(runtime) = self.runtime.loaded_chat(&chat.id) else {
+                    continue;
+                };
+                let idle = runtime
+                    .queue
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .idle();
+                if !idle
+                    || runtime
+                        .driver_running
+                        .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    running = Some(chat.id.clone());
+                    break;
+                }
+            }
+            drop(chats);
+        }
+        if let Some(chat_id) = running {
+            return Err(RpcError::Failed(format!(
+                "a Turn is running in the chat that owns {worktree} ({chat_id}); stop it first"
+            )));
         }
 
         // Git first, then the session bookkeeping — the design's order, and

@@ -759,17 +759,33 @@ async fn deleting_the_worktree_rehomes_its_review_chats() {
         .unwrap();
     assert!(review_space.starts_with("review-"), "{review_space}");
 
-    call(
-        &engine,
-        methods::DELETE_WORKTREE,
-        serde_json::json!({
-            "repoPath": repo_dir.path().display().to_string(),
-            "worktree": "wt-feature",
-            "force": false,
-        }),
-    )
-    .await
-    .unwrap();
+    // The driver clears its running flag a scheduler tick after the idle
+    // status lands; the delete is accepted once it has. Bounded, and only
+    // for this settling refusal — anything else fails the test.
+    let mut deleted = false;
+    for _ in 0..100 {
+        match call(
+            &engine,
+            methods::DELETE_WORKTREE,
+            serde_json::json!({
+                "repoPath": repo_dir.path().display().to_string(),
+                "worktree": "wt-feature",
+                "force": false,
+            }),
+        )
+        .await
+        {
+            Ok(_) => {
+                deleted = true;
+                break;
+            }
+            Err(error) if error.to_string().contains("stop it first") => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("unexpected delete failure: {error}"),
+        }
+    }
+    assert!(deleted, "a settled review must never block the delete");
 
     let chats = chats_of(&engine).await;
     let row = chats.iter().find(|chat| chat.id == chat_id).unwrap();
@@ -790,4 +806,61 @@ async fn deleting_the_worktree_rehomes_its_review_chats() {
         "the review chat points at a live Space"
     );
     assert!(!spaces.iter().any(|space| space.id == review_space));
+}
+
+#[tokio::test]
+async fn delete_refuses_while_a_review_turn_runs_in_the_worktree() {
+    let (repo_dir, _wt_dir, data_dir) = scene();
+    // The reviewer never answers: the review Turn hangs open.
+    let provider = ScriptedProvider::new(vec![ScriptedReply::Silent]);
+    let engine = assemble(&data_dir, &provider);
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "openai", "key": "not-a-real-key" }),
+        )
+        .await
+        .unwrap();
+    let started = call(
+        &engine,
+        methods::START_REVIEW,
+        serde_json::json!({
+            "repoPath": repo_dir.path().display().to_string(),
+            "worktree": "wt-feature",
+            "trunk": "main",
+            "reviewer": "bugbot",
+            "model": "openai/gpt-5.4",
+        }),
+    )
+    .await
+    .unwrap();
+    let chat_id = started["chatId"].as_str().unwrap().to_string();
+    common::wait_for_chat_status(&engine, &chat_id, "working").await;
+
+    // The review chat is not the owning chat (a different id), but its Turn
+    // runs against the worktree's directory — the delete must refuse.
+    assert_ne!(chat_id, "wt-feature");
+    let error = match engine
+        .handle(
+            methods::DELETE_WORKTREE,
+            serde_json::json!({
+                "repoPath": repo_dir.path().display().to_string(),
+                "worktree": "wt-feature",
+                "force": true,
+            }),
+        )
+        .await
+    {
+        Ok(_) => panic!("a running review Turn must refuse the delete"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("stop it first"), "got: {error}");
+    let repo = Repository::open(repo_dir.path()).unwrap();
+    let names: Vec<String> = repo
+        .worktrees()
+        .unwrap()
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_string))
+        .collect();
+    assert!(names.contains(&"wt-feature".to_string()), "nothing removed");
 }

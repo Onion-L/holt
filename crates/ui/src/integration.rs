@@ -435,6 +435,18 @@ impl IntegrationPage {
         cx.notify();
     }
 
+    /// Reset the review surface: catalogs and history bind to one
+    /// (repo, trunk), so a repo or trunk change drops them — `select_worktree`
+    /// does the same for a worktree change.
+    fn reset_reviews(&mut self) {
+        self.reviews_watch = None;
+        self.reviewers.clear();
+        self.reviews.clear();
+        self.reviews_loaded = false;
+        self.selected_findings.clear();
+        self.review_dialog = None;
+    }
+
     /// Select `path`'s snapshot: reset trunk and view state, reload.
     fn select_repo(&mut self, path: String, cx: &mut Context<Self>) {
         if self.repo_path.as_deref() == Some(path.as_str()) {
@@ -449,6 +461,7 @@ impl IntegrationPage {
         self.selected = None;
         self.detail = None;
         self.error = None;
+        self.reset_reviews();
         self.load(cx);
         self.fetch_refs(cx);
         cx.notify();
@@ -456,6 +469,7 @@ impl IntegrationPage {
 
     fn select_trunk(&mut self, trunk: String, cx: &mut Context<Self>) {
         self.trunk = Some(trunk);
+        self.reset_reviews();
         self.load(cx);
         cx.notify();
     }
@@ -474,12 +488,7 @@ impl IntegrationPage {
         self.checks_run = None;
         self.checks_error = None;
         self.checks_log = None;
-        self.reviews_watch = None;
-        self.reviewers.clear();
-        self.reviews.clear();
-        self.reviews_loaded = false;
-        self.selected_findings.clear();
-        self.review_dialog = None;
+        self.reset_reviews();
         cx.notify();
     }
 
@@ -2224,7 +2233,10 @@ impl IntegrationPage {
                     )
                     .await;
                 let _ = this.update(cx, |page, cx| {
-                    if let Ok(value) = listed {
+                    // A slow reply must not land on a page that moved on.
+                    let still = page.repo_path.as_deref() == Some(repo_path.as_str())
+                        && page.trunk_of().as_deref() == Some(trunk.as_str());
+                    if still && let Ok(value) = listed {
                         page.reviewers = serde_json::from_value::<Vec<serde_json::Value>>(value)
                             .unwrap_or_default()
                             .into_iter()
@@ -2446,7 +2458,12 @@ impl IntegrationPage {
     /// The review the card shows: a running one first, else the newest
     /// settled one (submitted or incomplete).
     fn latest_review(&self) -> Option<&serde_json::Value> {
-        self.reviews.first()
+        // A running review outranks a newer settled one: it is the review
+        // this worktree is under right now.
+        self.reviews
+            .iter()
+            .find(|review| review.get("state").and_then(|state| state.as_str()) == Some("running"))
+            .or_else(|| self.reviews.first())
     }
 
     /// The review card: reviewer buttons, the latest findings, and the
@@ -2994,7 +3011,7 @@ impl IntegrationPage {
         if !self.reviews_loaded {
             return None;
         }
-        let Some(review) = self.reviews.first() else {
+        let Some(review) = self.latest_review() else {
             return Some(t!("integration.review.summary_none").into());
         };
         let state = review["state"].as_str().unwrap_or("");
