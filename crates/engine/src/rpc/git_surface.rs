@@ -515,11 +515,29 @@ impl EngineService {
         if owns_chat || in_engine_dir {
             self.retire_session_worktree(&worktree, repo_path, &session_space)?;
         }
+        // A hand-made worktree's review chats live in a `review-` Space that
+        // StartReview created for its path; it goes the same way (no owning
+        // chat to archive — the empty id matches nothing).
+        let review_spaces: Vec<String> = self
+            .spaces
+            .read()
+            .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?
+            .iter()
+            .filter(|space| {
+                space.id.starts_with("review-")
+                    && space.path.trim_end_matches('/') == removed.path.trim_end_matches('/')
+            })
+            .map(|space| space.id.clone())
+            .collect();
+        for space_id in review_spaces {
+            self.retire_session_worktree("", repo_path, &space_id)?;
+        }
         RpcReply::value(&serde_json::json!({}))
     }
 
     /// Move an owning chat onto the repository's main Space (or Home), drop
     /// its `wt-<chatId>` Space row, and archive the chat — never delete it.
+    /// Any other chat in that Space (a review chat) is re-homed too.
     /// The order keeps the chat findable: a chat whose space_id points at a
     /// missing row is not rendered, so the re-home lands before the row
     /// goes.
@@ -552,6 +570,14 @@ impl EngineService {
             if let Some(chat) = chats.iter_mut().find(|chat| chat.id == chat_id) {
                 chat.space_id = Some(main_space_id.clone());
                 chat.archived = true;
+            }
+            // Other chats filed under the session Space (review chats) move
+            // with it; they stay unarchived — their history still reads.
+            for chat in chats
+                .iter_mut()
+                .filter(|chat| chat.space_id.as_deref() == Some(session_space_id))
+            {
+                chat.space_id = Some(main_space_id.clone());
             }
             drop(chats);
             self.runtime
@@ -627,7 +653,7 @@ fn no_turn_recorded() -> RpcError {
 
 /// Report git capture faults at the right RPC severity: caller-input
 /// problems are bad params, repository failures are opaque errors.
-fn git_fault(fault: crate::git::GitFault) -> RpcError {
+pub(super) fn git_fault(fault: crate::git::GitFault) -> RpcError {
     match fault {
         crate::git::GitFault::BadParams(message) => RpcError::BadParams(message),
         crate::git::GitFault::Error(message) => RpcError::Failed(message),

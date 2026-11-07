@@ -424,6 +424,15 @@ pub enum MessagePart {
         id: String,
         message: String,
     },
+    /// A reviewer's submitted findings (the review Turn's `submit_review`
+    /// call): verdict plus the typed findings — a read-only card.
+    ReviewSubmitted {
+        id: String,
+        /// `clean` | `issues`
+        verdict: String,
+        #[serde(default)]
+        findings: Vec<holt_proto::ReviewFinding>,
+    },
     /// A quiet housekeeping row addressed to the reader, never the model
     /// (ADR-history-is-a-separate-persisted-record): the legacy-chat and damaged-History notices here — the
     /// compaction divider, overflow, and failed-compaction notices join as
@@ -562,6 +571,7 @@ impl MessagePart {
             | MessagePart::Skill { id, .. }
             | MessagePart::Error { id, .. }
             | MessagePart::Notice { id, .. }
+            | MessagePart::ReviewSubmitted { id, .. }
             | MessagePart::GoalRound { id, .. }
             | MessagePart::WorkflowResult { id, .. }
             | MessagePart::CompactionDivider { id, .. }
@@ -605,6 +615,9 @@ impl MessagePart {
             MessagePart::Error { message, .. } | MessagePart::Notice { message, .. } => {
                 message.len()
             }
+            MessagePart::ReviewSubmitted {
+                verdict, findings, ..
+            } => verdict.len() + serde_json::to_vec(findings).map_or(0, |v| v.len()),
             MessagePart::GoalRound { reason, .. } => reason.len() + 8,
             MessagePart::WorkflowResult { name, .. } => name.len() + 8,
             MessagePart::CompactionDivider { summary, .. } => summary.len(),

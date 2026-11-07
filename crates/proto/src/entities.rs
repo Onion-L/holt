@@ -357,6 +357,11 @@ pub struct Chat {
     /// pauses an `Active` goal whose queue holds no continuation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<ChatGoalState>,
+    /// Review state (the integration view's reviewer chat): while present
+    /// the chat's Turns run the read-only review toolset. Restored by
+    /// restart; recovery never starts a Turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ChatReviewState>,
 }
 
 /// A chat's Plan Mode state (ADR-plan-mode-is-an-independent-approval-checkpoint): the permission mode captured on
@@ -367,6 +372,53 @@ pub struct Chat {
 #[serde(rename_all = "camelCase")]
 pub struct ChatPlanState {
     pub entry_permission_mode: PermissionMode,
+}
+
+/// One review finding: a problem the reviewer attributes to the reviewed
+/// diff (or explicitly marks pre-existing).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFinding {
+    pub id: String,
+    /// `high` | `medium` | `low`
+    pub severity: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
+    /// `introduced` | `pre-existing` | `unknown`
+    #[serde(default)]
+    pub origin: String,
+}
+
+/// A chat's review state (the integration view's reviewer chat): while
+/// present the chat's Turns run the read-only review toolset with
+/// `submit_review`. The findings land on the row at submission; the chat
+/// stays an ordinary chat — openable, stoppable, and visible in the
+/// sidebar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReviewState {
+    pub repo_path: String,
+    pub worktree: String,
+    pub trunk: String,
+    /// The reviewed diff's endpoints — staleness compares these.
+    pub trunk_head: String,
+    pub branch_head: String,
+    /// The reviewer's name (`bugbot`, `security`, a repo-defined one, or
+    /// `custom`).
+    pub reviewer: String,
+    /// The reviewer's resolved prompt text (the builtin block, the repo's
+    /// override, or the custom prompt), snapshotted at StartReview.
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings: Option<Vec<ReviewFinding>>,
+    /// `clean` | `issues`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
 }
 
 /// Where a chat's goal loop stands (ADR-goal-mode-verified-loop-at-turn-settle).

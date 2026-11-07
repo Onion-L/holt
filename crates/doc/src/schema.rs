@@ -319,13 +319,15 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
         | MessagePart::ProviderChoice { id, .. }
         | MessagePart::QuestionCard { id, .. }
         | MessagePart::TodoCard { id, .. }
-        | MessagePart::KeyRequest { id, .. } => DocPartJson {
+        | MessagePart::KeyRequest { id, .. }
+        | MessagePart::ReviewSubmitted { id, .. } => DocPartJson {
             id: id.clone(),
             kind: match part {
                 MessagePart::ModelProposal { .. } => "modelProposal",
                 MessagePart::ProviderChoice { .. } => "providerChoice",
                 MessagePart::QuestionCard { .. } => "questionCard",
                 MessagePart::TodoCard { .. } => "todoCard",
+                MessagePart::ReviewSubmitted { .. } => "reviewSubmitted",
                 _ => "keyRequest",
             }
             .into(),
@@ -448,7 +450,8 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             text: p.reasoning.unwrap_or_default(),
         },
-        "modelProposal" | "providerChoice" | "questionCard" | "keyRequest" | "todoCard" => {
+        "modelProposal" | "providerChoice" | "questionCard" | "keyRequest" | "todoCard"
+        | "reviewSubmitted" => {
             match p
                 .card
                 .and_then(|card| serde_json::from_value::<MessagePart>(card).ok())
@@ -458,7 +461,8 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                     | MessagePart::ProviderChoice { .. }
                     | MessagePart::QuestionCard { .. }
                     | MessagePart::TodoCard { .. }
-                    | MessagePart::KeyRequest { .. }),
+                    | MessagePart::KeyRequest { .. }
+                    | MessagePart::ReviewSubmitted { .. }),
                 ) => card,
                 _ => MessagePart::Text {
                     id: p.id,

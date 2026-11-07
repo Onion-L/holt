@@ -281,6 +281,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         provider_mode: false,
         routine_run: None,
         goal: None,
+        review: None,
     }
 }
 

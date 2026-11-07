@@ -25,8 +25,8 @@ pub(crate) enum DetailTab {
     Overview,
     Commits,
     Changes,
-    /// 审查与检查 (reviews arrive in P3; the checks card lives here and on
-    /// the overview).
+    /// 审查与检查 (the review card; the checks card lives here and on the
+    /// overview too).
     Review,
 }
 
@@ -42,6 +42,9 @@ pub(crate) struct Detail {
     pub(crate) changes: Option<Entity<Changes>>,
     /// A pinned commit diff while one commit is open from the Commits tab.
     pub(crate) commit: Option<(GitHistoryCommit, Entity<Changes>)>,
+    /// A file to scroll the Changes pane to once it exists (a review
+    /// finding's click).
+    pub(crate) pending_reveal: Option<String>,
 }
 
 impl Detail {
@@ -67,6 +70,7 @@ impl Detail {
             tab: DetailTab::Overview,
             changes: None,
             commit: None,
+            pending_reveal: None,
         })
     }
 
@@ -93,6 +97,12 @@ impl Detail {
         }
     }
 
+    /// Open the Changes tab scrolled to `path`.
+    pub(crate) fn reveal_in_changes(&mut self, path: String) {
+        self.set_tab(DetailTab::Changes);
+        self.pending_reveal = Some(path);
+    }
+
     /// Refetch the embedded panes after a snapshot refresh.
     pub(crate) fn invalidate(&self, cx: &mut Context<IntegrationPage>) {
         if let Some(changes) = &self.changes {
@@ -112,6 +122,7 @@ impl Detail {
         _snapshot: &IntegrationSnapshot,
         state: &Entity<AppState>,
         checks_card: AnyElement,
+        review_card: AnyElement,
         theme: &Theme,
         cx: &mut Context<IntegrationPage>,
     ) -> AnyElement {
@@ -122,8 +133,17 @@ impl Detail {
             DetailTab::Overview => self.render_overview(worktree, state, checks_card, theme, cx),
             DetailTab::Commits => self.render_commits(worktree, theme, cx),
             DetailTab::Changes => self.render_changes(worktree, state, cx),
-            // The checks card comes from the page (it owns the watch).
-            DetailTab::Review => checks_card,
+            // The checks card and the review card come from the page (it
+            // owns the watches).
+            DetailTab::Review => div()
+                .id("integration-review-scroll")
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(checks_card)
+                .child(review_card)
+                .into_any_element(),
         };
         let selector_name = self.worktree.clone();
         div()
@@ -282,7 +302,6 @@ impl Detail {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_overview(
         &mut self,
         worktree: &IntegrationWorktree,
@@ -577,6 +596,9 @@ impl Detail {
             self.changes = Some(cx.new(|cx| Changes::pinned(state, pin, None, Some(trunk), cx)));
         }
         let changes = self.changes.clone().expect("just created");
+        if let Some(path) = self.pending_reveal.take() {
+            changes.update(cx, |changes, cx| changes.reveal_file(path, cx));
+        }
         div().size_full().child(changes).into_any_element()
     }
 }

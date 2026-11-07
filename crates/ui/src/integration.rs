@@ -115,6 +115,18 @@ struct ResolveDialog {
     input: Entity<ComposerInput>,
 }
 
+/// The review card's dialogs: a one-off custom prompt, or the editable
+/// send-back into the author chat.
+enum ReviewDialog {
+    Custom {
+        input: Entity<ComposerInput>,
+    },
+    Send {
+        chat_id: String,
+        input: Entity<ComposerInput>,
+    },
+}
+
 /// The worktree-delete confirmation. `dirty` paths take the force flag and
 /// the data-loss warning.
 struct DeleteConfirm {
@@ -277,6 +289,18 @@ pub struct IntegrationPage {
     merge: Option<MergeFlow>,
     checks_watch: Option<Task<()>>,
     checks_run: Option<holt_rpc::checks::CheckRun>,
+    reviewers: Vec<(String, String)>,
+    reviews: Vec<serde_json::Value>,
+    reviews_watch: Option<Task<()>>,
+    /// The first `ListReviews` for the selection landed (so "not reviewed"
+    /// is a fact, not a loading state).
+    reviews_loaded: bool,
+    /// Finding ids picked for a multi-send.
+    selected_findings: HashSet<String>,
+    review_dialog: Option<ReviewDialog>,
+    /// The composer's pickers: a review of a chatless worktree takes their
+    /// resolved model.
+    pickers: Entity<crate::pickers::Pickers>,
     checks_error: Option<SharedString>,
     checks_log: Option<(String, Entity<CheckLogView>)>,
     resolve: Option<ResolveDialog>,
@@ -293,7 +317,11 @@ pub struct IntegrationPage {
 }
 
 impl IntegrationPage {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: Entity<AppState>,
+        pickers: Entity<crate::pickers::Pickers>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observe = cx.observe(&state, |this, _, cx| this.on_state_changed(cx));
         Self {
             state,
@@ -316,6 +344,13 @@ impl IntegrationPage {
             merge: None,
             checks_watch: None,
             checks_run: None,
+            reviewers: Vec::new(),
+            reviews: Vec::new(),
+            reviews_watch: None,
+            reviews_loaded: false,
+            selected_findings: HashSet::new(),
+            review_dialog: None,
+            pickers,
             checks_error: None,
             checks_log: None,
             resolve: None,
@@ -390,6 +425,10 @@ impl IntegrationPage {
             self.load(cx);
             self.fetch_refs(cx);
         }
+        // Reviews land on chat rows — a chats change re-reads the list.
+        if self.reviews_watch.is_some() {
+            self.reviews_watch = None;
+        }
         // The session-status re-derivation needs no fetch; the render reads
         // the sessions watch live.
         self.ensure_blink(cx);
@@ -435,6 +474,12 @@ impl IntegrationPage {
         self.checks_run = None;
         self.checks_error = None;
         self.checks_log = None;
+        self.reviews_watch = None;
+        self.reviewers.clear();
+        self.reviews.clear();
+        self.reviews_loaded = false;
+        self.selected_findings.clear();
+        self.review_dialog = None;
         cx.notify();
     }
 
@@ -1594,6 +1639,7 @@ impl IntegrationPage {
         let state = self.state.clone();
         self.ensure_checks_watch(cx);
         let checks_card = self.render_checks_card(theme, cx);
+        let review_card = self.render_review_card(worktree, theme, cx);
         let Some(detail) = self.detail.as_mut() else {
             return div().size_full().into_any_element();
         };
@@ -1604,6 +1650,7 @@ impl IntegrationPage {
             snapshot,
             &state,
             checks_card,
+            review_card,
             theme,
             cx,
         );
@@ -2144,6 +2191,638 @@ impl IntegrationPage {
         cx.notify();
     }
 
+    // ---- review (§9.6) ----
+
+    /// Fetch (once per selection) the reviewer catalog, and keep the reviews
+    /// list fresh for the selected worktree (a chats change re-arms it).
+    fn ensure_review_watch(&mut self, cx: &mut Context<Self>) {
+        if self.reviews_watch.is_some() {
+            return;
+        }
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let Some(worktree) = self.selected.clone() else {
+            return;
+        };
+        let Some(trunk) = self.trunk_of() else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        if self.reviewers.is_empty() {
+            let engine = engine.clone();
+            let repo_path = repo_path.clone();
+            let trunk = trunk.clone();
+            cx.spawn(async move |this, cx| {
+                let listed = engine
+                    .client()
+                    .call(
+                        methods::LIST_REVIEWERS,
+                        serde_json::json!({ "repoPath": repo_path, "trunk": trunk }),
+                    )
+                    .await;
+                let _ = this.update(cx, |page, cx| {
+                    if let Ok(value) = listed {
+                        page.reviewers = serde_json::from_value::<Vec<serde_json::Value>>(value)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter_map(|row| {
+                                Some((
+                                    row.get("name")?.as_str()?.to_string(),
+                                    row.get("source")?.as_str()?.to_string(),
+                                ))
+                            })
+                            .collect();
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        self.reviews_watch = Some(cx.spawn(async move |this, cx| {
+            let listed = engine
+                .client()
+                .call(
+                    methods::LIST_REVIEWS,
+                    serde_json::json!({
+                        "repoPath": repo_path,
+                        "worktree": worktree,
+                        "trunk": trunk,
+                    }),
+                )
+                .await;
+            let _ = this.update(cx, |page, cx| {
+                if let Ok(value) = listed {
+                    page.reviews = enrich_reviews(
+                        serde_json::from_value::<Vec<serde_json::Value>>(value).unwrap_or_default(),
+                        &page.state,
+                        cx,
+                    );
+                    page.reviews_loaded = true;
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Start a review for the selected worktree. `custom` carries the
+    /// one-off prompt of the 自定义 entry. The model is the author chat's
+    /// (engine-side); a worktree with no author chat takes the composer's
+    /// resolved model.
+    fn start_review(&mut self, reviewer: &str, custom: Option<String>, cx: &mut Context<Self>) {
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let Some(trunk) = self.trunk_of() else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let reviewer_label = if custom.is_some() { "custom" } else { reviewer };
+        let branch = row.branch.clone().unwrap_or_else(|| row.name.clone());
+        let mut params = serde_json::json!({
+            "repoPath": repo_path,
+            "worktree": row.name,
+            "trunk": trunk,
+            "reviewer": reviewer,
+            "title": t!(
+                "integration.review.chat_title",
+                branch = branch.as_str(),
+                reviewer = reviewer_label
+            ),
+        });
+        if let Some(prompt) = custom {
+            params["customPrompt"] = serde_json::Value::String(prompt);
+        }
+        let has_author = row
+            .chat_id
+            .as_ref()
+            .is_some_and(|chat_id| self.state.read(cx).chat_row(chat_id).is_some());
+        if !has_author {
+            let Some(model) = self.pickers.read(cx).resolved(cx).model else {
+                cx.emit(IntegrationEvent::Notice {
+                    message: t!("integration.review.no_model").into_owned(),
+                    success: false,
+                });
+                return;
+            };
+            params["model"] = serde_json::Value::String(model);
+        }
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(methods::START_REVIEW, params).await;
+            if let Err(error) = result {
+                this.update(cx, |_, cx| {
+                    cx.emit(IntegrationEvent::Notice {
+                        message: error.to_string(),
+                        success: false,
+                    });
+                    cx.notify();
+                })
+                .ok();
+            }
+        }));
+    }
+
+    /// Open the custom-review dialog.
+    fn open_custom_review(&mut self, cx: &mut Context<Self>) {
+        self.review_dialog = Some(ReviewDialog::Custom {
+            input: cx.new(|cx| ComposerInput::new("", cx)),
+        });
+        cx.notify();
+    }
+
+    /// Open the send-back dialog seeded with `findings` (the selection, or
+    /// the whole latest review).
+    fn open_send_back(
+        &mut self,
+        reviewer: &str,
+        findings: &[serde_json::Value],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat_id) = self.selected_row().and_then(|row| row.chat_id.clone()) else {
+            return;
+        };
+        let body = send_back_body(reviewer, findings);
+        self.review_dialog = Some(ReviewDialog::Send {
+            chat_id,
+            input: cx.new(|cx| {
+                let mut input = ComposerInput::new("", cx);
+                input.set_text(body, cx);
+                input
+            }),
+        });
+        cx.notify();
+    }
+
+    /// Confirm the open review dialog: start the custom review, or queue
+    /// the edited send-back into the author chat.
+    fn confirm_review_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.review_dialog.take() else {
+            return;
+        };
+        match dialog {
+            ReviewDialog::Custom { input } => {
+                let prompt = input.read(cx).text().to_string();
+                if prompt.trim().is_empty() {
+                    self.review_dialog = Some(ReviewDialog::Custom { input });
+                    return;
+                }
+                self.start_review("custom", Some(prompt), cx);
+            }
+            ReviewDialog::Send { chat_id, input } => {
+                let prompt = input.read(cx).text().to_string();
+                self.queue_into_author(chat_id, prompt, cx);
+                self.selected_findings.clear();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Queue `prompt` into the author chat with its own config and cwd.
+    fn queue_into_author(&mut self, chat_id: String, prompt: String, cx: &mut Context<Self>) {
+        let (config, cwd) = {
+            let state = self.state.read(cx);
+            match state.chat_row(&chat_id) {
+                Some(chat) => (chat.config.clone(), chat.cwd.clone()),
+                None => (None, None),
+            }
+        };
+        let Some(config) = config else {
+            cx.emit(IntegrationEvent::Notice {
+                message: t!("integration.merge.no_model").into_owned(),
+                success: false,
+            });
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let cwd = cwd.or_else(|| self.selected_row().map(|row| row.path.clone()));
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::QUEUE_COMMAND,
+                    serde_json::json!({
+                        "chatId": chat_id,
+                        "command": {
+                            "kind": "run",
+                            "messageId": uuid::Uuid::new_v4().to_string(),
+                            "request": {
+                                "prompt": prompt,
+                                "provider": config.provider,
+                                "model": config.model,
+                                "reasoning": config.reasoning,
+                                "modelOptions": config.model_options,
+                                "cwd": cwd,
+                                "permissionMode": config.permission_mode,
+                            },
+                        },
+                    }),
+                )
+                .await;
+            this.update(cx, |_, cx| {
+                cx.emit(match result {
+                    Ok(_) => IntegrationEvent::Notice {
+                        message: t!("integration.review.sent").into_owned(),
+                        success: true,
+                    },
+                    Err(error) => IntegrationEvent::Notice {
+                        message: error.to_string(),
+                        success: false,
+                    },
+                });
+            })
+            .ok();
+        }));
+    }
+
+    /// The review the card shows: a running one first, else the newest
+    /// settled one (submitted or incomplete).
+    fn latest_review(&self) -> Option<&serde_json::Value> {
+        self.reviews.first()
+    }
+
+    /// The review card: reviewer buttons, the latest findings, and the
+    /// history list.
+    fn render_review_card(
+        &mut self,
+        worktree: &holt_proto::IntegrationWorktree,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.ensure_review_watch(cx);
+        let mut buttons: Vec<AnyElement> = self
+            .reviewers
+            .iter()
+            .map(|(name, source)| {
+                let label = if source == "repo" {
+                    format!("{name} ·")
+                } else {
+                    name.clone()
+                };
+                let name = name.clone();
+                popover::btn_primary(theme, &label)
+                    .id(SharedString::from(format!("integration-reviewer-{name}")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.start_review(&name, None, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        buttons.push(
+            popover::btn_ghost(
+                theme,
+                &t!("integration.review.custom"),
+                "integration-reviewer-custom",
+            )
+            .id("integration-reviewer-custom")
+            .on_click(cx.listener(|this, _, _, cx| this.open_custom_review(cx)))
+            .into_any_element(),
+        );
+
+        let latest = self.latest_review().cloned();
+        let has_author = worktree.chat_id.is_some();
+        let findings_list: Vec<serde_json::Value> = latest
+            .as_ref()
+            .and_then(|review| review["findings"].as_array().cloned())
+            .unwrap_or_default();
+        // Grouped by severity: high, medium, low.
+        let mut ordered = findings_list.clone();
+        ordered.sort_by_key(|finding| match finding["severity"].as_str() {
+            Some("high") => 0,
+            Some("medium") => 1,
+            _ => 2,
+        });
+        let findings: Vec<AnyElement> = ordered
+            .iter()
+            .map(|finding| {
+                let id = finding["id"].as_str().unwrap_or_default().to_string();
+                let severity = finding["severity"].as_str().unwrap_or("?");
+                let color = match severity {
+                    "high" => theme.danger,
+                    "medium" => theme.warning,
+                    _ => theme.text_muted,
+                };
+                let path = finding["path"].as_str().unwrap_or("?").to_string();
+                let location = match finding["line"].as_u64() {
+                    Some(line) => format!("{path}:{line}"),
+                    None => path.clone(),
+                };
+                let selected = self.selected_findings.contains(&id);
+                let toggle_id = id.clone();
+                div()
+                    .id(SharedString::from(format!("integration-finding-{id}")))
+                    .flex()
+                    .items_start()
+                    .gap(px(10.0))
+                    .px(px(16.0))
+                    .py(px(8.0))
+                    .border_t_1()
+                    .border_color(theme.border.opacity(0.4))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(crate::theme::wash(0.04)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(detail) = &mut this.detail {
+                            detail.reveal_in_changes(path.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .when(has_author, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("integration-finding-pick-{id}")))
+                                .flex_none()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .mt(px(1.0))
+                                .rounded(px(3.0))
+                                .border_1()
+                                .border_color(theme.border)
+                                .when(selected, |el| el.bg(theme.accent))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if !this.selected_findings.remove(&toggle_id) {
+                                        this.selected_findings.insert(toggle_id.clone());
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(46.0))
+                            .text_size(px(10.5))
+                            .text_color(color)
+                            .child(severity.to_string()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_dim)
+                                    .child(location),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(theme.text)
+                                    .child(finding["title"].as_str().unwrap_or("").to_string()),
+                            )
+                            .when_some(
+                                finding["detail"]
+                                    .as_str()
+                                    .filter(|detail| !detail.is_empty())
+                                    .map(str::to_string),
+                                |el, detail| {
+                                    el.child(
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(theme.text_muted)
+                                            .child(detail),
+                                    )
+                                },
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        // Actions under the findings: send back (selection or all), open
+        // the review chat.
+        let mut actions: Vec<AnyElement> = Vec::new();
+        if let Some(review) = &latest {
+            let reviewer = review["reviewer"].as_str().unwrap_or_default().to_string();
+            if has_author && !findings_list.is_empty() {
+                let picked: Vec<serde_json::Value> = findings_list
+                    .iter()
+                    .filter(|finding| {
+                        finding["id"]
+                            .as_str()
+                            .is_some_and(|id| self.selected_findings.contains(id))
+                    })
+                    .cloned()
+                    .collect();
+                let label = if picked.is_empty() {
+                    t!("integration.review.send_back").into_owned()
+                } else {
+                    t!("integration.review.send_selected", count = picked.len()).into_owned()
+                };
+                let send = if picked.is_empty() {
+                    findings_list.clone()
+                } else {
+                    picked
+                };
+                actions.push(
+                    popover::btn_primary(theme, &label)
+                        .id("integration-review-send-back")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_send_back(&reviewer, &send, cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+            if let Some(chat_id) = review["chatId"].as_str().map(str::to_string) {
+                actions.push(
+                    popover::btn_ghost(
+                        theme,
+                        &t!("integration.review.open_chat"),
+                        "integration-review-open-chat",
+                    )
+                    .id("integration-review-open-chat")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(IntegrationEvent::OpenChat(chat_id.clone()));
+                    }))
+                    .into_any_element(),
+                );
+            }
+        }
+
+        let history_rows: Vec<AnyElement> = self
+            .reviews
+            .iter()
+            .map(|review| {
+                let stale = review["stale"] == serde_json::json!(true);
+                let (label, color) = review_state_label(review, theme);
+                let chat_id = review["chatId"].as_str().unwrap_or("?").to_string();
+                let open_id = chat_id.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "integration-review-history-{chat_id}"
+                    )))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(16.0))
+                    .h(px(28.0))
+                    .text_size(px(11.5))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(crate::theme::wash(0.04)))
+                    .when(stale, |el| el.opacity(0.5))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(IntegrationEvent::OpenChat(open_id.clone()));
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(theme.text_muted)
+                            .child(review["reviewer"].as_str().unwrap_or("?").to_string()),
+                    )
+                    .child(div().text_color(color).child(label))
+                    .when(stale, |el| {
+                        el.child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(theme.warning)
+                                .child(t!("integration.review.stale")),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+
+        div()
+            .mt(px(12.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border.opacity(0.6))
+            .debug_selector(|| "integration-review-card".into())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .py(px(12.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text)
+                    .child(t!("integration.review.title"))
+                    .child(div().flex_1())
+                    .children(buttons),
+            )
+            .when(latest.is_none(), |el| {
+                el.child(
+                    div()
+                        .px(px(16.0))
+                        .pb(px(12.0))
+                        .text_size(px(11.5))
+                        .text_color(theme.text_faint)
+                        .child(t!("integration.review.none")),
+                )
+            })
+            .children(findings)
+            .when(!actions.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .px(px(16.0))
+                        .py(px(8.0))
+                        .children(actions),
+                )
+            })
+            .when(!history_rows.is_empty(), |el| {
+                el.child(
+                    div()
+                        .mt(px(6.0))
+                        .border_t_1()
+                        .border_color(theme.border.opacity(0.6))
+                        .children(history_rows),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The custom-review / send-back dialog.
+    fn render_review_dialog(
+        &mut self,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(dialog) = &self.review_dialog else {
+            return div().into_any_element();
+        };
+        let (title, body, confirm, input) = match dialog {
+            ReviewDialog::Custom { input } => (
+                t!("integration.review.custom_title"),
+                t!("integration.review.custom_body"),
+                t!("integration.review.custom_start"),
+                input.clone(),
+            ),
+            ReviewDialog::Send { input, .. } => (
+                t!("integration.review.send_title"),
+                t!("integration.review.send_body"),
+                t!("integration.review.send_confirm"),
+                input.clone(),
+            ),
+        };
+        let card = popover::dialog_card(theme)
+            .w(px(560.0))
+            .id("integration-review-dialog-card")
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.review_dialog = None;
+                cx.notify();
+            }))
+            .child(popover::dialog_title(theme, &title))
+            .child(
+                div()
+                    .mt(px(10.0))
+                    .px(px(18.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(body),
+            )
+            .child(div().mt(px(10.0)).mx(px(18.0)).child(input))
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .mb(px(16.0))
+                    .mx(px(18.0))
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(
+                            theme,
+                            &t!("integration.merge.cancel"),
+                            "integration-review-dialog-cancel",
+                        )
+                        .id("integration-review-dialog-cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.review_dialog = None;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        popover::btn_primary(theme, &confirm)
+                            .id("integration-review-dialog-confirm")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_review_dialog(cx))),
+                    ),
+            );
+        popover::modal(
+            "integration-review-dialog",
+            window.viewport_size(),
+            card.into_any_element(),
+        )
+    }
+
     /// The checks card (the overview and the review tab share it).
     fn render_checks_card(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let run = self.checks_run.clone();
@@ -2308,6 +2987,32 @@ impl IntegrationPage {
             )
             .child(body)
             .into_any_element()
+    }
+
+    /// The merge bar's one-line review summary (never a gate).
+    fn review_summary(&self) -> Option<SharedString> {
+        if !self.reviews_loaded {
+            return None;
+        }
+        let Some(review) = self.reviews.first() else {
+            return Some(t!("integration.review.summary_none").into());
+        };
+        let state = review["state"].as_str().unwrap_or("");
+        if state == "running" {
+            return Some(t!("integration.review.summary_running").into());
+        }
+        if review["stale"] == serde_json::json!(true) {
+            return Some(t!("integration.review.summary_stale").into());
+        }
+        if state == "incomplete" {
+            return Some(t!("integration.review.summary_incomplete").into());
+        }
+        let count = review["findingCount"].as_u64().unwrap_or(0);
+        if review["verdict"] == "clean" {
+            Some(t!("integration.review.summary_clean").into())
+        } else {
+            Some(t!("integration.review.summary_issues", count = count).into())
+        }
     }
 
     /// The merge bar's one-line checks summary (never a gate).
@@ -2519,6 +3224,14 @@ impl IntegrationPage {
                 .text_color(theme.text_faint)
                 .child(t!("integration.delete.working"))
         });
+        // The review summary rides the bar beside the checks line — also
+        // never a gate.
+        let review_line = self.review_summary().map(|summary| {
+            div()
+                .text_size(px(11.0))
+                .text_color(theme.text_faint)
+                .child(summary)
+        });
         // The checks summary rides the bar as a hint — never a gate.
         let checks_line = self.checks_summary().map(|summary| {
             div()
@@ -2545,6 +3258,7 @@ impl IntegrationPage {
             .border_color(theme.border.opacity(0.6))
             .child(bar)
             .children(checks_line)
+            .children(review_line)
             .children(busy_row)
             .into_any_element()
     }
@@ -3140,6 +3854,7 @@ impl Render for IntegrationPage {
             )
             .child(self.render_merge_dialog(&theme, window, cx))
             .child(self.render_resolve_dialog(&theme, window, cx))
+            .child(self.render_review_dialog(&theme, window, cx))
             .child(self.render_delete_dialog(&theme, window, cx))
     }
 }
@@ -3298,6 +4013,66 @@ fn kv_row(theme: &Theme, label: &str, value: String) -> AnyElement {
                 .child(value),
         )
         .into_any_element()
+}
+
+/// Join `ListReviews` rows with their chat rows' findings (the findings
+/// live on the row `submit_review` wrote).
+fn enrich_reviews(
+    rows: Vec<serde_json::Value>,
+    state: &Entity<AppState>,
+    cx: &mut Context<IntegrationPage>,
+) -> Vec<serde_json::Value> {
+    let app = state.read(cx);
+    rows.into_iter()
+        .map(|mut row| {
+            if let Some(chat_id) = row["chatId"].as_str()
+                && let Some(chat) = app.chat_row(chat_id)
+                && let Some(review) = &chat.review
+            {
+                row["findings"] = serde_json::to_value(review.findings.clone().unwrap_or_default())
+                    .unwrap_or(serde_json::json!([]));
+            }
+            row
+        })
+        .collect()
+}
+
+/// The send-back message (§9.5): numbered findings with severity,
+/// location, title, and detail.
+fn send_back_body(reviewer: &str, findings: &[serde_json::Value]) -> String {
+    let mut body = t!("integration.review.send_prefix", reviewer = reviewer).into_owned();
+    body.push_str("\n\n");
+    for (index, finding) in findings.iter().enumerate() {
+        let severity = finding["severity"].as_str().unwrap_or("?");
+        let path = finding["path"].as_str().unwrap_or("?");
+        let at = finding["line"]
+            .as_u64()
+            .map(|line| format!(":{line}"))
+            .unwrap_or_default();
+        let title = finding["title"].as_str().unwrap_or("");
+        body.push_str(&format!(
+            "{}. [{severity}] {path}{at} — {title}\n",
+            index + 1
+        ));
+        if let Some(detail) = finding["detail"].as_str().filter(|d| !d.is_empty()) {
+            for line in detail.lines() {
+                body.push_str("   ");
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+    }
+    body
+}
+
+/// A history row's state label and its color.
+fn review_state_label(review: &serde_json::Value, theme: &Theme) -> (SharedString, gpui::Hsla) {
+    match (review["state"].as_str(), review["verdict"].as_str()) {
+        (_, Some("clean")) => (t!("integration.review.clean").into(), theme.success),
+        (_, Some("issues")) => (t!("integration.review.issues").into(), theme.danger),
+        (Some("running"), _) => (t!("integration.review.running").into(), theme.busy),
+        _ => (t!("integration.review.incomplete").into(), theme.text_faint),
+    }
 }
 
 /// One check's live log view (the `SubscribeCheckLog` stream folded into
@@ -3480,6 +4255,25 @@ mod tests {
     }
 
     #[test]
+    fn send_back_body_lists_location_title_and_detail() {
+        let body = super::send_back_body(
+            "bugbot",
+            &[serde_json::json!({
+                "severity": "high",
+                "path": "src/a.rs",
+                "line": 3,
+                "title": "unchecked index",
+                "detail": "`v[i]` panics\nwhen empty",
+            })],
+        );
+        assert!(
+            body.contains("1. [high] src/a.rs:3 — unchecked index"),
+            "{body}"
+        );
+        assert!(body.contains("   `v[i]` panics\n   when empty"), "{body}");
+    }
+
+    #[test]
     fn delete_is_hidden_when_the_branch_is_the_trunk_or_the_main_checkouts() {
         use super::delete_protected;
         // The trunk.
@@ -3572,6 +4366,7 @@ mod tests {
             provider_mode: false,
             routine_run: None,
             goal: None,
+            review: None,
         };
         state.chats.push(chat);
         state.selected_chat = Some("chat-1".into());

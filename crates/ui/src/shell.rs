@@ -1332,7 +1332,8 @@ impl Shell {
             return page.clone();
         }
         let state = self.state.clone();
-        let page = cx.new(|cx| crate::integration::IntegrationPage::new(state, cx));
+        let pickers = self.composer.read(cx).pickers().clone();
+        let page = cx.new(|cx| crate::integration::IntegrationPage::new(state, pickers, cx));
         self.integration_sub = Some(cx.subscribe(
             &page,
             |this: &mut Shell, _, event: &crate::integration::IntegrationEvent, cx| match event {
@@ -4070,6 +4071,7 @@ mod tests {
                 provider_mode: false,
                 routine_run: None,
                 goal: None,
+                review: None,
             });
             state
         });

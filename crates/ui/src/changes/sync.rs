@@ -387,6 +387,13 @@ impl Changes {
         }
     }
 
+    /// Scroll to `path`'s file section in the current scope (the integration
+    /// page's finding click: its pinned pane is already branch-scoped).
+    pub fn reveal_file(&mut self, path: String, cx: &mut Context<Self>) {
+        self.reveal = Some(path);
+        self.try_reveal(cx);
+    }
+
     /// Consume the pending reveal once the parsed rows describe the CURRENT
     /// diff: mid-switch rows belong to the old capture, so they are neither
     /// scrolled to nor allowed to cancel the reveal. Judged against live

@@ -19,6 +19,7 @@ pub(crate) mod model_setup;
 mod read_chat;
 pub(crate) mod schedule_routine;
 pub(crate) mod submit_plan;
+pub(crate) mod submit_review;
 #[cfg(test)]
 pub(crate) mod test_http;
 pub(crate) mod todo;

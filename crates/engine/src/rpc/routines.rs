@@ -344,6 +344,7 @@ impl EngineService {
                     manual: fire.manual,
                 }),
                 goal: None,
+                review: None,
             });
         let started = self
             .runtime
@@ -437,7 +438,7 @@ impl EngineService {
 
     /// Why a run on `config` could not start: its model is gone from the
     /// catalog or its provider has no key. Same wording as the queue's.
-    async fn model_unavailable(&self, config: &ChatConfig) -> Option<String> {
+    pub(super) async fn model_unavailable(&self, config: &ChatConfig) -> Option<String> {
         let provider = config.provider.as_str();
         if let Err(error) = self.providers.resolve_model(provider, &config.model) {
             return Some(error);

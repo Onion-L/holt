@@ -45,6 +45,7 @@ mod provider_store_rpc;
 mod queue_commands_rpc;
 mod read_chat_rpc;
 mod resume_rpc;
+mod review_rpc;
 mod routines_rpc;
 mod schedule_routine_rpc;
 mod scripted_provider;

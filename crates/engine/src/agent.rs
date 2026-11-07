@@ -1261,6 +1261,13 @@ pub(crate) struct AgentRun {
     /// plus the mode block, a file-free toolset, no delegation, no apply
     /// tool. The write path is the card's RPC, never the agent.
     pub(crate) provider_mode: bool,
+    /// The review snapshot (the integration view's reviewer chat): the
+    /// Turn runs the read-only review toolset with `submit_review` — no
+    /// file writes, no bash, no delegation, no MCP.
+    pub(crate) review_mode: bool,
+    /// The reviewer's resolved prompt text (the review block's first
+    /// half), snapshotted at admission from the chat row.
+    pub(crate) review_prompt: Option<String>,
     /// The Turn's web-search backend snapshot (ADR-web-tools-full-text-ungated-pluggable-search), resolved once at
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
@@ -1549,6 +1556,13 @@ impl RunSink {
                             &result.details,
                         )
                     })
+                    .or_else(|| {
+                        crate::tools::submit_review::tool_card(
+                            &tool_call_id,
+                            &tool_name,
+                            &result.details,
+                        )
+                    })
         {
             let proposal_card = matches!(card, MessagePart::ModelProposal { .. });
             match card {
@@ -1700,6 +1714,28 @@ fn on_retry_callback(
     })
 }
 
+/// The review Turn's system block: the reviewer's own prompt (bugbot /
+/// security / a repo-defined reviewer / the custom prompt — resolved onto
+/// the chat row at StartReview) plus the fixed review contract.
+fn review_system_block(reviewer_prompt: &str) -> String {
+    format!(
+        "{reviewer_prompt}\n\n## Review (active)\n\n\
+This turn reviews a branch diff. Read the diff and the code around it; do \
+not modify anything.\n\n\
+- Your tools are read-only exploration (`ls`, `read`, `grep`, \
+`read_chat`, `web_fetch`, and `web_search` when available) plus \
+`submit_review`. No `bash`, no file writes, no delegation, no MCP.\n\
+- Every finding must name the file and line in the diff and quote the code \
+as evidence.\n\
+- Report only problems this diff introduces; mark older ones \
+`pre-existing`.\n\
+- When the review is complete, call `submit_review` once — the call ends \
+your turn. If there are no problems, submit the verdict `clean` with no \
+findings. A turn that ends without a submission marks the review \
+incomplete.\n"
+    )
+}
+
 pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, TurnEnd> {
     Box::pin(run_agent_command_inner(run))
 }
@@ -1721,6 +1757,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         permission_mode,
         plan_mode,
         provider_mode,
+        review_mode,
+        review_prompt,
         search_backend,
         providers,
         stream_fn,
@@ -2122,9 +2160,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 model_providers.clone(),
             ));
         }
-    } else if !plan_mode {
+    } else if !plan_mode && !review_mode {
         // A planning Turn delegates nothing (ADR-plan-mode-is-an-independent-approval-checkpoint): the whitelist below
-        // would drop the tool anyway, so it is simply never mounted.
+        // would drop the tool anyway, so it is simply never mounted — the
+        // review Turn likewise: its read-only retain would drop the tool,
+        // and the MCP policy keeps its toolset curated.
         let delegation = crate::subagents::Delegation {
             runtime: runtime.clone(),
             parent: chat.clone(),
@@ -2171,7 +2211,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // joins the toolset and a synthetic bootstrap pair marks the whole
     // snapshot, so supporting providers keep the definitions out of the
     // static context until the model loads and calls them.
-    let mcp_bootstrap = if chat.child.is_none() && !provider_mode && !plan_mode {
+    let mcp_bootstrap = if chat.child.is_none() && !provider_mode && !plan_mode && !review_mode {
         let snapshot = runtime.mcp.agent_tools().await;
         if snapshot.is_empty() {
             None
@@ -2200,6 +2240,23 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         system_prompt.push('\n');
         system_prompt.push_str(&crate::provider_mode::provider_mode_block(
             search_backend_present,
+        ));
+    }
+    // The review-turn shaping: the reviewer's prompt plus the review
+    // contract, the read-only exploration surface, and `submit_review` —
+    // the structured channel whose typed result becomes the findings card
+    // and ENDS the Turn.
+    if review_mode {
+        system_prompt.push('\n');
+        system_prompt.push_str(&review_system_block(
+            review_prompt.as_deref().unwrap_or_default(),
+        ));
+        tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
+        tools.push(crate::tools::submit_review::create_submit_review_tool(
+            crate::tools::submit_review::ReviewSink {
+                runtime: runtime.clone(),
+                chat_id: chat_id.clone(),
+            },
         ));
     }
     let config = AgentLoopConfig {
@@ -2576,6 +2633,7 @@ mod tests {
             provider_mode: false,
             routine_run: None,
             goal: None,
+            review: None,
         }
     }
 

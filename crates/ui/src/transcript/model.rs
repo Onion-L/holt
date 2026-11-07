@@ -355,6 +355,12 @@ impl DirectiveChip {
 
 #[derive(Clone)]
 pub enum RowKind {
+    /// A submitted review's findings card (the review Turn's
+    /// `submit_review`): verdict plus the typed findings — read-only.
+    ReviewSubmitted {
+        verdict: SharedString,
+        findings: Arc<Vec<(SharedString, SharedString, SharedString, SharedString)>>,
+    },
     User {
         /// Visible prompt (attachment-ref trailer already stripped). When the
         /// prompt carries file mentions this is the *projected* display text —
@@ -1331,6 +1337,43 @@ pub fn rows_for_entry(
                             turn_start: false,
                             kind,
                             entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
+                    MessagePart::ReviewSubmitted {
+                        id: part_id,
+                        verdict,
+                        findings,
+                    } => {
+                        let rendered: Arc<
+                            Vec<(SharedString, SharedString, SharedString, SharedString)>,
+                        > = Arc::new(
+                            findings
+                                .iter()
+                                .map(|finding| {
+                                    (
+                                        SharedString::from(finding.severity.clone()),
+                                        SharedString::from(format!(
+                                            "{}:{}",
+                                            finding.path,
+                                            finding.line.map(|l| l.to_string()).unwrap_or_default()
+                                        )),
+                                        SharedString::from(finding.title.clone()),
+                                        SharedString::from(finding.detail.clone()),
+                                    )
+                                })
+                                .collect(),
+                        );
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(format!("{verdict}\0{}", findings.len()).as_bytes()),
+                            turn_start: false,
+                            kind: RowKind::ReviewSubmitted {
+                                verdict: SharedString::from(verdict.clone()),
+                                findings: rendered,
+                            },
+                            entry_id: entry.id.clone().into(),
                             timestamp: None,
                             copy_text: None,
                         });
