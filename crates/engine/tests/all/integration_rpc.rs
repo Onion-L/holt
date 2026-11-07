@@ -1206,10 +1206,9 @@ async fn a_trunk_checked_out_in_a_linked_worktree_refuses() {
         )
     };
     assert_eq!(reason, holt_proto::MergeRefusal::TrunkCheckedOutElsewhere);
-    let trunk_path = std::fs::canonicalize(&trunk_path)
-        .unwrap()
-        .display()
-        .to_string();
+    // The engine reports the addressed path spelling; `canonicalize`'s
+    // raw output matches it only on unix.
+    let trunk_path = common::addressed(&std::fs::canonicalize(&trunk_path).unwrap());
     assert!(
         detail.first().is_some_and(|line| line == &trunk_path),
         "detail {:?} vs {trunk_path}",
