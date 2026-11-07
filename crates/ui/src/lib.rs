@@ -35,6 +35,7 @@ pub mod i18n;
 pub mod icons;
 pub mod image_viewer;
 pub mod images;
+pub mod integration;
 pub mod links;
 pub mod loaders;
 pub mod markdown;

@@ -13,6 +13,7 @@ pub enum NavEntry {
     Settings(SettingsSection),
     ChatManager,
     Scheduled,
+    Integration,
 }
 
 /// Browser-style navigation history for the titlebar back/forward buttons
@@ -138,6 +139,10 @@ impl Shell {
             NavEntry::Scheduled => {
                 self.route = Route::Scheduled;
                 self.reveal_scheduled(cx);
+            }
+            NavEntry::Integration => {
+                self.route = Route::Integration;
+                self.reveal_integration(cx);
             }
         }
         self.close_chat_menu(cx);

@@ -178,6 +178,8 @@ icon_assets![
     // and menu row (the set has no pin glyph).
     (PIN, "pin"),
     (CLOCK_CIRCLE, "clock-circle"),
+    // Trunk-and-branch glyph for the integration page (same linear family).
+    (INTEGRATION, "integration"),
     // Context checkpoint glyph in the same linear style.
     (CONTEXT_COMPACT, "context-compact"),
     (CALENDAR, "calendar"),

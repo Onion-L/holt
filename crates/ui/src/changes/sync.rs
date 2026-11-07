@@ -117,7 +117,12 @@ impl Changes {
 
     /// The watch-resolved diff for the selected chat, borrowed — the
     /// key-only callers must not clone a patch that can run to megabytes.
+    /// A pinned pane never reads the watch: it serves a checkout the
+    /// selected chat does not point at.
     fn resolved_ref(&self, cx: &App) -> Option<&CheckoutDiff> {
+        if self.pin.is_some() {
+            return None;
+        }
         let state = self.state.read(cx);
         let chat = state.selected_chat_row()?;
         resolve_diff(&self.diffs, chat)
@@ -135,9 +140,13 @@ impl Changes {
         }
     }
 
-    /// The checkout root the scoped RPCs address: the watch-resolved diff's
-    /// canonical cwd when available, else the chat row's own.
+    /// The checkout root the scoped RPCs address: a pinned pane's pin, the
+    /// watch-resolved diff's canonical cwd when available, else the chat
+    /// row's own.
     fn scoped_cwd(&self, cx: &App) -> Option<String> {
+        if let Some(pin) = &self.pin {
+            return Some(pin.cwd.clone());
+        }
         if let Some(diff) = self.resolved(cx) {
             return Some(diff.cwd);
         }
@@ -181,7 +190,11 @@ impl Changes {
     /// Fetch the branch list for the selected chat's checkout (idempotent per
     /// cwd); the repo's default branch (first entry) becomes the
     /// comparison base unless the user already picked one that still exists.
+    /// A pinned pane skips the list — its base was fixed at construction.
     fn ensure_branches(&mut self, cx: &mut Context<Self>) {
+        if self.pin.is_some() {
+            return;
+        }
         let Some(cwd) = self.scoped_cwd(cx) else {
             return;
         };
@@ -248,10 +261,15 @@ impl Changes {
             return;
         }
         let Some(chat_id) = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .map(|chat| chat.id.clone())
+            .pin
+            .as_ref()
+            .map(|pin| pin.chat_id.clone())
+            .or_else(|| {
+                self.state
+                    .read(cx)
+                    .selected_chat_row()
+                    .map(|chat| chat.id.clone())
+            })
         else {
             return;
         };

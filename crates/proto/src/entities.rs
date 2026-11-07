@@ -613,6 +613,89 @@ pub struct GitHistoryPage {
     pub head_commit_count: Option<usize>,
 }
 
+/// The integration view's trunk: the branch everything merges into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationTrunk {
+    pub name: String,
+    pub head_sha: String,
+}
+
+/// The repository's main checkout as `ListIntegration` reports it. `branch`
+/// is empty for a detached HEAD.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationMainCheckout {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub dirty: bool,
+}
+
+/// One linked worktree in the integration view. `name` is git's worktree
+/// name — for a session worktree it equals the owning chat's id. `missing`
+/// marks a registered worktree whose directory is gone; every other git
+/// field is then empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationWorktree {
+    pub name: String,
+    pub path: String,
+    /// Empty when the worktree's HEAD is detached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    /// merge-base(trunk, head); empty without a common ancestor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_sha: Option<String>,
+    #[serde(default)]
+    pub ahead: usize,
+    #[serde(default)]
+    pub behind: usize,
+    /// Uncommitted changes (untracked included, ignored excluded).
+    #[serde(default)]
+    pub dirty: bool,
+    /// `refs/holt/merged/<name>` exists and points at this branch's head —
+    /// written by Holt's merge, not derivable from ancestry.
+    #[serde(default)]
+    pub merged: bool,
+    /// When merged: the trunk commit carrying the `Holt-Merged-From`
+    /// trailer (squash), else the branch head (fast-forward).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_sha: Option<String>,
+    /// Registered but the directory is gone.
+    #[serde(default)]
+    pub missing: bool,
+    /// The owning chat's id, when the worktree name resolves to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
+    /// `trunk..head`, newest first, capped.
+    #[serde(default)]
+    pub commits: Vec<GitHistoryCommit>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// The read-only integration snapshot: one repository's trunk plus every
+/// linked worktree, computed in one pass under the checkout lock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationSnapshot {
+    /// The MAIN checkout's working directory (normalized), even when the
+    /// request addressed a linked worktree.
+    pub repo_path: String,
+    pub trunk: IntegrationTrunk,
+    #[serde(default)]
+    pub trunk_commits: Vec<GitHistoryCommit>,
+    #[serde(default)]
+    pub trunk_truncated: bool,
+    pub main_checkout: IntegrationMainCheckout,
+    #[serde(default)]
+    pub worktrees: Vec<IntegrationWorktree>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {

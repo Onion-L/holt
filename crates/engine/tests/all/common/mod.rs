@@ -1135,3 +1135,38 @@ pub fn init_repo(path: &std::path::Path) -> git2::Repository {
         .unwrap();
     repo
 }
+
+/// A fixture commit signature — every fixture repo shares one identity.
+pub fn signature() -> git2::Signature<'static> {
+    git2::Signature::now("Holt Test", "holt-test@example.com").unwrap()
+}
+
+/// Commit `entries` (path → content) on top of `parent` onto `update_ref`,
+/// without touching the working tree — the shape integration-style fixtures
+/// need to build branch topology while a checkout stays clean.
+pub fn commit_on(
+    repo: &git2::Repository,
+    update_ref: &str,
+    parent: Option<git2::Oid>,
+    entries: &[(&str, &str)],
+    message: &str,
+) -> git2::Oid {
+    let mut builder = match parent {
+        Some(parent) => {
+            let parent_commit = repo.find_commit(parent).unwrap();
+            repo.treebuilder(Some(&parent_commit.tree().unwrap()))
+                .unwrap()
+        }
+        None => repo.treebuilder(None).unwrap(),
+    };
+    for (path, content) in entries {
+        let blob = repo.blob(content.as_bytes()).unwrap();
+        builder.insert(*path, blob, 0o100644).unwrap();
+    }
+    let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+    let parent = parent.map(|oid| repo.find_commit(oid).unwrap());
+    let parents: Vec<&git2::Commit> = parent.iter().collect();
+    let sig = signature();
+    repo.commit(Some(update_ref), &sig, &sig, message, &tree, &parents)
+        .unwrap()
+}
