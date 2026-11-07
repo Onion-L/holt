@@ -691,6 +691,11 @@ pub struct IntegrationSnapshot {
     /// request addressed a linked worktree.
     pub repo_path: String,
     pub trunk: IntegrationTrunk,
+    /// The repository's own default branch (origin/HEAD target, else
+    /// main/master) — what `trunk` shows when no override was sent. The
+    /// delete protection refuses a worktree holding either trunk.
+    #[serde(default)]
+    pub default_trunk: Option<String>,
     #[serde(default)]
     pub trunk_commits: Vec<GitHistoryCommit>,
     #[serde(default)]

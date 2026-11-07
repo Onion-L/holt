@@ -172,6 +172,8 @@ integration:
       en-US: "on %{branch}, clean — syncs with the merge"
     main_on_trunk_dirty:
       en-US: "on %{branch}, with uncommitted changes"
+    main_on_other:
+      en-US: "on %{branch} — the merge moves %{trunk} only; this checkout stays"
     main_elsewhere:
       en-US: not on the trunk
     final_diff:
