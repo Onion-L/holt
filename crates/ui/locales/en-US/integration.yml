@@ -107,3 +107,128 @@ integration:
       en-US: "No commits ahead of %{trunk}"
     truncated:
       en-US: Showing the newest commits only
+  merge:
+    mode_squash:
+      en-US: Squash
+    mode_ff:
+      en-US: Fast-forward
+    merge_button:
+      en-US: Merge
+    merge_into:
+      en-US: "Merge into %{trunk}"
+    working:
+      en-US: Working the merge…
+    agent_working:
+      en-US: The agent is still working; merge after it settles.
+    dirty_hint:
+      en-US: Only committed work merges; there are uncommitted changes.
+    dirty_hint_files:
+      en-US: "Only committed work merges; %{count} files have uncommitted changes."
+    merged_hint:
+      en-US: "Merged into %{trunk} as %{sha}"
+    delete_worktree:
+      en-US: Delete worktree
+    delete_worktree_branch:
+      en-US: Delete worktree and branch
+    cleanup:
+      en-US: Clean up
+    delete_blocked_hint:
+      en-US: The branch stays — it is the trunk or the main checkout's.
+    no_changes_hint:
+      en-US: No changes over the trunk.
+    missing_hint:
+      en-US: This worktree's directory is gone from disk.
+    behind_hint:
+      en-US: "Behind %{trunk} — merging takes a squash."
+    ff_blocked:
+      en-US: "Fast-forward needs a branch that is not behind %{trunk}"
+    conflict_hint:
+      en-US: "%{count} files would conflict"
+    open_editor:
+      en-US: Open in editor
+    resolve_in_chat:
+      en-US: Hand back to chat
+    open_main_checkout:
+      en-US: Open main checkout
+    message_placeholder:
+      en-US: Commit message
+    dialog_title:
+      en-US: "Merge %{branch} into %{trunk}"
+    row_mode:
+      en-US: Mode
+    row_changes:
+      en-US: Changes
+    row_main_checkout:
+      en-US: Main checkout
+    row_message:
+      en-US: Commit message
+    stats:
+      en-US: "%{files} files · + %{additions} / − %{deletions}"
+    truncated_suffix:
+      en-US: " (diff truncated)"
+    main_on_trunk_clean:
+      en-US: "on %{branch}, clean — syncs with the merge"
+    main_on_trunk_dirty:
+      en-US: "on %{branch}, with uncommitted changes"
+    main_on_other:
+      en-US: "on %{branch} — the merge moves %{trunk} only; this checkout stays"
+    main_elsewhere:
+      en-US: not on the trunk
+    final_diff:
+      en-US: Final diff
+    cancel:
+      en-US: Cancel
+    confirm:
+      en-US: Merge
+    merged_toast:
+      en-US: "Merged as %{sha}"
+    no_model:
+      en-US: The chat has no model configured.
+    resolve_title:
+      en-US: Hand the conflicts back
+    resolve_body:
+      en-US: This queues an editable instruction into the author chat.
+    resolve_prefix:
+      en-US: "Rebase this branch onto the latest %{trunk} and resolve these conflicts:"
+    resolve_suffix:
+      en-US: "Commit once resolved, and confirm the tests pass."
+    resolve_send:
+      en-US: Send
+    resolve_sent:
+      en-US: Queued the resolution into the chat.
+    refusal:
+      nothing_to_merge:
+        en-US: Nothing to merge — the branch has no commits over the trunk.
+      ff_not_possible:
+        en-US: Fast-forward is not possible — the branch is behind the trunk.
+      stale:
+        en-US: The trunk or branch moved since the preview — re-running it.
+      trunk_checked_out_dirty:
+        en-US: The main checkout holds uncommitted changes in the merge's files.
+      trunk_checked_out_elsewhere:
+        en-US: The trunk is checked out in another worktree.
+      worktree_missing:
+        en-US: The worktree is gone.
+      branch_detached:
+        en-US: The worktree's HEAD is detached.
+  delete:
+    title:
+      en-US: Delete worktree
+    row_worktree:
+      en-US: Worktree
+    row_branch:
+      en-US: Branch
+    row_path:
+      en-US: Path
+    chat_kept:
+      en-US: The chat is kept, archived, and moves to the repository's space.
+    dirty_warning:
+      en-US: Uncommitted changes will be lost.
+    cancel:
+      en-US: Cancel
+    confirm:
+      en-US: Delete
+    working:
+      en-US: Deleting…
+    done_toast:
+      en-US: Worktree deleted.

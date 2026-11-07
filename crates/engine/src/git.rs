@@ -207,6 +207,56 @@ impl Git {
         .await
     }
 
+    /// `PreviewMerge`: the in-memory squash or fast-forward and its diff,
+    /// with a typed refusal instead of an error. Never writes.
+    pub(crate) async fn preview_merge(
+        &self,
+        repo_path: &str,
+        worktree: String,
+        trunk: String,
+        mode: String,
+        title: Option<String>,
+    ) -> Result<holt_proto::MergePreview, String> {
+        self.with_repo(repo_path, move |repo| {
+            merge_preview(&repo, &worktree, &trunk, &mode, title.as_deref())
+        })
+        .await
+    }
+
+    /// `MergeIntoTrunk`: the whole landing under the checkout lock. A
+    /// typed refusal arrives as a `Failed` whose first line is the stable
+    /// `merge-refused: <reason>` marker.
+    pub(crate) async fn merge_into_trunk(
+        &self,
+        repo_path: &str,
+        worktree: String,
+        trunk: String,
+        mode: String,
+        message: Option<String>,
+        expect: holt_proto::MergeHeads,
+    ) -> Result<holt_proto::MergeResult, String> {
+        self.with_repo(repo_path, move |repo| {
+            merge_into_trunk(&repo, &worktree, &trunk, &mode, message, &expect)
+                .map_err(merge_stop_to_string)
+        })
+        .await
+    }
+
+    /// `DeleteWorktree`'s git half ([`remove_worktree`]); the chat and Space
+    /// bookkeeping lives in the RPC layer, which knows both.
+    pub(crate) async fn remove_worktree(
+        &self,
+        repo_path: &str,
+        worktree: String,
+        force: bool,
+        trunk: Option<String>,
+    ) -> Result<RemovedWorktree, String> {
+        self.with_repo(repo_path, move |repo| {
+            remove_worktree(&repo, &worktree, force, trunk.as_deref())
+        })
+        .await
+    }
+
     /// Fetch every remote with prune, using system-default credentials
     /// (credential helpers / ssh-agent — never interactive). Wrapped by the
     /// caller in a 30 s timeout.
@@ -1045,6 +1095,16 @@ fn create_and_switch(
 
 fn git_message(error: git2::Error) -> String {
     error.message().to_string()
+}
+
+/// A [`MergeStop`] as the git layer's error string: refusals carry the
+/// stable `merge-refused:` first line plus one detail per line, so the RPC
+/// boundary and the UI classify without parsing anything else.
+fn merge_stop_to_string(stop: MergeStop) -> String {
+    match stop {
+        MergeStop::Refusal(reason, detail) => merge_refusal_message(reason, &detail),
+        MergeStop::Failed(message) => message,
+    }
 }
 
 /// One status entry's concise classification for the File sidebar's
@@ -2466,6 +2526,8 @@ fn integration_snapshot(
     // come from the main repository itself.
     let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
     let names = local_branch_names(&main_repo)?;
+    let default_trunk_name =
+        default_branch(&names, origin_head_target(&main_repo).as_deref()).map(str::to_string);
     let trunk_name = match trunk_override {
         Some(name) => {
             if !names.iter().any(|candidate| candidate == name) {
@@ -2473,9 +2535,9 @@ fn integration_snapshot(
             }
             name.to_string()
         }
-        None => default_branch(&names, origin_head_target(&main_repo).as_deref())
-            .ok_or_else(|| "no branches to pick a trunk from".to_string())?
-            .to_string(),
+        None => default_trunk_name
+            .clone()
+            .ok_or_else(|| "no branches to pick a trunk from".to_string())?,
     };
     let trunk_commit = main_repo
         .find_reference(&format!("refs/heads/{trunk_name}"))
@@ -2510,6 +2572,7 @@ fn integration_snapshot(
             ahead: 0,
             behind: 0,
             dirty: false,
+            dirty_files: 0,
             merged: false,
             merge_sha: None,
             missing: !path.is_dir(),
@@ -2541,6 +2604,7 @@ fn integration_snapshot(
             name: trunk_name,
             head_sha: trunk_oid.to_string(),
         },
+        default_trunk: default_trunk_name,
         trunk_commits,
         trunk_truncated,
         main_checkout,
@@ -2631,6 +2695,7 @@ fn integration_fill_worktree(
             .statuses(Some(&mut options))
             .map_err(git_message)?;
         row.dirty = !statuses.is_empty();
+        row.dirty_files = statuses.len();
         Ok(())
     };
     if read().is_err() {
@@ -2642,6 +2707,7 @@ fn integration_fill_worktree(
         row.ahead = 0;
         row.behind = 0;
         row.dirty = false;
+        row.dirty_files = 0;
         row.merged = false;
         row.merge_sha = None;
         row.commits.clear();
@@ -2649,6 +2715,650 @@ fn integration_fill_worktree(
         row.missing = true;
     }
     Ok(())
+}
+
+// ---- local merge (the integration view's merge bar) ----
+
+/// The refusal message's stable first line. Deliberately NOT
+/// [`SWITCH_REFUSAL_MARKER`]: the branch-switch dialog recognizes its own
+/// marker, and a merge refusal must never raise that dialog.
+const MERGE_REFUSAL_MARKER: &str = "merge-refused: ";
+
+/// How a merge stopped: a typed refusal the UI can act on, or an opaque
+/// git/engine failure.
+enum MergeStop {
+    Refusal(holt_proto::MergeRefusal, Vec<String>),
+    Failed(String),
+}
+
+fn merge_refusal_message(reason: holt_proto::MergeRefusal, detail: &[String]) -> String {
+    let mut message = format!("{MERGE_REFUSAL_MARKER}{}", reason.wire_name());
+    for line in detail {
+        message.push('\n');
+        message.push_str(line);
+    }
+    message
+}
+
+/// Where the trunk is checked out — decides whether a landed merge syncs a
+/// working tree (main checkout), refuses outright (a linked worktree holds
+/// it: moving the ref there would strand that worktree's index and files),
+/// or only moves the ref.
+enum TrunkHeldBy {
+    MainCheckout,
+    LinkedWorktree(PathBuf),
+    Nobody,
+}
+
+/// The facts both Preview and Merge establish under the checkout lock.
+struct MergeContext {
+    branch: String,
+    branch_head: git2::Oid,
+    trunk_ref: String,
+    trunk_head: git2::Oid,
+    trunk_held_by: TrunkHeldBy,
+}
+
+/// The shared pre-checks: resolve the worktree's branch and the trunk,
+/// refuse the empty and impossible merges, and locate the trunk's checkout.
+fn merge_context(
+    main_repo: &Repository,
+    worktree_name: &str,
+    trunk: &str,
+    mode: &str,
+) -> Result<MergeContext, MergeStop> {
+    let worktree = main_repo.find_worktree(worktree_name).map_err(|_| {
+        MergeStop::Refusal(
+            holt_proto::MergeRefusal::WorktreeMissing,
+            vec![worktree_name.to_string()],
+        )
+    })?;
+    let path = worktree.path().to_path_buf();
+    if !path.is_dir() {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::WorktreeMissing,
+            vec![path.display().to_string()],
+        ));
+    }
+    let worktree_repo = Repository::open(&path).map_err(|_| {
+        MergeStop::Refusal(
+            holt_proto::MergeRefusal::WorktreeMissing,
+            vec![path.display().to_string()],
+        )
+    })?;
+    let head = worktree_repo
+        .head()
+        .map_err(|_| MergeStop::Refusal(holt_proto::MergeRefusal::BranchDetached, Vec::new()))?;
+    if !head.is_branch() {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::BranchDetached,
+            Vec::new(),
+        ));
+    }
+    let branch = head
+        .shorthand()
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?
+        .to_string();
+    let branch_head = head
+        .peel_to_commit()
+        .map_err(|_| MergeStop::Refusal(holt_proto::MergeRefusal::BranchDetached, Vec::new()))?
+        .id();
+
+    let trunk_ref = format!("refs/heads/{trunk}");
+    let trunk_head = main_repo
+        .find_reference(&trunk_ref)
+        .and_then(|reference| reference.peel_to_commit())
+        .map_err(|_| MergeStop::Failed(format!("trunk {trunk} does not resolve")))?
+        .id();
+
+    let (ahead, behind) = main_repo
+        .graph_ahead_behind(branch_head, trunk_head)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    if ahead == 0 {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::NothingToMerge,
+            Vec::new(),
+        ));
+    }
+    if mode == "ff" && behind > 0 {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::FfNotPossible,
+            Vec::new(),
+        ));
+    }
+
+    let trunk_held_by = if current_branch(main_repo).as_deref() == Some(trunk) {
+        TrunkHeldBy::MainCheckout
+    } else if let Some((_, path)) = linked_worktree_heads(main_repo)
+        .into_iter()
+        .find(|(head_branch, _)| head_branch == trunk)
+    {
+        // libgit2 spells worktree paths with a trailing slash; the refusal
+        // detail is a user-facing path.
+        TrunkHeldBy::LinkedWorktree(PathBuf::from(
+            path.display().to_string().trim_end_matches('/'),
+        ))
+    } else {
+        TrunkHeldBy::Nobody
+    };
+    Ok(MergeContext {
+        branch,
+        branch_head,
+        trunk_ref,
+        trunk_head,
+        trunk_held_by,
+    })
+}
+
+fn commit_tree(repo: &Repository, oid: git2::Oid) -> Result<git2::Tree<'_>, MergeStop> {
+    repo.find_commit(oid)
+        .and_then(|commit| commit.tree())
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)
+}
+
+/// The merged tree, in memory. Squash three-ways the trees (no ancestry
+/// after the merge: the commit's only parent is the trunk head); ff adopts
+/// the branch tree wholesale. Conflicts come back as paths — Holt leaves no
+/// conflict state anywhere on disk.
+fn merged_tree(
+    main_repo: &Repository,
+    context: &MergeContext,
+    mode: &str,
+) -> Result<Result<git2::Oid, Vec<String>>, MergeStop> {
+    if mode == "ff" {
+        return commit_tree(main_repo, context.branch_head).map(|tree| Ok(tree.id()));
+    }
+    let ancestor = main_repo
+        .merge_base(context.trunk_head, context.branch_head)
+        .and_then(|base| main_repo.find_commit(base).and_then(|commit| commit.tree()))
+        // Unrelated histories merge against the empty tree, like
+        // `git merge --allow-unrelated-histories`.
+        .or_else(|_| {
+            let tree = main_repo.treebuilder(None)?.write()?;
+            main_repo.find_tree(tree)
+        })
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    let ours = commit_tree(main_repo, context.trunk_head)?;
+    let theirs = commit_tree(main_repo, context.branch_head)?;
+    let mut index = main_repo
+        .merge_trees(&ancestor, &ours, &theirs, None)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    if index.has_conflicts() {
+        let mut paths: Vec<String> = index
+            .conflicts()
+            .map_err(git_message)
+            .map_err(MergeStop::Failed)?
+            .filter_map(|conflict| match conflict {
+                Ok(conflict) => conflict
+                    .our
+                    .or(conflict.their)
+                    .or(conflict.ancestor)
+                    .map(|entry| String::from_utf8_lossy(&entry.path).into_owned()),
+                Err(_) => None,
+            })
+            .collect();
+        paths.sort();
+        paths.dedup();
+        return Ok(Err(paths));
+    }
+    let tree = index
+        .write_tree_to(main_repo)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    Ok(Ok(tree))
+}
+
+/// `tree(trunk commit) → tree` as the preview payload, under the shared
+/// caps. Both ends arrive as commit oids and peel here.
+fn merge_preview_diff(
+    main_repo: &Repository,
+    from_commit: git2::Oid,
+    to_tree: git2::Oid,
+) -> Result<(Vec<DiffFileSummary>, String, bool, u32, u32), MergeStop> {
+    let from = commit_tree(main_repo, from_commit)?;
+    let to = main_repo
+        .find_tree(to_tree)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    let mut options = git2::DiffOptions::new();
+    options.show_binary(true);
+    let mut diff = main_repo
+        .diff_tree_to_tree(Some(&from), Some(&to), Some(&mut options))
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true);
+    let _ = diff.find_similar(Some(&mut find));
+    let files = diff_summaries(&mut diff);
+    let patch = diff_patch_text(&mut diff);
+    let (patch, truncated) = truncate_patch(&patch, MAX_PATCH_BYTES);
+    let additions = files.iter().map(|file| file.additions).sum();
+    let deletions = files.iter().map(|file| file.deletions).sum();
+    Ok((files, patch, truncated, additions, deletions))
+}
+
+/// The squash mode's default commit message: the chat's title (or the
+/// branch's oldest subject), the squashed subjects, and the trailer the
+/// merge writes and `ListIntegration` reads back.
+fn squash_message(
+    main_repo: &Repository,
+    context: &MergeContext,
+    worktree_name: &str,
+    title: Option<&str>,
+) -> Result<String, MergeStop> {
+    let mut subjects: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    let mut walker = main_repo
+        .revwalk()
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    walker
+        .set_sorting(git2::Sort::TOPOLOGICAL)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    walker
+        .push(context.branch_head)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    walker
+        .hide(context.trunk_head)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    for oid in walker {
+        let oid = oid.map_err(git_message).map_err(MergeStop::Failed)?;
+        total += 1;
+        if subjects.len() < INTEGRATION_COMMIT_CAP {
+            let commit = main_repo
+                .find_commit(oid)
+                .map_err(git_message)
+                .map_err(MergeStop::Failed)?;
+            subjects.push(
+                commit
+                    .summary()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+    }
+    let title = match title {
+        Some(title) => title.to_string(),
+        // The branch's oldest commit — subjects are newest-first.
+        None => subjects
+            .last()
+            .cloned()
+            .filter(|subject| !subject.is_empty())
+            .unwrap_or_else(|| format!("Merge {}", context.branch)),
+    };
+    let mut message = format!(
+        "{title}\n\nSquashed {} commits from {}:\n",
+        total, context.branch
+    );
+    for subject in &subjects {
+        message.push_str("- ");
+        message.push_str(subject);
+        message.push('\n');
+    }
+    if total > subjects.len() {
+        message.push_str(&format!("- … ({} more)\n", total - subjects.len()));
+    }
+    message.push('\n');
+    message.push_str(&merged_from_trailer(worktree_name));
+    Ok(message)
+}
+
+/// The whole preview: pre-checks, the in-memory tree, and its diff — never
+/// a working-tree write. Pre-check refusals arrive as `outcome.refused`
+/// (the wire contract reserves `Failed` for the merge call); only hard git
+/// failures error the RPC.
+fn merge_preview(
+    repo: &Repository,
+    worktree_name: &str,
+    trunk: &str,
+    mode: &str,
+    title: Option<&str>,
+) -> Result<holt_proto::MergePreview, String> {
+    match merge_preview_inner(repo, worktree_name, trunk, mode, title) {
+        Ok(preview) => Ok(preview),
+        Err(MergeStop::Refusal(reason, detail)) => Ok(holt_proto::MergePreview {
+            heads: holt_proto::MergeHeads {
+                trunk_head: String::new(),
+                branch_head: String::new(),
+            },
+            outcome: holt_proto::MergeOutcome::Refused { reason, detail },
+        }),
+        Err(MergeStop::Failed(message)) => Err(message),
+    }
+}
+
+fn merge_preview_inner(
+    repo: &Repository,
+    worktree_name: &str,
+    trunk: &str,
+    mode: &str,
+    title: Option<&str>,
+) -> Result<holt_proto::MergePreview, MergeStop> {
+    let main_repo = Repository::open(repo.commondir())
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    let context = merge_context(&main_repo, worktree_name, trunk, mode)?;
+    if let TrunkHeldBy::LinkedWorktree(path) = &context.trunk_held_by {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::TrunkCheckedOutElsewhere,
+            vec![path.display().to_string()],
+        ));
+    }
+    let heads = holt_proto::MergeHeads {
+        trunk_head: context.trunk_head.to_string(),
+        branch_head: context.branch_head.to_string(),
+    };
+    let tree = match merged_tree(&main_repo, &context, mode)? {
+        Ok(tree) => tree,
+        Err(paths) => {
+            return Ok(holt_proto::MergePreview {
+                heads,
+                outcome: holt_proto::MergeOutcome::Conflict { paths },
+            });
+        }
+    };
+    let (files, patch, truncated, additions, deletions) =
+        merge_preview_diff(&main_repo, context.trunk_head, tree)?;
+    let message = if mode == "ff" {
+        String::new()
+    } else {
+        squash_message(&main_repo, &context, worktree_name, title)?
+    };
+    Ok(holt_proto::MergePreview {
+        heads,
+        outcome: holt_proto::MergeOutcome::Ok {
+            files,
+            patch,
+            truncated,
+            message,
+            additions,
+            deletions,
+        },
+    })
+}
+
+/// Land the merge. Everything from the heads check to the last ref write
+/// runs under the caller's checkout lock; a failure after the working-tree
+/// sync rolls the tree back before answering, so no path leaves a
+/// half-merged checkout.
+#[allow(clippy::too_many_arguments)]
+fn merge_into_trunk(
+    repo: &Repository,
+    worktree_name: &str,
+    trunk: &str,
+    mode: &str,
+    message: Option<String>,
+    expect: &holt_proto::MergeHeads,
+) -> Result<holt_proto::MergeResult, MergeStop> {
+    let main_repo = Repository::open(repo.commondir())
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    let context = merge_context(&main_repo, worktree_name, trunk, mode)?;
+    if let TrunkHeldBy::LinkedWorktree(path) = &context.trunk_held_by {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::TrunkCheckedOutElsewhere,
+            vec![path.display().to_string()],
+        ));
+    }
+    let expect_trunk = git2::Oid::from_str(&expect.trunk_head)
+        .map_err(|_| MergeStop::Failed("expected trunkHead is not a sha".into()))?;
+    let expect_branch = git2::Oid::from_str(&expect.branch_head)
+        .map_err(|_| MergeStop::Failed("expected branchHead is not a sha".into()))?;
+    if context.trunk_head != expect_trunk || context.branch_head != expect_branch {
+        return Err(MergeStop::Refusal(
+            holt_proto::MergeRefusal::Stale,
+            Vec::new(),
+        ));
+    }
+    let tree = merged_tree(&main_repo, &context, mode)?.map_err(|paths| {
+        MergeStop::Failed(format!(
+            "the merge conflicts ({}); re-run the preview",
+            paths.join(", ")
+        ))
+    })?;
+
+    // The squash commit lands in the object store only — no ref moves it.
+    // ff needs no new object at all.
+    let merged_oid = if mode == "ff" {
+        context.branch_head
+    } else {
+        let mut message = message.unwrap_or_else(|| {
+            squash_message(&main_repo, &context, worktree_name, None).unwrap_or_default()
+        });
+        let trailer = merged_from_trailer(worktree_name);
+        if !message.lines().any(|line| line.trim() == trailer) {
+            if !message.ends_with('\n') {
+                message.push('\n');
+            }
+            message.push('\n');
+            message.push_str(&trailer);
+        }
+        let signature = main_repo.signature().map_err(|_| {
+            MergeStop::Failed(
+                "could not read the git identity (user.name/user.email); \
+                 configure it before merging"
+                    .into(),
+            )
+        })?;
+        let tree_object = main_repo
+            .find_tree(tree)
+            .map_err(git_message)
+            .map_err(MergeStop::Failed)?;
+        let parent = main_repo
+            .find_commit(context.trunk_head)
+            .map_err(git_message)
+            .map_err(MergeStop::Failed)?;
+        main_repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                &message,
+                &tree_object,
+                &[&parent],
+            )
+            .map_err(git_message)
+            .map_err(MergeStop::Failed)?
+    };
+
+    // Sync the main checkout's working tree BEFORE the ref moves: a safe
+    // checkout uses HEAD's tree as its baseline, which must still be the
+    // old trunk when it runs. Uncommitted changes outside the merge's
+    // files survive — that is the safe checkout's own contract.
+    let synced = matches!(context.trunk_held_by, TrunkHeldBy::MainCheckout);
+    if synced {
+        let tree_object = main_repo
+            .find_tree(tree)
+            .map_err(git_message)
+            .map_err(MergeStop::Failed)?;
+        let conflicts = switch_conflicts(&main_repo, &tree_object).map_err(MergeStop::Failed)?;
+        if !conflicts.is_empty() {
+            return Err(MergeStop::Refusal(
+                holt_proto::MergeRefusal::TrunkCheckedOutDirty,
+                conflicts,
+            ));
+        }
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe();
+        main_repo
+            .checkout_tree(tree_object.as_object(), Some(&mut checkout))
+            .map_err(git_message)
+            .map_err(MergeStop::Failed)?;
+    }
+
+    // Move the ref (the main checkout's HEAD is a symbolic ref onto it and
+    // follows). A failure here rolls the working tree back to the old
+    // trunk before answering — the ref never moved.
+    let reflog = format!("holt: merge {worktree_name} ({mode})");
+    let mut trunk_reference = main_repo
+        .find_reference(&context.trunk_ref)
+        .map_err(git_message)
+        .map_err(MergeStop::Failed)?;
+    if let Err(set_target_error) = trunk_reference.set_target(merged_oid, &reflog) {
+        if synced {
+            // HEAD never moved, so a safe checkout of the old tree is a
+            // measured no-op (libgit2 diffs the target against HEAD). Undo
+            // the merge's OWN paths by force-checking out HEAD over exactly
+            // them — files the merge added disappear, files it changed go
+            // back, and unrelated uncommitted changes sit outside the
+            // pathspec and survive.
+            let old_tree = commit_tree(&main_repo, context.trunk_head)?;
+            let new_tree = main_repo
+                .find_tree(tree)
+                .map_err(git_message)
+                .map_err(MergeStop::Failed)?;
+            let delta_paths: Vec<String> = main_repo
+                .diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)
+                .map_err(git_message)
+                .map_err(MergeStop::Failed)?
+                .deltas()
+                .filter_map(|delta| {
+                    delta
+                        .new_file()
+                        .path()
+                        .or_else(|| delta.old_file().path())
+                        .map(|path| path.display().to_string())
+                })
+                .collect();
+            let mut rollback = git2::build::CheckoutBuilder::new();
+            rollback.force();
+            for path in &delta_paths {
+                rollback.path(path.as_str());
+            }
+            if let Err(error) = main_repo.checkout_head(Some(&mut rollback)) {
+                return Err(MergeStop::Failed(format!(
+                    "the merge failed ({}) and rolling the checkout back failed too: {error}",
+                    git_message(set_target_error)
+                )));
+            }
+        }
+        return Err(MergeStop::Failed(git_message(set_target_error)));
+    }
+
+    // Holt's own merged marker — the one thing that says "merged" after a
+    // squash (the branch head is not in the trunk's history).
+    let _ = main_repo.reference(
+        &format!("refs/holt/merged/{worktree_name}"),
+        context.branch_head,
+        true,
+        &reflog,
+    );
+
+    Ok(holt_proto::MergeResult {
+        merged_sha: merged_oid.to_string(),
+        main_checkout_synced: synced,
+    })
+}
+
+/// What [`remove_worktree`] took away, for the caller's bookkeeping.
+pub(crate) struct RemovedWorktree {
+    pub path: String,
+}
+
+/// Remove a linked worktree: its directory, its registration, its branch,
+/// and Holt's merged marker. `force` is the only way past uncommitted
+/// changes (the caller confirmed they are disposable).
+fn remove_worktree(
+    repo: &Repository,
+    worktree_name: &str,
+    force: bool,
+    trunk_override: Option<&str>,
+) -> Result<RemovedWorktree, String> {
+    let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
+    let worktree = main_repo
+        .find_worktree(worktree_name)
+        .map_err(|_| format!("worktree {worktree_name} is not registered"))?;
+    let path = worktree.path().to_path_buf();
+    let present = path.is_dir();
+    let branch = if present {
+        let worktree_repo = Repository::open(&path).map_err(git_message)?;
+        let branch = worktree_repo
+            .head()
+            .ok()
+            .filter(|head| head.is_branch())
+            .and_then(|head| head.shorthand().ok().map(str::to_string));
+        if !force {
+            let mut options = git2::StatusOptions::new();
+            options.include_untracked(true);
+            let statuses = worktree_repo
+                .statuses(Some(&mut options))
+                .map_err(git_message)?;
+            let dirty: Vec<String> = statuses
+                .iter()
+                .filter_map(|entry| entry.path().ok().map(str::to_string))
+                .collect();
+            if !dirty.is_empty() {
+                let mut message = format!(
+                    "worktree {worktree_name} has uncommitted changes; \
+                     pass force to discard them:"
+                );
+                for path in dirty {
+                    message.push('\n');
+                    message.push_str(&path);
+                }
+                return Err(message);
+            }
+        }
+        branch
+    } else {
+        None
+    };
+    // A worktree holding a trunk (the repo's default branch, or the trunk
+    // the page merged into — deleting either strands the repository when
+    // its branch goes) or the main checkout's own branch refuses the whole
+    // deletion. (The last is unreachable through git's own checkout rules
+    // — a branch checked out twice is refused — kept as a guard.)
+    if let Some(branch) = branch.as_deref() {
+        let trunk = local_branch_names(&main_repo).ok().and_then(|names| {
+            default_branch(&names, origin_head_target(&main_repo).as_deref()).map(str::to_string)
+        });
+        let main_branch = current_branch(&main_repo);
+        let held_trunk = trunk.as_deref() == Some(branch)
+            || trunk_override == Some(branch)
+            || main_branch.as_deref() == Some(branch);
+        if held_trunk {
+            return Err(format!(
+                "worktree {worktree_name} has {branch} checked out; that branch is \
+                 a trunk or the main checkout's branch, so the worktree stays"
+            ));
+        }
+    }
+
+    // Directory first, then the registration: prune refuses a live
+    // directory unless told to take it too.
+    if present {
+        std::fs::remove_dir_all(&path)
+            .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+    }
+    let mut prune = git2::WorktreePruneOptions::new();
+    prune.valid(true).locked(true).working_tree(true);
+    worktree
+        .prune(Some(&mut prune))
+        .map_err(|error| format!("could not prune {worktree_name}: {error}"))?;
+
+    if let Some(branch) = branch.as_deref()
+        && let Ok(mut reference) = main_repo.find_reference(&format!("refs/heads/{branch}"))
+    {
+        reference
+            .delete()
+            .map_err(|error| format!("could not delete branch {branch}: {error}"))?;
+    }
+    if let Ok(mut marker) = main_repo.find_reference(&format!("refs/holt/merged/{worktree_name}")) {
+        let _ = marker.delete();
+    }
+    Ok(RemovedWorktree {
+        path: path.display().to_string(),
+    })
 }
 
 #[cfg(test)]

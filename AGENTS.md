@@ -64,8 +64,9 @@ does not run.
   plan/provider/goal modes, routines, self-update.
 - **Deliberately unserved** (the UI keeps rendering them; `UnknownMethod`
   is the contract, not a regression): the sync and account surface —
-  sign-in, orgs, repos, clone, uploads — and worktree lifecycle beyond
-  creation-on-demand.
+  sign-in, orgs, repos, clone, uploads — and worktree creation as a
+  standalone operation (worktrees appear on demand per chat, and the
+  integration view deletes them; there is no generic `CreateWorktree`).
 - The per-method contract for anything served lives in its owning
   subsystem page; the method names themselves live in `rpc::methods`.
 
