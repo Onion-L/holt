@@ -84,6 +84,7 @@ enum Destination {
     Settings(SettingsSection),
     Scheduled,
     ChatManager,
+    Integration,
 }
 
 impl Destination {
@@ -102,6 +103,7 @@ impl Destination {
             },
             Self::Scheduled => "navigation-scheduled",
             Self::ChatManager => "navigation-chat-manager",
+            Self::Integration => "navigation-integration",
         }
     }
 
@@ -111,6 +113,7 @@ impl Destination {
             Self::Settings(section) => SharedString::from(section.label().into_owned()),
             Self::Scheduled => t!("shell_chrome.titlebar.nav_scheduled").into(),
             Self::ChatManager => t!("shell_chrome.titlebar.nav_chat_manager").into(),
+            Self::Integration => t!("integration.nav").into(),
         }
     }
 
@@ -121,6 +124,7 @@ impl Destination {
             Self::Settings(SettingsSection::Usage) => (icons::NAVIGATION_CHART, 18.0),
             Self::Scheduled => (icons::CLOCK_CIRCLE, 16.0),
             Self::ChatManager => (icons::INBOX, 16.0),
+            Self::Integration => (icons::INTEGRATION, 17.0),
             _ => unreachable!("only mounted destinations render navigation icons"),
         }
     }
@@ -133,6 +137,7 @@ impl Destination {
             }
             Self::Scheduled => matches!(route, Route::Scheduled),
             Self::ChatManager => matches!(route, Route::ChatManager),
+            Self::Integration => matches!(route, Route::Integration),
         }
     }
 
@@ -142,6 +147,7 @@ impl Destination {
             Self::Settings(section) => shell.open_settings(section, cx),
             Self::Scheduled => shell.open_scheduled(cx),
             Self::ChatManager => shell.open_chat_manager(cx),
+            Self::Integration => shell.open_integration(cx),
         }
     }
 }
@@ -225,6 +231,7 @@ impl Shell {
             Destination::Home,
             Destination::Scheduled,
             Destination::ChatManager,
+            Destination::Integration,
         ];
         let bottom = [
             Destination::Settings(SettingsSection::Usage),

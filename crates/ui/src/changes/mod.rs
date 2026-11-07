@@ -248,6 +248,11 @@ pub(crate) enum ScopedDiffError {
 /// (the shell calls it when the pane first opens).
 pub struct Changes {
     state: Entity<AppState>,
+    /// A checkout pin for panes hosted outside the chat view (the
+    /// integration page's detail): the cwd and the chat id the scoped RPCs
+    /// carry come from the pin, never the selected chat, and the watch feed
+    /// (keyed to the selected chat's checkout) is not consulted at all.
+    pin: Option<CheckoutPin>,
     diffs: Vec<CheckoutDiff>,
     started: bool,
     error: Option<SharedString>,
@@ -313,6 +318,18 @@ pub enum ChangesEvent {
     OpenCommit(GitHistoryCommit),
 }
 
+/// The explicit checkout a pinned Changes pane serves: the integration
+/// page embeds diff panes for worktrees the selected chat does not point
+/// at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutPin {
+    /// The checkout the scoped RPCs address (a linked worktree's path).
+    pub cwd: String,
+    /// The id the branch/commit-mode RPCs carry; the engine ignores it for
+    /// these modes, but the pane's fetch key folds it in.
+    pub chat_id: String,
+}
+
 impl gpui::EventEmitter<ChangesEvent> for Changes {}
 
 impl Changes {
@@ -321,6 +338,7 @@ impl Changes {
         let mode = DiffMode::from_split(crate::settings::current(cx).diff_split);
         Self {
             state,
+            pin: None,
             mode,
             diffs: Vec::new(),
             started: false,
@@ -374,6 +392,42 @@ impl Changes {
         changes.scope = DiffScope::Commit;
         changes.commit = Some(commit);
         changes
+    }
+
+    /// A pane pinned to a checkout outside the chat view (the integration
+    /// page's detail): the branch scope against `base`, or a pinned commit's
+    /// diff. Scope and base never move and no scope menu is offered.
+    pub fn pinned(
+        state: Entity<AppState>,
+        pin: CheckoutPin,
+        commit: Option<GitHistoryCommit>,
+        base: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut changes = Self::new(state, cx);
+        changes.pin = Some(pin);
+        match commit {
+            Some(commit) => {
+                changes.scope = DiffScope::Commit;
+                changes.commit = Some(commit);
+            }
+            None => {
+                changes.scope = DiffScope::Branch;
+                changes.base_ref = base;
+            }
+        }
+        changes
+    }
+
+    /// Drop any cached scoped capture so the next sync refetches — a pinned
+    /// pane's refresh action (the fetch key is otherwise stable forever).
+    pub fn invalidate(&mut self, cx: &mut Context<Self>) {
+        self.scoped = None;
+        self.scoped_error = None;
+        self.scoped_for = None;
+        self.scoped_inflight = None;
+        self.scoped_task = None;
+        self.sync(cx);
     }
 
     /// The surface-tab title (contextual, user request): the pinned commit's

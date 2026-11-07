@@ -377,6 +377,7 @@ impl RpcService for EngineService {
             methods::RESTORE_TURN_CHANGES => self.restore_turn_changes(params).await,
 
             methods::LIST_GIT_HISTORY => self.list_git_history(params).await,
+            methods::LIST_INTEGRATION => self.list_integration(params).await,
             methods::FETCH_ALL => self.fetch_all(params).await,
             // No-op liveness pokes the UI fires defensively.
             methods::PROBE_SYNC => RpcReply::value(&serde_json::json!({})),

@@ -143,7 +143,7 @@ impl Shell {
         }
         match self.route {
             Route::Chat => self.render_session_title_bar(cx),
-            Route::Settings(_) | Route::ChatManager | Route::Scheduled => {
+            Route::Settings(_) | Route::ChatManager | Route::Scheduled | Route::Integration => {
                 let inner = div()
                     .size_full()
                     .flex()

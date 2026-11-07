@@ -49,7 +49,7 @@ Method names live in `rpc::methods` (code is the contract). Each family's behavi
 | Goals and routines | `SetGoal`, `SetGoalPaused`, `ListRoutines`, `RunRoutineNow` | [goals-routines](docs/subsystems/goals-routines.md) |
 | Catalog: models, commands, skills | `ListModels`, `ListCommands`, `ListSkills` | [prompts-skills](docs/subsystems/prompts-skills.md), [provider-transport](docs/subsystems/provider-transport.md) |
 | Workspace files and images | `ListWorkspaceEntries`, `ReadWorkspaceFile`, `SaveWorkspaceFile`, `StageImage`, `SearchFiles` | [workspace-files](docs/subsystems/workspace-files.md) |
-| Git and Turn change sets | `ListRefs`, `GetCheckoutDiff`, `GetTurnChangeSet`, `RestoreTurnChanges` | [workspace-git](docs/subsystems/workspace-git.md) |
+| Git and Turn change sets | `ListRefs`, `GetCheckoutDiff`, `GetTurnChangeSet`, `RestoreTurnChanges`, `ListIntegration` | [workspace-git](docs/subsystems/workspace-git.md) |
 | Terminals | `OpenTerminal`, `WriteTerminal`, `SubscribeTerminal`, `CloseTerminal` | [terminals](docs/subsystems/terminals.md) |
 | Background processes | `ListBackgroundProcesses`, `WatchBackgroundProcesses`, `SubscribeBackgroundProcess`, `KillBackgroundProcess` | [background-processes](docs/subsystems/background-processes.md) |
 | Transcript and subagent blobs | `WatchDocMessages`, `FetchToolBlob` | [persistence](docs/subsystems/persistence.md), [subagents](docs/subsystems/subagents.md) |

@@ -189,7 +189,7 @@ impl Shell {
             Route::Settings(section) => self.render_settings_nav(section, &theme, cx),
             // The Chat manager keeps the session sidebar — it manages what
             // that sidebar lists.
-            Route::Chat | Route::ChatManager | Route::Scheduled => {
+            Route::Chat | Route::ChatManager | Route::Scheduled | Route::Integration => {
                 self.render_chat_sidebar(&theme, cx)
             }
         };
