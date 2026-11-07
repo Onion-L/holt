@@ -408,25 +408,27 @@ impl BackgroundProcesses {
 
     /// The supervisor's finish path: queue the chat's exit notice, publish
     /// the exit, forget the shell-groups record, and wake watchers. The
-    /// notice queues BEFORE the exit becomes visible (`running` flips) —
-    /// a Turn starting against a just-exited row must not race past its
-    /// notice — and the tail fills in after `finish` computed it.
+    /// notice — tail included — queues BEFORE the exit becomes visible
+    /// (`running` flips): a Turn starting against a just-exited row must
+    /// not race past its notice, and a consumer that can see the exit code
+    /// must never read a placeholder tail.
     fn record_exit(self: &Arc<Self>, process: &Arc<Process>, code: i32) {
+        let notice = ExitNotice {
+            command: process.command.clone(),
+            exit_code: code,
+            tail: process.tail(8, 4096),
+        };
         {
             let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
             if !registry.removed_chats.contains(&process.chat_id) {
                 let notices = registry.notices.entry(process.chat_id.clone()).or_default();
-                notices.push_back(ExitNotice {
-                    command: process.command.clone(),
-                    exit_code: code,
-                    tail: String::new(),
-                });
+                notices.push_back(notice);
                 while notices.len() > MAX_NOTICES_PER_CHAT {
                     notices.pop_front();
                 }
             }
         }
-        let Some((notice, record)) = process.finish(code) else {
+        let Some((_, record)) = process.finish(code) else {
             // A second observation of the same exit (kill racing the
             // supervisor's poll) — the notice is already queued.
             return;
@@ -435,13 +437,6 @@ impl BackgroundProcesses {
             #[cfg(unix)]
             crate::shell_groups::forget(&record);
         }
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(notices) = registry.notices.get_mut(&process.chat_id)
-            && let Some(last) = notices.back_mut()
-        {
-            *last = notice;
-        }
-        drop(registry);
         self.bump();
     }
 
