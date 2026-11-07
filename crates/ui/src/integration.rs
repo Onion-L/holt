@@ -646,7 +646,6 @@ impl IntegrationPage {
         self.reviews_loaded = false;
         self.selected_findings.clear();
         self.review_dialog = None;
-
     }
 
     /// Select `path`'s snapshot: reset trunk and view state, reload.

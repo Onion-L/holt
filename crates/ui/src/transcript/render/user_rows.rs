@@ -511,6 +511,7 @@ impl Transcript {
             Some(LeadingChip::Skill(chip)),
             theme,
             clicks,
+            gpui::px(0.0),
         )
     }
 
