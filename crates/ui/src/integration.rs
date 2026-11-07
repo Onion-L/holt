@@ -360,6 +360,11 @@ pub struct IntegrationPage {
     /// RunChecks call so starting one never cancels a page load, a merge,
     /// or a delete.
     checks_task: Option<Task<()>>,
+    /// The merge flow's own slot: a snapshot reload or a delete must never
+    /// cancel an in-flight preview/confirm — a dropped task would strand
+    /// `MergeState::Previewing` with nothing to settle it.
+    merge_task: Option<Task<()>>,
+    delete_task: Option<Task<()>>,
     refs_task: Option<Task<()>>,
     fetch_task: Option<Task<()>>,
     /// Last painted split progress, so a reversal starts from this frame.
@@ -417,6 +422,8 @@ impl IntegrationPage {
             focus_pending: true,
             task: None,
             checks_task: None,
+            merge_task: None,
+            delete_task: None,
             refs_task: None,
             fetch_task: None,
             split_shown: 0.0,
@@ -1763,7 +1770,7 @@ impl IntegrationPage {
             state: MergeState::Previewing,
         });
         cx.notify();
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.merge_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
                 .call(
@@ -1862,7 +1869,7 @@ impl IntegrationPage {
             flow.state = MergeState::Merging;
         }
         cx.notify();
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.merge_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::json!({
                 "repoPath": repo_path,
                 "worktree": worktree.clone(),
@@ -2004,7 +2011,7 @@ impl IntegrationPage {
         };
         let cwd = cwd.unwrap_or_else(|| row.path.clone());
         cx.notify();
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.merge_task = Some(cx.spawn(async move |this, cx| {
             let request = serde_json::json!({
                 "prompt": prompt,
                 "provider": config.provider,
@@ -2073,7 +2080,8 @@ impl IntegrationPage {
         };
         self.deleting = Some(confirm.worktree.clone());
         cx.notify();
-        self.task = Some(cx.spawn(async move |this, cx| {
+        let trunk = self.trunk_of();
+        self.delete_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
                 .call(
@@ -2082,6 +2090,7 @@ impl IntegrationPage {
                         "repoPath": repo_path,
                         "worktree": confirm.worktree.clone(),
                         "force": confirm.dirty,
+                        "trunk": trunk,
                     }),
                 )
                 .await;
@@ -3162,6 +3171,7 @@ impl IntegrationPage {
         let delete_hidden = delete_protected(
             row.branch.as_deref(),
             trunk.as_str(),
+            snapshot.default_trunk.as_deref(),
             snapshot.main_checkout.branch.as_deref(),
         );
         let busy = self
@@ -3242,7 +3252,7 @@ impl IntegrationPage {
                         .text_color(theme.warning)
                         .child(hint)
                         .child(div().flex_1())
-                        .child(self.render_mode_toggle(&row, theme, cx))
+                        .child(self.render_mode_toggle(&row, &trunk, theme, cx))
                         .child(primary_merge_button(theme, cx))
                 }
                 WorktreeStatus::Merged => div()
@@ -3315,7 +3325,7 @@ impl IntegrationPage {
                     .gap(px(10.0))
                     .text_size(px(12.0))
                     .text_color(theme.text_muted)
-                    .child(self.render_mode_toggle(&row, theme, cx))
+                    .child(self.render_mode_toggle(&row, &trunk, theme, cx))
                     .child(div().flex_1())
                     .child(primary_merge_button(theme, cx)),
             };
@@ -3463,6 +3473,7 @@ impl IntegrationPage {
     fn render_mode_toggle(
         &mut self,
         row: &holt_proto::IntegrationWorktree,
+        trunk: &str,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -3475,7 +3486,7 @@ impl IntegrationPage {
             .child(self.mode_chip(MergeMode::Squash, selected, false, theme, cx))
             .child(self.mode_chip(MergeMode::FastForward, selected, ff_disabled, theme, cx))
             .when(ff_disabled, |el| {
-                let hint = t!("integration.merge.ff_blocked", trunk = row.behind).into_owned();
+                let hint = t!("integration.merge.ff_blocked", trunk = trunk).into_owned();
                 el.tooltip(move |_, cx| {
                     cx.new(|_| popover::TextTooltip(hint.clone().into())).into()
                 })
@@ -4119,13 +4130,21 @@ fn main_checkout_state(snapshot: &IntegrationSnapshot, theme: &Theme) -> Option<
     let _ = theme;
     let checkout = &snapshot.main_checkout;
     Some(match (&checkout.branch, checkout.dirty) {
-        (Some(branch), false) => t!(
-            "integration.merge.main_on_trunk_clean",
-            branch = branch.as_str()
+        // A checkout on another branch never syncs: the engine moves the
+        // trunk ref and leaves this working tree alone.
+        (Some(branch), _) if branch != &snapshot.trunk.name => t!(
+            "integration.merge.main_on_other",
+            branch = branch.as_str(),
+            trunk = snapshot.trunk.name.as_str()
         )
         .into_owned(),
         (Some(branch), true) => t!(
             "integration.merge.main_on_trunk_dirty",
+            branch = branch.as_str()
+        )
+        .into_owned(),
+        (Some(branch), false) => t!(
+            "integration.merge.main_on_trunk_clean",
             branch = branch.as_str()
         )
         .into_owned(),
@@ -4278,9 +4297,15 @@ fn format_duration_ms(ms: u64) -> String {
 pub(crate) fn delete_protected(
     row_branch: Option<&str>,
     trunk: &str,
+    default_trunk: Option<&str>,
     main_branch: Option<&str>,
 ) -> bool {
-    row_branch.is_some_and(|branch| branch == trunk || Some(branch) == main_branch)
+    // Mirror of the engine's refusal: a worktree holding the selected
+    // trunk, the repository's own default branch, or the main checkout's
+    // branch never offers the delete.
+    row_branch.is_some_and(|branch| {
+        branch == trunk || Some(branch) == default_trunk || Some(branch) == main_branch
+    })
 }
 
 #[cfg(test)]
@@ -4434,13 +4459,36 @@ mod tests {
     fn delete_is_hidden_when_the_branch_is_the_trunk_or_the_main_checkouts() {
         use super::delete_protected;
         // The trunk.
-        assert!(delete_protected(Some("main"), "main", Some("side")));
+        assert!(delete_protected(
+            Some("main"),
+            "main",
+            Some("side"),
+            Some("side")
+        ));
+        // The repository's own default branch, even when the page merged
+        // into a different trunk.
+        assert!(delete_protected(
+            Some("main"),
+            "develop",
+            Some("main"),
+            Some("side")
+        ));
         // The main checkout's own branch.
-        assert!(delete_protected(Some("side"), "main", Some("side")));
+        assert!(delete_protected(
+            Some("side"),
+            "main",
+            Some("main"),
+            Some("side")
+        ));
         // An ordinary branch deletes.
-        assert!(!delete_protected(Some("feature"), "main", Some("main")));
+        assert!(!delete_protected(
+            Some("feature"),
+            "main",
+            Some("main"),
+            Some("main")
+        ));
         // Detached or missing worktrees have nothing to protect.
-        assert!(!delete_protected(None, "main", Some("main")));
+        assert!(!delete_protected(None, "main", Some("main"), Some("main")));
     }
 
     // ---- repo selection ----

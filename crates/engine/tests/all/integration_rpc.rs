@@ -1874,3 +1874,75 @@ async fn delete_worktree_refuses_a_worktree_holding_the_trunk() {
     assert!(names.contains(&"wt-holds-trunk".to_string()));
     assert!(repo.find_reference("refs/heads/main").is_ok());
 }
+
+#[tokio::test]
+async fn delete_refuses_the_default_trunk_even_under_a_trunk_override() {
+    let fixture = Fixture::new();
+    let wt_dir = TempDir::new().unwrap();
+    // The page works on a `develop` trunk, but the worktree holds `main` —
+    // the repository's own default. Deleting it would strand the repo all
+    // the same, so the override must extend the refusal set, not replace it.
+    let repo = fixture.repo();
+    let tip_id = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    {
+        let tip = repo.find_commit(tip_id).unwrap();
+        repo.branch("side", &tip, false).unwrap();
+        repo.branch("develop", &tip, false).unwrap();
+    }
+    repo.set_head("refs/heads/side").unwrap();
+    let path = add_worktree(&repo, &wt_dir, "wt-holds-default", "main", "main");
+    drop(repo);
+
+    let engine = fixture.engine();
+    let error = match engine
+        .handle(
+            methods::DELETE_WORKTREE,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "worktree": "wt-holds-default",
+                "force": false,
+                "trunk": "develop",
+            }),
+        )
+        .await
+    {
+        Ok(_) => panic!("a worktree holding the default branch must refuse"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("the worktree stays"),
+        "got: {error}"
+    );
+    assert!(std::path::Path::new(&path).exists());
+
+    // The mirror case: a worktree holding the OVERRIDE trunk refuses too,
+    // even though the repository's default is `main`.
+    let repo = fixture.repo();
+    let override_path = add_worktree(&repo, &wt_dir, "wt-holds-override", "develop", "develop");
+    drop(repo);
+    let error = match engine
+        .handle(
+            methods::DELETE_WORKTREE,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "worktree": "wt-holds-override",
+                "force": false,
+                "trunk": "develop",
+            }),
+        )
+        .await
+    {
+        Ok(_) => panic!("a worktree holding the override trunk must refuse"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("the worktree stays"),
+        "got: {error}"
+    );
+    assert!(std::path::Path::new(&override_path).exists());
+}

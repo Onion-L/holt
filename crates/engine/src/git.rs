@@ -250,9 +250,10 @@ impl Git {
         repo_path: &str,
         worktree: String,
         force: bool,
+        trunk: Option<String>,
     ) -> Result<RemovedWorktree, String> {
         self.with_repo(repo_path, move |repo| {
-            remove_worktree(&repo, &worktree, force)
+            remove_worktree(&repo, &worktree, force, trunk.as_deref())
         })
         .await
     }
@@ -2833,6 +2834,8 @@ fn integration_snapshot(
     // come from the main repository itself.
     let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
     let names = local_branch_names(&main_repo)?;
+    let default_trunk_name =
+        default_branch(&names, origin_head_target(&main_repo).as_deref()).map(str::to_string);
     let trunk_name = match trunk_override {
         Some(name) => {
             if !names.iter().any(|candidate| candidate == name) {
@@ -2840,9 +2843,9 @@ fn integration_snapshot(
             }
             name.to_string()
         }
-        None => default_branch(&names, origin_head_target(&main_repo).as_deref())
-            .ok_or_else(|| "no branches to pick a trunk from".to_string())?
-            .to_string(),
+        None => default_trunk_name
+            .clone()
+            .ok_or_else(|| "no branches to pick a trunk from".to_string())?,
     };
     let trunk_commit = main_repo
         .find_reference(&format!("refs/heads/{trunk_name}"))
@@ -2939,6 +2942,7 @@ fn integration_snapshot(
             name: trunk_name,
             head_sha: trunk_oid.to_string(),
         },
+        default_trunk: default_trunk_name,
         trunk_commits,
         trunk_truncated,
         main_checkout,
@@ -3670,6 +3674,7 @@ fn remove_worktree(
     repo: &Repository,
     worktree_name: &str,
     force: bool,
+    trunk_override: Option<&str>,
 ) -> Result<RemovedWorktree, String> {
     let main_repo = Repository::open(repo.commondir()).map_err(git_message)?;
     let worktree = main_repo
@@ -3710,20 +3715,23 @@ fn remove_worktree(
     } else {
         None
     };
-    // A worktree holding the trunk (the repo's default branch) or the main
-    // checkout's own branch strands the repository when its branch goes —
-    // refuse the whole deletion. (The second half is unreachable through
-    // git's own checkout rules — a branch checked out twice is refused —
-    // kept as a guard.)
+    // A worktree holding a trunk (the repo's default branch, or the trunk
+    // the page merged into — deleting either strands the repository when
+    // its branch goes) or the main checkout's own branch refuses the whole
+    // deletion. (The last is unreachable through git's own checkout rules
+    // — a branch checked out twice is refused — kept as a guard.)
     if let Some(branch) = branch.as_deref() {
         let trunk = local_branch_names(&main_repo).ok().and_then(|names| {
             default_branch(&names, origin_head_target(&main_repo).as_deref()).map(str::to_string)
         });
         let main_branch = current_branch(&main_repo);
-        if trunk.as_deref() == Some(branch) || main_branch.as_deref() == Some(branch) {
+        let held_trunk = trunk.as_deref() == Some(branch)
+            || trunk_override == Some(branch)
+            || main_branch.as_deref() == Some(branch);
+        if held_trunk {
             return Err(format!(
                 "worktree {worktree_name} has {branch} checked out; that branch is \
-                 the trunk or the main checkout's branch, so the worktree stays"
+                 a trunk or the main checkout's branch, so the worktree stays"
             ));
         }
     }
