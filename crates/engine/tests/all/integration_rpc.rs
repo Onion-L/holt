@@ -439,6 +439,85 @@ async fn squash_trailer_commit_is_the_merge_point() {
 }
 
 #[tokio::test]
+async fn a_squash_deeper_than_the_trunk_window_still_resolves() {
+    let fixture = Fixture::new();
+    let wt_dir = TempDir::new().unwrap();
+    let repo = fixture.repo();
+    let main_tip = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    let path = add_worktree(&repo, &wt_dir, "wt-deep", "wt-deep", "main");
+    let branch_head = {
+        let worktree_repo = Repository::open(&path).unwrap();
+        common::commit_on(
+            &worktree_repo,
+            "refs/heads/wt-deep",
+            Some(main_tip),
+            &[("README.md", "hello\n"), ("deep.txt", "deep\n")],
+            "deep branch work",
+        )
+    };
+    let squash_oid = {
+        let parent = repo.find_commit(main_tip).unwrap();
+        let mut builder = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+        let blob = repo.blob(b"deep\n").unwrap();
+        builder.insert("deep.txt", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let sig = common::signature();
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "squash the deep branch\n\nHolt-Merged-From: wt-deep\n",
+            &tree,
+            &[&parent],
+        )
+        .unwrap()
+    };
+    repo.reference(
+        "refs/holt/merged/wt-deep",
+        branch_head,
+        true,
+        "holt: merge wt-deep (squash)",
+    )
+    .unwrap();
+    // Bury the squash one commit past the snapshot's 200-commit window.
+    let mut tip = squash_oid;
+    for index in 0..201 {
+        tip = common::commit_on(
+            &repo,
+            "refs/heads/main",
+            Some(tip),
+            &[
+                ("README.md", "hello\n"),
+                ("fill.txt", format!("{index}\n").as_str()),
+            ],
+            &format!("filler {index}"),
+        );
+    }
+    drop(repo);
+
+    let engine = fixture.engine();
+    let snapshot = list_integration(&engine, &fixture.repo_path(), None)
+        .await
+        .unwrap();
+    let worktree = worktree(&snapshot, "wt-deep");
+    assert!(worktree.merged);
+    assert_eq!(
+        worktree.merge_sha.as_deref(),
+        Some(squash_oid.to_string().as_str()),
+        "a merge point past the window resolves, not the branch head"
+    );
+    assert_ne!(
+        worktree.merge_sha.as_deref(),
+        Some(branch_head.to_string().as_str())
+    );
+}
+
+#[tokio::test]
 async fn manual_worktrees_are_listed_and_carry_no_chat() {
     let fixture = Fixture::new();
     let wt_dir = TempDir::new().unwrap();
