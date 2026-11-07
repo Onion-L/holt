@@ -7,8 +7,8 @@
 //! in-memory RPC transport ([`InProcessEngine`]). The backend remains behind the same RPC contract.
 //!
 //! ## Async bridging
-//! `bootstrap` runs on tokio via `gpui_tokio::Tokio::spawn`. Once an [`RpcClient`]
-//! exists, its `call`/`subscribe` futures are runtime-agnostic (tokio channels),
+//! `bootstrap` runs on tokio via [`crate::tokio_bridge::Tokio::spawn`]. Once an
+//! [`RpcClient`] exists, its `call`/`subscribe` futures are runtime-agnostic (tokio channels),
 //! so subscription pumps run on gpui's own executor via `cx.spawn` and fold each
 //! frame into the entity with `this.update(...)` + `cx.notify()`.
 //!
@@ -22,10 +22,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gpui::{App, Context, Entity, Task};
-use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
 use crate::comments::DiffComment;
+use crate::tokio_bridge::Tokio;
 use holt_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use holt_engine::{EngineConfig, LocalEngine};
 use holt_proto::{

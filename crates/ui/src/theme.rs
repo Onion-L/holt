@@ -897,12 +897,9 @@ impl Theme {
     }
 
     /// Whether FLOATING surfaces (popovers, the composer pill) paint their
-    /// backdrop blur and translucent tints. Unlike [`Self::is_glass`] this is
-    /// scene-level: the blur runs on in-app content inside the window, not on
-    /// the desktop behind it, so it needs no compositor vibrancy — macOS
-    /// rasterizes it in Metal and Linux in the vendored wgpu renderer (other
-    /// wgpu platforms keep opaque floats until tested). The window chrome
-    /// itself stays opaque off macOS either way.
+    /// translucent tints. Unlike [`Self::is_glass`] this is scene-level and
+    /// does not require compositor vibrancy. The window chrome itself stays
+    /// opaque off macOS either way.
     pub fn is_frost(&self) -> bool {
         self.surface_treatment == SurfaceTreatment::Frosted
             && cfg!(any(target_os = "macos", target_os = "linux"))
@@ -915,9 +912,9 @@ impl Theme {
         self.element_hover
     }
 
-    /// The theme-owned tint floating cards paint over their backdrop blur (see
-    /// [`crate::frost::frosted`]). Light coverage stays heavier because dark
-    /// text is more vulnerable to unpredictable content behind a popover.
+    /// The theme-owned tint for floating cards. Light coverage stays heavier
+    /// because dark text is more vulnerable to unpredictable content behind a
+    /// popover.
     pub fn glass_overlay(&self) -> Hsla {
         let base = match self.appearance {
             Appearance::Dark => self.surface_overlay.opacity(0.50),

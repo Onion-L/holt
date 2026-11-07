@@ -591,8 +591,8 @@ impl Transcript {
                             )
                         });
                     // Mounted straight through deferred/anchored (not a popover
-                    // mount helper), so the frost wrap happens here.
-                    crate::frost::frosted(12.0, crate::frost::MENU_BLUR, card).into_any_element()
+                    // mount helper), so the layer wrap happens here.
+                    crate::layer::glass_layer(card).into_any_element()
                 });
                 div()
                     .id(("rail-tick", ix))

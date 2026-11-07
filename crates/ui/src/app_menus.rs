@@ -12,7 +12,9 @@
 //! `shell::apply_keymap`, which clears every binding first), and
 //! [`app_menus`] builds the menu bar handed to `cx.set_menus` in `run_app`.
 
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
+use gpui::{
+    AnyWindowHandle, App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions,
+};
 
 use crate::appearance::{self, AppearanceMode};
 use crate::composer;
@@ -103,22 +105,26 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'sta
     }
 }
 
-/// ⌘Q / "Quit Holt". `cx.quit()` runs the platform's standard quit routine,
-/// which invokes gpui `App::shutdown` — that fires the `on_app_quit` observers
-/// registered in `run_app` (embedded-engine drain: live runs + doc snapshot
-/// flush) with gpui's shutdown timeout before the process exits. Same graceful
-/// path as quitting from the Dock or closing the last window.
-///
-/// This handler runs mid action-dispatch, i.e. inside the dispatching window's
-/// `update` (gpui's re-entrancy guard has that window taken out of
-/// `cx.windows`), so it must NOT `active_window().update(...)` synchronously —
-/// that fails with "window not found" and silently swallowed the quit. Instead
-/// `cx.quit()` defers `[NSApp terminate:]` to the main queue; the resulting
-/// `applicationShouldTerminate` re-enters gpui from the run loop, where
-/// `terminal::lifecycle`'s `on_should_quit` gate runs the shared
-/// `request_close` confirmation and, once approved, re-calls `cx.quit()`.
+/// ⌘Q / "Quit Holt" enters the same draft and terminal confirmation path as
+/// closing the window. The quit itself runs after that path approves.
 fn quit(_: &Quit, cx: &mut App) {
-    cx.quit();
+    let Some(handle) = quit_window(cx) else {
+        cx.quit();
+        return;
+    };
+    // Deferred for the same re-entrancy reason as `with_active_window`.
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            crate::terminal::lifecycle::request_close(window, cx, true)
+        });
+    });
+}
+
+/// The window that hosts the quit confirmation. A minimized (or otherwise
+/// unfocused) window leaves macOS with no key window, so `active_window` alone
+/// would let ⌘Q skip the draft/terminal gate; fall back to any open window.
+fn quit_window(cx: &App) -> Option<AnyWindowHandle> {
+    cx.active_window().or_else(|| cx.windows().first().copied())
 }
 
 /// Fixed app-level shortcuts backing the menu key equivalents. These live
@@ -133,7 +139,11 @@ pub fn bind_keys(cx: &mut App) {
 /// The binding table behind [`bind_keys`] — `KeyBinding` construction is pure
 /// (no `App`), so unit tests can inspect it directly.
 fn app_key_bindings(macos: bool) -> Vec<KeyBinding> {
-    let primary = if macos { "cmd" } else { "ctrl" };
+    let (equals, plus, minus) = if macos {
+        ("cmd-=", "cmd-+", "cmd--")
+    } else {
+        ("ctrl-=", "ctrl-+", "ctrl--")
+    };
     let mut bindings = vec![
         KeyBinding::new(
             if macos { "cmd-," } else { "ctrl-," },
@@ -143,9 +153,9 @@ fn app_key_bindings(macos: bool) -> Vec<KeyBinding> {
         // Interface zoom: the "+" variant covers the shifted "=" key — macOS
         // reports Cmd+Shift+= as the keystroke "cmd-+" (shift folded into the
         // character), and Linux keysyms name it "plus" the same way.
-        KeyBinding::new(&format!("{primary}-="), ZoomIn, None),
-        KeyBinding::new(&format!("{primary}-+"), ZoomIn, None),
-        KeyBinding::new(&format!("{primary}--"), ZoomOut, None),
+        KeyBinding::new(equals, ZoomIn, None),
+        KeyBinding::new(plus, ZoomIn, None),
+        KeyBinding::new(minus, ZoomOut, None),
     ];
     if macos {
         bindings.extend([
@@ -270,6 +280,17 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[gpui::test]
+    fn quit_targets_a_window_even_without_an_active_one(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let window = cx.update(|window, _| window.window_handle());
+        assert_eq!(cx.update(|_, cx| quit_window(cx)), Some(window));
+        // Minimizing leaves macOS with no key window.
+        cx.deactivate_window();
+        assert_eq!(cx.update(|_, cx| cx.active_window()), None);
+        assert_eq!(cx.update(|_, cx| quit_window(cx)), Some(window));
     }
 
     #[test]
@@ -426,7 +447,7 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
         };
-        let combo = |source: &str| vec![Keystroke::parse(source).unwrap()];
+        let combo = |source: &'static str| vec![Keystroke::parse(source).unwrap()];
         let macos = app_key_bindings(true);
         assert_eq!(
             find(&macos, shell::OpenSettings.name()),

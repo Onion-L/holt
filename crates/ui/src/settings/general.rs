@@ -370,29 +370,6 @@ impl GeneralPage {
     fn render_notifications(theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let ui_settings = settings::current(cx);
         let master_on = ui_settings.completion_notifications;
-        let sound_on = ui_settings.completion_notification_sound;
-
-        let sound_switch = div()
-            .id("completion-notification-sound-toggle")
-            .debug_selector(|| "completion-notification-sound-toggle".into())
-            .flex_none()
-            .child(widgets::toggle_switch(theme, sound_on));
-        // While the master is off the control is visually non-interactive;
-        // the stored sound choice is untouched and honored again on
-        // re-enable.
-        let sound_switch = if master_on {
-            sound_switch
-                .cursor_pointer()
-                .on_click(cx.listener(|_, _, _, cx| {
-                    settings::update(SavePolicy::Immediate, cx, |settings| {
-                        settings.completion_notification_sound =
-                            !settings.completion_notification_sound;
-                    });
-                    cx.notify();
-                }))
-        } else {
-            sound_switch.opacity(0.4)
-        };
 
         div()
             .mt(px(GROUP_GAP))
@@ -426,15 +403,6 @@ impl GeneralPage {
                                     }))
                                     .child(widgets::toggle_switch(theme, master_on)),
                             ),
-                    )
-                    .child(
-                        group_row()
-                            .child(row_text(
-                                theme,
-                                &t!("settings_general_appearance.general.notifications.sound"),
-                                &t!("settings_general_appearance.general.notifications.sound_description"),
-                            ))
-                            .child(sound_switch),
                     ),
             )
     }
@@ -1298,9 +1266,7 @@ mod tests {
 
     /// The Notifications group is device-local: it must render and work even
     /// when the engine-backed automatic-title settings fail to load (here the
-    /// state has no engine at all, so the title group lands in its Error
-    /// state), and the sound control must be non-interactive — without
-    /// changing its stored value — while the master toggle is off.
+    /// state has no engine at all, so the title group lands in its Error state).
     #[gpui::test]
     fn notifications_group_survives_title_settings_failure(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -1316,53 +1282,26 @@ mod tests {
 
         let current = |visual: &gpui::VisualTestContext| visual.read(settings::current);
 
-        // Both controls exist despite the title group's load failure.
+        // The control exists despite the title group's load failure.
         let master = visual
             .debug_bounds("completion-notifications-toggle")
             .expect("master toggle renders without engine-backed settings");
-        assert!(
-            visual
-                .debug_bounds("completion-notification-sound-toggle")
-                .is_some(),
-            "sound toggle renders without engine-backed settings"
-        );
         assert!(current(visual).completion_notifications);
-        assert!(current(visual).completion_notification_sound);
 
-        // Master off: the sound control goes non-interactive but keeps its
-        // stored value.
         visual.simulate_click(master.center(), Default::default());
         visual.run_until_parked();
         assert!(!current(visual).completion_notifications);
-        let sound = visual
-            .debug_bounds("completion-notification-sound-toggle")
-            .expect("sound toggle still renders while disabled");
-        visual.simulate_click(sound.center(), Default::default());
-        visual.run_until_parked();
-        assert!(
-            current(visual).completion_notification_sound,
-            "a disabled sound control must not change its stored value"
-        );
 
-        // Master back on: the sound choice was retained and is editable again.
         let master = visual
             .debug_bounds("completion-notifications-toggle")
             .unwrap();
         visual.simulate_click(master.center(), Default::default());
         visual.run_until_parked();
         assert!(current(visual).completion_notifications);
-        assert!(current(visual).completion_notification_sound);
-        let sound = visual
-            .debug_bounds("completion-notification-sound-toggle")
-            .unwrap();
-        visual.simulate_click(sound.center(), Default::default());
-        visual.run_until_parked();
-        assert!(!current(visual).completion_notification_sound);
 
         // Explicit toggles persist immediately.
         let reloaded = crate::settings::UiSettings::load(dir.path());
         assert!(reloaded.completion_notifications);
-        assert!(!reloaded.completion_notification_sound);
     }
 
     fn model(id: &str, label: &str) -> Model {

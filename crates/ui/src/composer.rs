@@ -1235,8 +1235,6 @@ impl Render for Composer {
         // The file dropzone lives in the shell (the whole conversation column,
         // not just the pill — shell.rs `chat-dropzone`); drops land back here
         // via `add_paths`.
-        // Frosted: the pill backdrop-blurs the transcript scrolling under it
-        // (the popover glass treatment; radius matches the pill's rounding).
         // Keep the queue in normal flow so the shell's bottom-stack measurement
         // reserves its actual height from the transcript.
         let container = container.child(
@@ -1275,11 +1273,10 @@ impl Render for Composer {
                                 cx.notify();
                             },
                         ))
-                        .child(crate::frost::frosted(
-                            26.0,
-                            16.0,
-                            motion::fade_quick("composer-input", body),
-                        ))
+                        .child(crate::layer::glass_layer(motion::fade_quick(
+                            "composer-input",
+                            body,
+                        )))
                         // Both completion popups span the full pill width above it —
                         // the file-mention and slash tokens are mutually exclusive.
                         .children(self.render_file_mention_popup(&theme, cx))

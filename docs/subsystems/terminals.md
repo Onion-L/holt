@@ -13,7 +13,7 @@ Not here: the agent's `bash` tool (`engine::tools` — a separate execution path
 | Root resolution | A known chat's working directory wins (the workspace resolution, errors included); a chat-less terminal takes the caller's explicit `cwd`, else the user's home | `open_terminal` / `chatless_terminal_root` in `rpc/terminals.rs` |
 | Emulator | `alacritty_terminal` 0.26 `Term` + vte ANSI parsing, 10,000 scrollback lines, search inside scrollback | [`crates/ui/src/terminal/emulator.rs`](../../crates/ui/src/terminal/emulator.rs) |
 | Panes and tabs | Split panes (⌘D / ⇧⌘D); tabs on the embedded right-pane panel — the bottom dock stays chat-only; an embedded panel with no chat selected scopes its tabs to the Space | [`crates/ui/src/terminal/panel.rs`](../../crates/ui/src/terminal/panel.rs), [`pane.rs`](../../crates/ui/src/terminal/pane.rs) |
-| Close confirmation | One path for window chrome, ⌘Q, and native Dock quit (`on_should_quit`): unsaved file drafts decide first, then running terminals | [`crates/ui/src/terminal/lifecycle.rs`](../../crates/ui/src/terminal/lifecycle.rs) |
+| Close confirmation | One path for window chrome and ⌘Q: unsaved file drafts decide first, then running terminals. Native Dock quit is non-cancellable and bypasses the prompt | [`crates/ui/src/terminal/lifecycle.rs`](../../crates/ui/src/terminal/lifecycle.rs) |
 
 ## Runtime path
 

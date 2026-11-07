@@ -20,9 +20,9 @@ use std::time::Duration;
 use chrono::Utc;
 use gpui::{
     Action, AnyElement, App, ClipboardItem, Context, Empty, Entity, Focusable as _, IntoElement,
-    KeyBinding, Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseUpEvent,
-    Pixels, Point, Render, SharedString, Subscription, Task, Window, WindowControlArea, actions,
-    div, img, prelude::*, px,
+    Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
+    Render, SharedString, Subscription, Task, Window, WindowControlArea, actions, div, img,
+    prelude::*, px,
 };
 
 use holt_rpc::methods;
@@ -36,6 +36,7 @@ use crate::files::viewer::{FileScope, FileViewerEvent};
 use crate::git_panel::{GitPanel, GitPanelEvent};
 use crate::i18n::t;
 use crate::icons::{self, icon};
+use crate::keybinding::dynamic_key_binding;
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
 use crate::popover::{self, Loadable};
@@ -125,15 +126,16 @@ pub struct JumpSession(pub usize);
 /// map, then binds the customizable shortcuts from `keymap` (feature-inventory
 /// §1.4). Invalid persisted combos fall back to that shortcut's default.
 pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
-    fn valid_or_default(combo: &str, fallback: &str) -> String {
+    let os = cx.platform_info().os;
+    let valid_or_default = |combo: &str, fallback: &str| {
         let candidate = platform_combo(combo);
-        if Keystroke::parse(&candidate).is_ok() {
+        if Keystroke::parse_with_os(&candidate, os).is_ok() {
             candidate
         } else {
             tracing::warn!(%combo, "unparseable shortcut combo; using default");
             platform_combo(fallback)
         }
-    }
+    };
     cx.clear_key_bindings();
     crate::composer::init(cx);
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
@@ -142,78 +144,87 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     crate::app_menus::bind_keys(cx);
     crate::terminal::panel::init(cx);
     cx.bind_keys([
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(
                 &keymap.toggle_sidebar,
                 crate::settings::ShortcutId::ToggleSidebar.default_combo(),
             ),
             ToggleSidebar,
             None,
+            cx,
         ),
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(
                 &keymap.toggle_changes,
                 crate::settings::ShortcutId::ToggleChanges.default_combo(),
             ),
             ToggleChanges,
             None,
+            cx,
         ),
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(&keymap.toggle_terminal, "mod-j"),
             ToggleTerminal,
             None,
+            cx,
         ),
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(&keymap.new_session, "mod-n"),
             NewSession,
             None,
+            cx,
         ),
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(
                 &keymap.next_session,
                 crate::settings::ShortcutId::NextSession.default_combo(),
             ),
             NextSession,
             None,
+            cx,
         ),
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(
                 &keymap.prev_session,
                 crate::settings::ShortcutId::PrevSession.default_combo(),
             ),
             PrevSession,
             None,
+            cx,
         ),
-        KeyBinding::new(
+        dynamic_key_binding(
             &valid_or_default(&keymap.archive_session, "mod-shift-a"),
             ArchiveSession,
             None,
+            cx,
         ),
         // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
         // bar); pressing it again dismisses.
-        KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+        dynamic_key_binding(&platform_combo("mod-k"), AddSpacePalette, None, cx),
         // Fixed: ⌘P opens the find-file palette (ticket 09) — the tree
         // column's search row carries the same shortcut.
-        KeyBinding::new(&platform_combo("mod-p"), OpenFileLookup, None),
+        dynamic_key_binding(&platform_combo("mod-p"), OpenFileLookup, None, cx),
         // Fixed: ⌘⇧M opens the Chat manager (batch archive/delete); the
         // titlebar nav menu's Chat manager row carries the same action.
-        KeyBinding::new(&platform_combo("mod-shift-m"), OpenChatManager, None),
+        dynamic_key_binding(&platform_combo("mod-shift-m"), OpenChatManager, None, cx),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
     // the user cleared it on purpose.
-    cx.bind_keys((0..JUMP_SLOTS).filter_map(|slot| {
+    let jump_bindings = (0..JUMP_SLOTS).filter_map(|slot| {
         let id = ShortcutId::JumpSession(slot);
         let combo = keymap.get(id);
         if combo.is_empty() {
             return None;
         }
-        Some(KeyBinding::new(
+        Some(dynamic_key_binding(
             &valid_or_default(combo, id.default_combo()),
             JumpSession(slot),
             None,
+            cx,
         ))
-    }));
+    });
+    cx.bind_keys(jump_bindings.collect::<Vec<_>>());
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
@@ -316,9 +327,8 @@ pub struct Shell {
     composer: Entity<Composer>,
     /// Measured height of the bottom chrome stack (status strip + composer)
     /// the full-height transcript scrolls under — written by a
-    /// paint-time canvas each frame, read the NEXT frame for the fade inset,
-    /// the transcript's bottom clearance, and the jump pill's anchor (the
-    /// same one-frame lag every fade here rides).
+    /// paint-time canvas each frame, read the NEXT frame for the transcript's
+    /// bottom clearance and the jump pill's anchor.
     bottom_stack: std::rc::Rc<std::cell::Cell<f32>>,
     /// The state card's collapse/expand morph: the outgoing form's measured
     /// outer size at the toggle instant; the box tweens toward the current
@@ -508,7 +518,7 @@ pub struct Shell {
     sidebar_view_menu: popover::Popup<spaces::SidebarViewMenu>,
     /// Natural-tab-order focus target for the icon-only view-options button.
     sidebar_view_trigger_focus: gpui::FocusHandle,
-    /// Scroll position of the sidebar lists region (drives its edge fades).
+    /// Scroll position and viewport geometry of the sidebar lists region.
     sidebar_scroll: gpui::ScrollHandle,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
@@ -2321,54 +2331,24 @@ impl Shell {
             .child(
                 // Full-height underlay: the transcript viewport spans the
                 // whole column, scrolling UNDER the titlebar above and the
-                // composer stack below. The per-glyph EdgeFade (glass-safe,
-                // same as the sidebar's) spans the full column with
-                // ASYMMETRIC bands sized to the chrome: content is opaque at
-                // the chrome's inner edge and fades to zero at the window
-                // edge — visible mid-fade through the glass chrome it slides
-                // under. Always on (the resting paddings keep pinned content
-                // out of the bands, and gating on measured scroll state left
-                // the top unfaded for one frame on session switch — user
-                // report). The jump pill floats outside the fade scope,
-                // anchored above the measured stack.
+                // composer stack below. The jump pill floats above the
+                // measured stack.
                 {
                     // The dock sits below this entire row; only the composer
                     // and status strip overlap the transcript viewport.
                     let stack_h = self.bottom_stack.get();
-                    // Opaque from the composer PILL's top (the reserved
-                    // status strip above it is empty air), zero at the
-                    // underlay's bottom edge.
-                    let bottom_band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
-                    // An expanded workflow canvas is a spatial surface, not
-                    // scrolling content: it meets the chrome unfaded.
-                    let faded = !self.transcript.read(cx).workflow_expanded();
                     div()
                         .absolute()
                         .inset_0()
-                        .child(
-                            crate::edge_fade::edge_faded(
-                                Theme::TRANSCRIPT_FADE_BAND,
-                                faded,
-                                faded,
-                                div().size_full().child(outlet),
-                            )
-                            // Fully faded BY the titlebar's bottom edge (the
-                            // title text is opaque — overlap read as collision),
-                            // ramping in the band just below it. Windows draws
-                            // the strip in normal flow, so the fade starts at
-                            // the list's own top there.
-                            .inset_top(Theme::chrome_top_inset())
-                            .band_top(Theme::TRANSCRIPT_FADE_BAND)
-                            .band_bottom(bottom_band),
-                        )
+                        .child(div().size_full().child(outlet))
                         .children(self.render_jump_to_bottom(stack_h, cx))
                 },
             )
             // The glass chrome stack, floating over the transcript's bottom:
             // reserved status strip (h-6, the WorkingIndicator — the composer
             // below never shifts) and composer. A paint-time
-            // canvas measures the stack for next frame's fade inset and
-            // transcript clearance. The flex_1 spacer has no id/listeners, so
+            // canvas measures the stack for next frame's transcript clearance
+            // and jump-pill anchor. The flex_1 spacer has no id/listeners, so
             // pointer + wheel events over it fall through to the list below.
             .child(div().flex_1().min_h_0())
             .child({
@@ -2480,13 +2460,12 @@ impl Shell {
     /// the subagent pane so both read as one control. `anim_key`/`hover_key`
     /// must be distinct per instance (they key global animation state).
     ///
-    /// Glass-forward like the composer pill it floats near: a backdrop blur
-    /// under the floating-card tint ([`Theme::glass_overlay`]), hover
-    /// brightening via the standard glass wash painted OVER the tint —
-    /// mixing the tint TOWARD the wash would thin the pill on hover, the
-    /// exact see-through regression the old opaque pill's comment warned
-    /// about. Opaque appearances keep the raised-surface treatment
-    /// (`frosted` passes through there anyway).
+    /// Glass-forward like the composer pill it floats near: the
+    /// floating-card tint ([`Theme::glass_overlay`]), hover brightening via
+    /// the standard glass wash painted OVER the tint — mixing the tint TOWARD
+    /// the wash would thin the pill on hover, the exact see-through regression
+    /// the old opaque pill's comment warned about. Opaque appearances keep the
+    /// raised-surface treatment.
     fn jump_pill(
         &self,
         anim_key: &'static str,
@@ -2544,12 +2523,11 @@ impl Shell {
                             .child(t!("shell_chrome.jump_pill.scroll_to_bottom")),
                     ),
             );
-        // Frost OUTSIDE the entry animation (the composer pill's exact
-        // composition): one scene layer — blur, then the pill's quads, then
-        // glyphs — so the pill always composes over the transcript content
-        // scrolling under it, and never loses its washes to the kind-sorted
-        // draw order (frost.rs module docs).
-        crate::frost::frosted(15.0, 16.0, motion::dialog_in(anim_key, pill)).into_any_element()
+        // Layer wrap OUTSIDE the entry animation: the pill's quads and glyphs
+        // share one draw order, so it always composes over the transcript
+        // content scrolling under it instead of losing its washes to the
+        // kind-sorted order.
+        crate::layer::glass_layer(motion::dialog_in(anim_key, pill)).into_any_element()
     }
 
     /// Terminal dock below the conversation and right pane: a 5px height-drag handle
@@ -2835,7 +2813,7 @@ impl Render for Shell {
                     Route::Settings(_)
                     | Route::ChatManager
                     | Route::Scheduled
-                    | Route::Integration => window.blur(),
+                    | Route::Integration => window.blur(cx),
                 }
             }));
         }
@@ -2913,9 +2891,8 @@ impl Render for Shell {
             }))
             // The Windows menu bar's Exit is the caption button's twin: it
             // asks the lifecycle gate first (unsaved drafts, running
-            // terminals) and quits only once that approves. `cx.quit()`
-            // alone would skip the gate — gpui implements `on_should_quit`
-            // on macOS only.
+            // terminals) and quits only once that approves. Calling
+            // `cx.quit()` directly would skip the gate.
             .on_action(cx.listener(|_, _: &QuitApp, window, cx| {
                 crate::terminal::lifecycle::request_close(window, cx, true);
             }))
@@ -3142,10 +3119,9 @@ impl Render for Shell {
                     .bg(crate::theme::wash(0.05));
                 // The content row spans the FULL window height on
                 // macOS/Linux — the titlebar overlays it (glass, no fill), so
-                // the transcript can scroll under the header and fade out at
-                // its edge. Columns that must NOT underlap (sidebar content,
-                // the changes panel, settings) pad themselves down by the
-                // titlebar height. On Windows the strip takes its own band
+                // the transcript can scroll under the header. Columns that must NOT
+                // underlap (sidebar content, the changes panel, settings) pad themselves
+                // down by the titlebar height. On Windows the strip takes its own band
                 // and this row starts below it (`chrome_top_inset` is 0).
                 let content_row = div()
                     .size_full()
@@ -3290,7 +3266,6 @@ mod tests {
             cx.set_global(Theme::default());
             let mut seeded = UiSettings::default();
             seeded.completion_notifications = false;
-            seeded.completion_notification_sound = false;
             seeded.disabled_skills = vec!["grill".into()];
             crate::settings::init(seeded, dir.path(), cx);
         });
@@ -3323,7 +3298,6 @@ mod tests {
             let current = crate::settings::current(cx);
             assert_eq!(current.sidebar_width, 300.0);
             assert!(!current.completion_notifications);
-            assert!(!current.completion_notification_sound);
             assert_eq!(current.disabled_skills, ["grill".to_string()]);
             assert!(current.file_navigation.contains_key("space-a"));
             crate::settings::flush(cx);
@@ -3331,7 +3305,6 @@ mod tests {
         let reloaded = UiSettings::load(dir.path());
         assert_eq!(reloaded.sidebar_width, 300.0);
         assert!(!reloaded.completion_notifications);
-        assert!(!reloaded.completion_notification_sound);
         assert_eq!(reloaded.disabled_skills, ["grill".to_string()]);
         let navigation = &reloaded.file_navigation["space-a"];
         assert_eq!(navigation.tabs.len(), 1);
@@ -3536,18 +3509,20 @@ mod tests {
         });
     }
 
-    #[test]
-    fn every_default_shortcut_binds_on_this_platform() {
+    #[gpui::test]
+    fn every_default_shortcut_binds_on_this_platform(cx: &mut gpui::TestAppContext) {
         // `apply_keymap` silently falls back on an unparseable combo, so a
         // default gpui cannot parse would ship as a dead shortcut.
-        for id in crate::settings::ShortcutId::ALL {
-            let combo = platform_combo(id.default_combo());
-            assert!(
-                Keystroke::parse(&combo).is_ok(),
-                "{} default {combo:?} does not parse",
-                id.label()
-            );
-        }
+        cx.update(|cx| {
+            for id in crate::settings::ShortcutId::ALL {
+                let combo = platform_combo(id.default_combo());
+                assert!(
+                    Keystroke::parse_with_os(&combo, cx.platform_info().os).is_ok(),
+                    "{} default {combo:?} does not parse",
+                    id.label()
+                );
+            }
+        });
     }
 
     #[test]
