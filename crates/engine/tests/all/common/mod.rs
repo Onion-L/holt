@@ -1129,10 +1129,16 @@ pub fn addressed(path: &std::path::Path) -> String {
 /// every fixture checkout and break byte-exact assertions.
 pub fn init_repo(path: &std::path::Path) -> git2::Repository {
     let repo = git2::Repository::init(path).unwrap();
-    repo.config()
-        .unwrap()
-        .set_str("core.autocrlf", "false")
+    let mut config = repo.config().unwrap();
+    config.set_str("core.autocrlf", "false").unwrap();
+    // Engine paths that create commits (merge, checks checkouts) read the
+    // repository identity; CI runners and fresh machines carry no global
+    // one, so every fixture repo names its own.
+    config.set_str("user.name", "Holt Test").unwrap();
+    config
+        .set_str("user.email", "holt-test@example.com")
         .unwrap();
+    drop(config);
     repo
 }
 
