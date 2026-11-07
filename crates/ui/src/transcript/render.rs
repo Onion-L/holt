@@ -4,7 +4,7 @@
 //! submodules: `user_rows` (skill invocation, compaction divider, bubble
 //! strips, working trailer), `turn_card` (ADR-turn-change-sets-and-review change card),
 //! `tool_group` (nested chips, detail bodies, subagent tabs), `highlight`
-//! (background syntax store). Entity state, sync, and events stay in the
+//! (background syntax store), `virtual_text` (oversized user bubbles). Entity state, sync, and events stay in the
 //! facade; this module only reads them.
 
 use std::borrow::Cow;
@@ -56,6 +56,7 @@ mod highlight;
 mod tool_group;
 mod turn_card;
 mod user_rows;
+mod virtual_text;
 
 pub(super) use highlight::HighlightStore;
 
@@ -1224,6 +1225,11 @@ fn user_bubble_text_with_chip(
     theme: &Theme,
     clicks: BubbleClicks,
 ) -> AnyElement {
+    // A review's first message inlines the whole branch diff. One StyledText
+    // shapes every glyph of that string on every frame the row is on screen.
+    if leading.is_none() && mentions.is_empty() && virtual_text::oversized(&text) {
+        return virtual_text::element(text);
+    }
     // Split runs at chip boundaries (spans are in order): body text keeps the
     // sans font, mention chips read as inline code, skill chips read in the
     // accent like the composer's. Size/line-height flow from the bubble's
