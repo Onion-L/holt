@@ -81,6 +81,8 @@ integration:
       en-US: Commits
     tab_changes:
       en-US: Changes
+    tab_review:
+      en-US: Review & checks
     row_branch:
       en-US: Branch
     row_path:
@@ -209,6 +211,27 @@ integration:
         en-US: The worktree is gone.
       branch_detached:
         en-US: The worktree's HEAD is detached.
+  checks:
+    title:
+      en-US: Checks
+    subtitle:
+      en-US: run on the merged tree, in a throwaway checkout
+    none:
+      en-US: No checks yet. They are optional — the list comes from .holt/checks.toml on the trunk.
+    stale:
+      en-US: Stale — the trunk or branch has moved
+    rerun:
+      en-US: Run checks
+    summary_running:
+      en-US: Checks running
+    summary_passed:
+      en-US: Checks passed
+    summary_failed:
+      en-US: "%{count} checks failing"
+    summary_stale:
+      en-US: Checks stale
+    summary_error:
+      en-US: Checks did not run
   delete:
     title:
       en-US: Delete worktree

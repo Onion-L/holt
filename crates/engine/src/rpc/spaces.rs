@@ -163,6 +163,10 @@ impl EngineService {
             .write()
             .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
         let before = spaces.len();
+        let removed_path = spaces
+            .iter()
+            .find(|space| space.id == params.space_id)
+            .map(|space| space.path.clone());
         spaces.retain(|space| space.id != params.space_id);
         let removed = spaces.len() != before;
         if removed {
@@ -175,6 +179,18 @@ impl EngineService {
         if removed {
             self.spaces_tx.send_replace(value);
             self.pause_routines_in_space(&params.space_id);
+            // The space's persisted checks results go with it (bucketed by
+            // the repository's checkout key; the git side is untouched).
+            if let Some(path) = removed_path {
+                let git = self.git.clone();
+                let checks = self.checks.clone();
+                let data_dir = self.data_dir.clone();
+                tokio::spawn(async move {
+                    if let Ok(key) = git.checkout_key(&path).await {
+                        checks.forget_checkout(&data_dir, &key);
+                    }
+                });
+            }
         }
         RpcReply::value(&serde_json::json!({}))
     }

@@ -372,9 +372,16 @@ impl EngineService {
     ) -> Result<RpcReply, RpcError> {
         let repo_path = required_string(&params, "repoPath")?;
         let trunk = optional_string(&params, "trunk");
+        // Canonicalize so the comparison matches git's resolved worktree
+        // paths even under symlinked temp roots (macOS /var).
+        let data_dir = self
+            .data_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.data_dir.clone());
+        let checks_root = data_dir.join("integration/checkouts");
         let mut snapshot = self
             .git
-            .integration(repo_path, trunk)
+            .integration(repo_path, trunk, checks_root)
             .await
             .map_err(RpcError::Failed)?;
         let chats = self

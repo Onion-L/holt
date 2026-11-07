@@ -275,6 +275,10 @@ pub struct IntegrationPage {
     trunk_menu: popover::Popup<()>,
     merge_mode: MergeMode,
     merge: Option<MergeFlow>,
+    checks_watch: Option<Task<()>>,
+    checks_run: Option<holt_rpc::checks::CheckRun>,
+    checks_error: Option<SharedString>,
+    checks_log: Option<(String, Entity<CheckLogView>)>,
     resolve: Option<ResolveDialog>,
     delete_confirm: Option<DeleteConfirm>,
     deleting: Option<String>,
@@ -310,6 +314,10 @@ impl IntegrationPage {
             trunk_menu: popover::Popup::default(),
             merge_mode: MergeMode::Squash,
             merge: None,
+            checks_watch: None,
+            checks_run: None,
+            checks_error: None,
+            checks_log: None,
             resolve: None,
             delete_confirm: None,
             deleting: None,
@@ -423,6 +431,10 @@ impl IntegrationPage {
         self.merge = None;
         self.resolve = None;
         self.delete_confirm = None;
+        self.checks_watch = None;
+        self.checks_run = None;
+        self.checks_error = None;
+        self.checks_log = None;
         cx.notify();
     }
 
@@ -1580,10 +1592,21 @@ impl IntegrationPage {
             .map(|(status, _)| *status)
             .unwrap_or(WorktreeStatus::Missing);
         let state = self.state.clone();
+        self.ensure_checks_watch(cx);
+        let checks_card = self.render_checks_card(theme, cx);
         let Some(detail) = self.detail.as_mut() else {
             return div().size_full().into_any_element();
         };
-        let pane = detail.render(worktree, title, status, snapshot, &state, theme, cx);
+        let pane = detail.render(
+            worktree,
+            title,
+            status,
+            snapshot,
+            &state,
+            checks_card,
+            theme,
+            cx,
+        );
         let bar = self.render_merge_bar(theme, cx);
         div()
             .size_full()
@@ -1975,6 +1998,343 @@ impl IntegrationPage {
         }));
     }
 
+    // ---- checks (§8.4) ----
+
+    /// Start (or keep) the checks watch for the selected worktree. Called
+    /// from render — guarded, cheap, and the pane is lazily created.
+    fn ensure_checks_watch(&mut self, cx: &mut Context<Self>) {
+        if self.checks_watch.is_some() {
+            return;
+        }
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let Some(worktree) = self.selected.clone() else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.checks_watch = Some(cx.spawn(async move |this, cx| {
+            let subscribed = engine
+                .client()
+                .subscribe(
+                    methods::WATCH_CHECKS,
+                    serde_json::json!({ "repoPath": repo_path, "worktree": worktree }),
+                )
+                .await;
+            let Ok(mut stream) = subscribed else {
+                return;
+            };
+            while let Some(frame) = stream.recv().await {
+                let decoded = if frame.is_null() {
+                    Ok(None)
+                } else {
+                    serde_json::from_value::<holt_rpc::checks::CheckRun>(frame.clone()).map(Some)
+                };
+                let Ok(decoded) = decoded else {
+                    continue;
+                };
+                let alive = this.update(cx, |page, cx| {
+                    page.checks_error = None;
+                    page.checks_run = decoded;
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// The 运行 / 重新运行 button's action.
+    fn run_checks(&mut self, cx: &mut Context<Self>) {
+        let Some(repo_path) = self.repo_path.clone() else {
+            return;
+        };
+        let Some(worktree) = self.selected.clone() else {
+            return;
+        };
+        let Some(trunk) = self.trunk_of() else {
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.checks_error = None;
+        cx.notify();
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::RUN_CHECKS,
+                    serde_json::json!({
+                        "repoPath": repo_path,
+                        "worktree": worktree,
+                        "trunk": trunk,
+                    }),
+                )
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |page, cx| {
+                    page.checks_error = Some(error.to_string().into());
+                    cx.notify();
+                })
+                .ok();
+            }
+            // Success needs nothing here: the watch delivers the frames.
+        }));
+    }
+
+    /// Toggle one check's live log.
+    fn toggle_check_log(&mut self, name: &str, run_id: &str, cx: &mut Context<Self>) {
+        if self
+            .checks_log
+            .as_ref()
+            .is_some_and(|(open, _)| open == name)
+        {
+            self.checks_log = None;
+            cx.notify();
+            return;
+        }
+        let view = cx.new(|_| CheckLogView {
+            lines: Vec::new(),
+            _task: None,
+        });
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let run_id = run_id.to_string();
+        let name_owned = name.to_string();
+        view.update(cx, |view, cx| {
+            view._task = Some(cx.spawn(async move |this, cx| {
+                let Ok(mut stream) = engine
+                    .client()
+                    .subscribe(
+                        methods::SUBSCRIBE_CHECK_LOG,
+                        serde_json::json!({
+                            "runId": run_id,
+                            "name": name_owned,
+                            "afterSeq": 0,
+                        }),
+                    )
+                    .await
+                else {
+                    return;
+                };
+                loop {
+                    let Some(event) = stream.recv().await else {
+                        return;
+                    };
+                    let line = check_log_line(&event);
+                    let alive = this.update(cx, |view: &mut CheckLogView, cx| {
+                        view.lines.push(line.clone());
+                        if view.lines.len() > 2000 {
+                            view.lines.drain(..view.lines.len() - 2000);
+                        }
+                        cx.notify();
+                    });
+                    if event.get("exit").is_some() || alive.is_err() {
+                        return;
+                    }
+                }
+            }));
+        });
+        self.checks_log = Some((name.to_string(), view));
+        cx.notify();
+    }
+
+    /// The checks card (the overview and the review tab share it).
+    fn render_checks_card(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let run = self.checks_run.clone();
+        let error = self.checks_error.clone();
+        let running = run.as_ref().is_some_and(|run| !run.finished());
+        let stale = run.as_ref().is_some_and(|run| run.stale);
+        let open_log = self.checks_log.as_ref().map(|(name, _)| name.clone());
+
+        let body: AnyElement = match (&run, &error) {
+            (None, None) => div()
+                .px(px(16.0))
+                .py(px(12.0))
+                .text_size(px(12.0))
+                .text_color(theme.text_faint)
+                .child(t!("integration.checks.none"))
+                .into_any_element(),
+            (_, Some(error)) => div()
+                .px(px(16.0))
+                .py(px(12.0))
+                .text_size(px(12.0))
+                .text_color(theme.danger)
+                .child(error.clone())
+                .into_any_element(),
+            (Some(run), None) => {
+                let rows: Vec<AnyElement> = run
+                    .checks
+                    .iter()
+                    .map(|row| {
+                        let (glyph, color): (&'static str, _) = match row.status.as_str() {
+                            "passed" => ("✓", theme.success),
+                            "failed" => ("✕", theme.danger),
+                            "timeout" => ("⏱", theme.warning),
+                            "running" => ("…", theme.busy),
+                            "stopped" => ("■", theme.text_faint),
+                            _ => ("·", theme.text_faint),
+                        };
+                        let name = row.name.clone();
+                        let is_open = open_log.as_deref() == Some(row.name.as_str());
+                        div()
+                            .id(SharedString::from(format!(
+                                "integration-check-row-{}",
+                                row.name
+                            )))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .px(px(16.0))
+                            .h(px(30.0))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(crate::theme::ink(0.025)))
+                            .on_click({
+                                let run_id = run.run_id.clone();
+                                let name = name.clone();
+                                cx.listener(move |this, _, _, cx| {
+                                    this.toggle_check_log(&name, &run_id, cx);
+                                })
+                            })
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(14.0))
+                                    .text_size(px(11.0))
+                                    .text_color(color)
+                                    .child(glyph),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_muted)
+                                    .child(name),
+                            )
+                            .when_some(row.duration_ms, |el, ms| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(10.5))
+                                        .text_color(theme.text_faint)
+                                        .child(format_duration_ms(ms)),
+                                )
+                            })
+                            .when(is_open, |el| {
+                                el.child(
+                                    icon(icons::ALT_ARROW_DOWN)
+                                        .size(px(11.0))
+                                        .text_color(theme.text_faint),
+                                )
+                            })
+                            .into_any_element()
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(rows)
+                    .when(run.error.is_some(), |el| {
+                        el.child(
+                            div()
+                                .px(px(16.0))
+                                .py(px(10.0))
+                                .text_size(px(11.5))
+                                .text_color(theme.danger)
+                                .child(run.error.clone().unwrap_or_default()),
+                        )
+                    })
+                    .when_some(
+                        open_log.and_then(|_| self.checks_log.as_ref().map(|(_, v)| v.clone())),
+                        |el, view| el.child(div().max_h(px(220.0)).child(view)),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        div()
+            .id("integration-checks-card")
+            .debug_selector(|| "integration-checks-card".into())
+            .mt(px(12.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(if stale {
+                theme.border
+            } else {
+                theme.border.opacity(0.6)
+            })
+            .when(stale, |el| el.opacity(0.55))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(16.0))
+                    .pt(px(12.0))
+                    .pb(px(4.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text)
+                    .child(t!("integration.checks.title"))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(theme.text_faint)
+                            .child(t!("integration.checks.subtitle")),
+                    )
+                    .child(div().flex_1())
+                    .when(stale, |el| {
+                        el.child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(theme.warning)
+                                .child(t!("integration.checks.stale")),
+                        )
+                    })
+                    .child(
+                        popover::btn_primary(theme, &t!("integration.checks.rerun"))
+                            .id("integration-checks-run")
+                            .debug_selector(|| "integration-checks-run".into())
+                            .when(running, |el| el.opacity(0.5))
+                            .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx))),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// The merge bar's one-line checks summary (never a gate).
+    fn checks_summary(&self) -> Option<SharedString> {
+        let run = self.checks_run.as_ref()?;
+        if let Some(error) = &run.error {
+            let _ = error;
+            return Some(t!("integration.checks.summary_error").into());
+        }
+        if run.stale {
+            return Some(t!("integration.checks.summary_stale").into());
+        }
+        if !run.finished() {
+            return Some(t!("integration.checks.summary_running").into());
+        }
+        let failed = run
+            .checks
+            .iter()
+            .filter(|row| !matches!(row.status.as_str(), "passed"))
+            .count();
+        if failed == 0 {
+            Some(t!("integration.checks.summary_passed").into())
+        } else {
+            Some(t!("integration.checks.summary_failed", count = failed).into())
+        }
+    }
+
     /// The detail's bottom bar (§7.5): what can happen to the selected
     /// worktree right now. Checks and reviews are P2/P3 — nothing here ever
     /// blocks on them.
@@ -2159,6 +2519,21 @@ impl IntegrationPage {
                 .text_color(theme.text_faint)
                 .child(t!("integration.delete.working"))
         });
+        // The checks summary rides the bar as a hint — never a gate.
+        let checks_line = self.checks_summary().map(|summary| {
+            div()
+                .text_size(px(11.0))
+                .text_color(
+                    if self.checks_run.as_ref().is_some_and(|run| {
+                        run.finished() && run.checks.iter().any(|row| row.status != "passed")
+                    }) {
+                        theme.warning
+                    } else {
+                        theme.text_faint
+                    },
+                )
+                .child(summary)
+        });
         div()
             .flex_none()
             .flex()
@@ -2169,6 +2544,7 @@ impl IntegrationPage {
             .border_t_1()
             .border_color(theme.border.opacity(0.6))
             .child(bar)
+            .children(checks_line)
             .children(busy_row)
             .into_any_element()
     }
@@ -2922,6 +3298,62 @@ fn kv_row(theme: &Theme, label: &str, value: String) -> AnyElement {
                 .child(value),
         )
         .into_any_element()
+}
+
+/// One check's live log view (the `SubscribeCheckLog` stream folded into
+/// lines).
+pub(crate) struct CheckLogView {
+    lines: Vec<String>,
+    _task: Option<Task<()>>,
+}
+
+impl gpui::Render for CheckLogView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx).clone();
+        div()
+            .id("integration-check-log")
+            .mx(px(12.0))
+            .mb(px(10.0))
+            .max_h(px(200.0))
+            .overflow_y_scroll()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border.opacity(0.6))
+            .bg(theme.bg)
+            .p(px(10.0))
+            .font_family(theme.font_mono.clone())
+            .text_size(px(10.5))
+            .text_color(theme.text_muted)
+            .children(self.lines.iter().cloned().map(|line| div().child(line)))
+    }
+}
+
+/// One `TerminalEvent` as a display line.
+fn check_log_line(event: &serde_json::Value) -> String {
+    use base64::Engine as _;
+    if let Some(data) = event.get("data").and_then(|value| value.as_str()) {
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+            return String::from_utf8_lossy(&bytes).into_owned();
+        }
+        return String::new();
+    }
+    if let Some(code) = event.get("exit").and_then(|value| value.as_i64()) {
+        return format!("\n— exit {code} —");
+    }
+    if event.get("gap").is_some() {
+        return "…".to_string();
+    }
+    String::new()
+}
+
+/// Milliseconds as a compact human duration.
+fn format_duration_ms(ms: u64) -> String {
+    let seconds = ms / 1000;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    }
 }
 
 /// Whether deleting this worktree would take the trunk or the main

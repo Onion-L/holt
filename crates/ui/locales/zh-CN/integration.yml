@@ -81,6 +81,8 @@ integration:
       zh-CN: 提交
     tab_changes:
       zh-CN: 改动
+    tab_review:
+      zh-CN: 审查与检查
     row_branch:
       zh-CN: 分支
     row_path:
@@ -209,6 +211,27 @@ integration:
         zh-CN: 工作树已不存在。
       branch_detached:
         zh-CN: 工作树的 HEAD 处于分离状态。
+  checks:
+    title:
+      zh-CN: 检查
+    subtitle:
+      zh-CN: 跑在合并结果的临时检出里
+    none:
+      zh-CN: 没跑过。检查是可选的，命令列表来自主干上的 .holt/checks.toml。
+    stale:
+      zh-CN: 已过期 — 主干或分支有了新提交
+    rerun:
+      zh-CN: 运行检查
+    summary_running:
+      zh-CN: 检查运行中
+    summary_passed:
+      zh-CN: 检查通过
+    summary_failed:
+      zh-CN: "%{count} 项检查失败"
+    summary_stale:
+      zh-CN: 检查已过期
+    summary_error:
+      zh-CN: 检查未能运行
   delete:
     title:
       zh-CN: 删除工作树

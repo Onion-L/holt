@@ -21,6 +21,7 @@ mod git_status_rpc;
 mod goal_mode_rpc;
 mod history_rpc;
 mod images_rpc;
+mod integration_checks_rpc;
 mod integration_rpc;
 mod mcp_ceilings_rpc;
 mod mcp_gate_rpc;
