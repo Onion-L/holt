@@ -12,6 +12,9 @@ integration:
     zh-CN: 正在加载集成视图…
   empty:
     zh-CN: 还没有工作树。用「新建工作树」开一个 chat，或用 git 手动添加。
+  list:
+    filtered_empty:
+      zh-CN: 这个筛选下没有工作树。
   refresh:
     zh-CN: 刷新
   refreshing:
@@ -29,21 +32,6 @@ integration:
       zh-CN: 需处理
     merged:
       zh-CN: 已合并
-  legend:
-    worktrees:
-      zero:
-        zh-CN: 暂无工作树
-      one:
-        zh-CN: 1 个工作树
-      other:
-        zh-CN: "%{n} 个工作树"
-    unmerged:
-      zero:
-        zh-CN: 无未合并
-      one:
-        zh-CN: 1 个未合并
-      other:
-        zh-CN: "%{n} 个未合并"
   status:
     missing:
       zh-CN: 目录丢失
@@ -65,34 +53,32 @@ integration:
   detail:
     none:
       zh-CN: 选择一个工作树
+    none_hint:
+      zh-CN: 先看改动，再合并到页头的分支。
     detached:
       zh-CN: （分离 HEAD）
     untitled_chat:
       zh-CN: 未命名会话
-    no_chat:
-      zh-CN: 无（手动导入的工作树）
     open_chat:
       zh-CN: 打开 chat
     open_terminal:
       zh-CN: 在终端打开
-    tab_overview:
+    tab_summary:
       zh-CN: 概览
-    tab_commits:
-      zh-CN: 提交
-    tab_changes:
-      zh-CN: 改动
-    tab_review:
-      zh-CN: 审查与检查
-    row_branch:
+    tab_code:
+      zh-CN: 代码
+    tab_activity:
+      zh-CN: 动态
+    prop_status:
+      zh-CN: 状态
+    prop_review:
+      zh-CN: 审查
+    prop_branch:
       zh-CN: 分支
-    row_path:
-      zh-CN: 路径
-    row_vs_trunk:
-      zh-CN: 相对主干
-    row_chat:
-      zh-CN: Chat
-    row_merged_as:
-      zh-CN: 合并为
+    prop_changes:
+      zh-CN: 改动
+    changes_line:
+      zh-CN: "%{commits} 个提交 · +%{ahead} −%{behind}"
     ahead:
       zh-CN: 领先 %{n}
     behind:

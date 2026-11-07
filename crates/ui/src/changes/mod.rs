@@ -416,13 +416,17 @@ impl Changes {
                 changes.base_ref = base;
             }
         }
+        // A pinned pane does not ride the checkout-diff watch, and nothing
+        // else observes it into a first fetch. The chat surface calls
+        // `ensure_content` when a tab is shown; this pane has no such host.
+        changes.ensure_content(cx);
         changes
     }
 
-    /// Drop any cached scoped capture so the next sync refetches — a pinned
-    /// pane's refresh action (the fetch key is otherwise stable forever).
+    /// Refetch the scoped capture. The fetch key is otherwise stable for a
+    /// pinned pane, so a snapshot refresh has to drop it. The diff already
+    /// on screen stays until the new one lands.
     pub fn invalidate(&mut self, cx: &mut Context<Self>) {
-        self.scoped = None;
         self.scoped_error = None;
         self.scoped_for = None;
         self.scoped_inflight = None;

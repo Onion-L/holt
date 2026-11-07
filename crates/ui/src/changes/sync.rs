@@ -305,10 +305,12 @@ impl Changes {
         {
             return;
         }
+        // A missing key means "not fetched yet" or "refetch, keep what's
+        // on screen" (`invalidate`). Only a real context change blanks.
         if self
             .scoped_for
             .as_deref()
-            .is_none_or(|prev| !prev.starts_with(&format!("{context}|")))
+            .is_some_and(|prev| !prev.starts_with(&format!("{context}|")))
         {
             self.scoped = None;
             self.scoped_error = None;
@@ -510,9 +512,13 @@ impl Changes {
     /// Reconcile parsed content with the currently-active diff.
     pub(super) fn sync(&mut self, cx: &mut Context<Self>) {
         self.discard_stale_draft(cx);
-        // The watch is idempotent once started; a boot-deferred attempt
-        // retries here too.
-        self.ensure_watch(cx);
+        // A pinned pane never reads the watch (`resolved_ref` bails when
+        // `pin` is set). Subscribing anyway makes this the stream's next
+        // opener, and that opener's first frame recaptures every git space
+        // under the checkout lock — the branch diff then waits behind it.
+        if self.pin.is_none() {
+            self.ensure_watch(cx);
+        }
         if self.scope == DiffScope::History {
             self.history_pane(cx)
                 .update(cx, |history, cx| history.ensure_loaded(cx));
