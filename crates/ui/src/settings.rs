@@ -340,11 +340,6 @@ pub struct UiSettings {
     /// default so a pre-notifications file loads with the feature on.
     #[serde(default = "default_true")]
     pub completion_notifications: bool,
-    /// Whether completion notifications request the OS default sound.
-    /// Subordinate to [`Self::completion_notifications`] — the stored value is
-    /// retained while the master is off and honored again when it returns.
-    #[serde(default = "default_true")]
-    pub completion_notification_sound: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
     pub accent: holt_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
@@ -407,7 +402,6 @@ impl Default for UiSettings {
             theme_selection: holt_theme::ThemeSelection::default(),
             diff_split: false,
             completion_notifications: true,
-            completion_notification_sound: true,
             accent: holt_theme::AccentSelection::default(),
             surface: holt_theme::SurfacePreference::default(),
             chat_backdrop_path: None,
@@ -1125,7 +1119,6 @@ mod tests {
             },
             diff_split: true,
             completion_notifications: false,
-            completion_notification_sound: false,
             accent: holt_theme::AccentSelection::Preset(holt_theme::AccentPreset::Cyan),
             surface: holt_theme::SurfacePreference::Frosted,
             disabled_skills: vec!["grill".into()],
@@ -1173,13 +1166,12 @@ mod tests {
     fn completion_notification_settings_default_on() {
         let d = UiSettings::default();
         assert!(d.completion_notifications);
-        assert!(d.completion_notification_sound);
     }
 
-    /// A settings file written before notifications existed has neither key;
-    /// it must load with both on — no migration error, no silent opt-out.
+    /// A settings file written before notifications existed has no key; it
+    /// must load with notifications on — no migration error or silent opt-out.
     #[test]
-    fn old_file_without_notification_keys_loads_with_both_on() {
+    fn old_file_without_notification_key_loads_with_it_on() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             UiSettings::path(dir.path()),
@@ -1188,39 +1180,25 @@ mod tests {
         .unwrap();
         let loaded = UiSettings::load(dir.path());
         assert!(loaded.completion_notifications);
-        assert!(loaded.completion_notification_sound);
         assert_eq!(loaded.sidebar_width, 300.0);
     }
 
     #[test]
-    fn notification_choices_round_trip() {
+    fn notification_choice_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
             completion_notifications: false,
-            completion_notification_sound: false,
             ..UiSettings::default()
         };
         settings.save(dir.path()).unwrap();
         let loaded = UiSettings::load(dir.path());
         assert!(!loaded.completion_notifications);
-        assert!(!loaded.completion_notification_sound);
-        // The sound choice is independent of the master: off-master keeps it.
-        let settings = UiSettings {
-            completion_notifications: false,
-            completion_notification_sound: true,
-            ..UiSettings::default()
-        };
-        settings.save(dir.path()).unwrap();
-        let loaded = UiSettings::load(dir.path());
-        assert!(!loaded.completion_notifications);
-        assert!(loaded.completion_notification_sound);
     }
 
     #[test]
-    fn notification_keys_use_camel_case_names() {
+    fn notification_key_uses_camel_case_name() {
         let json = serde_json::to_string(&UiSettings::default()).unwrap();
         assert!(json.contains("\"completionNotifications\""));
-        assert!(json.contains("\"completionNotificationSound\""));
     }
 
     #[test]
@@ -1449,7 +1427,19 @@ mod tests {
         assert!(conflicted_shortcuts(&KeymapConfig::default()).is_empty());
         for id in ShortcutId::ALL {
             assert!(
-                gpui::Keystroke::parse(&platform_combo(id.default_combo())).is_ok(),
+                gpui::Keystroke::parse_with_os(
+                    &platform_combo(id.default_combo()),
+                    if cfg!(target_os = "macos") {
+                        gpui::OperatingSystem::Mac
+                    } else if cfg!(target_os = "windows") {
+                        gpui::OperatingSystem::Windows
+                    } else if cfg!(target_os = "freebsd") {
+                        gpui::OperatingSystem::FreeBsd
+                    } else {
+                        gpui::OperatingSystem::Linux
+                    },
+                )
+                .is_ok(),
                 "{:?} default combo does not parse",
                 id
             );

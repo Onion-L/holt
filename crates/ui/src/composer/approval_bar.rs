@@ -698,14 +698,8 @@ impl Composer {
             .child(number_chip(note_row, note_selected, false))
             .child(div().flex_1().min_w_0().child(self.input.clone()));
 
-        // The frosted wrapper (the composer pill's own chrome): the
-        // translucent fill needs the backdrop blur — without it the
-        // transcript rows scrolling behind the tall panel bleed through
-        // the text.
         Some(
-            crate::frost::frosted(
-                26.0,
-                16.0,
+            crate::layer::glass_layer(
                 div()
                     .id("approval-bar")
                     .track_focus(&self.approval_bar_focus)

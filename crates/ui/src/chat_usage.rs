@@ -373,7 +373,7 @@ impl Render for UsageCard {
         if let Some(note) = source_note(model) {
             card = card.child(footnote(note.into_owned(), &theme));
         }
-        crate::frost::frosted(crate::popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
+        crate::layer::glass_layer(card)
     }
 }
 

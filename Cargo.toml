@@ -12,8 +12,6 @@ members = [
     "apps/holt",
     "apps/holt-runner",
 ]
-# The third-party gpui fork keeps its own (trimmed) workspace root.
-exclude = ["third_party/gpui"]
 
 [workspace.package]
 version = "0.7.1"
@@ -34,14 +32,7 @@ holt-core = { path = "crates/core" }
 # CRDT
 loro = "1.13"
 
-gpui = { path = "third_party/gpui/crates/gpui" }
-gpui_platform = { path = "third_party/gpui/crates/gpui_platform", features = [
-    "wayland",
-    "x11",
-    "font-kit",
-    "runtime_shaders",
-] }
-gpui_tokio = { path = "third_party/gpui/crates/gpui_tokio" }
+gpui = { package = "gpui-kit", version = "0.9.0", default-features = false }
 
 # diffs
 similar = "2"

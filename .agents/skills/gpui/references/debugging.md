@@ -1,8 +1,8 @@
 # GPUI Debugging
 
-This is a diagnosis playbook for the vendored GPUI snapshot used by Holt. Start
-with a small reproduction and inspect the local implementation; do not infer
-behavior from a newer GPUI release.
+This is a diagnosis playbook for Holt's GPUI Kit / GPUI stack. Start with a
+small reproduction and inspect the locked implementation; do not infer behavior
+from another GPUI release.
 
 ## Fast triage
 
@@ -100,10 +100,10 @@ nearby comment only when the invariant is otherwise non-obvious.
 ## Local evidence commands
 
 ```text
-rg "cx\\.notify|cx\\.spawn|background_spawn|on_action|track_focus|occlude" crates/ui third_party/gpui
-rg "fn request_layout|fn prepaint|fn paint" third_party/gpui/crates/gpui/src
+rg "cx\\.notify|cx\\.spawn|background_spawn|on_action|track_focus|occlude" crates/ui
 cargo test -p holt-ui -- <focused-test-name>
 ```
 
-Read `docs/research/gpui.md` and the `nested-scroll-containers-isolate-wheel-events` entry in `docs/DECISION.md`
-when the issue involves Holt's frame model or nested scrolling.
+Read the `nested-scroll-containers-isolate-wheel-events` entry in
+`docs/DECISION.md` when the issue involves nested scrolling. For frame-model
+questions, inspect the locked `gpui-pre` source selected by `Cargo.lock`.

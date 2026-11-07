@@ -12,9 +12,9 @@ is easiest to waste work on. What this project **is** starts in
 boundaries (UI talks only `rpc::methods`; `engine` is `core`'s only adapter;
 git2 only in `engine::git` and the workspace filesystem only in
 `engine::files`; all disk writes are engine-owned), and the RPC-surface map
-to the owning pages. Terms live in [CONTEXT.md](CONTEXT.md); the gpui API
-truth is [docs/research/gpui.md](docs/research/gpui.md) and the vendored
-sources — never online docs, never git.
+to the owning pages. Terms live in [CONTEXT.md](CONTEXT.md); the GPUI API truth
+is the `gpui-kit` facade and the exact dependency sources selected by
+`Cargo.lock`, with the matching GPUI Kit documentation for background.
 
 ## Subsystem design and review
 

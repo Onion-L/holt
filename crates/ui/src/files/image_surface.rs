@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 
 use gpui::{
-    AnyElement, Bounds, Context, EventEmitter, MouseButton, Pixels, Render, ScrollWheelEvent,
+    AnyElement, Bounds, Context, EventEmitter, MouseButton, Pixels, Render, ScrollEvent,
     SharedString, Size, Window, canvas, div, img, point, prelude::*, px, size,
 };
 
@@ -163,7 +163,7 @@ impl FileImageSurface {
         self.pan = pan;
     }
 
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
         self.apply_zoom(wheel_zoom_factor(&event.delta), self.local(event.position));
         cx.stop_propagation();
         cx.notify();
@@ -386,7 +386,7 @@ impl Render for FileImageSurface {
                     cx.notify();
                 }),
             )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                 this.on_wheel(event, cx);
             }))
             .on_pinch(cx.listener(|this, event: &gpui::PinchEvent, _, cx| {

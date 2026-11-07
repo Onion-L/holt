@@ -210,7 +210,7 @@ impl Shell {
             if let Some(focus) = &menu.return_focus {
                 window.focus(focus, cx);
             } else {
-                window.blur();
+                window.blur(cx);
             }
         }
         let theme = Theme::of(cx).clone();

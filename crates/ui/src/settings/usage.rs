@@ -1490,8 +1490,7 @@ impl UsagePage {
                     ))),
             );
         }
-        crate::frost::frosted(popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
-            .into_any_element()
+        crate::layer::glass_layer(card).into_any_element()
     }
 
     /// The hero block above the chart: Total tokens as the big number
@@ -3762,6 +3761,10 @@ mod tests {
         harness.click("usage-breakdown-row-4");
         harness.pump();
         let child = harness.bounds("usage-breakdown-child-1");
+        harness
+            .visual
+            .simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, Default::default());
+        harness.repaint();
         harness
             .visual
             .simulate_mouse_move(child.center(), None, Default::default());

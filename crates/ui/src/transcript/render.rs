@@ -145,7 +145,7 @@ impl Transcript {
     pub(super) fn row_outer_pads(&self, ix: usize, row: &Row) -> (f32, f32) {
         // The viewport spans the full window (under the titlebar overlay on
         // macOS/Linux): the first row's gap adds the titlebar's height so a
-        // top-scrolled transcript rests below the chrome it fades under.
+        // top-scrolled transcript rests below the chrome it scrolls under.
         // Windows draws a dedicated strip in normal flow, so only the
         // breathing room remains. The right pane already pads for the
         // titlebar — an override instance's first row keeps only the
@@ -160,9 +160,7 @@ impl Transcript {
             top_gap_for(ix.checked_sub(1).and_then(|i| self.rows.get(i)), row)
         };
         // The last row must clear the composer/status stack the transcript
-        // scrolls under PLUS the fade band above it, or the timestamp strip
-        // (the row's lowest content) renders half-faded (or hidden) when the
-        // transcript is pinned to the bottom.
+        // scrolls under, with extra breathing room above it.
         let bottom_pad = if ix + 1 == self.rows.len() {
             let runway = self
                 .own_turn
@@ -1994,8 +1992,6 @@ impl Transcript {
             return None;
         };
         let theme = Theme::of(cx).clone();
-        // The shell drops its edge fade while a canvas is expanded, so the
-        // canvas meets the titlebar and composer stack with hard edges.
         let top = if self.doc_override.is_some() {
             0.0
         } else {
@@ -2660,34 +2656,12 @@ impl Render for Transcript {
         }
         let rail = self.render_rail(cx);
         // The scroll-to-bottom pill is rendered by the SHELL (conversation
-        // region overlay): it must float just above the composer and paint
-        // OVER the bottom fade gradient, which is a later sibling of this
-        // outlet — an overlay here would be tinted by the fade.
+        // region overlay) so it floats just above the composer, independently
+        // of the transcript list.
         let list_el = list(self.list.clone(), cx.processor(Self::render_row))
             .size_full()
             .with_sizing_behavior(gpui::ListSizingBehavior::Auto);
-        let content: AnyElement = if self.doc_override.is_some() {
-            // The primary transcript's fade lives on the SHELL's outlet
-            // wrapper (it spans the titlebar/composer chrome); an override
-            // instance owns its own — top edge only (nothing overlays the
-            // pane's bottom), gated on real overflow so a short top-anchored
-            // transcript shows no fade. Gated here rather than at paint via
-            // a ScrollHandle (the list isn't one); scrolls re-render this
-            // entity, so the flag can't go stale.
-            let scrolled_under_top = {
-                let max = f32::from(self.list.max_offset_for_scrollbar().y);
-                max - self.distance_from_bottom() > 1.0
-            };
-            crate::edge_fade::edge_faded(
-                Theme::TRANSCRIPT_FADE_BAND,
-                scrolled_under_top,
-                false,
-                list_el,
-            )
-            .into_any_element()
-        } else {
-            list_el.into_any_element()
-        };
+        let content = list_el.into_any_element();
         let list_width = self.list_width.clone();
         let root = div()
             .relative()
@@ -2781,7 +2755,7 @@ mod tests {
             |_, _| view.clone().into_any_element(),
         );
 
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position: gpui::point(gpui::px(50.0), gpui::px(25.0)),
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(-40.0))),
             ..Default::default()
@@ -2831,7 +2805,7 @@ mod tests {
                                     .overflow_y_scroll()
                                     .track_scroll(&inner)
                                     .occlude()
-                                    .on_scroll_wheel(move |_, _, _| {
+                                    .on_scroll(move |_, _, _| {
                                         forward_scroll_remainder(&wheel_outer, &wheel_inner);
                                     })
                                     .children((0..10).map(|_| gpui::div().h(gpui::px(20.0)))),
@@ -2858,7 +2832,7 @@ mod tests {
             |_, _| view.clone().into_any_element(),
         );
 
-        let wheel = |delta_y: f32| gpui::ScrollWheelEvent {
+        let wheel = |delta_y: f32| gpui::ScrollEvent {
             position: gpui::point(gpui::px(50.0), gpui::px(25.0)),
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(delta_y))),
             ..Default::default()

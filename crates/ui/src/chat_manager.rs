@@ -647,8 +647,8 @@ impl ChatManagerPage {
             "escape" if self.space_menu.is_open() => self.close_space_menu(cx),
             "escape" if self.routine_menu.is_open() => self.close_routine_menu(cx),
             "escape" if !self.selection.is_empty() => self.clear_selection(cx),
-            "a" if mods.secondary() && !mods.shift && !mods.alt => self.select_all_filtered(cx),
-            "backspace" | "delete" if mods.secondary() && !self.selection.is_empty() => {
+            "a" if mods.secondary(cx) && !mods.shift && !mods.alt => self.select_all_filtered(cx),
+            "backspace" | "delete" if mods.secondary(cx) && !self.selection.is_empty() => {
                 let ids = self.selection.iter().cloned().collect();
                 self.ask_delete(ids, window, cx);
             }
