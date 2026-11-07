@@ -174,7 +174,10 @@ are no automatic worktrees, merging, or rollback.
 
 ## terminals-belong-to-chats-and-end-with-the-app
 
-`dcbe375`. Terminals belong to chats (not spaces), live only as long as the
+`dcbe375`. Partially superseded: native Dock quit on macOS now uses GPUI's
+non-cancellable exit path and skips the confirmation
+(`gpui-kit-owns-the-gpui-stack`); window chrome and Cmd+Q still confirm.
+Terminals belong to chats (not spaces), live only as long as the
 app (no background host, no restoration), and any ending close requires
 confirmation. Independent of the agent's bash tool.
 
@@ -466,7 +469,12 @@ CONTINUE pass pushes no transcript row today.
 
 ## urls-wrap-after-slashes-never-before
 
-`d781c50` (issue #44). The vendored gpui wrap rule breaks
+`d781c50` (issue #44). Superseded by `gpui-kit-owns-the-gpui-stack`: the
+patched fork is gone, and gpui-kit's GPUI (`gpui-pre`) takes every wrap and
+truncation break candidate from `icu_segmenter`'s UAX #14 line segmenter,
+which already breaks after `/` and never before it — the behavior below
+holds without a Holt patch.
+The vendored gpui wrap rule breaks
 after `/` and never before it, in all three copies of the candidate rule
 (`LineWrapper::wrap_line`, `LineLayout::compute_wrap_boundaries`, and
 `truncate_wrapped_line`) and in their no-candidate hard-break fallbacks:

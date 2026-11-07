@@ -105,8 +105,8 @@ prefix-strip, then folds separators to `/`), `skills.rs` `Catalog::by_path`
   fixture can pass there and fail here.
 - **MAX_PATH 260** by default. Verbatim `\\?\` paths bypass it; plain paths
   need the system LongPathsEnabled policy **and** a `longPathAware`
-  manifest — the embedded gpui manifest
-  (`third_party/gpui/crates/gpui/resources/windows/gpui.manifest.xml`)
+  manifest — the embedded gpui manifest (`gpui-pre`'s
+  `resources/windows/gpui.manifest.xml`, pulled in through `gpui-kit`)
   carries DPI awareness but not that. Deep user workspaces + long data-dir
   transcripts are the exposure; uuid ids keep Holt's own files shallow.
 
@@ -315,11 +315,12 @@ POSIX shells — cmd.exe takes no session flags
 
 ## 7. Class 6 — rendering and windowing (gpui_windows)
 
-The vendored platform crate is
-`third_party/gpui/crates/gpui_windows/` (D3D11 + HLSL **fxc SM 4.1** — not
+The platform crate is `gpui-pre-windows`, pulled in through `gpui-kit`
+(the vendored `third_party/gpui` fork this section was written against is
+gone — see `gpui-kit-owns-the-gpui-stack` in DECISION.md) (D3D11 + HLSL **fxc SM 4.1** — not
 D3D12/blade — with DirectComposition for the transparent titlebar,
 DirectWrite text, IMM32 IME, and a PerMonitorV2 manifest embedded by
-`third_party/gpui/crates/gpui/build.rs`).
+`gpui-pre`'s `build.rs`).
 
 ### 7.1 The two fixed rendering bug classes (expect them again)
 
@@ -333,12 +334,10 @@ DirectWrite text, IMM32 IME, and a PerMonitorV2 manifest embedded by
   a structured buffer inherits the chunking rule.
 - **Rust-scene ↔ HLSL struct misalignment** (same commit): the HLSL
   `StructuredBuffer` element structs in `shaders.hlsl` must match
-  `third_party/gpui/crates/gpui/src/scene.rs` field-for-field, in order — a
+  the GPUI `scene.rs` field-for-field, in order — a
   field inserted only on one side shifts every later member and renders
-  silent garbage, not an error. `EdgeFadeParams` was added to *both* `Quad`
-  and `PolychromeSprite` for exactly this, and it is **layout only**: no
-  HLSL entry point reads `fade`, so the transcript/sidebar edge fade is
-  unimplemented on Windows (macOS and Linux apply it). Rule: adding a scene
+  silent garbage, not an error. (The fork's `EdgeFadeParams` scene field was
+  the instance of this; edge fades left with the fork.) Rule: adding a scene
   field means editing `scene.rs`, the producer, and `shaders.hlsl` in one
   change, and debug runs won't catch a release-only divergence (next
   bullet).
@@ -500,5 +499,5 @@ so nobody re-diagnoses its gate. What remains open:
   `f4e6689` (D3D chunking + HLSL alignment), `919a632` (caption metrics +
   MDL2), `a728e85` (menu-bar strip + `chrome_top_inset`).
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) for the boundaries this page's
-  rules sit inside; [docs/research/gpui.md](gpui.md) for the framework
-  model the rendering section assumes.
+  rules sit inside; the `gpui-kit` sources selected by `Cargo.lock` for the
+  framework model the rendering section assumes (see AGENTS.md).
