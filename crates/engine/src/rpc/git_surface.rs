@@ -456,6 +456,10 @@ impl EngineService {
             .get("force")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        let trunk = params
+            .get("trunk")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         if worktree.trim().is_empty() {
             return Err(RpcError::BadParams("worktree must not be empty".into()));
         }
@@ -485,7 +489,7 @@ impl EngineService {
         // retry ever lands on an already-removed worktree.
         let removed = self
             .git
-            .remove_worktree(repo_path, worktree.clone(), force)
+            .remove_worktree(repo_path, worktree.clone(), force, trunk)
             .await
             .map_err(RpcError::Failed)?;
         // Session semantics: the worktree's name is a chat id, or it lives

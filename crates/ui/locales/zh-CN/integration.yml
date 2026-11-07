@@ -170,6 +170,8 @@ integration:
       zh-CN: 在 %{branch} 上，干净 · 随合并同步
     main_on_trunk_dirty:
       zh-CN: 在 %{branch} 上，有未提交改动
+    main_on_other:
+      zh-CN: 在 %{branch} 上 · 合并只移动 %{trunk}，此工作区不变
     main_elsewhere:
       zh-CN: 不在主干上
     final_diff:

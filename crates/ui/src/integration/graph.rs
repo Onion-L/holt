@@ -277,6 +277,7 @@ mod tests {
                 name: "main".to_string(),
                 head_sha: trunk_commits[0].sha.clone(),
             },
+            default_trunk: Some("main".to_string()),
             trunk_commits,
             trunk_truncated: false,
             main_checkout: IntegrationMainCheckout {
