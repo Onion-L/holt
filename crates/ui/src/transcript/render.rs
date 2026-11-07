@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, BorderStyle, Bounds, ClipboardItem, Context, CursorStyle, Focusable, KeyDownEvent,
-    MouseButton, ObjectFit, SharedString, StyledImage as _, StyledText, Task, TextRun, Window,
-    canvas, div, img, list, point, prelude::*, px, quad, size,
+    MouseButton, ObjectFit, Pixels, SharedString, StyledImage as _, StyledText, Task, TextRun,
+    Window, canvas, div, img, list, point, prelude::*, px, quad, size,
 };
 use holt_doc::{MessagePart, MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
@@ -407,9 +407,26 @@ impl Transcript {
                             (None, Some(chip)) => {
                                 render_user_directive(&row.id, chip, text, mentions, &theme, clicks)
                             }
-                            (None, None) => user_bubble_text_with_chip(
-                                &row.id, text, mentions, None, &theme, clicks,
-                            )
+                            (None, None) => {
+                                // The oversized-bubble element measures its
+                                // height from this seed — the probe-measured
+                                // row width minus gutters and padding, the
+                                // width the bubble's content box actually
+                                // gets (same formula as the inline edit's
+                                // first-frame seed below).
+                                let seed = (self.list_width.get() - 96.0)
+                                    .min(MAX_CONTENT_WIDTH * 0.8)
+                                    - 32.0;
+                                user_bubble_text_with_chip(
+                                    &row.id,
+                                    text,
+                                    mentions,
+                                    None,
+                                    &theme,
+                                    clicks,
+                                    px(seed),
+                                )
+                            }
                             .into_any_element(),
                         }
                     };
@@ -1224,11 +1241,12 @@ fn user_bubble_text_with_chip(
     leading: Option<LeadingChip>,
     theme: &Theme,
     clicks: BubbleClicks,
+    width_hint: Pixels,
 ) -> AnyElement {
     // A review's first message inlines the whole branch diff. One StyledText
     // shapes every glyph of that string on every frame the row is on screen.
     if leading.is_none() && mentions.is_empty() && virtual_text::oversized(&text) {
-        return virtual_text::element(text);
+        return virtual_text::element(text, width_hint);
     }
     // Split runs at chip boundaries (spans are in order): body text keeps the
     // sans font, mention chips read as inline code, skill chips read in the
@@ -1491,6 +1509,7 @@ fn render_user_directive(
         Some(chip),
         theme,
         clicks,
+        px(0.0),
     )
 }
 

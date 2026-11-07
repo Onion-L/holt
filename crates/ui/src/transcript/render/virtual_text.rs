@@ -37,18 +37,24 @@ pub(super) fn oversized(text: &str) -> bool {
     text.len() > OVERSIZED_BYTES
 }
 
-pub(super) fn element(text: SharedString) -> gpui::AnyElement {
+pub(super) fn element(text: SharedString, width_hint: Pixels) -> gpui::AnyElement {
     div()
         .w_full()
         .min_w_0()
         .cursor(gpui::CursorStyle::IBeam)
         .overflow_hidden()
-        .child(VirtualBubbleText { text })
+        .child(VirtualBubbleText { text, width_hint })
         .into_any_element()
 }
 
 struct VirtualBubbleText {
     text: SharedString,
+    /// The bubble's real content width (row width minus gutters, capped,
+    /// minus padding) as the transcript's layout probe last measured it —
+    /// taffy hands the leaf the UNCLAMPED row width, which overestimates
+    /// the painted width on narrow rows and used to size the row for too
+    /// few wraps, clipping the diff's tail out of reach.
+    width_hint: Pixels,
 }
 
 impl IntoElement for VirtualBubbleText {
@@ -81,11 +87,12 @@ impl Element for VirtualBubbleText {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         let text = self.text.clone();
+        let width_hint = self.width_hint;
         let layout_id =
             window.request_measured_layout(style, move |known, available, window, cx| {
                 let (_, line_height) = bubble_metrics(window);
                 let advance = advance_of_zero(window, cx);
-                let width = layout_width(known.width, available.width);
+                let width = layout_width(known.width, available.width, width_hint);
                 let rows = content_rows(&text, columns_for(width, advance));
                 let reported = if known.width.is_none()
                     && matches!(available.width, AvailableSpace::MinContent)
@@ -196,12 +203,14 @@ fn content_cap() -> Pixels {
     px(MAX_CONTENT_WIDTH * 0.8 - 32.0)
 }
 
-fn layout_width(known: Option<Pixels>, available: AvailableSpace) -> Pixels {
+fn layout_width(known: Option<Pixels>, available: AvailableSpace, hint: Pixels) -> Pixels {
     let cap = content_cap();
-    let raw = known.unwrap_or(match available {
-        AvailableSpace::Definite(width) => width,
-        AvailableSpace::MinContent | AvailableSpace::MaxContent => cap,
-    });
+    let raw = known
+        .or_else(|| (hint > px(0.0)).then_some(hint))
+        .unwrap_or(match available {
+            AvailableSpace::Definite(width) => width,
+            AvailableSpace::MinContent | AvailableSpace::MaxContent => cap,
+        });
     raw.min(cap).max(px(1.0))
 }
 
