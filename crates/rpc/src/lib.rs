@@ -359,6 +359,20 @@ pub mod methods {
     /// computed in one pass under the checkout lock, missing worktree
     /// directories report as `missing` instead of failing the call.
     pub const LIST_INTEGRATION: &str = "ListIntegration";
+    /// The merge pair behind the integration page's merge bar.
+    /// `PreviewMerge {repoPath, worktree, trunk, mode: "squash"|"ff"}` →
+    /// `holt_proto::MergePreview`: the in-memory result (files/patch under
+    /// the usual caps, the squash default message), the conflicting paths,
+    /// or a `MergeRefusal`. Never writes.
+    pub const PREVIEW_MERGE: &str = "PreviewMerge";
+    /// `MergeIntoTrunk {repoPath, worktree, trunk, mode, message?, expect}`
+    /// → `holt_proto::MergeResult`. The whole merge runs under the checkout
+    /// lock; a moved head (vs `expect`) refuses as `stale`, an overlapping
+    /// dirty main checkout refuses as `trunk-checked-out-dirty`, and any
+    /// failure rolls back to the previous tree before answering. On refusal
+    /// the `Failed` message's first line is `merge-refused: <reason>` with
+    /// one detail per following line.
+    pub const MERGE_INTO_TRUNK: &str = "MergeIntoTrunk";
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";

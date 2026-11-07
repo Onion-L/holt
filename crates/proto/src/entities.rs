@@ -657,6 +657,10 @@ pub struct IntegrationWorktree {
     /// Uncommitted changes (untracked included, ignored excluded).
     #[serde(default)]
     pub dirty: bool,
+    /// How many paths those uncommitted changes touch (the merge bar's
+    /// "N files uncommitted" hint).
+    #[serde(default)]
+    pub dirty_files: usize,
     /// `refs/holt/merged/<name>` exists and points at this branch's head —
     /// written by Holt's merge, not derivable from ancestry.
     #[serde(default)]
@@ -694,6 +698,114 @@ pub struct IntegrationSnapshot {
     pub main_checkout: IntegrationMainCheckout,
     #[serde(default)]
     pub worktrees: Vec<IntegrationWorktree>,
+}
+
+/// Why a merge stopped before touching anything. Wire names are the
+/// kebab-case strings the refusal message's first line carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MergeRefusal {
+    NothingToMerge,
+    FfNotPossible,
+    Stale,
+    /// The trunk is checked out in the main checkout and its uncommitted
+    /// changes overlap the merge's files (detail: the overlapping paths).
+    TrunkCheckedOutDirty,
+    /// The trunk is checked out in a linked worktree (detail: that path) —
+    /// moving the ref there would strand that worktree's index and files.
+    TrunkCheckedOutElsewhere,
+    WorktreeMissing,
+    BranchDetached,
+}
+
+impl MergeRefusal {
+    /// The refusal message's stable first-line spelling, parsed back (the
+    /// UI classifies a failed merge by it).
+    pub fn parse_wire(name: &str) -> Option<Self> {
+        [
+            MergeRefusal::NothingToMerge,
+            MergeRefusal::FfNotPossible,
+            MergeRefusal::Stale,
+            MergeRefusal::TrunkCheckedOutDirty,
+            MergeRefusal::TrunkCheckedOutElsewhere,
+            MergeRefusal::WorktreeMissing,
+            MergeRefusal::BranchDetached,
+        ]
+        .into_iter()
+        .find(|reason| reason.wire_name() == name)
+    }
+
+    /// The refusal message's stable first-line spelling.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            MergeRefusal::NothingToMerge => "nothing-to-merge",
+            MergeRefusal::FfNotPossible => "ff-not-possible",
+            MergeRefusal::Stale => "stale",
+            MergeRefusal::TrunkCheckedOutDirty => "trunk-checked-out-dirty",
+            MergeRefusal::TrunkCheckedOutElsewhere => "trunk-checked-out-elsewhere",
+            MergeRefusal::WorktreeMissing => "worktree-missing",
+            MergeRefusal::BranchDetached => "branch-detached",
+        }
+    }
+}
+
+/// A merge preview's outcome: the clean result, the conflicting paths, or
+/// the refusal that stopped it before anything changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum MergeOutcome {
+    Ok {
+        #[serde(default)]
+        files: Vec<DiffFileSummary>,
+        #[serde(default)]
+        patch: String,
+        #[serde(default)]
+        truncated: bool,
+        /// The squash mode's default commit message (empty for ff).
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        additions: u32,
+        #[serde(default)]
+        deletions: u32,
+    },
+    Conflict {
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    Refused {
+        reason: MergeRefusal,
+        #[serde(default)]
+        detail: Vec<String>,
+    },
+}
+
+/// The two heads a preview read; `MergeIntoTrunk` returns them unchanged
+/// and the merge refuses as `stale` when the repository moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeHeads {
+    pub trunk_head: String,
+    pub branch_head: String,
+}
+
+/// `PreviewMerge`'s reply: an in-memory squash or fast-forward — never a
+/// working-tree write.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergePreview {
+    pub heads: MergeHeads,
+    pub outcome: MergeOutcome,
+}
+
+/// `MergeIntoTrunk`'s reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeResult {
+    pub merged_sha: String,
+    /// The trunk was checked out in the main checkout and its working tree
+    /// was synced to the merged tree.
+    pub main_checkout_synced: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

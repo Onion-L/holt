@@ -33,7 +33,8 @@ in the same commit.
 | [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [background-processes](subsystems/background-processes.md) | [background-processes-are-chat-owned](#background-processes-are-chat-owned) |
-| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
+| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [ui-driven-merge-and-worktree-delete](#ui-driven-merge-and-worktree-delete) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
+| [integration](subsystems/integration.md) | [ui-driven-merge-and-worktree-delete](#ui-driven-merge-and-worktree-delete) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
 | UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
@@ -201,9 +202,11 @@ deliberate contrast).
 
 ## ui-driven-git-writes-agent-surface-stays-read-only
 
-`5adc754`. Partially superseded: the UI write trio (stage/unstage/commit)
-was removed. What stands: the agent's git surface stays read-only — wiring
-git writes into the agent toolset must be an explicit future decision.
+`5adc754`. Partially superseded twice: the UI write trio (stage/unstage/
+commit) was removed, and UI-driven git writes returned as local merge and
+worktree deletion (`ui-driven-merge-and-worktree-delete`). What stands
+unchanged: the agent's git surface stays read-only — wiring git writes
+into the agent toolset must be an explicit future decision.
 
 ## attended-sends-run-through-a-paused-queue
 
@@ -363,10 +366,13 @@ docs/research/mcp.md.
 
 ## session-worktrees-are-chat-owned-isolation
 
-`1cebfab`. The worktree intent is chat state absorbed at command acceptance
+`1cebfab`. Partially superseded: `DeleteWorktree` is now served for the
+integration view (`ui-driven-merge-and-worktree-delete`) — deleting a
+session worktree retires it politely (chat archived onto the repo's Space,
+`wt-` row dropped, branch gone) and a later send rematerializes it. What
+stands: the worktree intent is chat state absorbed at command acceptance
 (a crash cannot drop it), materialized at admission, joining as its own
-Space. `CreateWorktree`/`DeleteWorktree` stay unserved — lifecycle beyond
-creation-on-demand is a later slice.
+Space, and a generic `CreateWorktree` stays unserved.
 
 ## home-space-for-project-less-chats
 
@@ -849,3 +855,23 @@ English task slug from the prompt or automatic title (translation/model
 latency, and the title does not exist at admission); and renaming at push or
 PR creation (needless local/remote ref and upstream churn). The readable name
 is only an identifier; task semantics stay in the chat, commit, and PR titles.
+
+## ui-driven-merge-and-worktree-delete
+
+UI-triggered git writes return as exactly two operations: the local merge
+(squash or fast-forward, in-memory preview first, whole landing under the
+checkout lock) and worktree deletion (dirty trees need an explicit force).
+Both are UI-only — the agent toolset gains no git write. `refs/holt/merged/
+<worktree>` is Holt's own merged marker (ancestry cannot say it after a
+squash), and a squash commit carries a `Holt-Merged-From: <name>` trailer
+naming the merge point. Deleting a session worktree archives its chat onto
+the repository's Space instead of destroying it; a queued send both
+unarchives and rematerializes.
+Rejected: merge as an agent tool (the agent could merge its own work into
+the trunk — the gate this keeps); a true three-way merge commit plus an
+in-app conflict editor (large surface, and the author chat already
+resolves conflicts read-write); blocking merges on reviews or checks (a
+merge gate reopens the PR-state-machine question the integration view
+exists to avoid); stashing or forcing a dirty main checkout (silently
+moving user data — overlapping dirt refuses, non-overlapping dirt
+survives the safe checkout).

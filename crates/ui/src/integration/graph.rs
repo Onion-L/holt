@@ -257,6 +257,7 @@ mod tests {
             ahead: 1,
             behind: 0,
             dirty: false,
+            dirty_files: 0,
             merged: false,
             merge_sha: None,
             missing: false,
