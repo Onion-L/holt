@@ -101,7 +101,9 @@ pub(crate) fn parse_checks_config(bytes: &[u8]) -> Result<Vec<CheckSpec>, String
 struct RunHandle {
     run_id: String,
     stop: tokio_util::sync::CancellationToken,
-    current: Mutex<Option<Arc<crate::background::Process>>>,
+    /// The running check's name and process. The name rides along so a
+    /// log subscription for one check can never stream another's output.
+    current: Mutex<Option<(String, Arc<crate::background::Process>)>>,
 }
 
 /// The per-(checkout, worktree) latest result, published to watchers.
@@ -171,12 +173,13 @@ impl IntegrationChecks {
     }
 
     /// The currently executing check's process, for `SubscribeCheckLog`.
-    /// Live only: once the check (or run) finishes, the log is gone — the
-    /// persisted `logTail` is what remains.
+    /// Live only, and only for the check actually running: a named check
+    /// that is not live reports `None` (the persisted `logTail` is what
+    /// remains for finished checks).
     pub fn live_check_process(
         &self,
         run_id: &str,
-        _check_name: &str,
+        check_name: &str,
     ) -> Option<Arc<crate::background::Process>> {
         let key = self
             .by_run_id
@@ -189,15 +192,15 @@ impl IntegrationChecks {
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
             .and_then(|handle| {
-                handle
-                    .current
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
+                let current = handle.current.lock().unwrap_or_else(|e| e.into_inner());
+                let (name, process) = current.as_ref()?;
+                (name == check_name).then(|| process.clone())
             })
     }
 
-    /// Stop one run by id (StopChecks). Unknown or finished ids are no-ops.
+    /// Stop one run by id (StopChecks). Unknown ids, finished ids, and ids
+    /// a re-run superseded are no-ops — the id must still name the live run
+    /// under its key.
     pub fn stop(&self, run_id: &str) {
         let key = self
             .by_run_id
@@ -214,13 +217,15 @@ impl IntegrationChecks {
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
             .cloned()
+            && handle.run_id == run_id
         {
             handle.stop.cancel();
             if let Some(process) = handle
                 .current
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .clone()
+                .as_ref()
+                .map(|(_, process)| process.clone())
             {
                 process.kill_with_grace();
             }
@@ -254,25 +259,9 @@ impl IntegrationChecks {
             .ok_or_else(|| "the trunk has no .holt/checks.toml".to_string())?;
         let specs = parse_checks_config(&config)?;
 
-        // One live run per (repo, worktree): stop the old one.
-        if let Some(previous) = self
-            .runs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-            .cloned()
-        {
-            previous.stop.cancel();
-            if let Some(process) = previous
-                .current
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-            {
-                process.kill_with_grace();
-            }
-        }
-
+        // One live run per (repo, worktree): stop the old one, take its
+        // remembered id with it, and seat the replacement — one critical
+        // section, so two racing RunChecks cannot both miss the previous.
         let run_id = uuid::Uuid::new_v4().to_string();
         let handle = Arc::new(RunHandle {
             run_id: run_id.clone(),
@@ -281,11 +270,25 @@ impl IntegrationChecks {
         });
         {
             let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-            runs.insert(key.clone(), handle.clone());
-        }
-        {
-            let mut by_id = self.by_run_id.lock().unwrap_or_else(|e| e.into_inner());
-            by_id.insert(run_id.clone(), key.clone());
+            let previous = runs.insert(key.clone(), handle.clone());
+            if let Some(previous) = previous {
+                previous.stop.cancel();
+                if let Some(process) = previous
+                    .current
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|(_, process)| process.clone())
+                {
+                    process.kill_with_grace();
+                }
+                let mut by_id = self.by_run_id.lock().unwrap_or_else(|e| e.into_inner());
+                by_id.remove(&previous.run_id);
+                by_id.insert(run_id.clone(), key.clone());
+            } else {
+                let mut by_id = self.by_run_id.lock().unwrap_or_else(|e| e.into_inner());
+                by_id.insert(run_id.clone(), key.clone());
+            }
         }
         let slot = self.slot(key.clone());
 
@@ -329,13 +332,27 @@ impl IntegrationChecks {
         slot: watch::Sender<Option<CheckRun>>,
     ) {
         let key = (checkout_key.clone(), worktree.clone());
+        // A superseded run lands here too: a re-run took the key while this
+        // task was still unwinding. Its record must not clobber the
+        // replacement — no persist, no publish, no removal — so every
+        // finish checks it still owns the key.
         let finish_run = |this: &Self, run: CheckRun| {
-            persist_run(&data_dir, &checkout_key, &worktree, &run);
-            slot.send_replace(Some(run));
-            this.runs
+            let still_current = this
+                .runs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .remove(&key);
+                .get(&key)
+                .is_some_and(|live| live.run_id == handle.run_id);
+            if !still_current {
+                return;
+            }
+            persist_run(&data_dir, &checkout_key, &worktree, &run);
+            slot.send_replace(Some(run));
+            let mut runs = this.runs.lock().unwrap_or_else(|e| e.into_inner());
+            runs.remove(&key);
+            drop(runs);
+            let mut by_id = this.by_run_id.lock().unwrap_or_else(|e| e.into_inner());
+            by_id.remove(&handle.run_id);
         };
 
         // The merge the run executes against. A conflict (or refusal) ends
@@ -445,7 +462,8 @@ impl IntegrationChecks {
                     continue;
                 }
             };
-            *handle.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(process.clone());
+            *handle.current.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((spec.name.clone(), process.clone()));
 
             let (done_tx, done_rx) = tokio::sync::oneshot::channel::<i32>();
             crate::background::supervise_group(process.clone(), child, move |process, code| {
@@ -531,7 +549,8 @@ impl IntegrationChecks {
                 .current
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .clone()
+                .as_ref()
+                .map(|(_, process)| process.clone())
             {
                 process.kill_with_grace();
             }

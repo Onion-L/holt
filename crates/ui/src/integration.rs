@@ -286,6 +286,10 @@ pub struct IntegrationPage {
     focus_pending: bool,
     blink: Blink,
     task: Option<Task<()>>,
+    /// Checks runs stream through WatchChecks; this slot only carries the
+    /// RunChecks call so starting one never cancels a page load, a merge,
+    /// or a delete.
+    checks_task: Option<Task<()>>,
     refs_task: Option<Task<()>>,
     fetch_task: Option<Task<()>>,
     _observe: Subscription,
@@ -325,6 +329,7 @@ impl IntegrationPage {
             focus_pending: true,
             blink: Cell::new(false),
             task: None,
+            checks_task: None,
             refs_task: None,
             fetch_task: None,
             _observe: observe,
@@ -2063,7 +2068,7 @@ impl IntegrationPage {
         };
         self.checks_error = None;
         cx.notify();
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.checks_task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
                 .call(
@@ -2087,13 +2092,36 @@ impl IntegrationPage {
     }
 
     /// Toggle one check's live log.
-    fn toggle_check_log(&mut self, name: &str, run_id: &str, cx: &mut Context<Self>) {
+    fn toggle_check_log(
+        &mut self,
+        name: &str,
+        run_id: &str,
+        running: bool,
+        log_tail: String,
+        cx: &mut Context<Self>,
+    ) {
         if self
             .checks_log
             .as_ref()
             .is_some_and(|(open, _)| open == name)
         {
             self.checks_log = None;
+            cx.notify();
+            return;
+        }
+        // Only a running check has a live stream; anything finished (or a
+        // pending row mid-run) shows the persisted tail instead, so a
+        // failed check's output survives its run.
+        if !running {
+            let lines: Vec<String> = log_tail
+                .split('\n')
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect();
+            self.checks_log = Some((
+                name.to_string(),
+                cx.new(|_| CheckLogView { lines, _task: None }),
+            ));
             cx.notify();
             return;
         }
@@ -2197,8 +2225,16 @@ impl IntegrationPage {
                             .on_click({
                                 let run_id = run.run_id.clone();
                                 let name = name.clone();
+                                let running = row.status == "running";
+                                let log_tail = row.log_tail.clone();
                                 cx.listener(move |this, _, _, cx| {
-                                    this.toggle_check_log(&name, &run_id, cx);
+                                    this.toggle_check_log(
+                                        &name,
+                                        &run_id,
+                                        running,
+                                        log_tail.clone(),
+                                        cx,
+                                    );
                                 })
                             })
                             .child(
