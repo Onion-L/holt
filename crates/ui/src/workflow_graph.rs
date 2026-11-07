@@ -335,7 +335,7 @@ pub(crate) fn render_workflow_graph(
         .bg(theme.surface)
         .overflow_hidden()
         .debug_selector(|| "workflow-graph".to_string())
-        .on_scroll_wheel(move |event: &gpui::ScrollWheelEvent, window, cx| {
+        .on_scroll(move |event: &gpui::ScrollEvent, window, cx| {
             if !(event.modifiers.control || event.modifiers.platform) {
                 return;
             }

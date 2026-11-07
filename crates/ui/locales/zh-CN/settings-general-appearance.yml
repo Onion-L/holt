@@ -59,10 +59,6 @@ settings_general_appearance:
         zh-CN: 任务完成通知
       completion_description:
         zh-CN: 后台轮次成功或失败时显示系统横幅。
-      sound:
-        zh-CN: 播放声音
-      sound_description:
-        zh-CN: 每条横幅附带播放系统通知音。
     updates:
       title:
         zh-CN: 更新

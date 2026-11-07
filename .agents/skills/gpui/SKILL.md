@@ -1,18 +1,19 @@
 ---
 name: gpui
-description: "Explain and apply the vendored GPUI framework: entities and contexts, declarative views, custom elements, layout, input/focus, async tasks, lists, and tests. Use when building or changing a GPUI UI, investigating rendering/layout/event/async bugs, or resolving an API mismatch in a pre-1.0 GPUI snapshot."
+description: "Explain and apply Holt's GPUI Kit / GPUI stack: entities and contexts, declarative views, custom elements, layout, input/focus, async tasks, lists, and tests. Use when building or changing a GPUI UI, investigating rendering/layout/event/async bugs, or resolving an API mismatch."
 ---
 
 # GPUI
 
 Use this skill as a source-first implementation and diagnosis guide. GPUI is
-pre-1.0 and Holt uses a patched snapshot, so verify APIs against the checkout.
+pre-1.0; verify APIs against the exact `gpui-kit` / `gpui-pre` sources selected
+by `Cargo.lock`.
 
 ## Source order
 
-1. `third_party/gpui` source and examples (Holt's API truth).
-2. Existing `crates/ui` call sites and `docs/research/gpui.md`.
-3. Upstream docs only for background; confirm signatures locally.
+1. The `gpui-kit` facade and locked dependency sources in Cargo's registry.
+2. Existing `crates/ui` call sites.
+3. The matching GPUI Kit documentation for background.
 
 ## Quick start
 

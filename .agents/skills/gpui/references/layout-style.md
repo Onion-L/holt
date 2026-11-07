@@ -119,7 +119,7 @@ div()
 
 ### SVG Icons
 
-In Holt's vendored snapshot, set `.text_color(...)` on the SVG itself:
+In Holt's current GPUI stack, set `.text_color(...)` on the SVG itself:
 
 ```rust
 crate::icons::icon(crate::icons::CLOSE)
@@ -128,8 +128,8 @@ crate::icons::icon(crate::icons::CLOSE)
 ```
 
 Parent text color is not inherited by the SVG paint path. Without an explicit
-color, `Svg::paint` skips drawing entirely; see
-`third_party/gpui/crates/gpui/src/elements/svg.rs`.
+color, `Svg::paint` skips drawing entirely; verify this against the locked
+`gpui-pre` source when upgrading GPUI Kit.
 
 When changing icon styling, verify that the icons reach SVG painting as well
 as checking button interaction. The regression test

@@ -19,6 +19,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::keybinding::dynamic_key_binding;
 use crate::syntax_cache::{DocumentHighlightKey, SyntaxHighlightCache};
 use crate::theme::Theme;
 
@@ -115,30 +116,42 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("escape", Escape, ctx),
     ];
     for prefix in ["cmd", "ctrl"] {
-        bindings.push(KeyBinding::new(&format!("{prefix}-z"), Undo, ctx));
-        bindings.push(KeyBinding::new(&format!("shift-{prefix}-z"), Redo, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-a"), SelectAll, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-c"), Copy, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, ctx));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-z"), Undo, ctx, cx));
+        bindings.push(dynamic_key_binding(
+            &format!("shift-{prefix}-z"),
+            Redo,
+            ctx,
+            cx,
+        ));
+        bindings.push(dynamic_key_binding(
+            &format!("{prefix}-a"),
+            SelectAll,
+            ctx,
+            cx,
+        ));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-c"), Copy, ctx, cx));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-x"), Cut, ctx, cx));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-v"), Paste, ctx, cx));
     }
     // Cmd+S is the FILE's, not the editor's: it fires wherever focus sits
     // while a file tab is the active surface (tree, composer, editor).
     let find_bindings: Vec<KeyBinding> = ["cmd", "ctrl"]
         .iter()
-        .map(|prefix| KeyBinding::new(&format!("{prefix}-f"), super::FindInFile, None))
+        .map(|prefix| dynamic_key_binding(&format!("{prefix}-f"), super::FindInFile, None, cx))
         .collect();
     cx.bind_keys(find_bindings);
     let save_bindings: Vec<KeyBinding> = ["cmd", "ctrl"]
         .iter()
-        .map(|prefix| KeyBinding::new(&format!("{prefix}-s"), super::SaveFile, None))
+        .map(|prefix| dynamic_key_binding(&format!("{prefix}-s"), super::SaveFile, None, cx))
         .collect();
     cx.bind_keys(save_bindings);
     // Source ⇄ preview for the active Markdown tab (ticket 08) — the file
     // surface's own mode switch, like Cmd+S/Cmd+F.
     let preview_bindings: Vec<KeyBinding> = ["cmd", "ctrl"]
         .iter()
-        .map(|prefix| KeyBinding::new(&format!("{prefix}-shift-p"), super::TogglePreview, None))
+        .map(|prefix| {
+            dynamic_key_binding(&format!("{prefix}-shift-p"), super::TogglePreview, None, cx)
+        })
         .collect();
     cx.bind_keys(preview_bindings);
     let word_edit_prefix = if cfg!(target_os = "macos") {
@@ -146,35 +159,41 @@ pub(crate) fn init(cx: &mut App) {
     } else {
         "ctrl"
     };
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-backspace"),
         DeleteWordLeft,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-delete"),
         DeleteWordRight,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-left"),
         WordLeft,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-right"),
         WordRight,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("shift-{word_edit_prefix}-left"),
         SelectWordLeft,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("shift-{word_edit_prefix}-right"),
         SelectWordRight,
         ctx,
+        cx,
     ));
     cx.bind_keys(bindings);
 }
@@ -854,7 +873,7 @@ impl CodeEditor {
 
     fn on_scroll_wheel(
         &mut self,
-        event: &gpui::ScrollWheelEvent,
+        event: &gpui::ScrollEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1278,11 +1297,9 @@ impl Render for CodeEditor {
                     this.on_mouse_up(event, window, cx);
                 }),
             )
-            .on_scroll_wheel(
-                cx.listener(|this, event: &gpui::ScrollWheelEvent, window, cx| {
-                    this.on_scroll_wheel(event, window, cx);
-                }),
-            )
+            .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, window, cx| {
+                this.on_scroll_wheel(event, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Backspace, _, cx| {
                 this.delete_backward(cx);
             }))

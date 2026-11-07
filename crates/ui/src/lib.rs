@@ -24,10 +24,8 @@ pub mod chat_manager;
 mod chat_usage;
 pub mod comments;
 pub mod composer;
-pub mod edge_fade;
 pub mod file_dialog;
 pub mod files;
-pub mod frost;
 pub mod git_panel;
 pub mod goal;
 pub mod history;
@@ -36,6 +34,8 @@ pub mod icons;
 pub mod image_viewer;
 pub mod images;
 pub mod integration;
+mod keybinding;
+mod layer;
 pub mod links;
 pub mod loaders;
 pub mod markdown;
@@ -56,6 +56,7 @@ pub mod terminal;
 pub mod theme;
 pub mod theme_library;
 mod token_display;
+mod tokio_bridge;
 pub mod transcript;
 pub mod turn_review;
 pub mod typography;
@@ -109,7 +110,7 @@ impl gpui::Global for ReopenState {}
 /// connect-or-embed), 1320×880 window (min 900×600) with [`shell::Shell`] as the
 /// root view and engine connection gate.
 pub fn run_app(config: UiConfig) {
-    let app = gpui_platform::application().with_assets(icons::Assets);
+    let app = gpui::platform::application().with_assets(icons::Assets);
     let (url_tx, mut url_rx) = futures::channel::mpsc::unbounded::<String>();
     let callback_tx = url_tx.clone();
     app.on_open_urls(move |urls| {
@@ -125,10 +126,10 @@ pub fn run_app(config: UiConfig) {
     // (crates/zed/src/main.rs `app.on_reopen`).
     app.on_reopen(reopen_main_window);
     app.run(move |cx: &mut App| {
+        gpui::init(cx);
         // Dock/⌘-Tab icon before the first frame paints.
         app_icon::install();
-        // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
-        gpui_tokio::init(cx);
+        tokio_bridge::init(cx);
         // Application identity before any window opens or notification posts
         // (platforms that can't identify the process stay silent otherwise).
         cx.set_app_identity(notifications::APP_IDENTITY, notifications::APP_DISPLAY_NAME);
@@ -186,10 +187,9 @@ pub fn run_app(config: UiConfig) {
         let quit_state = state.clone();
         cx.on_app_quit(move |cx| {
             settings::flush(cx);
-            let shutdown =
-                quit_state.read(cx).engine().cloned().map(|handle| {
-                    gpui_tokio::Tokio::spawn(cx, async move { handle.shutdown().await })
-                });
+            let shutdown = quit_state.read(cx).engine().cloned().map(|handle| {
+                tokio_bridge::Tokio::spawn(cx, async move { handle.shutdown().await })
+            });
             async move {
                 if let Some(task) = shutdown {
                     let _ = task.await;

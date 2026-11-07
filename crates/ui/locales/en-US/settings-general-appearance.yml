@@ -59,10 +59,6 @@ settings_general_appearance:
         en-US: Completion notifications
       completion_description:
         en-US: Show a system banner when a background Turn succeeds or fails.
-      sound:
-        en-US: Play sound
-      sound_description:
-        en-US: Play the system notification sound with each banner.
     updates:
       title:
         en-US: Updates

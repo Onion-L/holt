@@ -123,7 +123,7 @@ impl Transcript {
                         // at the body's scroll boundary.
                         .occlude()
                         .track_scroll(&scroll)
-                        .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
+                        .on_scroll(cx.listener(move |this, _, _, cx| {
                             this.chain_nested_scroll(&scroll, cx);
                         }))
                         .font_family(theme.font_mono.clone())
@@ -298,7 +298,7 @@ impl Transcript {
                     // the unabsorbed wheel remainder to the list.
                     .occlude()
                     .track_scroll(&scroll)
-                    .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
+                    .on_scroll(cx.listener(move |this, _, _, cx| {
                         this.chain_nested_scroll(&scroll, cx);
                     }))
                     .font_family(theme.font_mono.clone())
@@ -458,7 +458,7 @@ impl Transcript {
                     // the summary's scroll boundary.
                     .occlude()
                     .track_scroll(&scroll)
-                    .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
+                    .on_scroll(cx.listener(move |this, _, _, cx| {
                         this.chain_nested_scroll(&scroll, cx);
                     }))
                     .child(body),

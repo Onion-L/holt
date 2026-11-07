@@ -1366,9 +1366,7 @@ impl Shell {
             .as_ref()
             .map(|d| (d.from, d.over, d.epoch, d.prev_over));
 
-        // Fade flags from the LAST frame's scroll state (invisible lag).
-        // The EdgeFade scope below fades per-pixel on x for glyphs AND
-        // quads/images (fork 5d1f83d) — washes dissolve across the band.
+        // Painted edge gradients use the previous frame's scroll state.
         const FADE_WIDTH: f32 = 36.0;
         let scrolled = -f32::from(self.right_tab_scroll.offset().x);
         let max_scroll = f32::from(self.right_tab_scroll.max_offset().x);
@@ -1739,9 +1737,8 @@ impl Shell {
         // The empty-state picker already offers every surface. Show a single
         // Chrome-style add-tab affordance only after at least one tab exists.
         strip = strip.when(count > 0, |strip| strip.child(plus));
-        // Edge fades on whichever side hides tabs (flags computed above).
-        // Glass: per-glyph EdgeFade scope over the chips' own opacity ramps;
-        // opaque: painted gradients in the shell surface tone.
+        // Non-glass themes paint edge gradients on whichever side hides tabs;
+        // glass themes render the region without a fade.
         let glass = theme.is_glass();
         let bar_bg = theme.surface;
         let region = div()
@@ -1781,14 +1778,7 @@ impl Shell {
                         )),
                 )
             });
-        if glass {
-            crate::edge_fade::edge_faded(FADE_WIDTH, false, false, region)
-                .fade_left(fade_left)
-                .fade_right(fade_right)
-                .into_any_element()
-        } else {
-            region.into_any_element()
-        }
+        region.into_any_element()
     }
 }
 
