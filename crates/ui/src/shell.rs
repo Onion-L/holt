@@ -138,6 +138,11 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     };
     cx.clear_key_bindings();
     crate::composer::init(cx);
+    // The file editor's bindings (save, find, undo, tab/enter, the
+    // clipboard actions) live in its own init; without this line every
+    // keymap re-application — including the first window's construction —
+    // wiped them for the whole app.
+    crate::files::editor::init(cx);
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
