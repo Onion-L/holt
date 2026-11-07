@@ -95,8 +95,15 @@ pub(crate) fn layout(snapshot: &IntegrationSnapshot) -> TreeLayout {
         .collect();
 
     for (index, worktree) in snapshot.worktrees.iter().enumerate() {
-        // Missing directories and unreadable heads have nothing to sort by.
-        let mut key = (i64::MAX, false, index);
+        // Missing directories and unreadable heads have nothing to sort by
+        // and ask for attention at the top. A present worktree whose head
+        // fell out of the truncated trunk window with no commits of its own
+        // is simply old: it hangs off the bottom, never the top.
+        let mut key = if worktree.missing || worktree.head_sha.is_none() {
+            (i64::MAX, false, index)
+        } else {
+            (i64::MIN, false, index)
+        };
         if let (false, Some(head_sha)) = (worktree.missing, worktree.head_sha.as_deref()) {
             if worktree.merged
                 && let Some(merge_row) =
@@ -403,6 +410,17 @@ mod tests {
         let layout = layout(&snap);
         assert_eq!(row_kinds(&layout, &snap), ["Wgone", "Tc2", "Tc1"]);
         assert!(layout.spans.is_empty());
+    }
+
+    #[test]
+    fn an_old_synced_worktree_hangs_off_the_bottom_not_the_top() {
+        // Zero commits of its own and a head deeper than the truncated
+        // trunk window: undatable, but present — the bottom, never the top.
+        let trunk = vec![commit("c2", 20), commit("c1", 10)];
+        let old = worktree("old", Some("root-commit"), Some("root-commit"));
+        let snap = snapshot(trunk, vec![old]);
+        let layout = layout(&snap);
+        assert_eq!(row_kinds(&layout, &snap), ["Tc2", "Tc1", "Wold"]);
     }
 
     #[test]

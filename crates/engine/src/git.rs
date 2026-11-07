@@ -2781,6 +2781,38 @@ fn history_page(
 /// cap for one worktree's `trunk..head` range.
 const INTEGRATION_COMMIT_CAP: usize = 200;
 
+/// How deep the snapshot hunts a worktree's `Holt-Merged-From` merge point
+/// down the trunk's first-parent line. Deeper than the commit window — a
+/// squash older than 200 trunk commits is still that worktree's merge point,
+/// and the branch-head fallback is only right for a fast-forward.
+const INTEGRATION_TRAILER_SEARCH_CAP: usize = 5_000;
+
+/// The trunk commit carrying `trailer` on the first-parent line, if the
+/// trunk still has it.
+fn trunk_trailer_commit(
+    main_repo: &Repository,
+    trunk_oid: git2::Oid,
+    trailer: &str,
+) -> Option<String> {
+    let mut walker = main_repo.revwalk().ok()?;
+    let _ = walker.simplify_first_parent();
+    walker.push(trunk_oid).ok()?;
+    for oid in walker
+        .by_ref()
+        .take(INTEGRATION_TRAILER_SEARCH_CAP)
+        .flatten()
+    {
+        let message = main_repo
+            .find_commit(oid)
+            .ok()
+            .and_then(|commit| commit.message().ok().map(str::to_string));
+        if message.is_some_and(|message| message.lines().any(|line| line.trim() == trailer)) {
+            return Some(oid.to_string());
+        }
+    }
+    None
+}
+
 /// The `Holt-Merged-From` trailer line a squash merge writes (and the
 /// integration view reads back to find the merge point).
 fn merged_from_trailer(worktree: &str) -> String {
@@ -2891,16 +2923,7 @@ fn integration_snapshot(
             // worktree's trailer; a fast-forward merge writes none, and the
             // branch head is the merge point itself.
             let trailer = merged_from_trailer(&row.name);
-            row.merge_sha = trunk_commits
-                .iter()
-                .find(|commit| {
-                    git2::Oid::from_str(&commit.sha)
-                        .ok()
-                        .and_then(|oid| main_repo.find_commit(oid).ok())
-                        .and_then(|commit| commit.message().ok().map(str::to_string))
-                        .is_some_and(|message| message.lines().any(|line| line.trim() == trailer))
-                })
-                .map(|commit| commit.sha.clone())
+            row.merge_sha = trunk_trailer_commit(&main_repo, trunk_oid, &trailer)
                 .or_else(|| row.head_sha.clone());
         }
         worktrees.push(row);
