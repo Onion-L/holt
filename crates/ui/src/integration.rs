@@ -15,7 +15,7 @@ use std::time::Instant;
 use chrono::Utc;
 use gpui::{
     AnyElement, App, Context, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, Render, SharedString, Subscription, Task, Window, div, prelude::*, px,
+    MouseUpEvent, Render, SharedString, Subscription, Task, Window, canvas, div, prelude::*, px,
 };
 use holt_proto::{IntegrationSnapshot, IntegrationWorktree, SessionStatus, Space};
 use holt_rpc::methods;
@@ -30,10 +30,6 @@ use crate::theme::Theme;
 
 use detail::Detail;
 use graph::{RowKind, TreeLayout};
-
-/// Width of the navigation rail the page sits beside. The page fills the
-/// rest of the window.
-const NAVIGATION_RAIL: f32 = 44.0;
 
 /// 0 = centered inbox, 1 = inbox pinned left. Manual clock: a
 /// `with_animation` wrapper replays whenever this tree remounts.
@@ -367,6 +363,9 @@ pub struct IntegrationPage {
     split_tween: Option<SplitTween>,
     /// Dragged detail width. `None` fills the space beside the default inbox.
     detail_width: Option<f32>,
+    /// Laid-out width of this page. The chat sidebar sits beside it, so the
+    /// window width is the wrong measure for centering and the drag clamp.
+    page_width: f32,
     _observe: Subscription,
 }
 
@@ -418,6 +417,7 @@ impl IntegrationPage {
             split_shown: 0.0,
             split_tween: None,
             detail_width: None,
+            page_width: 0.0,
             _observe: observe,
         }
     }
@@ -470,8 +470,12 @@ impl IntegrationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let available = self.page_width;
+        if available < 1.0 {
+            return;
+        }
+        // The detail runs to the window's right edge; the pointer is the seam.
         let viewport = f32::from(window.viewport_size().width);
-        let available = (viewport - NAVIGATION_RAIL).max(0.0);
         let width = viewport - f32::from(event.event.position.x);
         let (min, max) = detail_pane_bounds(available);
         self.detail_width = Some(width.clamp(min, max));
@@ -3848,25 +3852,46 @@ impl Render for IntegrationPage {
         }
         self.ensure_started(cx);
         let open = self.split_progress(cx.reduce_motion(), window);
-        let available = (f32::from(window.viewport_size().width) - NAVIGATION_RAIL).max(0.0);
+        let available = self.page_width;
+        let measured = available > 1.0;
         let closed = available.min(INBOX_MAX_W);
         let detail = detail_pane_width(self.detail_width, available);
         let width = crate::motion::lerp(closed, (available - detail).max(0.0), open);
         let margin = crate::motion::lerp((available - closed).max(0.0) / 2.0, 0.0, open);
         let inbox = self.render_inbox(open, &theme, cx);
-        let show_detail = open > 0.0 && self.detail.is_some();
+        let show_detail = measured && open > 0.0 && self.detail.is_some();
         let (detail_min, detail_max) = detail_pane_bounds(available);
-        let show_handle = self.split_tween.is_none()
+        let show_handle = measured
+            && self.split_tween.is_none()
             && self.selected.is_some()
             && detail_max - detail_min >= 24.0;
         let handle = show_handle.then(|| self.render_detail_handle(margin + width, cx));
-        let body =
+        let entity = cx.entity();
+        let probe = canvas(
+            move |bounds, _, cx| {
+                entity.update(cx, |page, cx| {
+                    let width = f32::from(bounds.size.width);
+                    if (page.page_width - width).abs() > 0.5 {
+                        page.page_width = width;
+                        cx.notify();
+                    }
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        // Until the probe lands, center with the page's own box. A margin
+        // computed from the window lands the column on the right, because
+        // the chat sidebar already consumed that width.
+        let body = if measured {
             div()
                 .size_full()
                 .relative()
                 .flex()
                 .min_h_0()
                 .overflow_hidden()
+                .child(probe)
                 .child(div().w(px(margin)).flex_none())
                 .child(
                     div()
@@ -3894,7 +3919,25 @@ impl Render for IntegrationPage {
                         )
                     },
                 ))
-                .children(handle);
+                .children(handle)
+        } else {
+            div()
+                .size_full()
+                .relative()
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .child(probe)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .max_w(px(INBOX_MAX_W))
+                        .mx_auto()
+                        .child(inbox),
+                )
+        };
 
         div()
             .id("integration-page")
