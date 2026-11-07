@@ -189,6 +189,75 @@ fn row<'a>(run: &'a CheckRun, name: &str) -> &'a holt_rpc::checks::CheckRow {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_superseded_run_never_clobbers_or_stops_its_replacement() {
+    let fixture = Fixture::new();
+    commit_checks_config(
+        &fixture,
+        "[[check]]\nname = \"hang\"\nrun = \"sleep 30\"\n[[check]]\nname = \"after\"\nrun = \"true\"\n",
+    );
+    let engine = fixture.engine();
+
+    let first = run_checks(&engine, &fixture).await.unwrap();
+    let _ = watch_until(&engine, &fixture, |run| {
+        row(run, "hang").status == "running"
+    })
+    .await;
+
+    // Re-run: the replacement takes the key and the old id is forgotten.
+    let second = run_checks(&engine, &fixture).await.unwrap();
+    assert_ne!(first, second);
+    let _ = watch_until(&engine, &fixture, |run| run.run_id == second).await;
+
+    // Stopping with the SUPERSEDED id is a no-op: the replacement keeps
+    // running.
+    engine
+        .handle(methods::STOP_CHECKS, serde_json::json!({ "runId": first }))
+        .await
+        .unwrap();
+    let run = watch_until(&engine, &fixture, |run| run.run_id == second).await;
+    assert_eq!(
+        row(&run, "hang").status,
+        "running",
+        "a stale id must not stop the replacement: {:?}",
+        run.checks
+    );
+
+    // A log subscription names the running check or refuses; a stale id
+    // never streams the replacement's process.
+    let error = match engine
+        .handle(
+            methods::SUBSCRIBE_CHECK_LOG,
+            serde_json::json!({
+                "runId": second,
+                "name": "after",
+                "afterSeq": 0,
+            }),
+        )
+        .await
+    {
+        Ok(_) => panic!("a not-yet-running check must refuse to stream"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("is not live"),
+        "a not-yet-running check must refuse: {error}"
+    );
+
+    // The replacement finishes on its own terms and its result survives
+    // the superseded run's unwind (no clobber, no removal).
+    engine
+        .handle(methods::STOP_CHECKS, serde_json::json!({ "runId": second }))
+        .await
+        .unwrap();
+    let run = watch_until(&engine, &fixture, |run| run.finished()).await;
+    assert_eq!(
+        run.run_id, second,
+        "the persisted result is the replacement's"
+    );
+    assert_eq!(row(&run, "hang").status, "stopped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn checks_run_in_a_checkout_of_the_merged_tree() {
     let fixture = Fixture::new();
     // The trunk moves ahead with its own file AND its own checks config;
