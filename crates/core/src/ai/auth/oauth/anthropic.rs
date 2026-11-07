@@ -316,7 +316,7 @@ impl AnthropicOAuth {
         .await;
 
         manual_abort.cancel();
-        server.close();
+        server.close().await;
         outcome
     }
 }
@@ -484,6 +484,10 @@ impl CallbackServerInner {
 pub struct CallbackServer {
     inner: Arc<CallbackServerInner>,
     rx: Mutex<Option<CodeRx>>,
+    /// The accept task owns the listener; `close` awaits it so the fixed
+    /// port is provably free when `close` returns instead of when the
+    /// runtime next polls the task.
+    accept: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The one-shot wait behind `wait_for_code`.
@@ -494,11 +498,19 @@ impl CallbackServer {
         Self {
             inner: Arc::clone(&self.inner),
             rx: Mutex::new(None),
+            accept: Mutex::new(None),
         }
     }
 
-    fn close(&self) {
+    /// Cancel the accept loop and wait out its exit: until the task is
+    /// reaped its listener still holds the fixed callback port, and a
+    /// following login (another flow, the next test) must not race it.
+    async fn close(&self) {
         self.inner.shutdown.cancel();
+        let accept = self.accept.lock().expect("lock poisoned").take();
+        if let Some(accept) = accept {
+            let _ = accept.await;
+        }
     }
 
     fn cancel_wait(&self) {
@@ -545,7 +557,7 @@ async fn start_callback_server(
         });
     }
 
-    {
+    let accept = {
         let inner = Arc::clone(&inner);
         let shutdown = inner.shutdown.clone();
         tokio::spawn(async move {
@@ -562,12 +574,13 @@ async fn start_callback_server(
                     handle_callback_connection(inner, connection).await;
                 });
             }
-        });
-    }
+        })
+    };
 
     Ok(CallbackServer {
         inner,
         rx: Mutex::new(Some(rx)),
+        accept: Mutex::new(Some(accept)),
     })
 }
 
