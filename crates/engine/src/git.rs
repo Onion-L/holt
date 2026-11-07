@@ -2825,6 +2825,14 @@ fn integration_snapshot(
 
     let main_checkout = integration_main_checkout(&main_repo)?;
 
+    // The engine's own root and a registered worktree's path can spell the
+    // same directory differently on Windows (a short %TEMP% prefix on one
+    // side, the expanded form libgit2 stored on the other), so the checks
+    // classification below runs against the canonicalized spelling too.
+    let canonical_checks_root = std::fs::canonicalize(checks_root)
+        .ok()
+        .map(crate::tools::strip_verbatim);
+
     let mut worktrees = Vec::new();
     let registered = main_repo.worktrees().map_err(git_message)?;
     for index in 0..registered.len() {
@@ -2841,7 +2849,11 @@ fn integration_snapshot(
         // behind with the directory gone — prune it while we are here. A
         // LIVE run's checkout (directory present) is left alone: pruning
         // under a running check would break it.
-        if path.starts_with(checks_root) {
+        let under_checks_root = path.starts_with(checks_root)
+            || canonical_checks_root
+                .as_deref()
+                .is_some_and(|root| path.starts_with(root));
+        if under_checks_root {
             if !path.is_dir() {
                 let mut prune = git2::WorktreePruneOptions::new();
                 prune.valid(true).locked(true).working_tree(true);
