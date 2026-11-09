@@ -871,6 +871,8 @@ edge-fade renderers (visual parity was not worth retaining renderer patches).
 
 The accepted simplifications are explicit: native window background blur
 stays, floating cards lose their separate backdrop blur but keep scene-layer
-isolation, edge fades are removed, OS notifications become silent on macOS,
-and native Dock quit uses GPUI's non-cancellable exit path. Window chrome and
+isolation, edge fades are removed, OS notifications become silent on every
+platform (gpui-pre's `SystemNotification` carries no sound field, so the
+`completionNotificationSound` setting is removed), and native Dock quit
+uses GPUI's non-cancellable exit path. Window chrome and
 Cmd+Q still pass through the draft/terminal confirmation gate.
