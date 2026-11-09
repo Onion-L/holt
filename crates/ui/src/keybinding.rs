@@ -2,7 +2,9 @@ use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate};
 
 /// Build a binding from a runtime string. `KeyBinding::new` now accepts only
 /// static strings; `load` owns the parsed keystrokes and resolves modifiers
-/// with the application's keyboard mapper.
+/// with the application's keyboard mapper. Panics on unparseable input —
+/// callers pass literals or strings pre-validated by `apply_keymap`'s
+/// `valid_or_default` (same `parse_with_os` parser).
 pub(crate) fn dynamic_key_binding<A: Action>(
     keystrokes: &str,
     action: A,

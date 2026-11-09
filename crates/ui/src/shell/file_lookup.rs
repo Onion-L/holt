@@ -543,12 +543,7 @@ impl Shell {
             .child(body)
             .child(footer)
             .into_any_element();
-        Some(popover::modal_glass(
-            "file-lookup-dialog",
-            viewport,
-            card,
-            card_radius,
-        ))
+        Some(popover::modal_glass("file-lookup-dialog", viewport, card))
     }
 }
 

@@ -686,7 +686,6 @@ pub fn modal_glass(
     id: impl Into<ElementId>,
     viewport: gpui::Size<Pixels>,
     card: AnyElement,
-    _corner_radius: f32,
 ) -> AnyElement {
     modal_with(id, viewport, card, 0.35)
 }
