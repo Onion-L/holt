@@ -17,11 +17,12 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler,
     EventEmitter, FocusHandle, Focusable, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, Task, TextRun, TextStyle,
+    MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Task, TextRun, TextStyle,
     UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, point, prelude::*, px, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::keybinding::dynamic_key_binding;
 use crate::theme::Theme;
 
 // ---------------------------------------------------------------------------
@@ -230,8 +231,13 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-delete", DeleteToLineEnd, ctx),
     ];
     for prefix in ["cmd", "ctrl"] {
-        bindings.push(KeyBinding::new(&format!("{prefix}-z"), Undo, ctx));
-        bindings.push(KeyBinding::new(&format!("shift-{prefix}-z"), Redo, ctx));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-z"), Undo, ctx, cx));
+        bindings.push(dynamic_key_binding(
+            &format!("shift-{prefix}-z"),
+            Redo,
+            ctx,
+            cx,
+        ));
     }
     // Word-level editing: Option on macOS, Ctrl on Windows/Linux.
     let word_edit_prefix = if cfg!(target_os = "macos") {
@@ -239,41 +245,52 @@ pub fn init(cx: &mut App) {
     } else {
         "ctrl"
     };
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-backspace"),
         DeleteWordLeft,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-delete"),
         DeleteWordRight,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-left"),
         WordLeft,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-right"),
         WordRight,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("shift-{word_edit_prefix}-left"),
         SelectWordLeft,
         ctx,
+        cx,
     ));
-    bindings.push(KeyBinding::new(
+    bindings.push(dynamic_key_binding(
         &format!("shift-{word_edit_prefix}-right"),
         SelectWordRight,
         ctx,
+        cx,
     ));
     for prefix in ["cmd", "ctrl"] {
-        bindings.push(KeyBinding::new(&format!("{prefix}-a"), SelectAll, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-c"), Copy, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, ctx));
-        bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, ctx));
+        bindings.push(dynamic_key_binding(
+            &format!("{prefix}-a"),
+            SelectAll,
+            ctx,
+            cx,
+        ));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-c"), Copy, ctx, cx));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-x"), Cut, ctx, cx));
+        bindings.push(dynamic_key_binding(&format!("{prefix}-v"), Paste, ctx, cx));
     }
     // Palette-search context: TEXT-EDITING keys only. gpui dispatches matched
     // keybindings BEFORE raw key listeners (window.rs `dispatch_key_event`),
@@ -296,43 +313,79 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-cmd-right", SelectEnd, palette),
         KeyBinding::new("cmd-backspace", DeleteToLineStart, palette),
     ];
-    palette_bindings.push(KeyBinding::new(
+    palette_bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-backspace"),
         DeleteWordLeft,
         palette,
+        cx,
     ));
-    palette_bindings.push(KeyBinding::new(
+    palette_bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-delete"),
         DeleteWordRight,
         palette,
+        cx,
     ));
-    palette_bindings.push(KeyBinding::new(
+    palette_bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-left"),
         WordLeft,
         palette,
+        cx,
     ));
-    palette_bindings.push(KeyBinding::new(
+    palette_bindings.push(dynamic_key_binding(
         &format!("{word_edit_prefix}-right"),
         WordRight,
         palette,
+        cx,
     ));
-    palette_bindings.push(KeyBinding::new(
+    palette_bindings.push(dynamic_key_binding(
         &format!("shift-{word_edit_prefix}-left"),
         SelectWordLeft,
         palette,
+        cx,
     ));
-    palette_bindings.push(KeyBinding::new(
+    palette_bindings.push(dynamic_key_binding(
         &format!("shift-{word_edit_prefix}-right"),
         SelectWordRight,
         palette,
+        cx,
     ));
     for prefix in ["cmd", "ctrl"] {
-        palette_bindings.push(KeyBinding::new(&format!("{prefix}-a"), SelectAll, palette));
-        palette_bindings.push(KeyBinding::new(&format!("{prefix}-c"), Copy, palette));
-        palette_bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, palette));
-        palette_bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, palette));
-        palette_bindings.push(KeyBinding::new(&format!("{prefix}-z"), Undo, palette));
-        palette_bindings.push(KeyBinding::new(&format!("shift-{prefix}-z"), Redo, palette));
+        palette_bindings.push(dynamic_key_binding(
+            &format!("{prefix}-a"),
+            SelectAll,
+            palette,
+            cx,
+        ));
+        palette_bindings.push(dynamic_key_binding(
+            &format!("{prefix}-c"),
+            Copy,
+            palette,
+            cx,
+        ));
+        palette_bindings.push(dynamic_key_binding(
+            &format!("{prefix}-x"),
+            Cut,
+            palette,
+            cx,
+        ));
+        palette_bindings.push(dynamic_key_binding(
+            &format!("{prefix}-v"),
+            Paste,
+            palette,
+            cx,
+        ));
+        palette_bindings.push(dynamic_key_binding(
+            &format!("{prefix}-z"),
+            Undo,
+            palette,
+            cx,
+        ));
+        palette_bindings.push(dynamic_key_binding(
+            &format!("shift-{prefix}-z"),
+            Redo,
+            palette,
+            cx,
+        ));
     }
     cx.bind_keys(palette_bindings);
     cx.bind_keys(bindings);
@@ -1590,12 +1643,7 @@ impl ComposerInput {
         true
     }
 
-    fn on_scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_scroll_wheel(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(bounds) = self.last_bounds else {
             return;
         };
@@ -2077,7 +2125,7 @@ impl Render for ComposerInput {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_scroll(cx.listener(Self::on_scroll_wheel))
             .w_full()
             .text_size(crate::typography::ui_rems(INPUT_TEXT_SIZE))
             .line_height(px(INPUT_LINE_HEIGHT))

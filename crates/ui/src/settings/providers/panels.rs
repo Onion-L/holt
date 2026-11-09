@@ -320,7 +320,7 @@ pub(super) fn provider_model_list(
             )
             .h(px(height))
             .w_full()
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .into_any_element();
             div().mx(px(-8.0)).child(list).into_any_element()
         }
@@ -631,7 +631,7 @@ pub(super) fn hidden_rows(
     .h(px(height))
     .w_full()
     .occlude()
-    .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
+    .on_scroll(|_, _, cx| cx.stop_propagation());
     Some(
         block
             .child(div().w_full().mx(px(-8.0)).child(list))

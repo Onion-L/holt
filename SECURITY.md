@@ -45,6 +45,6 @@ following security issues:
 
 By design, prompts and attached content are sent to the model providers and
 search backends **you** configure — that data flow is expected behavior, not a
-vulnerability. Bugs in third-party providers or in the vendored gpui snapshot
+vulnerability. Bugs in third-party providers or in the GPUI Kit / GPUI stack
 are best reported upstream, though feel free to tell us if Holt's integration
 makes them exploitable.

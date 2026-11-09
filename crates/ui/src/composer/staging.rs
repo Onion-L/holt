@@ -353,13 +353,13 @@ impl Composer {
             let chip = if let Some(thumb_frame) = frame {
                 // Image references render as a thumbnail tile with the
                 // remove affordance beside it, matching the attachment-strip
-                // idiom (an overhanging hover button on its own frost layer).
+                // idiom (an overhanging hover button on its own scene layer).
                 let group: SharedString = format!("composer-ref-{}", reference.id).into();
                 div()
                     .group(group.clone())
                     .relative()
                     .child(thumb_frame)
-                    .child(crate::frost::layered(
+                    .child(crate::layer::layered(
                         div()
                             .id(("composer-ref-remove", ix))
                             .absolute()

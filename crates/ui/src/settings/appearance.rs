@@ -464,7 +464,7 @@ impl Render for AppearancePage {
                 }));
         }
         if !self.backdrop_editing && backdrop_focus.is_focused(window) {
-            window.blur();
+            window.blur(cx);
         }
         let preview_message = |theme: &Theme| {
             div()

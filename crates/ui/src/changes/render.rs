@@ -35,7 +35,7 @@ use super::{
     ACCENT_BAR_WIDTH, BODY_BOTTOM_PAD, Changes, CommentDraft, DIFF_LINE_HEIGHT, DIFF_TEXT_SIZE,
     DiffHighlightState, DiffMode, FILE_HEADER_HEIGHT, FOLD_TWEEN_MAX_PX, FileFold,
     HUNK_HEADER_HEIGHT, HighlightSlot, MARKER_WIDTH, NOTICE_HEIGHT, RefMenu, SPLIT_DIVIDER_WIDTH,
-    SPLIT_MARKER_WIDTH, STICKY_FILE_HEADER_BLUR, ScopedDiffError,
+    SPLIT_MARKER_WIDTH, ScopedDiffError,
 };
 
 impl Changes {
@@ -691,15 +691,15 @@ impl Changes {
         );
         let paint = sticky_file_header_paint(theme);
         // The sticky floats over diff rows, but it belongs to the same content
-        // plane. Tint the blur with `theme.bg`; `glass_overlay` is deliberately
+        // plane. Tint the header with `theme.bg`; `glass_overlay` is deliberately
         // reserved for elevated menus/cards and produced the wrong hue here.
         let header = if let Some(tint) = paint.frost_tint {
             div().w_full().bg(tint).child(header).into_any_element()
         } else {
             header
         };
-        // Frosted is a pass-through when the resolved surface is opaque.
-        let header = crate::frost::frosted(0.0, STICKY_FILE_HEADER_BLUR, header);
+        // The layer wrap is a pass-through when the resolved surface is opaque.
+        let header = crate::layer::glass_layer(header);
 
         Some(
             div()

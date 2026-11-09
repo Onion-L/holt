@@ -459,7 +459,7 @@ impl Shell {
                     this.set_todo_capsule_collapsed(false, cx);
                 }));
         }
-        Some(state_card::fade_and_frost(card, id, 1.0))
+        Some(state_card::fade_card(card, id, 1.0))
     }
 
     /// The capsule: identity glyph (accent while the Turn is live), the

@@ -36,7 +36,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
-| UI, no page | [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
+| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -173,7 +173,10 @@ are no automatic worktrees, merging, or rollback.
 
 ## terminals-belong-to-chats-and-end-with-the-app
 
-`dcbe375`. Terminals belong to chats (not spaces), live only as long as the
+`dcbe375`. Partially superseded: native Dock quit on macOS now uses GPUI's
+non-cancellable exit path and skips the confirmation
+(`gpui-kit-owns-the-gpui-stack`); window chrome and Cmd+Q still confirm.
+Terminals belong to chats (not spaces), live only as long as the
 app (no background host, no restoration), and any ending close requires
 confirmation. Independent of the agent's bash tool.
 
@@ -460,7 +463,12 @@ CONTINUE pass pushes no transcript row today.
 
 ## urls-wrap-after-slashes-never-before
 
-`d781c50` (issue #44). The vendored gpui wrap rule breaks
+`d781c50` (issue #44). Superseded by `gpui-kit-owns-the-gpui-stack`: the
+patched fork is gone, and gpui-kit's GPUI (`gpui-pre`) takes every wrap and
+truncation break candidate from `icu_segmenter`'s UAX #14 line segmenter,
+which already breaks after `/` and never before it — the behavior below
+holds without a Holt patch.
+The vendored gpui wrap rule breaks
 after `/` and never before it, in all three copies of the candidate rule
 (`LineWrapper::wrap_line`, `LineLayout::compute_wrap_boundaries`, and
 `truncate_wrapped_line`) and in their no-candidate hard-break fallbacks:
@@ -849,3 +857,20 @@ English task slug from the prompt or automatic title (translation/model
 latency, and the title does not exist at admission); and renaming at push or
 PR creation (needless local/remote ref and upstream churn). The readable name
 is only an identifier; task semantics stay in the chat, commit, and PR titles.
+
+## gpui-kit-owns-the-gpui-stack
+
+Holt consumes GPUI through `gpui-kit` with the component and asset features
+disabled, and deletes the vendored GPUI fork. The existing `gpui` crate name
+is Holt's alias for the Kit facade, so ordinary views do not need import-only
+churn; the small Tokio bridge remains Holt-owned because Kit does not supply
+one. Rejected: keeping a patched fork (the maintenance cost this migration
+is intended to remove), adopting `gpui-component` at the same time (an
+independent UI migration), and porting the custom within-window blur and
+edge-fade renderers (visual parity was not worth retaining renderer patches).
+
+The accepted simplifications are explicit: native window background blur
+stays, floating cards lose their separate backdrop blur but keep scene-layer
+isolation, edge fades are removed, OS notifications become silent on macOS,
+and native Dock quit uses GPUI's non-cancellable exit path. Window chrome and
+Cmd+Q still pass through the draft/terminal confirmation gate.

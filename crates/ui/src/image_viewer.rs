@@ -15,7 +15,7 @@ use std::borrow::Cow;
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Render,
-    ScrollDelta, ScrollWheelEvent, SharedString, Size, Window, anchored, deferred, div, img, point,
+    ScrollDelta, ScrollEvent, SharedString, Size, Window, anchored, deferred, div, img, point,
     prelude::*, px, size,
 };
 
@@ -263,7 +263,7 @@ impl ImageViewer {
         cx.notify();
     }
 
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let factor = wheel_zoom_factor(&event.delta);
         self.apply_zoom(factor, event.position, window.viewport_size());
         cx.stop_propagation();
@@ -564,7 +564,7 @@ impl Render for ImageViewer {
                     cx.notify();
                 }),
             )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
                 this.on_wheel(event, window, cx);
             }))
             .on_pinch(cx.listener(|this, event: &gpui::PinchEvent, window, cx| {

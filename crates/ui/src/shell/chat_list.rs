@@ -175,10 +175,6 @@ pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
 pub(super) const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
 pub(super) const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP: f32 = Theme::SPACE_SM;
 
-/// Ramp height of the sidebar's scroll-edge fade (the gpui
-/// [`gpui::EdgeFade`] scope — per-primitive, so text fades per glyph).
-pub(super) const SIDEBAR_GLASS_FADE_BAND: f32 = 24.0;
-
 impl Shell {
     pub(super) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         // The sidebar is part of the resolved theme. A second fixed-Holt
@@ -943,98 +939,83 @@ impl Shell {
             // (No titlebar strip: the unified window titlebar spans the whole
             // window above this column.)
             .child(filter_row)
-            // The (filtered) Sessions list scrolls inside an EdgeFade scope —
-            // a true per-glyph gradient at active overflow edges. Glass-safe
-            // (no painted overlay can fade content over see-through blur) and
-            // equivalent on opaque themes: alpha→0 reveals the surface tone
-            // underneath, same as the gradient overlays it replaced. Overflow
-            // is read at PAINT time via the scroll handle — render-time gating
-            // rode the previous frame's offset, so the last frame of a content
-            // shrink (row archived while scrolled) left a phantom fade stuck
-            // over an unscrollable list (user report).
             .child(
-                crate::edge_fade::edge_faded(
-                    SIDEBAR_GLASS_FADE_BAND,
-                    true,
-                    true,
-                    div().relative().flex_1().min_h_0().child(
-                        div()
-                            .id("sidebar-lists")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.sidebar_scroll)
-                            .px(px(Theme::SPACE_SM))
-                            .flex()
-                            .flex_col()
-                            // No "Sessions" header (user request) — the list
-                            // is the whole column; a little air stands in.
-                            .pt(px(SIDEBAR_LIST_TOP_INSET))
-                            // The scroller (not the row column) is the drop
-                            // target so the empty space under the last row
-                            // still takes a drop; y reads in content
-                            // coordinates (offset.y is negative when scrolled).
-                            .on_drag_move::<ChatRowDrag>(cx.listener(
-                                move |this, event: &gpui::DragMoveEvent<ChatRowDrag>, _, cx| {
-                                    let chat_id = &event.drag(cx).chat_id;
-                                    let pointer = event.event.position;
-                                    match &mut this.sidebar_drag {
-                                        Some(drag) if drag.chat_id == *chat_id => {
-                                            drag.pointer = pointer;
-                                            drag.rows = drag_rows.clone();
-                                        }
-                                        _ => {
-                                            this.sidebar_drag = Some(SidebarRowDragState {
-                                                chat_id: chat_id.clone(),
-                                                slot: None,
-                                                pointer,
-                                                rows: drag_rows.clone(),
-                                                scroll_task: None,
-                                            })
-                                        }
+                div().relative().flex_1().min_h_0().child(
+                    div()
+                        .id("sidebar-lists")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.sidebar_scroll)
+                        .px(px(Theme::SPACE_SM))
+                        .flex()
+                        .flex_col()
+                        // No "Sessions" header (user request) — the list
+                        // is the whole column; a little air stands in.
+                        .pt(px(SIDEBAR_LIST_TOP_INSET))
+                        // The scroller (not the row column) is the drop
+                        // target so the empty space under the last row
+                        // still takes a drop; y reads in content
+                        // coordinates (offset.y is negative when scrolled).
+                        .on_drag_move::<ChatRowDrag>(cx.listener(
+                            move |this, event: &gpui::DragMoveEvent<ChatRowDrag>, _, cx| {
+                                let chat_id = &event.drag(cx).chat_id;
+                                let pointer = event.event.position;
+                                match &mut this.sidebar_drag {
+                                    Some(drag) if drag.chat_id == *chat_id => {
+                                        drag.pointer = pointer;
+                                        drag.rows = drag_rows.clone();
                                     }
-                                    this.refresh_sidebar_drag_slot(cx);
-                                    this.schedule_sidebar_drag_scroll(cx);
-                                },
-                            ))
-                            .on_drop(cx.listener(|this, payload: &ChatRowDrag, _, cx| {
-                                let slot = this.sidebar_drag.take().and_then(|d| d.slot);
-                                if let Some(slot) = slot {
-                                    this.drop_sidebar_row(&payload.chat_id, slot, cx);
+                                    _ => {
+                                        this.sidebar_drag = Some(SidebarRowDragState {
+                                            chat_id: chat_id.clone(),
+                                            slot: None,
+                                            pointer,
+                                            rows: drag_rows.clone(),
+                                            scroll_task: None,
+                                        })
+                                    }
                                 }
-                                cx.notify();
-                            }))
-                            .child(if !list_items.is_empty() {
-                                div()
-                                    .relative()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(SIDEBAR_LIST_GAP))
-                                    .children(list_items)
-                                    .when_some(drop_line_y, |el, y| {
-                                        el.child(
-                                            div()
-                                                .absolute()
-                                                .left(px(4.0))
-                                                .right(px(4.0))
-                                                .top(px(y - 1.0))
-                                                .h(px(2.0))
-                                                .rounded(px(1.0))
-                                                .bg(theme.accent),
-                                        )
-                                    })
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .px(px(Theme::SPACE_SM))
-                                    .pb(px(Theme::SPACE_SM))
-                                    .text_size(crate::typography::ui_rems(12.0))
-                                    .text_color(theme.text_faint)
-                                    .child(t!("sidebar_spaces.sidebar.no_sessions"))
-                                    .into_any_element()
-                            }),
-                    ),
-                )
-                .fade_overflow_y(&self.sidebar_scroll),
+                                this.refresh_sidebar_drag_slot(cx);
+                                this.schedule_sidebar_drag_scroll(cx);
+                            },
+                        ))
+                        .on_drop(cx.listener(|this, payload: &ChatRowDrag, _, cx| {
+                            let slot = this.sidebar_drag.take().and_then(|d| d.slot);
+                            if let Some(slot) = slot {
+                                this.drop_sidebar_row(&payload.chat_id, slot, cx);
+                            }
+                            cx.notify();
+                        }))
+                        .child(if !list_items.is_empty() {
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_col()
+                                .gap(px(SIDEBAR_LIST_GAP))
+                                .children(list_items)
+                                .when_some(drop_line_y, |el, y| {
+                                    el.child(
+                                        div()
+                                            .absolute()
+                                            .left(px(4.0))
+                                            .right(px(4.0))
+                                            .top(px(y - 1.0))
+                                            .h(px(2.0))
+                                            .rounded(px(1.0))
+                                            .bg(theme.accent),
+                                    )
+                                })
+                                .into_any_element()
+                        } else {
+                            div()
+                                .px(px(Theme::SPACE_SM))
+                                .pb(px(Theme::SPACE_SM))
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_faint)
+                                .child(t!("sidebar_spaces.sidebar.no_sessions"))
+                                .into_any_element()
+                        }),
+                ),
             )
             // Global connection pill (durable-by-design UI truth): appears
             // whenever the edge posture is degraded; hidden while healthy —
