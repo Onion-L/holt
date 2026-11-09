@@ -1,4 +1,5 @@
-//! One confirmation path for window chrome, Cmd+Q, and native Dock quit.
+//! One confirmation path for window chrome and Cmd+Q. The native Dock quit
+//! follows GPUI's non-cancellable system exit path.
 //! The file sidebar's unsaved drafts gate the SAME decision, ahead of the
 //! running-terminal check (ADR-file-editing-state-belongs-to-spaces; decision 11): a failed save refuses the
 //! exit, and cancelling either keeps the app — and the terminals — alive.
@@ -12,7 +13,6 @@ use holt_rpc::{methods, terminals::TerminalStatus};
 struct Lifecycle {
     state: Entity<AppState>,
     pending: bool,
-    approved_quit: bool,
     /// The shell's file-draft surface, attached on its first render — the
     /// lifecycle global itself is created before any window exists.
     shell: Option<Entity<Shell>>,
@@ -23,19 +23,7 @@ pub fn init(state: Entity<AppState>, cx: &mut App) {
     cx.set_global(Lifecycle {
         state,
         pending: false,
-        approved_quit: false,
         shell: None,
-    });
-    cx.on_should_quit(|cx| {
-        if cx.global::<Lifecycle>().approved_quit {
-            return true;
-        }
-        if let Some(handle) = cx.active_window().or_else(|| cx.windows().first().copied()) {
-            let _ = handle.update(cx, |_, window, cx| request_close(window, cx, true));
-            false
-        } else {
-            true
-        }
     });
 }
 
@@ -224,7 +212,6 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
             let _ = cx.update(|window, cx| {
                 let lifecycle = cx.global_mut::<Lifecycle>();
                 lifecycle.pending = false;
-                lifecycle.approved_quit = quit;
                 if quit {
                     cx.quit();
                 } else {

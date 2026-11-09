@@ -1,6 +1,6 @@
 # UI Localization in GPUI Applications: Zed, gpui-component, and a Route for Holt
 
-> Survey date: 2026-10-24. This document surveys how UI localization (i18n) is done — and not done — in the two relevant GPUI projects, establishes that the vendored GPUI snapshot provides no localization primitives, and recommends a concrete route for Holt. It is written for engineers already familiar with Rust; the GPUI mental model itself is covered by [gpui.md](gpui.md). Localization here means translated interface strings, not input methods or locale-aware data formatting, which are separate concerns.
+> Survey date: 2026-10-24. This document surveys how UI localization (i18n) is done — and not done — in the two relevant GPUI projects, establishes that the vendored GPUI snapshot provides no localization primitives, and recommends a concrete route for Holt. It is written for engineers already familiar with Rust; the GPUI mental model itself is covered by the `gpui-kit` sources selected by `Cargo.lock` (see AGENTS.md). The `third_party/gpui` paths below describe the vendored fork as of the survey date; it has since been replaced by `gpui-kit` (`gpui-kit-owns-the-gpui-stack` in DECISION.md). Localization here means translated interface strings, not input methods or locale-aware data formatting, which are separate concerns.
 
 ## 1. Conclusions up front
 
@@ -141,7 +141,7 @@ Re-running `rg -il 'fluent|i18n|localiz|gettext|translation' third_party/gpui --
 
 `SharedString` (`crates/gpui_shared_string/gpui_shared_string.rs:10-39`) is an immutable, cheap-to-clone `SmolStr` wrapper with no locale, lookup, or fallback semantics — but it is what every copy-bearing API accepts (`impl Into<SharedString>`). That is the integration seam: a holt-side i18n layer only has to produce the right localized string at render time, and GPUI's text system handles shaping, measuring, and glyph fallback from there. GPUI's only adjacent responsibility is the font/fallback layer, which is why §9.3 treats CJK font coverage as a first-class migration check rather than an afterthought.
 
-Per [docs/CODE-STANDARDS.md](../CODE-STANDARDS.md), the vendored snapshot is changed only with an uncontroversial reason; localization has none — everything in §8 lives in `crates/ui`.
+The vendored snapshot has since been replaced by `gpui-kit` (`gpui-kit-owns-the-gpui-stack` in DECISION.md), which Holt does not patch at all; everything in §8 lives in `crates/ui`.
 
 ## 7. Holt today: surface inventory and persistence facts
 
@@ -254,7 +254,7 @@ New languages and new keys require a rebuild — acceptable for Holt's tagged-re
 
 - [H0] [`ARCHITECTURE.md`](../../ARCHITECTURE.md): the four hard boundaries; `ui-settings.json`'s exceptional status discussed in §7.2.
 - [H1] [`docs/RETROS.md`](../RETROS.md): grep-all-forms cleanup, "re-implementation ≠ test", every-fact-has-a-landing-spot lessons.
-- [H2] [`third_party/gpui/crates/gpui_shared_string/gpui_shared_string.rs:10-39`](../../third_party/gpui/crates/gpui_shared_string/gpui_shared_string.rs#L10-L39): `SharedString` as a locale-free `SmolStr` wrapper.
+- [H2] `third_party/gpui/crates/gpui_shared_string/gpui_shared_string.rs:10-39` (removed fork): `SharedString` as a locale-free `SmolStr` wrapper.
 - [H3] Repository greps re-run 2026-10-24: `rg -il 'fluent|i18n|localiz|gettext|translation' third_party/gpui --glob '!target'` (all hits are false friends; `FluentBuilder` at `crates/gpui_util/src/lib.rs:1`, used `crates/gpui/src/element.rs:37,159`); `rg -in 'fluent|gettext|locale' third_party/gpui/crates/gpui/Cargo.toml` → exit 1; `rg -l 'gpui-component|gpui_component|gpui-kit|gpui_kit' --glob 'Cargo.toml'` → no match (Holt does not use gpui-component); `rg -n 'sys-locale|sys_locale' --glob 'Cargo.toml'` → no match (new dependency); `rg -n 'fn .*locale|current_locale|get_locale' third_party/gpui/crates --glob '*.rs'` → only `gpui_windows/src/direct_write.rs:1353,1365,1748` font-locale internals, no app-level locale API.
 - [H4] String counts re-run 2026-10-24: `find crates/ui -name '*.rs' | wc -l` → 141; `rg -o '"[A-Z][^"]*[a-z][^"]*"' crates/ui/src --glob '*.rs' | wc -l` → 1929; unique → 1248; unique multi-word → 865.
 - [H5] [`crates/ui/src/shell/menu_bar.rs:91-92`](../../crates/ui/src/shell/menu_bar.rs#L91-L92), [`crates/ui/src/app_menus.rs:169-177`](../../crates/ui/src/app_menus.rs#L169-L177), [`crates/ui/src/state.rs:327`](../../crates/ui/src/state.rs#L327), [`crates/ui/src/theme.rs:77-83`](../../crates/ui/src/theme.rs#L77-L83): canonical literal shapes and the theme identity/label trap.
@@ -283,8 +283,6 @@ New languages and new keys require a rebuild — acceptable for Holt's tagged-re
 
 [H0]: ../../ARCHITECTURE.md
 [H1]: ../RETROS.md
-[H2]: ../../third_party/gpui/crates/gpui_shared_string/gpui_shared_string.rs#L10-L39
-[H3]: ../../third_party/gpui/crates/gpui_util/src/lib.rs#L1
 [H4]: ../../crates/ui/src
 [H5]: ../../crates/ui/src/app_menus.rs#L169-L177
 [H6]: ../../crates/ui/src/settings.rs#L67-L80

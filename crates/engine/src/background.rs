@@ -239,7 +239,7 @@ fn spawn_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     weak: std::sync::Weak<Process>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     use tokio::io::AsyncReadExt as _;
-    let Some(mut pipe) = pipe else { return None };
+    let mut pipe = pipe?;
     Some(tokio::spawn(async move {
         let mut buffer = [0; 16384];
         loop {

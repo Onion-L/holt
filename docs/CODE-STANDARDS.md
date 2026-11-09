@@ -15,5 +15,3 @@ RETROS evidence, or names its directive.
 - **Surfaces**: do not change public types, RPC methods, or serialized
   representations without checking every consumer and the owning subsystem
   page.
-- **Vendored gpui**: modify `third_party/gpui` only with a complete,
-  indisputable justification (maintainer directive).

@@ -81,5 +81,5 @@ Plain JSON/JSONL under the data dir; each record written by the engine, atomical
 
 ## Provenance
 
-- gpui is vendored under `third_party/gpui/` — a frozen snapshot of a Zed fork carrying the glass/edge-fade patches the UI depends on. Edit it in place; never resolve gpui from git. [docs/research/gpui.md](docs/research/gpui.md) and the vendored sources are the API truth.
+- GPUI comes from `gpui-kit` with its component and asset features disabled; `Cargo.lock` pins the exact `gpui-pre` stack. Holt owns the UI integration and its small Tokio bridge, not a GPUI fork.
 - `LICENSE` is GPL-3.0; the exception is `crates/core`, which keeps the MIT license of the pi packages it was ported from.

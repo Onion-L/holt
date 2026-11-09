@@ -1340,7 +1340,7 @@ fn render_mermaid_image(
     // alongside); plain wheel does nothing here and keeps scrolling the row.
     let wheel = opts.mermaid_ui.as_ref().map(|ui| {
         let handler = ui.handler.clone();
-        move |event: &gpui::ScrollWheelEvent, window: &mut Window, cx: &mut gpui::App| {
+        move |event: &gpui::ScrollEvent, window: &mut Window, cx: &mut gpui::App| {
             if !(event.modifiers.control || event.modifiers.platform) {
                 return;
             }
@@ -1489,7 +1489,7 @@ fn render_mermaid_image(
         .p(px(6.0))
         .flex()
         .justify_center()
-        .when_some(wheel, |el, wheel| el.on_scroll_wheel(wheel))
+        .when_some(wheel, |el, wheel| el.on_scroll(wheel))
         .child(body)
         .children(controls)
         .into_any_element()
@@ -2009,7 +2009,7 @@ mod tests {
         // 400px of content in a 100px viewport = 300px of scrollable extent.
         assert_eq!(scroll.max_offset().x, px(300.0));
 
-        let wheel = |dx: f32, dy: f32| gpui::ScrollWheelEvent {
+        let wheel = |dx: f32, dy: f32| gpui::ScrollEvent {
             position: point(px(50.0), px(9.0)),
             delta: gpui::ScrollDelta::Pixels(point(px(dx), px(dy))),
             ..Default::default()
