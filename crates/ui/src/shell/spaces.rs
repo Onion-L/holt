@@ -2496,15 +2496,9 @@ impl Shell {
                 .child(body)
                 .child(footer)
                 .into_any_element();
-        // The glass-modal variant: lighter scrim + a frost radius matching
-        // this card's 14px rounding, so the palette reads like the popovers
-        // instead of a flat slab over a 60% dim (user request).
-        Some(popover::modal_glass(
-            "add-space-dialog",
-            viewport,
-            card,
-            card_radius,
-        ))
+        // The glass-modal variant: lighter scrim, so the palette reads like
+        // the popovers instead of a flat slab over a 60% dim (user request).
+        Some(popover::modal_glass("add-space-dialog", viewport, card))
     }
 
     // ---- space context menu / rename / delete overlays ----
