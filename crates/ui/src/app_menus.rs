@@ -12,7 +12,9 @@
 //! `shell::apply_keymap`, which clears every binding first), and
 //! [`app_menus`] builds the menu bar handed to `cx.set_menus` in `run_app`.
 
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
+use gpui::{
+    AnyWindowHandle, App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions,
+};
 
 use crate::appearance::{self, AppearanceMode};
 use crate::composer;
@@ -106,13 +108,23 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'sta
 /// ⌘Q / "Quit Holt" enters the same draft and terminal confirmation path as
 /// closing the window. The quit itself runs after that path approves.
 fn quit(_: &Quit, cx: &mut App) {
-    if cx.active_window().is_none() {
+    let Some(handle) = quit_window(cx) else {
         cx.quit();
         return;
-    }
-    with_active_window(cx, |window, cx| {
-        crate::terminal::lifecycle::request_close(window, cx, true)
+    };
+    // Deferred for the same re-entrancy reason as `with_active_window`.
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            crate::terminal::lifecycle::request_close(window, cx, true)
+        });
     });
+}
+
+/// The window that hosts the quit confirmation. A minimized (or otherwise
+/// unfocused) window leaves macOS with no key window, so `active_window` alone
+/// would let ⌘Q skip the draft/terminal gate; fall back to any open window.
+fn quit_window(cx: &App) -> Option<AnyWindowHandle> {
+    cx.active_window().or_else(|| cx.windows().first().copied())
 }
 
 /// Fixed app-level shortcuts backing the menu key equivalents. These live
@@ -268,6 +280,17 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[gpui::test]
+    fn quit_targets_a_window_even_without_an_active_one(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let window = cx.update(|window, _| window.window_handle());
+        assert_eq!(cx.update(|_, cx| quit_window(cx)), Some(window));
+        // Minimizing leaves macOS with no key window.
+        cx.deactivate_window();
+        assert_eq!(cx.update(|_, cx| cx.active_window()), None);
+        assert_eq!(cx.update(|_, cx| quit_window(cx)), Some(window));
     }
 
     #[test]
