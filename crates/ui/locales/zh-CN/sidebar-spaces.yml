@@ -24,10 +24,6 @@ sidebar_spaces:
         zh-CN: 创建时间
       manual:
         zh-CN: 手动
-      provider_logo:
-        zh-CN: 提供商图标
-      branch:
-        zh-CN: 分支
       pull_request:
         zh-CN: 拉取请求
     rows:

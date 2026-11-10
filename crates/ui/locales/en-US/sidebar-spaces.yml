@@ -24,10 +24,6 @@ sidebar_spaces:
         en-US: Created
       manual:
         en-US: Manual
-      provider_logo:
-        en-US: Provider logo
-      branch:
-        en-US: Branch
       pull_request:
         en-US: Pull request
     rows:

@@ -53,6 +53,9 @@ struct ActiveChatRow {
     status: ChatIndicator,
     chat: holt_proto::Chat,
     folder: String,
+    /// The space's absolute folder path — the hover card shows it under the
+    /// space name now that the row is a single line.
+    space_path: Option<String>,
     branch: Option<String>,
     change_request: Option<holt_proto::ChangeRequestSummary>,
     group: Option<(String, String)>,
@@ -131,17 +134,13 @@ pub(super) struct SpacesMenu {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SidebarViewRow {
     Sort(SidebarSort),
-    ShowProvider,
-    ShowBranch,
     ShowPullRequest,
 }
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 6] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 4] = [
     SidebarViewRow::Sort(SidebarSort::LastUpdated),
     SidebarViewRow::Sort(SidebarSort::Created),
     SidebarViewRow::Sort(SidebarSort::Manual),
-    SidebarViewRow::ShowProvider,
-    SidebarViewRow::ShowBranch,
     SidebarViewRow::ShowPullRequest,
 ];
 
@@ -367,26 +366,6 @@ pub(super) struct RenameSpaceDialog {
     pub input: Entity<ComposerInput>,
     pub focus_pending: bool,
     pub _events: Subscription,
-}
-
-/// Dot color for a chat's display status (tab dots + Sessions rows).
-pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hsla {
-    match status {
-        // Preset activity tone, not warning amber: running is routine.
-        // Non-done statuses sit well below full
-        // strength: at full alpha the colored words shouted across the
-        // whole sidebar (user request) — only Done keeps its pop.
-        ChatIndicator::Working => theme.busy.opacity(0.55),
-        // Blue: "asking you a question" must read differently from "busy
-        // working" at a glance.
-        ChatIndicator::AwaitingInput => theme.accent.opacity(0.6),
-        ChatIndicator::Errored => theme.danger.opacity(0.65),
-        // Green: finished-but-unseen reads as "ready for you".
-        ChatIndicator::Completed => {
-            theme.success.opacity(0.9) // emerald-400
-        }
-        ChatIndicator::Idle => crate::theme::ink(0.14),
-    }
 }
 
 impl Shell {
@@ -1003,13 +982,11 @@ impl Shell {
         }
     }
 
-    /// Whether a row reads as chosen: the standing sort, or a shown metadata
-    /// line.
+    /// Whether a row reads as chosen: the standing sort, or the shown PR
+    /// badge.
     fn sidebar_view_row_selected(&self, row: SidebarViewRow) -> bool {
         match row {
             SidebarViewRow::Sort(sort) => sort == self.settings.sidebar_sort,
-            SidebarViewRow::ShowProvider => self.settings.sidebar_show_provider,
-            SidebarViewRow::ShowBranch => self.settings.sidebar_show_branch,
             SidebarViewRow::ShowPullRequest => self.settings.sidebar_show_pull_request,
         }
     }
@@ -1028,14 +1005,6 @@ impl Shell {
                 self.settings.sidebar_sort = sort;
                 self.schedule_save(cx);
                 self.close_sidebar_view_menu(cx);
-            }
-            SidebarViewRow::ShowProvider => {
-                self.settings.sidebar_show_provider = !self.settings.sidebar_show_provider;
-                self.schedule_save(cx);
-            }
-            SidebarViewRow::ShowBranch => {
-                self.settings.sidebar_show_branch = !self.settings.sidebar_show_branch;
-                self.schedule_save(cx);
             }
             SidebarViewRow::ShowPullRequest => {
                 let visible = !self.settings.sidebar_show_pull_request;
@@ -1123,10 +1092,6 @@ impl Shell {
                 SidebarViewRow::Sort(SidebarSort::Manual) => {
                     t!("sidebar_spaces.spaces.view.manual").into()
                 }
-                SidebarViewRow::ShowProvider => {
-                    t!("sidebar_spaces.spaces.view.provider_logo").into()
-                }
-                SidebarViewRow::ShowBranch => t!("sidebar_spaces.spaces.view.branch").into(),
                 SidebarViewRow::ShowPullRequest => {
                     t!("sidebar_spaces.spaces.view.pull_request").into()
                 }
@@ -1220,11 +1185,13 @@ impl Shell {
             chats
                 .into_iter()
                 .map(|(status, chat)| {
-                    // Line 1 is the project name (t3code's project row).
-                    let folder = state
-                        .space_for_chat(&chat)
-                        .map(|space| space.display_name().to_string())
-                        .unwrap_or_else(|| "?".to_string());
+                    // The space identity — name on the hover card's first
+                    // row, absolute folder under it (the row itself is a
+                    // single line now; hover carries the card).
+                    let (folder, space_path) = match state.space_for_chat(&chat) {
+                        Some(space) => (space.display_name().to_string(), Some(space.path.clone())),
+                        None => ("?".to_string(), None),
+                    };
                     // The branch shows whenever the engine has stamped one —
                     // main-checkout sessions included, not just worktrees.
                     let branch = crate::change_requests::conversation_branch(&chat, &state.spaces)
@@ -1237,6 +1204,7 @@ impl Shell {
                         status,
                         chat: chat.clone(),
                         folder,
+                        space_path,
                         branch,
                         change_request,
                         group,
@@ -1244,11 +1212,6 @@ impl Shell {
                 })
                 .collect()
         };
-        if !self.settings.sidebar_show_branch {
-            for row in &mut rows {
-                row.branch = None;
-            }
-        }
         if !self.settings.sidebar_show_pull_request {
             for row in &mut rows {
                 row.change_request = None;
@@ -1287,6 +1250,7 @@ impl Shell {
                     status,
                     chat,
                     folder,
+                    space_path,
                     branch,
                     change_request,
                     group: _,
@@ -1294,14 +1258,8 @@ impl Shell {
                 let time_ago: SharedString =
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
                 let is_selected = selected.as_deref() == Some(chat.id.as_str());
-                let provider = self
-                    .settings
-                    .sidebar_show_provider
-                    .then(|| chat.config.as_ref().map(|c| c.provider.clone()))
-                    .flatten();
-                let height = super::chat_row_height(
-                    self.settings.sidebar_show_branch || self.settings.sidebar_show_pull_request,
-                );
+                let provider = chat.config.as_ref().map(|c| c.provider.clone());
+                let height = super::CHAT_ROW_HEIGHT;
                 // Only rows a jump slot can reach wear a chip; row 10 onward
                 // keeps its time-ago.
                 let jump_label: Option<SharedString> = if jump_hints {
@@ -1324,6 +1282,7 @@ impl Shell {
                         .into(),
                         time_ago,
                         folder.into(),
+                        space_path,
                         branch.map(SharedString::from),
                         change_request,
                         provider,
@@ -2955,29 +2914,27 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // ↓↓↓ from the cursor's start (the sort row) lands on "Provider logo".
+        // ↓↓↓ from the cursor's start (the sort row) lands on "Pull request".
         cx.simulate_keystrokes("down down down enter");
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
-            assert!(!shell.settings.sidebar_show_provider);
+            assert!(!shell.settings.sidebar_show_pull_request);
             assert!(shell.sidebar_view_menu.closing_since().is_none());
         });
 
-        let branch = cx
-            .debug_bounds("sidebar-view-row-4")
+        let pull_request = cx
+            .debug_bounds("sidebar-view-row-3")
             .expect("the card is up")
             .center();
-        cx.simulate_click(branch, Default::default());
+        cx.simulate_click(pull_request, Default::default());
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
-            assert!(!shell.settings.sidebar_show_provider);
-            assert!(!shell.settings.sidebar_show_branch);
+            assert!(shell.settings.sidebar_show_pull_request);
             assert!(shell.sidebar_view_menu.closing_since().is_none());
         });
         cx.update(|_, cx| {
             let current = crate::settings::current(cx);
-            assert!(!current.sidebar_show_provider);
-            assert!(!current.sidebar_show_branch);
+            assert!(current.sidebar_show_pull_request);
         });
 
         // Esc closes — re-opened first, since a mouse pick does not re-focus
@@ -3127,10 +3084,11 @@ mod tests {
         });
     }
 
-    /// The pinned row wears its marker, and the hover "…" opens the same
-    /// context menu a right-click does — without selecting the row.
+    /// The pin action mounts on every row — pinned rows wear it permanently,
+    /// unpinned rows reveal it on hover — and a right-click opens the same
+    /// context menu it always did, without selecting the row.
     #[gpui::test]
-    fn session_rows_mark_pinned_and_open_the_menu_from_the_dots(cx: &mut gpui::TestAppContext) {
+    fn session_rows_mark_pinned_and_open_the_menu_on_right_click(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path().to_path_buf();
@@ -3167,19 +3125,21 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Pinned marker: on the pinned row only.
+        // The pin action mounts on every row; visibility is the hover fade,
+        // not the mount.
         assert!(cx.debug_bounds("chat-pin-kept").is_some());
-        assert!(cx.debug_bounds("chat-pin-plain").is_none());
+        assert!(cx.debug_bounds("chat-pin-plain").is_some());
 
-        // The "…" opens the context menu; the row itself is not activated.
-        let dots = cx
-            .debug_bounds("chat-more-plain")
-            .expect("the dots affordance is rendered")
+        // A right-click opens the context menu; the row itself is not
+        // activated.
+        let row = cx
+            .debug_bounds("chat-plain")
+            .expect("the row is rendered")
             .center();
-        cx.simulate_click(dots, Default::default());
+        cx.simulate_mouse_down(row, MouseButton::Right, Default::default());
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
-            let menu = shell.chat_menu.get().expect("the dots open the menu");
+            let menu = shell.chat_menu.get().expect("a right-click opens the menu");
             assert_eq!(menu.chat_id, "plain");
         });
         state.read_with(cx, |state, _| {
@@ -3238,8 +3198,8 @@ mod tests {
 
         let order = shell.update(cx, |shell, cx| shell.sidebar_visible_order(cx));
         assert_eq!(order, ["run-3", "plain"]);
-        assert!(cx.debug_bounds("chat-more-run-3").is_some());
-        assert!(cx.debug_bounds("chat-more-run-2").is_none());
+        assert!(cx.debug_bounds("chat-run-3").is_some());
+        assert!(cx.debug_bounds("chat-run-2").is_none());
         assert!(
             cx.debug_bounds("chat-runs-run-3").is_some(),
             "the count shows"
@@ -3256,7 +3216,7 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("chat-more-run-3").is_some());
+        assert!(cx.debug_bounds("chat-run-3").is_some());
         assert!(cx.debug_bounds("chat-runs-run-3").is_none());
     }
 }
