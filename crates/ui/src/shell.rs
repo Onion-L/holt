@@ -63,7 +63,6 @@ mod chat_menu;
 mod external_apps;
 mod menu_bar;
 mod navigation;
-mod navigation_rail;
 mod notices;
 mod panes;
 mod right_pane;
@@ -105,6 +104,12 @@ actions!(
         OpenChatManager
     ]
 );
+
+/// Inset of the desktop frame from the window edge: flush (the app fills
+/// the whole window; the old navigation rail inset is gone).
+const SHELL_INSET: f32 = 0.0;
+/// Corner radius of the app's rounded frame.
+const APP_RADIUS: f32 = 12.0;
 
 /// Random index into `loaders::MARK_SHAPES` — time-seeded, display-only (no
 /// crypto need). Re-rolled per new-chat canvas visit.
@@ -372,6 +377,7 @@ pub struct Shell {
     right_plus: popover::Popup<()>,
     /// External workspace application picker in the session titlebar.
     external_app_menu: popover::Popup<ExternalApp>,
+    titlebar_menu: popover::Popup<titlebar::TitlebarMenu>,
     /// Applications detected on the host and offered by the picker.
     external_apps: Vec<ExternalApp>,
     /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
@@ -812,6 +818,7 @@ impl Shell {
             right_terminal: None,
             right_plus: popover::Popup::default(),
             external_app_menu: popover::Popup::default(),
+            titlebar_menu: popover::Popup::default(),
             external_apps: available_external_apps(),
             diffs: std::collections::HashMap::new(),
             diff_subs: std::collections::HashMap::new(),
@@ -1210,6 +1217,7 @@ impl Shell {
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
         cx.notify();
     }
@@ -1226,6 +1234,7 @@ impl Shell {
         self.nav.push(NavEntry::ChatManager);
         self.reveal_chat_manager(cx);
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
         cx.notify();
     }
@@ -1261,6 +1270,7 @@ impl Shell {
         self.nav.push(NavEntry::Scheduled);
         self.reveal_scheduled(cx);
         self.close_chat_menu(cx);
+        self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
         cx.notify();
     }
@@ -2196,16 +2206,24 @@ impl Shell {
             .child(
                 // Full-height underlay: the transcript viewport spans the
                 // whole column, scrolling UNDER the titlebar above and the
-                // composer stack below. The jump pill floats above the
-                // measured stack.
+                // composer stack below. Edge scrims melt the scrolled-under
+                // content into the chrome (the vendored fork's per-glyph
+                // EdgeFade is gone with gpui-kit). The jump pill floats
+                // outside the scrims, anchored above the measured stack.
                 {
                     // The dock sits below this entire row; only the composer
                     // and status strip overlap the transcript viewport.
                     let stack_h = self.bottom_stack.get();
+                    // An expanded workflow canvas is a spatial surface, not
+                    // scrolling content: it meets the chrome unfaded.
+                    let faded = !self.transcript.read(cx).workflow_expanded();
                     div()
                         .absolute()
                         .inset_0()
                         .child(div().size_full().child(outlet))
+                        .when(faded, |el| {
+                            el.children(crate::chat_backdrop::edge_scrims(&theme_owned, stack_h))
+                        })
                         .children(self.render_jump_to_bottom(stack_h, cx))
                 },
             )
@@ -2852,8 +2870,7 @@ impl Render for Shell {
                         .update(cx, |c, cx| c.debug_open_model_menu(window, cx));
                 }
                 // MessageRail width gate: hide below 48rem of main-panel width.
-                let viewport =
-                    navigation_rail::app_content_width(f32::from(window.viewport_size().width));
+                let viewport = f32::from(window.viewport_size().width);
                 // Stamped for `right_target` — the expanded changes panel
                 // sizes itself to the viewport.
                 self.viewport_width = viewport;
@@ -3045,27 +3062,20 @@ impl Render for Shell {
                     .min_w_0()
                     .h_full()
                     .overflow_hidden()
-                    .rounded(px(navigation_rail::APP_RADIUS))
+                    .rounded(px(APP_RADIUS))
                     // Keep the entrance on the full-size page: fade_in makes
                     // its element relative, cancelling absolute inset sizing.
                     .child(motion::fade_in("phase-app", page));
                 let frame = div()
                     .debug_selector(|| "desktop-frame".into())
                     .absolute()
-                    .top(px(navigation_rail::SHELL_INSET))
-                    .right(px(navigation_rail::SHELL_INSET))
-                    .bottom(px(navigation_rail::SHELL_INSET))
-                    .left(px(navigation_rail::SHELL_INSET))
+                    .top(px(SHELL_INSET))
+                    .right(px(SHELL_INSET))
+                    .bottom(px(SHELL_INSET))
+                    .left(px(SHELL_INSET))
                     .flex()
                     .flex_row()
-                    .child(self.render_navigation_rail(cx))
-                    .when(sidebar_now == 0.0, |el| {
-                        el.child(navigation_rail::collapsed_corner_backing(
-                            navigation_rail::sidebar_frame_color(cx),
-                        ))
-                    })
-                    .child(app)
-                    .child(navigation_rail::app_border(cx));
+                    .child(app);
                 root.child(frame).children(overlays)
             }
             GatePhase::Loading => root.bg(frost),
@@ -3540,7 +3550,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_live_run_marks_the_navigation_icon_and_the_card(cx: &mut gpui::TestAppContext) {
+    fn a_live_run_marks_the_titlebar_menu_and_the_card(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| routine_state("waiting"));
         let (shell, cx) = cx.add_window_view(|_, cx| {
@@ -3555,7 +3565,7 @@ mod tests {
             shell
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("navigation-scheduled-live").is_some());
+        assert!(cx.debug_bounds("titlebar-scheduled-live").is_some());
 
         shell.update(cx, |shell, cx| shell.open_scheduled(cx));
         cx.run_until_parked();
@@ -3566,12 +3576,12 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("navigation-scheduled-live").is_none());
+        assert!(cx.debug_bounds("titlebar-scheduled-live").is_none());
         assert!(cx.debug_bounds("routine-live-r1").is_none());
     }
 
     #[gpui::test]
-    fn navigation_rail_rows_open_their_pages(cx: &mut gpui::TestAppContext) {
+    fn nav_menu_and_sidebar_settings_open_their_pages(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| AppState::new());
         let (shell, cx) = cx.add_window_view(|_, cx| {
@@ -3587,21 +3597,42 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let scheduled = cx.debug_bounds("navigation-scheduled").unwrap().center();
+        // The "..." trigger next to the new-session `+` opens the nav menu.
+        let more = cx.debug_bounds("titlebar-menu").unwrap().center();
+        cx.simulate_click(more, Default::default());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("titlebar-menu-row-0").is_some());
+        let scheduled = cx.debug_bounds("titlebar-menu-row-0").unwrap().center();
         cx.simulate_click(scheduled, Default::default());
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
-            assert!(matches!(shell.route, Route::Scheduled))
+            assert!(matches!(shell.route, Route::Scheduled));
+            assert!(shell.titlebar_menu.closing_since().is_some());
         });
 
-        let manager = cx.debug_bounds("navigation-chat-manager").unwrap().center();
-        cx.simulate_click(manager, Default::default());
+        // Reopen (programmatically — a mid-exit press counts as mounted by
+        // design) and open the Chat manager row from the keyboard.
+        cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_titlebar_menu(window, cx)));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down down enter");
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
             assert!(matches!(shell.route, Route::ChatManager));
+            assert!(shell.titlebar_menu.closing_since().is_some());
         });
 
-        let settings = cx.debug_bounds("navigation-general").unwrap().center();
+        // Esc closes without navigating.
+        cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_titlebar_menu(window, cx)));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert!(matches!(shell.route, Route::ChatManager));
+            assert!(shell.titlebar_menu.closing_since().is_some());
+        });
+
+        // Settings sits at the sidebar column's bottom.
+        let settings = cx.debug_bounds("sidebar-settings").unwrap().center();
         cx.simulate_click(settings, Default::default());
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
@@ -3610,12 +3641,25 @@ mod tests {
                 Route::Settings(SettingsSection::General)
             ));
         });
+        assert!(cx.debug_bounds("titlebar-menu-card").is_none());
 
-        let home = cx.debug_bounds("navigation-home").unwrap().center();
-        cx.simulate_click(home, Default::default());
+        // Sidebar collapsed: the seam-aligned trigger is gone entirely —
+        // the identity parks one group gap past the `+` instead.
+        shell.update(cx, |shell, cx| {
+            shell.toggle_sidebar(cx);
+            // Tests don't run real-time tweens — snap to the target.
+            shell.sidebar_tween = None;
+            cx.notify();
+        });
         cx.run_until_parked();
-        shell.read_with(cx, |shell, _| assert!(matches!(shell.route, Route::Chat)));
         assert!(cx.debug_bounds("titlebar-menu").is_none());
+        shell.update(cx, |shell, cx| {
+            shell.toggle_sidebar(cx);
+            shell.sidebar_tween = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("titlebar-menu").is_some());
     }
 
     // ---- navigation history (titlebar back/forward) ----

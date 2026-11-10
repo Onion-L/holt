@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui::{
-    AnyElement, App, Div, Hsla, ObjectFit, RenderImage, SharedString, div, img, prelude::*,
+    AnyElement, App, Div, Hsla, ObjectFit, RenderImage, SharedString, div, img, prelude::*, px,
 };
 
 use crate::motion::{AnimationExt, MotionSpec};
@@ -273,6 +273,62 @@ pub(crate) fn paint_layers(image: Arc<RenderImage>, surface: Hsla, wash: Wash) -
         .inset_0()
         .child(image_layer(image))
         .child(wash_layers(surface, wash))
+}
+
+/// The chat column's edge scrims: gradient bands, opaque at the window edge
+/// and clear at the chrome's inner edge, that melt transcript content
+/// scrolling under the titlebar and the composer stack. The vendored fork's
+/// per-glyph `EdgeFade` — which faded the text primitives themselves,
+/// invisible on glass — is gone with the gpui-kit migration; a paint scrim
+/// ([`wash_layers`]' recipe, in the window's own tone so it blends with the
+/// frosted blur) re-creates the look.
+///
+/// - top: solid across the titlebar's own zone ([`Theme::chrome_top_inset`];
+///   zero on Windows, whose strip is in flow), then one fade ramp below it —
+///   content fully faded by the titlebar's bottom edge.
+/// - bottom: from the composer pill's top (the reserved status strip above
+///   it is empty air, `stack_h` minus the strip) down to the window edge.
+///   Two halves — the ramp finishes by the band's midpoint (the pill's
+///   lower half) and everything below, the footer row and the window edge,
+///   sits on solid tone: a single linear ramp still let error lines peek
+///   through just under the pill (user report).
+///
+/// Paint between the transcript underlay and the glass chrome.
+pub(crate) fn edge_scrims(theme: &Theme, stack_h: f32) -> Vec<AnyElement> {
+    let tone = theme.window_tone();
+    let band = (stack_h - Theme::STATUS_STRIP_HEIGHT).max(1.0);
+    let stop = |alpha: f32, at: f32| gpui::linear_color_stop(tone.opacity(alpha), at);
+    vec![
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .flex()
+            .flex_col()
+            .child(div().h(px(Theme::chrome_top_inset())).bg(tone))
+            .child(
+                div()
+                    .h(px(Theme::TRANSCRIPT_FADE_BAND))
+                    .bg(gpui::linear_gradient(180.0, stop(1.0, 0.0), stop(0.0, 1.0))),
+            )
+            .into_any_element(),
+        div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .h(px(band))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_1()
+                    .bg(gpui::linear_gradient(180.0, stop(0.0, 0.0), stop(1.0, 1.0))),
+            )
+            .child(div().flex_1().bg(tone))
+            .into_any_element(),
+    ]
 }
 
 /// The two-half vertical wash, above every picture layer.

@@ -34,11 +34,39 @@ pub const TITLEBAR_IDENTITY_GAP: f32 = Theme::SPACE_MD;
 /// A 28px action centered in the 38px titlebar with its 2px downward optical
 /// shift lands 6px from the top; use the same inset at the trailing edge.
 pub const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
+/// Air between the new-session `+` and the nav-menu trigger IN THE DECLARED
+/// cluster geometry: one button slot, so the overflow "..." reads as its own
+/// group at the cluster's trailing edge (holt window-controls.tsx) rather
+/// than a fourth navigation button. The trigger's ACTUAL margin is
+/// [`titlebar_menu_margin`] — with the sidebar open it leaves the cluster
+/// edge and pins to the sidebar seam.
+pub const TITLEBAR_MENU_GAP: f32 = 24.0;
+/// Cluster geometry ahead of the nav-menu trigger's slot: sidebar toggle
+/// (24), group gap, history pair (24+2+24), group gap, new-session (24).
+const TITLEBAR_MENU_PREFIX: f32 =
+    24.0 + TITLEBAR_GROUP_GAP + (24.0 * 2.0 + TITLEBAR_CONTROL_GAP) + TITLEBAR_GROUP_GAP + 24.0;
+/// The trigger pins its icon to the sidebar's view-options (sort) button
+/// below: sort's icon centers 22.5px in from the sidebar's right edge (8px
+/// row inset + half its 29px box); this 24px trigger's icon centers 12px in
+/// from its own box — so the box's left edge lands 34.5px ahead of the seam.
+const TITLEBAR_MENU_SEAM_INSET: f32 = 22.5 + 12.0;
+
+/// Left margin ahead of the nav-menu trigger. With the sidebar open the
+/// trigger tracks the sidebar's right seam (resize tween included) so the
+/// two menu buttons share one vertical line; a collapsed or too-narrow
+/// sidebar parks it one group-gap past the `+`.
+pub fn titlebar_menu_margin(buttons_start: f32, sidebar_width: f32) -> f32 {
+    (sidebar_width - TITLEBAR_MENU_SEAM_INSET - buttons_start - TITLEBAR_MENU_PREFIX)
+        .max(TITLEBAR_GROUP_GAP)
+}
+
 /// Width of the persistent top-left button cluster itself: a 24px sidebar
 /// trigger, an 8px group gap, two 24px history buttons on a 2px rhythm, then
-/// the new-session action. The conditional `+` rides its own slot
+/// [`TITLEBAR_MENU_GAP`] of air and the 24px nav-menu trigger. The
+/// conditional new-session `+` rides its own slot
 /// ([`TITLEBAR_ACTION_SLOT_WIDTH`]).
-pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 4.0 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
+pub const CLUSTER_BUTTONS_WIDTH: f32 =
+    24.0 * 4.0 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP + TITLEBAR_MENU_GAP;
 /// Extra width consumed when the new-session `+` joins the cluster: its own
 /// 24px button behind an 8px group gap.
 pub const TITLEBAR_ACTION_SLOT_WIDTH: f32 = 24.0 + TITLEBAR_GROUP_GAP;
@@ -69,6 +97,47 @@ pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool, linux_left_captio
         10.0 + caption_buttons_width(linux_left_captions) + 2.0
     } else {
         10.0
+    }
+}
+
+/// The titlebar's nav menu (Scheduled / Chat manager), `Some` while open.
+///
+/// Key bindings dispatch BEFORE the card's `on_key_down` (gpui runs a
+/// matched binding first), so ⌘,/⌘N/⌘1-9 navigate with the card still
+/// focused and unable to intercept — every route-changing entry
+/// (`open_settings`, `open_chat`, `open_new_session`, `apply_nav`) closes
+/// the menu itself.
+pub(super) struct TitlebarMenu {
+    /// Keyboard highlight within [`TITLEBAR_MENU_ROWS`] — `None` until ↑↓ is
+    /// pressed, so no row wears a wash on open without a hover.
+    active: Option<usize>,
+    /// Tracked on the card — the keyboard dispatch path while it holds focus.
+    focus: gpui::FocusHandle,
+}
+
+/// One row of the titlebar nav menu, in draw order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TitlebarMenuRow {
+    Scheduled,
+    ChatManager,
+}
+
+const TITLEBAR_MENU_ROWS: [TitlebarMenuRow; 2] =
+    [TitlebarMenuRow::Scheduled, TitlebarMenuRow::ChatManager];
+
+impl TitlebarMenuRow {
+    fn label(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            TitlebarMenuRow::Scheduled => t!("shell_chrome.titlebar.nav_scheduled"),
+            TitlebarMenuRow::ChatManager => t!("shell_chrome.titlebar.nav_chat_manager"),
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            TitlebarMenuRow::Scheduled => icons::CLOCK_CIRCLE,
+            TitlebarMenuRow::ChatManager => icons::INBOX,
+        }
     }
 }
 
@@ -317,6 +386,9 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.open_new_session(cx)),
                     )),
             )
+            // The Scheduled page and Chat manager entries share ONE menu
+            // behind a "..." trigger, right of the new-session slot.
+            .child(self.render_titlebar_menu(&theme, cx))
             .into_any_element()
     }
 
@@ -464,7 +536,273 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.open_new_session(cx)),
                     )),
             )
+            // The Scheduled page and Chat manager entries share ONE menu
+            // behind a "..." trigger, right of the new-session slot.
+            .child(self.render_titlebar_menu(&theme, cx))
             .into_any_element()
+    }
+
+    /// Open the titlebar nav menu. No row is highlighted on open — the
+    /// keyboard cursor appears with the first ↑↓ (the current page's row
+    /// carries the standing selected wash instead).
+    pub(super) fn open_titlebar_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = cx.focus_handle();
+        self.titlebar_menu.open(TitlebarMenu {
+            active: None,
+            focus: focus.clone(),
+        });
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Close the titlebar nav menu through the exit animation (no-op when it
+    /// isn't open).
+    pub(super) fn close_titlebar_menu(&mut self, cx: &mut Context<Self>) {
+        if self.titlebar_menu.begin_close() {
+            popover::reap_popup(cx, |shell: &mut Self| &mut shell.titlebar_menu);
+            cx.notify();
+        }
+    }
+
+    fn activate_titlebar_menu_row(&mut self, row: TitlebarMenuRow, cx: &mut Context<Self>) {
+        self.close_titlebar_menu(cx);
+        match row {
+            // Re-entering the page already showing must not push a duplicate
+            // history entry (the old clock button was a no-op there).
+            TitlebarMenuRow::Scheduled => {
+                if !matches!(self.route, Route::Scheduled) {
+                    self.open_scheduled(cx);
+                }
+            }
+            // The manager toggles: picking it on its own page walks back
+            // (the ⌘⇧M behavior).
+            TitlebarMenuRow::ChatManager => self.open_chat_manager(cx),
+        }
+    }
+
+    /// Card keys: ↑↓ navigate, ⏎ opens the highlighted page, esc closes.
+    fn titlebar_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        // The card stays mounted (and focused) through its exit animation —
+        // keys must not drive a dying card.
+        if !self.titlebar_menu.is_open() {
+            return;
+        }
+        let key = popover::classify_key(
+            event.keystroke.key.as_str(),
+            event.keystroke.modifiers.platform,
+            event.keystroke.modifiers.control,
+        );
+        match key {
+            popover::MenuKey::Escape => self.close_titlebar_menu(cx),
+            popover::MenuKey::Up | popover::MenuKey::Down => {
+                let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
+                if let Some(menu) = self.titlebar_menu.open_mut() {
+                    menu.active = popover::menu_step(menu.active, TITLEBAR_MENU_ROWS.len(), delta);
+                }
+                cx.notify();
+            }
+            popover::MenuKey::Enter | popover::MenuKey::ModEnter => {
+                let row = self
+                    .titlebar_menu
+                    .get()
+                    .and_then(|menu| menu.active)
+                    .map(|active| TITLEBAR_MENU_ROWS[active]);
+                if let Some(row) = row {
+                    self.activate_titlebar_menu_row(row, cx);
+                }
+            }
+            popover::MenuKey::Backspace | popover::MenuKey::Other => {}
+        }
+    }
+
+    /// The titlebar nav menu: one "..." trigger opening a downward card with
+    /// the Scheduled and Chat manager rows. A Routine run in flight still
+    /// shows on the trigger — amber while one waits on the user, the busy
+    /// colour while one runs.
+    fn render_titlebar_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.titlebar_menu.is_open();
+        let live = {
+            let state = self.state.read(cx);
+            let outcomes = || {
+                state
+                    .routines
+                    .iter()
+                    .filter_map(|view| crate::scheduled::live_run(&view.routine))
+                    .map(|run| run.outcome)
+            };
+            if outcomes().any(|outcome| outcome == holt_proto::RunOutcome::Waiting) {
+                Some(theme.warning)
+            } else if outcomes().next().is_some() {
+                Some(theme.busy)
+            } else {
+                None
+            }
+        };
+        // The trigger aligns to the sidebar's view-options seam; when the
+        // sidebar no longer affords that (collapsed, or too narrow), the
+        // parked button read as a stray fourth icon over the identity (user
+        // request) — it is gone entirely, and the title parks one group gap
+        // past the `+` instead.
+        let buttons_start = self.eval_tween(
+            self.titlebar_tween,
+            cluster_buttons_start(
+                cfg!(target_os = "macos"),
+                self.fullscreen.unwrap_or(false),
+                self.linux_left_caption_count(),
+            ),
+        );
+        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
+        let menu_ml = if cfg!(target_os = "windows") {
+            TITLEBAR_GROUP_GAP - TITLEBAR_CONTROL_GAP
+        } else {
+            let margin = titlebar_menu_margin(buttons_start, sidebar_now);
+            if margin <= TITLEBAR_GROUP_GAP {
+                return div().into_any_element();
+            }
+            margin
+        };
+        let fade_key = "window-control-titlebar-menu";
+        let mut trigger = div()
+            .id("titlebar-menu")
+            .debug_selector(|| "titlebar-menu".into())
+            .size(px(24.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .bg(if open {
+                theme.glass_hover()
+            } else {
+                motion::hover_blend(
+                    fade_key,
+                    theme.glass_hover().opacity(0.0),
+                    theme.glass_hover(),
+                )
+            })
+            .on_hover(motion::hover_listener(fade_key))
+            // Same occlusion + click-swallowing as [`window_control_button`]:
+            // the trigger sits inside the titlebar's drag strips, so its rect
+            // must be carved out of their drag/zoom surface.
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    window.prevent_default();
+                    this.titlebar_menu.note_trigger_press();
+                }),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                // A press that found the menu open closes it (the card's
+                // mouse-down-out already began the close) — never reopen.
+                if this.titlebar_menu.take_press_was_open() {
+                    this.close_titlebar_menu(cx);
+                } else {
+                    this.open_titlebar_menu(window, cx);
+                }
+            }))
+            .child(
+                icon(icons::MENU_DOTS)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted),
+            );
+
+        if self.titlebar_menu.get().is_some() {
+            let closing = self.titlebar_menu.closing_since();
+            let card = self.render_titlebar_menu_card(theme, cx);
+            trigger = trigger.relative().child(popover::anchored_menu_below_gap(
+                "titlebar-menu-card",
+                card,
+                closing,
+                8.0,
+            ));
+        }
+
+        div()
+            .ml(px(menu_ml))
+            .flex_none()
+            .relative()
+            .child(trigger)
+            .when_some(live, |el, color| {
+                el.child(
+                    div()
+                        .debug_selector(|| "titlebar-scheduled-live".into())
+                        .absolute()
+                        .top(px(3.0))
+                        .right(px(3.0))
+                        .size(px(5.0))
+                        .rounded_full()
+                        .bg(color),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The nav-menu card: one row per destination, the current page washed.
+    fn render_titlebar_menu_card(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some((active, focus)) = self
+            .titlebar_menu
+            .get()
+            .map(|menu| (menu.active, menu.focus.clone()))
+        else {
+            return div().into_any_element();
+        };
+        let rows = TITLEBAR_MENU_ROWS.into_iter().enumerate().map(|(ix, row)| {
+            let selected = match row {
+                TitlebarMenuRow::Scheduled => matches!(self.route, Route::Scheduled),
+                TitlebarMenuRow::ChatManager => matches!(self.route, Route::ChatManager),
+            };
+            popover::menu_row_nav(
+                theme,
+                selected,
+                active == Some(ix),
+                format!("titlebar-menu-row-{ix}"),
+            )
+            .id(("titlebar-menu-row", ix))
+            .debug_selector(move || format!("titlebar-menu-row-{ix}"))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.activate_titlebar_menu_row(row, cx);
+            }))
+            .child(
+                icon(row.icon())
+                    .size(px(15.0))
+                    .flex_none()
+                    .text_color(theme.text_muted.opacity(0.8)),
+            )
+            .child(div().flex_1().min_w_0().truncate().child(row.label()))
+            .into_any_element()
+        });
+
+        popover::popover_card(theme)
+            .w(px(200.0))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                this.titlebar_menu_key(event, cx)
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.close_titlebar_menu(cx);
+            }))
+            .child(div().flex().flex_col().gap(px(2.0)).children(rows))
+            .into_any_element()
+    }
+
+    /// Where session-titlebar content parks once the sidebar is collapsed:
+    /// one group gap past the cluster's last icon (`+`) — the same
+    /// icon-to-icon rhythm the cluster uses. The "..." trigger only mounts
+    /// while the sidebar affords its seam, so nothing else occupies the
+    /// slot.
+    pub(super) fn collapsed_content_start(&self) -> f32 {
+        let cluster = self.eval_tween(
+            self.titlebar_tween,
+            cluster_buttons_start(
+                cfg!(target_os = "macos"),
+                self.fullscreen.unwrap_or(false),
+                self.linux_left_caption_count(),
+            ),
+        );
+        cluster + TITLEBAR_MENU_PREFIX + TITLEBAR_GROUP_GAP
     }
 
     fn selected_external_app(&self) -> ExternalApp {
@@ -1236,9 +1574,29 @@ mod tests {
         assert_eq!(TITLEBAR_CONTROL_GAP, 2.0);
         assert_eq!(TITLEBAR_GROUP_GAP, Theme::SPACE_SM);
         assert_eq!(TITLEBAR_IDENTITY_GAP, Theme::SPACE_MD);
-        assert_eq!(CLUSTER_BUTTONS_WIDTH, 106.0);
+        assert_eq!(CLUSTER_BUTTONS_WIDTH, 130.0);
         assert_eq!(TITLEBAR_ACTION_SLOT_WIDTH, 32.0);
         assert_eq!(TITLEBAR_ACTION_EDGE_INSET, 6.0);
+    }
+
+    #[test]
+    fn titlebar_menu_tracks_the_sidebar_seam() {
+        // The trigger's icon center lands on the view-options button's icon
+        // center (sidebar_width − 22.5) at any sidebar width that affords it.
+        let aligned = |sidebar: f32, start: f32| {
+            let ml = titlebar_menu_margin(start, sidebar);
+            start + TITLEBAR_MENU_PREFIX + ml + 12.0
+        };
+        let sort_icon_center = |sidebar: f32| sidebar - 22.5;
+        for sidebar in [244.5, 256.0, 300.0, 400.0] {
+            assert_eq!(aligned(sidebar, 88.0), sort_icon_center(sidebar));
+            // Fullscreen cluster start tracks too.
+            assert_eq!(aligned(sidebar, 12.0), sort_icon_center(sidebar));
+        }
+        // Too narrow to align without overlapping the `+`: parks one group
+        // gap after the prefix; a collapsed sidebar parks there as well.
+        assert_eq!(titlebar_menu_margin(88.0, 208.0), TITLEBAR_GROUP_GAP);
+        assert_eq!(titlebar_menu_margin(88.0, 0.0), TITLEBAR_GROUP_GAP);
     }
 
     #[test]

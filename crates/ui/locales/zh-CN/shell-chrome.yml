@@ -52,9 +52,6 @@ shell_chrome:
   common:
     cancel:
       zh-CN: 取消
-  navigation_rail:
-    home:
-      zh-CN: 首页
   menu_bar:
     menu_file:
       zh-CN: 文件

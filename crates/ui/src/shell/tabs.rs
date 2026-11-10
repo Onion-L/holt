@@ -111,6 +111,7 @@ impl Shell {
         self.route = Route::Chat;
         self.state
             .update(cx, |s, cx| s.select_chat(Some(chat_id), cx));
+        self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
         cx.notify();
     }
@@ -133,6 +134,7 @@ impl Shell {
             }
             s.select_chat(None, cx);
         });
+        self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
         cx.notify();
     }
@@ -384,9 +386,10 @@ impl Shell {
 
         // Same glide as the old strip: content starts at the inset card's
         // left edge while the sidebar is open, and slides toward the control
-        // cluster as it collapses.
-        let content_left =
-            (sidebar_now + Theme::SPACE_LG).max(self.title_bar_content_start() + plus_inset);
+        // cluster as it collapses — parking one group gap past the `+`, the
+        // cluster's own icon-to-icon rhythm (the "..." trigger only mounts
+        // while the sidebar affords its seam, so the slot stays empty).
+        let content_left = (sidebar_now + Theme::SPACE_LG).max(self.collapsed_content_start());
 
         // Trailing titlebar section. With the changes pane open this is the
         // PANE'S HEADER — a strip exactly as wide as the pane carrying its

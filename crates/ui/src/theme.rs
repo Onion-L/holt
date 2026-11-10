@@ -887,6 +887,14 @@ impl Theme {
         }
     }
 
+    /// The glass composited over its adverse backdrop — the tone the window
+    /// actually reads as on glass platforms. Paint that must blend with the
+    /// chrome (the chat column's edge scrims) targets this instead of
+    /// [`Self::bg`], which only matches on opaque platforms.
+    pub(crate) fn window_tone(&self) -> Hsla {
+        flatten(self.glass(), self.adverse_backdrop())
+    }
+
     /// Whether this appearance paints translucent chrome over the blurred
     /// desktop. Glass-only recipes — backdrop blurs, translucent popover
     /// tints, per-glyph edge fades — must gate on this, not on

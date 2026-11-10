@@ -52,9 +52,6 @@ shell_chrome:
   common:
     cancel:
       en-US: Cancel
-  navigation_rail:
-    home:
-      en-US: Home
   menu_bar:
     menu_file:
       en-US: File

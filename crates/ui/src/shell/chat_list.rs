@@ -140,11 +140,16 @@ fn sidebar_key_order_changed(old: &[(String, f32)], new: &[(String, f32)]) -> bo
             .any(|((old_key, _), (new_key, _))| old_key != new_key)
 }
 
+/// The right cluster's fixed height — the pin/archive buttons' own size; the
+/// jump chip rides in the same slot so holding the modifier never reflows
+/// the rows.
+pub(super) const CHAT_ROW_CLUSTER_HEIGHT: f32 = 18.0;
+
 /// Exact active-session row height: one line (provider mark, title, right
-/// cluster) — a 17px title line inside 8px vertical padding. The FLIP resort
-/// and drop math measure from this constant; keeping it beside the renderer's
-/// metrics prevents drift between the two.
-pub(super) const CHAT_ROW_HEIGHT: f32 = 33.0;
+/// cluster) — the 18px cluster line inside 8px vertical padding. The FLIP
+/// resort and drop math measure from this constant; keeping it beside the
+/// renderer's metrics prevents drift between the two.
+pub(super) const CHAT_ROW_HEIGHT: f32 = CHAT_ROW_CLUSTER_HEIGHT + 16.0;
 
 /// The hover card behind a session row: the title again, then the space name,
 /// folder path, and branch — identity metadata the single-line row no longer
@@ -260,6 +265,42 @@ fn settings_nav_label(section: SettingsSection) -> std::borrow::Cow<'static, str
 
 /// Flex gap between sidebar list items.
 pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
+
+/// The sidebar column's pinned bottom row — the chat list's Settings and the
+/// settings nav's Back share one cloth (height, insets, hover) so the two
+/// bottom rows never drift apart. The reference geometry is the Back row
+/// (py 6, 12px bottom inset).
+pub(super) fn sidebar_bottom_row(
+    id: &'static str,
+    icon_path: &'static str,
+    label: SharedString,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_string())
+        .mx(px(Theme::SPACE_SM))
+        .mb(px(12.0))
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(8.0))
+        .px(px(Theme::SPACE_SM))
+        .py(px(6.0))
+        .text_size(crate::typography::ui_rems(13.0))
+        .text_color(theme.text_muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
+        .child(
+            icon(icon_path)
+                .size(px(16.0))
+                .flex_none()
+                .text_color(theme.text_muted),
+        )
+        .child(label)
+}
 /// Provider/title geometry for the active multi-line cards: identity close
 /// on the standard 8px rhythm.
 pub(super) const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
@@ -377,32 +418,18 @@ impl Shell {
                         }),
                     )),
             )
-            // Back pinned to the bottom (holt settings-sidebar.tsx).
+            // Back pinned to the bottom (holt settings-sidebar.tsx) — the
+            // same shared bottom-row cloth as the chat list's Settings row.
             .child(
-                div().px(px(Theme::SPACE_SM)).pb(px(12.0)).child(
-                    div()
-                        .id("settings-back")
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .rounded(px(8.0))
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(6.0))
-                        .text_size(crate::typography::ui_rems(13.0))
-                        .text_color(theme.text_muted)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
-                        .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
-                        .child(
-                            // AltArrowLeft chevron (holt settings-sidebar.tsx),
-                            // not the straight history arrow.
-                            icon(icons::ALT_ARROW_LEFT)
-                                .size(px(16.0))
-                                .text_color(theme.text_muted),
-                        )
-                        .child(t!("sidebar_spaces.sidebar.back")),
-                ),
+                sidebar_bottom_row(
+                    "settings-back",
+                    // AltArrowLeft chevron (holt settings-sidebar.tsx),
+                    // not the straight history arrow.
+                    icons::ALT_ARROW_LEFT,
+                    t!("sidebar_spaces.sidebar.back").into(),
+                    theme,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx))),
             )
             .into_any_element()
     }
@@ -514,6 +541,10 @@ impl Shell {
         // underneath and flicker; the buttons' stop-propagation clicks are
         // separation enough), and the jump chip takes the whole cluster
         // while the hint overlay is up so all nine chips read together.
+        // Both states ride in the same fixed-height slot: the pin/archive
+        // buttons (18px) define the normal cluster, and the jump chip must
+        // not shrink the row when it replaces them — a 1px reflow on every
+        // modifier hold read as the list jittering (user report).
         let right: AnyElement = if let Some(label) = jump_label {
             // Cut to the sidebar PR badge's exact cloth (`pull_request_badge`,
             // Sidebar surface): pinned 16px, px 4, rounded 4, borderless
@@ -522,23 +553,31 @@ impl Shell {
             // reads as a second badge system on the row.
             let tone = theme.text_muted;
             div()
-                .h(px(16.0))
+                .h(px(CHAT_ROW_CLUSTER_HEIGHT))
                 .flex_none()
                 .flex()
-                .flex_row()
                 .items_center()
-                .px(px(4.0))
-                .rounded(px(4.0))
-                .bg(tone.opacity(0.08))
-                .text_size(crate::typography::ui_rems(10.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(tone.opacity(0.85))
-                .font_family(theme.font_mono.clone())
-                .child(label)
+                .child(
+                    div()
+                        .h(px(16.0))
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .px(px(4.0))
+                        .rounded(px(4.0))
+                        .bg(tone.opacity(0.08))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(tone.opacity(0.85))
+                        .font_family(theme.font_mono.clone())
+                        .child(label),
+                )
                 .into_any_element()
         } else {
             let hover_opacity = motion::hover_t(&fade_key);
             div()
+                .h(px(CHAT_ROW_CLUSTER_HEIGHT))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -994,6 +1033,19 @@ impl Shell {
             .when_some(self.render_connection_pill(theme, cx), |el, pill| {
                 el.child(pill)
             })
+            // Settings pinned to the column's bottom (user request: the
+            // navigation rail is gone) — the shared bottom-row cloth.
+            .child(
+                sidebar_bottom_row(
+                    "sidebar-settings",
+                    icons::SETTINGS_MINIMALISTIC,
+                    t!("sidebar_spaces.sidebar.settings").into(),
+                    theme,
+                )
+                .on_click(
+                    cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::General, cx)),
+                ),
+            )
             // Holt notices are rendered as top-right overlays in
             // `render_overlays`, so the sidebar column itself stays a pure
             // nav surface with no in-flow feedback strip.
@@ -1124,10 +1176,10 @@ mod tests {
 
     #[test]
     fn sidebar_row_height_matches_the_single_line() {
-        // One line: a 17px title line inside 8px vertical padding — the FLIP
-        // resort and drop math measure from the constant the renderer pads
-        // to.
-        assert_eq!(CHAT_ROW_HEIGHT, 33.0);
+        // One line: the 18px right cluster inside 8px vertical padding — the
+        // FLIP resort and drop math measure from the constant the renderer
+        // pads to.
+        assert_eq!(CHAT_ROW_HEIGHT, 34.0);
     }
 
     #[test]
