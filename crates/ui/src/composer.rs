@@ -670,11 +670,12 @@ impl Render for Composer {
         {
             self.reset_mention(None, cx);
         }
-        if self.slash.token.is_some()
-            && (wizard_active
-                || approval_bar_active
-                || !self.input.focus_handle(cx).is_focused(window))
-        {
+        // The slash popup does NOT join the blur reset (issue #86): a focus
+        // hiccup mid-open (the Ctrl+N canvas's own focus race) used to tear
+        // the popup down, swallowing the next row click. Clicking outside
+        // the card dismisses it via the card's own mouse-down-out, and the
+        // wizard/approval bars still win here.
+        if self.slash.token.is_some() && (wizard_active || approval_bar_active) {
             self.reset_slash(None, cx);
         }
         let mode = self.button_mode(cx);
@@ -1408,5 +1409,112 @@ mod tests {
         );
         visual.run_until_parked();
         assert_eq!(behind_clicks.get(), 1);
+    }
+
+    /// Clicking a slash-menu row fills the command into the composer
+    /// (issue #86 — a click used to be swallowed).
+    #[gpui::test]
+    fn slash_menu_click_inserts_the_command(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .child(self.composer.clone()),
+                )
+            }
+        }
+
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let state = cx.new(|_| AppState::new());
+            let composer = cx.new(|cx| Composer::new(state, cx));
+            TestView { composer }
+        });
+        view.update_in(&mut *visual, |_, _, cx| cx.notify());
+        visual.run_until_parked();
+
+        // Type "/" — deliberately WITHOUT focusing the input: the render
+        // pass no longer tears the popup down on a focus hiccup (issue #86,
+        // the Ctrl+N canvas's focus race swallowed row clicks).
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                c.input.update(cx, |input, cx| input.set_text("/", cx));
+                c.on_input_edited(cx);
+                // The real command list comes from the provider's command
+                // fetch; seed one directly — the harness has no engine.
+                c.slash.candidates = vec![super::slash::SlashCandidate::Command {
+                    name: "provider".into(),
+                    description: String::new(),
+                    input_hint: None,
+                }];
+                c.refilter_slash(cx);
+            });
+        });
+        visual.run_until_parked();
+
+        let row = visual
+            .debug_bounds("slash-result-0")
+            .expect("the slash popup renders rows");
+        visual.simulate_click(row.center(), Modifiers::none());
+        visual.run_until_parked();
+        view.read_with(cx, |view, app| {
+            let text = view.composer.read(app).input.read(app).text().to_string();
+            assert_eq!(text, "/provider ", "the clicked command fills the input");
+        });
+    }
+
+    /// Deleting the mode directive disarms the canvas draft (issue #86): a
+    /// later unrelated send must not enter the mode by surprise.
+    #[gpui::test]
+    fn clearing_the_directive_text_disarms_the_mode_drafts(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.composer.clone())
+            }
+        }
+
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let state = cx.new(|_| AppState::new());
+            let composer = cx.new(|cx| Composer::new(state, cx));
+            TestView { composer }
+        });
+
+        // `/provider` on the canvas arms the draft.
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                c.input
+                    .update(cx, |input, cx| input.set_text("/provider", cx));
+                c.submit_text("/provider".to_string(), cx);
+            });
+        });
+        visual.run_until_parked();
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                assert!(c.pickers.read(cx).provider_mode_draft, "the draft arms");
+                // The user thinks better of it and deletes the directive.
+                c.input.update(cx, |input, cx| input.set_text("", cx));
+                c.on_input_edited(cx);
+                assert!(
+                    !c.pickers.read(cx).provider_mode_draft,
+                    "deleting the directive disarms the draft"
+                );
+            });
+        });
     }
 }

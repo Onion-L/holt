@@ -311,6 +311,12 @@ impl Composer {
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, mut text: String, cx: &mut Context<Self>) {
+        // A bare `/` is the open-all popup, not a message (issue #86):
+        // pressing Enter there used to send a literal slash. Nothing has
+        // been mutated at this point — the draft stays as the user left it.
+        if text.trim() == "/" {
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.fail_offline();
             self.failure_key = None; // global — meaningful on every chat

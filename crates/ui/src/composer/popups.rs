@@ -95,10 +95,10 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
 pub(super) struct SlashState {
     pub(super) token: Option<MentionToken>,
     /// The merged rows for the current open: skills first, commands after.
-    candidates: Vec<SlashCandidate>,
+    pub(super) candidates: Vec<SlashCandidate>,
     /// Indices into `candidates`, filter-ranked for the query.
-    filtered: Vec<usize>,
-    active: Option<usize>,
+    pub(super) filtered: Vec<usize>,
+    pub(super) active: Option<usize>,
     /// Provider the command entries are for (the `slash_cache` key).
     provider: Option<ProviderId>,
     /// The last skills catalog, with the cwd it was fetched for.
@@ -209,6 +209,28 @@ impl Composer {
             let input = self.input.read(cx);
             (input.text().to_string(), input.cursor_offset())
         };
+        // The canvas's armed mode drafts (/plan, /provider — set by their
+        // bare directives) live only while the directive text still stands
+        // (issue #86): deleting it disarms the draft, so a later unrelated
+        // send cannot enter the mode by surprise. A send consumes the draft
+        // at arming, so this never clobbers an in-flight enter.
+        if !matches!(
+            super::slash::parse(&text),
+            super::slash::Parsed::Plan { .. }
+        ) && self.plan_mode_draft
+        {
+            self.plan_mode_draft = false;
+        }
+        if !matches!(
+            super::slash::parse(&text),
+            super::slash::Parsed::Provider { .. }
+        ) && self.pickers.read(cx).provider_mode_draft
+        {
+            self.pickers.update(cx, |pickers, cx| {
+                pickers.provider_mode_draft = false;
+                cx.notify();
+            });
+        }
         self.update_slash(&text, cursor, cx);
         let token = mention_token(&text, cursor);
         let still_dismissed = token.as_ref().is_some_and(|token| {
@@ -654,7 +676,7 @@ impl Composer {
 
     /// Re-rank the merged candidate list for the current query (pure local
     /// filter over the row titles).
-    fn refilter_slash(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refilter_slash(&mut self, cx: &mut Context<Self>) {
         let query = self
             .slash
             .token
@@ -848,6 +870,7 @@ impl Composer {
                 rows.push(
                     crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
                         .id(("slash-result", row_ix))
+                        .debug_selector(move || format!("slash-result-{row_ix}"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.slash.active = Some(row_ix);
                             this.accept_slash(cx);
