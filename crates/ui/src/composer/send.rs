@@ -280,6 +280,17 @@ impl Composer {
             super::slash::GoalAction::Clear => methods::CLEAR_GOAL,
             _ => methods::SET_GOAL_PAUSED,
         };
+        // Pause/clear also halt the turn chasing the old goal (issue
+        // #79): the goal RPC alone left the agent editing and prompting —
+        // the same interrupt the stop button drives lands here, and the
+        // run's cancellation settles any pending prompt as aborted.
+        if matches!(
+            action,
+            super::slash::GoalAction::Pause | super::slash::GoalAction::Clear
+        ) && self.run_live(cx)
+        {
+            self.interrupt(cx);
+        }
         self.input.update(cx, |input, cx| input.set_text("", cx));
         cx.spawn(async move |this, cx| {
             if let Err(error) = engine.client().call(method, params).await {

@@ -877,9 +877,54 @@ impl Shell {
     }
 
     /// `SetGoalPaused` from the goal form's button: fire-and-forget — the
+    /// The goal pause/clear companion halt (issue #79): the goal RPCs only
+    /// rewrote the chip while the turn chasing it kept editing and
+    /// prompting — fire the same interrupt command the stop button drives,
+    /// so the agent halts and any pending prompt settles as aborted with
+    /// the run.
+    fn stop_live_turn_for_goal(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
+        let live = matches!(
+            self.state
+                .read(cx)
+                .indicator_for(&chat_id, chrono::Utc::now()),
+            crate::state::Indicator::Working | crate::state::Indicator::AwaitingInput
+        );
+        if !live {
+            return;
+        }
+        let params = serde_json::json!({
+            "chatId": chat_id,
+            "command": { "kind": "interrupt" },
+        });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = engine.client().call(methods::QUEUE_COMMAND, params).await {
+                tracing::warn!(error = %error, "the goal halt failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.push_holt_notice(
+                        crate::shell::HoltNoticeKind::Error,
+                        t!("composer_input.failure.stop_failed", error = error).into(),
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
+    }
+
     /// WatchChats republish repaints the card, and only a failure needs the
     /// user told.
     fn set_goal_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        // Pausing is a halt, not a chip edit (issue #79): the running turn
+        // stops chasing the objective from here.
+        if paused {
+            self.stop_live_turn_for_goal(cx);
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 crate::shell::HoltNoticeKind::Error,
@@ -914,8 +959,10 @@ impl Shell {
         .detach();
     }
 
-    /// `ClearGoal` from the goal form's button (the retired chip's ×).
+    /// `ClearGoal` from the goal form's button (the retired chip's ×). The
+    /// running turn stops with the goal (issue #79).
     fn clear_goal(&mut self, cx: &mut Context<Self>) {
+        self.stop_live_turn_for_goal(cx);
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 crate::shell::HoltNoticeKind::Error,
