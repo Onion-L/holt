@@ -123,11 +123,42 @@ import ChangelogController from '../components/ChangelogController';
 <div class="wrap">
   <ol class="vers">
 
+    <li class="ver" id="v0.8.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.8.0">0.8.0</a>
+        <span class="vdate mono">Nov 10, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>The left navigation rail steps aside: Scheduled and Chat manager live in the titlebar overflow menu (with <code>⌘⇧R</code> / <code>⌘⇧M</code> shortcuts), Settings sits at the bottom of the sidebar, and the window title follows the route and session</li>
+            <li>Session rows are back to two lines — the project with its time on top, then the provider brand (or Routine clock, or pin) beside the title with the run count and PR badge — and a hover card carries the space name, folder path, and branch</li>
+            <li>GPUI now sources from gpui-kit, and the vendored fork is gone from the tree</li>
+            <li>Under Full access, a write or edit landing outside the chat's folder settles with a visible <code>⚠ Outside project</code> badge on its chip</li>
+            <li>A setup-blocked composer explains itself: no keyed provider deep-links to Settings → Providers, and a missing model opens the model menu</li>
+            <li>Every content-derived link click can only reach <code>http</code>, <code>https</code>, or <code>mailto</code> — <code>file:</code>, custom app schemes, and everything else are dropped, terminal OSC-8 hyperlinks included</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>The chat column's edge fade is restored on the gpui-kit stack — transcript text scrolling under the titlebar and composer melts away instead of showing through</li>
+            <li>Goal pause, Clear, and <code>/goal off</code> halt the running turn and settle its pending prompts as aborted, instead of letting the agent keep editing behind a paused chip</li>
+            <li>The always-allow options state their exact scope — this command, this file, or this tool — instead of promising the whole session</li>
+            <li>The slash popup survives focus hiccups, a bare <code>/</code> no longer sends as a message, and deleting a <code>/plan</code> or <code>/provider</code> directive disarms it</li>
+            <li>macOS traffic lights no longer sit under the titlebar's first button, and Linux windows get their real title back</li>
+            <li>The <code>/workflow</code> hint no longer double-wraps its argument</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.7.1">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.7.1">0.7.1</a>
         <span class="vdate mono">Nov 5, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
