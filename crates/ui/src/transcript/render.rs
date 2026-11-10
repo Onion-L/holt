@@ -1253,7 +1253,11 @@ fn user_bubble_text_with_chip(
                                 open(path, window, cx);
                             }
                         }
-                        BubbleLinkKind::Url => cx.open_url(path),
+                        BubbleLinkKind::Url => {
+                            if let Some(url) = crate::links::safe_external_url(path) {
+                                cx.open_url(url);
+                            }
+                        }
                     }
                 },
             )

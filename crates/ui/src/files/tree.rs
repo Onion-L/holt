@@ -385,6 +385,9 @@ fn expansion_path(path: &str, kind: &WorkspaceEntryKind) -> String {
 
 /// Open a path with the platform handler (outside-root links, unsupported
 /// files). Percent-encodes so spaces and Unicode survive the URL parse.
+/// Deliberately NOT routed through [`crate::links::safe_external_url`]: the
+/// targets are the user's own workspace listing (issue #32), where `file://`
+/// is the feature, not an attack surface.
 pub(super) fn open_externally(path: &str, cx: &mut App) {
     let mut url = String::from("file://");
     for byte in path.bytes() {

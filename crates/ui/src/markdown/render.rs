@@ -748,7 +748,10 @@ fn flat_text_element(
         let id: SharedString = format!("{}-t{ix}", opts.row_key).into();
         InteractiveText::new(id, styled)
             .on_click(ranges, move |clicked_ix, _window, cx| {
-                if let Some(url) = urls.get(clicked_ix) {
+                if let Some(url) = urls
+                    .get(clicked_ix)
+                    .and_then(|u| crate::links::safe_external_url(u))
+                {
                     cx.open_url(url);
                 }
             })

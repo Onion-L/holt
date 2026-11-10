@@ -1213,8 +1213,9 @@ impl TerminalPane {
         };
         if event.modifiers.platform
             && let Some(url) = self.with_active_emulator(cx, |e| e.url_at(point)).flatten()
+            && let Some(url) = crate::links::safe_external_url(&url)
         {
-            cx.open_url(&url);
+            cx.open_url(url);
             return;
         }
         // Click count picks the granularity, the same mapping every terminal

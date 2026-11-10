@@ -156,7 +156,9 @@ pub(crate) fn pull_request_badge(
         .hover(move |style| style.bg(color.opacity(0.16)).text_color(color))
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
-            cx.open_url(&url);
+            if let Some(url) = crate::links::safe_external_url(&url) {
+                cx.open_url(url);
+            }
         })
         .tooltip(move |_, cx| {
             cx.new(|_| ChangeRequestTooltip::new(&tooltip_summary))
