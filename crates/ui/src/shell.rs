@@ -3689,22 +3689,26 @@ mod tests {
         assert!(cx.debug_bounds("titlebar-menu-card").is_none());
 
         // Sidebar collapsed: the seam-aligned trigger is gone entirely —
-        // the identity parks one group gap past the `+` instead.
-        shell.update(cx, |shell, cx| {
-            shell.toggle_sidebar(cx);
-            // Tests don't run real-time tweens — snap to the target.
-            shell.sidebar_tween = None;
-            cx.notify();
-        });
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("titlebar-menu").is_none());
-        shell.update(cx, |shell, cx| {
-            shell.toggle_sidebar(cx);
-            shell.sidebar_tween = None;
-            cx.notify();
-        });
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("titlebar-menu").is_some());
+        // the identity parks one group gap past the `+` instead. Windows'
+        // trigger lives in the content header's nav cluster and stays put
+        // by design.
+        if !cfg!(target_os = "windows") {
+            shell.update(cx, |shell, cx| {
+                shell.toggle_sidebar(cx);
+                // Tests don't run real-time tweens — snap to the target.
+                shell.sidebar_tween = None;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("titlebar-menu").is_none());
+            shell.update(cx, |shell, cx| {
+                shell.toggle_sidebar(cx);
+                shell.sidebar_tween = None;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("titlebar-menu").is_some());
+        }
     }
 
     // ---- navigation history (titlebar back/forward) ----
