@@ -140,16 +140,11 @@ fn sidebar_key_order_changed(old: &[(String, f32)], new: &[(String, f32)]) -> bo
             .any(|((old_key, _), (new_key, _))| old_key != new_key)
 }
 
-/// The right cluster's fixed height — the pin/archive buttons' own size; the
-/// jump chip rides in the same slot so holding the modifier never reflows
-/// the rows.
-pub(super) const CHAT_ROW_CLUSTER_HEIGHT: f32 = 18.0;
-
-/// Exact active-session row height: one line (provider mark, title, right
-/// cluster) — the 18px cluster line inside 8px vertical padding. The FLIP
-/// resort and drop math measure from this constant; keeping it beside the
-/// renderer's metrics prevents drift between the two.
-pub(super) const CHAT_ROW_HEIGHT: f32 = CHAT_ROW_CLUSTER_HEIGHT + 16.0;
+/// Exact active-session row height: the project line (14px) over the
+/// identity line (17px) inside 6px vertical padding. The FLIP resort and
+/// drop math measure from this constant; keeping it beside the renderer's
+/// metrics prevents drift between the two.
+pub(super) const CHAT_ROW_HEIGHT: f32 = 45.0;
 
 /// The hover card behind a session row: the title again, then the space name,
 /// folder path, and branch — identity metadata the single-line row no longer
@@ -434,12 +429,12 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row: a single line — the provider's mark leading the
-    /// title, and a right cluster of routine marker, PR badge, pin/archive
-    /// quick actions, and the relative time. Working swaps the mark for the
-    /// pixel loader. Hover reveals the quick actions and the identity card
-    /// (space name, folder path, branch). Click selects; right-click opens
-    /// the context menu.
+    /// One session row: the project line (space name left, the jump chip or
+    /// relative time right) over the identity line — the front mark (pin /
+    /// Routine clock / provider brand; Working swaps it for the pixel
+    /// loader), the title, and the PR badge when one is open. Hover raises
+    /// the identity card (space name, folder path, branch). Click selects;
+    /// right-click opens the context menu.
     #[expect(clippy::too_many_arguments)]
     pub(super) fn render_chat_row(
         &self,
@@ -455,20 +450,20 @@ impl Shell {
         selected: bool,
         pinned: bool,
         // This row's jump combo while the hint overlay is up. It takes the
-        // right cluster outright — above hover and above the time — so all
-        // nine chips appear together instead of leaving a hole on whichever
-        // row is busy or under the pointer.
+        // corner outright — above hover and above the time — so all nine
+        // chips appear together instead of leaving a hole on whichever row
+        // is busy or under the pointer.
         jump_label: Option<SharedString>,
         // A Routine's folded run row: its run count (the row is the latest).
         routine_runs: Option<usize>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Activity, not position: the leading slot's mark animates while the
-        // session runs. Send-truth overrides: a send unadopted past the
-        // grace window is FAILED (explicit, with the transcript's retry
-        // affordance); a send whose delivery path is degraded is QUEUED, not
-        // Working — the loader doesn't fake progress.
+        // Activity, not position: the identity line's front mark animates
+        // while the session runs. Send-truth overrides: a send unadopted
+        // past the grace window is FAILED (explicit, with the transcript's
+        // retry affordance); a send whose delivery path is degraded is
+        // QUEUED, not Working — the loader doesn't fake progress.
         let (queued, undelivered) = {
             let now = Utc::now();
             let state = self.state.read(cx);
@@ -479,38 +474,6 @@ impl Shell {
         };
         let queued = queued && !undelivered;
         let working = status == holt_proto::ChatIndicator::Working && !queued && !undelivered;
-        // The leading slot: the provider's brand mark rides with the title
-        // (the same mark the session tab wears); Working swaps it for the
-        // composer-strip pixel loader. The row carries no status dot (user
-        // request).
-        let leading: AnyElement = div()
-            .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .when(working, |el| {
-                el.child(loaders::mini_glyph_spinner(
-                    format!("chat-working-{id}"),
-                    2.0,
-                    theme.glyph,
-                    cx.entity_id(),
-                    cx,
-                ))
-            })
-            .when(!working, |el| {
-                el.when_some(
-                    provider
-                        .as_ref()
-                        .and_then(crate::pickers::provider_brand_icon),
-                    |el, mark| {
-                        el.child(
-                            mark.render(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE), theme.text_muted),
-                        )
-                    },
-                )
-            })
-            .into_any_element();
         let (hover, text) = (theme.glass_hover(), theme.text);
         let selected_wash = crate::theme::glass_selected_bg();
         let subline = theme.text_muted.opacity(0.5);
@@ -534,26 +497,19 @@ impl Shell {
         // dimmed the active row under the pointer (user report).
         let hover_bg = if active_like { selected_wash } else { hover };
         let rest_text = if active_like { text } else { text.opacity(0.8) };
-        // Right cluster: routine marker, PR badge, pin/archive quick actions,
-        // and the relative time — laid out in that order so the time stays
-        // the row's right edge. The buttons' opacity rides the ROW's hover
-        // fade (no occlude — an occluding button would un-hover the row
-        // underneath and flicker; the buttons' stop-propagation clicks are
-        // separation enough), and the jump chip takes the whole cluster
-        // while the hint overlay is up so all nine chips read together.
-        // Both states ride in the same fixed-height slot: the pin/archive
-        // buttons (18px) define the normal cluster, and the jump chip must
-        // not shrink the row when it replaces them — a 1px reflow on every
-        // modifier hold read as the list jittering (user report).
-        let right: AnyElement = if let Some(label) = jump_label {
-            // Cut to the sidebar PR badge's exact cloth (`pull_request_badge`,
-            // Sidebar surface): pinned 16px, px 4, rounded 4, borderless
-            // 0.08-fill with 0.85 text of one tone — neutral here — and the
-            // label in the badge's mono at 10 MEDIUM. Any other geometry
-            // reads as a second badge system on the row.
+        // Line 1's right corner: the jump chip takes it while the hint
+        // overlay is up — cut to the sidebar PR badge's exact cloth
+        // (`pull_request_badge`, Sidebar surface): pinned 16px, px 4,
+        // rounded 4, borderless 0.08-fill with 0.85 text of one tone —
+        // neutral here — and the label in the badge's mono at 10 MEDIUM.
+        // Any other geometry reads as a second badge system on the row.
+        // Idle rows show the relative time instead. The corner pins to the
+        // line's 14px text height so the taller chip overflows without
+        // growing the row.
+        let corner: AnyElement = if let Some(label) = jump_label {
             let tone = theme.text_muted;
             div()
-                .h(px(CHAT_ROW_CLUSTER_HEIGHT))
+                .h(px(14.0))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -575,123 +531,69 @@ impl Shell {
                 )
                 .into_any_element()
         } else {
-            let hover_opacity = motion::hover_t(&fade_key);
             div()
-                .h(px(CHAT_ROW_CLUSTER_HEIGHT))
+                .h(px(14.0))
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(4.0))
-                // A Routine's folded run row: the clock marks it, the count
-                // shows past the first run.
-                .when_some(routine_runs, |el, runs| {
-                    el.child(
-                        icon(icons::CLOCK_CIRCLE)
-                            .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-                            .flex_none()
-                            .text_color(subline),
-                    )
-                    .when(runs > 1, |el| {
-                        let count_id = id.clone();
-                        el.child(
-                            div()
-                                .id(SharedString::from(format!("chat-runs-{id}")))
-                                .debug_selector(move || format!("chat-runs-{count_id}"))
-                                .text_size(crate::typography::ui_rems(11.0))
-                                .text_color(subline)
-                                .child(SharedString::from(format!("\u{d7}{runs}"))),
-                        )
-                    })
-                })
-                .when_some(change_request, |el, summary| {
-                    el.child(crate::change_requests::pull_request_badge(
-                        format!("chat-pr-{id}").into(),
-                        summary,
-                        crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
-                        theme,
-                    ))
-                })
-                // Pin: pinned rows wear it permanently (glossary "Pinned (a
-                // chat)"); unpinned rows reveal it on hover. Click toggles —
-                // the same op the context menu's pin row drives.
-                .child({
-                    let pin_id = id.clone();
-                    let pin_click = id.clone();
-                    div()
-                        .id(SharedString::from(format!("chat-pin-{id}")))
-                        .debug_selector(move || format!("chat-pin-{pin_id}"))
-                        .size(px(18.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.0))
-                        .cursor_pointer()
-                        .opacity(if pinned { 1.0 } else { hover_opacity })
-                        .hover(|s| s.bg(crate::theme::wash(0.12)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.set_chat_pinned(pin_click.clone(), !pinned, cx);
-                        }))
-                        .tooltip({
-                            let label: SharedString = if pinned {
-                                t!("sidebar_spaces.chat_menu.unpin").into()
-                            } else {
-                                t!("sidebar_spaces.chat_menu.pin").into()
-                            };
-                            move |_, cx| {
-                                cx.new(|_| crate::popover::TextTooltip(label.clone()))
-                                    .into()
-                            }
-                        })
-                        .child(
-                            icon(icons::PIN)
-                                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-                                .flex_none()
-                                .text_color(if pinned { theme.text_muted } else { subline }),
-                        )
-                })
-                // Archive: hover-only quick action; it opens the same confirm
-                // dialog as the context menu's Archive row.
-                .child({
-                    let archive_id = id.clone();
-                    let archive_click = id.clone();
-                    div()
-                        .id(SharedString::from(format!("chat-archive-{id}")))
-                        .debug_selector(move || format!("chat-archive-{archive_id}"))
-                        .size(px(18.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.0))
-                        .cursor_pointer()
-                        .opacity(hover_opacity)
-                        .hover(|s| s.bg(crate::theme::wash(0.12)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.request_archive_chat(archive_click.clone(), cx);
-                        }))
-                        .tooltip({
-                            let label: SharedString = t!("sidebar_spaces.chat_menu.archive").into();
-                            move |_, cx| {
-                                cx.new(|_| crate::popover::TextTooltip(label.clone()))
-                                    .into()
-                            }
-                        })
-                        .child(
-                            icon(icons::ARCHIVE_MINIMALISTIC)
-                                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-                                .flex_none()
-                                .text_color(subline),
-                        )
-                })
                 .child(
                     div()
-                        .flex_none()
                         .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(subline)
+                        .font_weight(gpui::FontWeight::MEDIUM)
                         .child(time_ago),
+                )
+                .into_any_element()
+        };
+        // Line 2's front slot: pinned rows wear the pin (glossary "Pinned
+        // (a chat)"), Routine folds wear the clock, and everything else
+        // shows the provider's brand mark (the same mark the session tab
+        // wears) — Working swaps it for the composer-strip pixel loader.
+        let leading: AnyElement = if pinned {
+            let pin_selector = id.clone();
+            div()
+                .id(SharedString::from(format!("chat-pin-{id}")))
+                .debug_selector(move || format!("chat-pin-{pin_selector}"))
+                .flex_none()
+                .child(
+                    icon(icons::PIN)
+                        .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                        .text_color(theme.text_muted),
+                )
+                .into_any_element()
+        } else if routine_runs.is_some() {
+            icon(icons::CLOCK_CIRCLE)
+                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                .flex_none()
+                .text_color(subline.opacity(0.8))
+                .into_any_element()
+        } else if working {
+            div()
+                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(loaders::mini_glyph_spinner(
+                    format!("chat-working-{id}"),
+                    2.0,
+                    theme.glyph,
+                    cx.entity_id(),
+                    cx,
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                .flex_none()
+                .when_some(
+                    provider
+                        .as_ref()
+                        .and_then(crate::pickers::provider_brand_icon),
+                    |el, mark| {
+                        el.child(
+                            mark.render(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE), subline.opacity(0.8)),
+                        )
+                    },
                 )
                 .into_any_element()
         };
@@ -700,21 +602,19 @@ impl Shell {
             .debug_selector(move || format!("chat-{row_selector}"))
             .relative()
             .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
+            .flex_col()
+            .gap(px(2.0))
             .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
-            .py(px(8.0))
+            .py(px(6.0))
             .text_color(motion::hover_blend(&fade_key, rest_text, text))
             .bg(motion::hover_blend(&fade_key, rest_bg, hover_bg))
             // No selection ring (user request) — the wash alone marks the
-            // active row. Row hover drives the wash blend and the quick
-            // actions' reveal (one listener — gpui allows a single hover
-            // listener per element).
+            // active row. Row hover drives the wash blend (one listener —
+            // gpui allows a single hover listener per element).
             .on_hover(motion::hover_listener(fade_key.clone()))
-            // Hover card: the identity metadata the single-line row dropped —
-            // title again, then space name, folder path, and branch.
+            // Hover card: the identity metadata the row dropped — title
+            // again, then space name, folder path, and branch.
             .tooltip({
                 let card = SessionRowCard {
                     title: title.clone(),
@@ -746,17 +646,66 @@ impl Shell {
                     this.open_chat_menu(menu_id.clone(), event.position, window, cx);
                 }),
             )
-            .child(leading)
+            // Line 1: the project, time right.
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .line_height(px(17.0))
-                    .child(title),
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(Theme::SPACE_SM))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .line_height(px(14.0))
+                            .text_color(subline)
+                            .child(space_name),
+                    )
+                    .child(div().text_color(subline).child(corner)),
             )
-            .child(right)
+            // Line 2: the identity line — the front mark, the title, and the
+            // Routine run count / PR badge when one is open.
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
+                    .child(leading)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .line_height(px(17.0))
+                            .child(title),
+                    )
+                    .when_some(routine_runs.filter(|runs| *runs > 1), |el, runs| {
+                        let count_id = id.clone();
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("chat-runs-{id}")))
+                                .debug_selector(move || format!("chat-runs-{count_id}"))
+                                .flex_none()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(subline)
+                                .child(SharedString::from(format!("\u{d7}{runs}"))),
+                        )
+                    })
+                    .when_some(change_request, |el, summary| {
+                        el.child(crate::change_requests::pull_request_badge(
+                            format!("chat-pr-{id}").into(),
+                            summary,
+                            crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                            theme,
+                        ))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -1175,11 +1124,11 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_row_height_matches_the_single_line() {
-        // One line: the 18px right cluster inside 8px vertical padding — the
-        // FLIP resort and drop math measure from the constant the renderer
-        // pads to.
-        assert_eq!(CHAT_ROW_HEIGHT, 34.0);
+    fn sidebar_row_height_matches_the_two_lines() {
+        // Two lines: a 14px project line over the 17px identity line inside
+        // 6px vertical padding — the FLIP resort and drop math measure from
+        // the constant the renderer pads to.
+        assert_eq!(CHAT_ROW_HEIGHT, 45.0);
     }
 
     #[test]

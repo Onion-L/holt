@@ -3084,9 +3084,9 @@ mod tests {
         });
     }
 
-    /// The pin action mounts on every row — pinned rows wear it permanently,
-    /// unpinned rows reveal it on hover — and a right-click opens the same
-    /// context menu it always did, without selecting the row.
+    /// The pinned row wears its marker; unpinned rows carry no pin. A
+    /// right-click opens the same context menu it always did, without
+    /// selecting the row.
     #[gpui::test]
     fn session_rows_mark_pinned_and_open_the_menu_on_right_click(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
@@ -3125,10 +3125,9 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // The pin action mounts on every row; visibility is the hover fade,
-        // not the mount.
+        // The pinned marker: on the pinned row only.
         assert!(cx.debug_bounds("chat-pin-kept").is_some());
-        assert!(cx.debug_bounds("chat-pin-plain").is_some());
+        assert!(cx.debug_bounds("chat-pin-plain").is_none());
 
         // A right-click opens the context menu; the row itself is not
         // activated.
