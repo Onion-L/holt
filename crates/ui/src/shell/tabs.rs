@@ -144,7 +144,7 @@ impl Shell {
     /// The canvas titles as NOTHING (user request — a "New session" header
     /// over the empty canvas was noise); a session appends its project as a
     /// muted folder tag right of the title.
-    fn session_title_bits(
+    pub(super) fn session_title_bits(
         &self,
         cx: &App,
     ) -> (

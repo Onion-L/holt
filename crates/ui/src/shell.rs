@@ -359,6 +359,9 @@ pub struct Shell {
     /// deactivation clears it, so a chip cannot stick after an app switch
     /// swallows the key-up.
     pub(super) jump_hints: bool,
+    /// The window title this process last pushed to the platform — the
+    /// render pass only crosses the FFI on a change.
+    window_title: Option<String>,
     /// Which `loaders::MARK_SHAPES` variant the new-chat canvas shows —
     /// re-rolled at random each time a chat is selected, so the next visit
     /// to the bare canvas gets a fresh shape.
@@ -817,6 +820,7 @@ impl Shell {
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,
+            window_title: None,
             new_chat_mark: random_mark_index(),
             terminal: None,
             background_menu: popover::Popup::default(),
@@ -2623,6 +2627,31 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.viewport_width = f32::from(window.viewport_size().width);
+        // The window manager reads the title (Linux titlebars, taskbars); the
+        // app's own chrome hides it on macOS. Only a change crosses the FFI.
+        let title: SharedString = match self.route {
+            Route::Chat => {
+                let (title, folder, _, on_canvas) = self.session_title_bits(cx);
+                if on_canvas {
+                    format!("{} — holt", t!("shell_chrome.session.default_title")).into()
+                } else {
+                    format!("{title} — {}", folder.unwrap_or_else(|| "holt".into())).into()
+                }
+            }
+            Route::Settings(_) => {
+                format!("{} — holt", t!("sidebar_spaces.sidebar.settings")).into()
+            }
+            Route::Scheduled => {
+                format!("{} — holt", t!("shell_chrome.titlebar.nav_scheduled")).into()
+            }
+            Route::ChatManager => {
+                format!("{} — holt", t!("shell_chrome.titlebar.nav_chat_manager")).into()
+            }
+        };
+        if self.window_title.as_deref() != Some(title.as_ref()) {
+            window.set_window_title(&title);
+            self.window_title = Some(title.to_string());
+        }
         // Appearance actions persist independently of the shell. Mirror the
         // globals before any later debounced settings save can overwrite them.
         self.settings.appearance = crate::appearance::mode(cx);
