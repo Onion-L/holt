@@ -101,7 +101,11 @@ actions!(
         NextSession,
         PrevSession,
         ArchiveSession,
-        OpenChatManager
+        OpenChatManager,
+        /// ⌘⇧R — Scheduled reached without the titlebar menu, which the
+        /// collapsed/narrow sidebar hides (the menu only mounts while the
+        /// seam affords it).
+        OpenScheduled
     ]
 );
 
@@ -212,6 +216,10 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // Fixed: ⌘⇧M opens the Chat manager (batch archive/delete); the
         // titlebar nav menu's Chat manager row carries the same action.
         dynamic_key_binding(&platform_combo("mod-shift-m"), OpenChatManager, None, cx),
+        // Fixed: ⌘⇧R opens Scheduled — the menu row's twin, so the page
+        // stays reachable in the collapsed/narrow layouts that hide the
+        // menu trigger.
+        dynamic_key_binding(&platform_combo("mod-shift-r"), OpenScheduled, None, cx),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
@@ -2862,6 +2870,9 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &OpenChatManager, _, cx| {
                 this.open_chat_manager(cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenScheduled, _, cx| {
+                this.open_scheduled(cx);
             }));
 
         let root = match &gate {
@@ -2901,7 +2912,7 @@ impl Render for Shell {
                 if self.debug_dialog.as_deref() == Some("model") {
                     self.debug_dialog = None;
                     self.composer
-                        .update(cx, |c, cx| c.debug_open_model_menu(window, cx));
+                        .update(cx, |c, cx| c.open_model_menu(window, cx));
                 }
                 // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);

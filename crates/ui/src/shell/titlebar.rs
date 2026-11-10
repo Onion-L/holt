@@ -641,8 +641,10 @@ impl Shell {
         // The trigger aligns to the sidebar's view-options seam; when the
         // sidebar no longer affords that (collapsed, or too narrow), the
         // parked button read as a stray fourth icon over the identity (user
-        // request) — it is gone entirely, and the title parks one group gap
-        // past the `+` instead.
+        // request) — it is gone, and the title parks one group gap past the
+        // `+` instead. A live Routine keeps it mounted: the dot is the only
+        // waiting/running signal, and the menu is how the user reaches the
+        // page (⌘⇧R is the shortcut twin).
         let buttons_start = self.eval_tween(
             self.titlebar_tween,
             cluster_buttons_start(
@@ -656,10 +658,15 @@ impl Shell {
             TITLEBAR_GROUP_GAP - TITLEBAR_CONTROL_GAP
         } else {
             let margin = titlebar_menu_margin(buttons_start, sidebar_now);
-            if margin <= TITLEBAR_GROUP_GAP {
+            if margin <= TITLEBAR_GROUP_GAP && live.is_none() {
                 return div().into_any_element();
             }
-            margin
+            if margin <= TITLEBAR_GROUP_GAP {
+                // Parked past the `+`: only the live-Routine case lands here.
+                TITLEBAR_GROUP_GAP
+            } else {
+                margin
+            }
         };
         let fade_key = "window-control-titlebar-menu";
         let mut trigger = div()
