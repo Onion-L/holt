@@ -64,6 +64,9 @@ pub enum ComposerEvent {
     /// identity so it can anchor the prompt at the top with the reply's
     /// reserved space below it.
     Sent { chat_id: String, message_id: String },
+    /// The blocked-send explanation's action (issue #71): deep-link to
+    /// Settings → Providers, not the default section.
+    OpenProviderSetup,
 }
 pub struct Composer {
     state: Entity<AppState>,
@@ -955,7 +958,57 @@ impl Render for Composer {
                         .child(div().size(px(5.0)).rounded_full().bg(dot))
                         .child(div().min_w_0().truncate().child(notice)),
                 ))
-            });
+            })
+            // Blocked-by-setup explanation (issue #71): a fresh install with
+            // no provider key leaves the send button dimmed and Enter dead —
+            // say why, and deep-link to Settings → Providers instead of the
+            // default section.
+            .when(
+                !self.sending
+                    && !self.failed_submissions.contains_key(&self.current_key)
+                    && self.pickers.read(cx).send_setup_block(cx) == Some(true),
+                |el| {
+                    el.child(crate::motion::fade_in(
+                        "composer-setup-notice",
+                        div()
+                            .id("composer-setup-notice")
+                            .mx(px(8.0))
+                            .mt(px(6.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .text_size(px(11.0))
+                            .line_height(px(14.0))
+                            .text_color(theme.text_faint)
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(t!("composer_input.failure.configure_provider")),
+                            )
+                            .child(
+                                div()
+                                    .id("composer-setup-open")
+                                    .role(gpui::Role::Button)
+                                    .aria_label(t!(
+                                        "pickers_dialogs.provider_model.configure_provider"
+                                    ))
+                                    .focusable()
+                                    .flex_none()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(6.0))
+                                    .cursor_pointer()
+                                    .text_color(theme.text_muted)
+                                    .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ComposerEvent::OpenProviderSetup);
+                                    }))
+                                    .child(t!("pickers_dialogs.provider_model.configure_provider")),
+                            ),
+                    ))
+                },
+            );
 
         if wizard_active {
             let wizard = self.render_wizard(cx);

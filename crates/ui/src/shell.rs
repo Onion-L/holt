@@ -712,6 +712,11 @@ impl Shell {
                         t.on_own_send(chat_id.clone(), message_id.clone(), cx)
                     });
                 }
+                // The blocked-send notice's deep link (issue #71): the
+                // provider setup page, not the default section.
+                ComposerEvent::OpenProviderSetup => {
+                    _this.open_settings(SettingsSection::Providers, cx);
+                }
             }
         });
         // Spawn chips open their subagent's transcript as a right-pane tab.

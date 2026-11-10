@@ -547,6 +547,23 @@ impl Pickers {
             && self.resolved(cx).model.is_some()
     }
 
+    /// The fresh-install explanation the composer renders when a send is
+    /// blocked by setup (issue #71 — the disabled button otherwise reads as
+    /// a dead app): `None` while providers are still loading or everything
+    /// resolves; `Some(true)` = no keyed provider to send with; `Some(false)`
+    /// = provider fine but no model.
+    pub(crate) fn send_setup_block(&self, cx: &App) -> Option<bool> {
+        let providers = self.providers.ready()?;
+        let offered = offered_providers(providers);
+        let provider_ok = self
+            .effective_provider(cx)
+            .is_some_and(|selected| offered.iter().any(|p| p.id == selected));
+        if !provider_ok {
+            return Some(true);
+        }
+        (!self.resolved(cx).model.is_some()).then_some(false)
+    }
+
     /// Every loaded model of the configured providers, provider by provider
     /// in catalog order: what a Routine's model is picked from.
     pub(crate) fn offered_models(&self) -> Vec<&Model> {
