@@ -67,6 +67,8 @@ conversation_transcript:
         en-US: ⊘ Denied
       denied_note:
         en-US: ⊘ Denied · "%{note}"
+      outside_project:
+        en-US: ⚠ Outside project
       aborted:
         en-US: ⊘ Interrupted
   tool:

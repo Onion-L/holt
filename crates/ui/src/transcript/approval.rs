@@ -108,6 +108,9 @@ pub enum VerdictTint {
     Neutral,
     AutoReview,
     Danger,
+    /// The full-access outside-project badge (issue #88) — ran, but the
+    /// user should notice.
+    Warning,
 }
 
 /// The settled verdict's compact marker text + tint (prototype 3-A's chip
@@ -157,6 +160,10 @@ pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
             t!("conversation_transcript.approval.verdict.aborted").into_owned(),
             VerdictTint::Danger,
         ),
+        GateVerdict::OutsideProject => (
+            t!("conversation_transcript.approval.verdict.outside_project").into_owned(),
+            VerdictTint::Warning,
+        ),
     }
 }
 
@@ -167,6 +174,9 @@ pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
         // The model review's signpost, matching the mode menu's tier tint.
         VerdictTint::AutoReview => crate::theme::AccentColor::Blue.primary(theme.appearance),
         VerdictTint::Danger => theme.danger,
+        // The full-access outside-project badge (issue #88) — ran, but the
+        // user should notice.
+        VerdictTint::Warning => theme.warning,
     }
 }
 

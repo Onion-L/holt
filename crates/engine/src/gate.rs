@@ -32,6 +32,27 @@ pub(crate) fn is_mutating_tool(name: &str) -> bool {
     ) || name.starts_with("mcp__")
 }
 
+/// Full-access visibility (issue #88): does this write/edit land outside
+/// the chat's folder? Prefix test on the resolved absolute path —
+/// [`crate::tools::to_absolute`] already normalized the shape. Windows
+/// compares case-insensitively; a casing-only mismatch can still badge on
+/// unix, which is the harmless direction (a badge, not a silent write).
+fn writes_outside_cwd(cwd: &str, arguments: &serde_json::Value) -> bool {
+    arg_str(arguments, "path")
+        .map(|path| crate::tools::to_absolute(cwd, &path))
+        .is_some_and(|resolved| {
+            let cwd = cwd.trim_end_matches(['/', '\\']);
+            let (cwd_norm, resolved_norm) = if cfg!(target_os = "windows") {
+                (cwd.to_lowercase(), resolved.to_lowercase())
+            } else {
+                (cwd.to_string(), resolved)
+            };
+            !resolved_norm
+                .strip_prefix(&cwd_norm)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+        })
+}
+
 /// Tools whose calls always meet the HUMAN gatekeeper, whatever the chat's
 /// permission mode (ADR-model-setup-applies-stored-proposals): a catalog write steers where the API key is
 /// sent — full-access means "don't audit my files", not "don't audit my
@@ -572,6 +593,29 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                     };
                 }
                 if !forced && mode != PermissionMode::ConfirmChanges {
+                    // Full access runs everything without asking (issue #88):
+                    // a write/edit whose target lands outside the chat's
+                    // folder still stamps a visible badge on the chip —
+                    // silent out-of-tree writes were too easy to miss. Bash
+                    // targets stay unstamped: redirect parsing is not
+                    // reliable enough to badge honestly.
+                    if mode == PermissionMode::FullAccess
+                        && matches!(ctx.tool_call.name.as_str(), "write" | "edit")
+                        && writes_outside_cwd(&cwd, &arguments)
+                    {
+                        stamp_gate(
+                            &chat,
+                            &base_parts,
+                            &ctx.tool_call.id,
+                            ToolGate {
+                                origin: None,
+                                id: uuid::Uuid::new_v4().to_string(),
+                                state: ToolGateState::Settled {
+                                    verdict: GateVerdict::OutsideProject,
+                                },
+                            },
+                        );
+                    }
                     return None;
                 }
                 let approval_id = uuid::Uuid::new_v4().to_string();
@@ -739,6 +783,38 @@ mod tests {
                 state,
             }),
         }
+    }
+
+    fn outside_probe(cwd: &str, path: &str) -> bool {
+        writes_outside_cwd(cwd, &serde_json::json!({ "path": path }))
+    }
+
+    #[test]
+    fn outside_cwd_detection_covers_relative_absolute_and_inside_paths() {
+        let cwd = "/workspace/holt/demo-todo";
+        // Absolute sibling outside the folder.
+        assert!(outside_probe(cwd, "/tmp/holt-probe.txt"));
+        // Relative paths resolve against the cwd and stay inside...
+        assert!(!outside_probe(cwd, "todo.js"));
+        assert!(!outside_probe(cwd, "src/index.js"));
+        // ...but a `..` climb out is outside.
+        assert!(outside_probe(cwd, "../sibling/secret.txt"));
+        // The cwd itself (with a trailing separator) is not outside.
+        assert!(!outside_probe(cwd, "."));
+    }
+
+    #[test]
+    fn outside_cwd_detection_is_prefix_safe() {
+        // A sibling sharing the cwd's prefix must not read as inside.
+        assert!(outside_probe(
+            "/workspace/holt/demo",
+            "/workspace/holt/demo-todo/x"
+        ));
+        // Trailing separator on the cwd itself.
+        assert!(!outside_probe("/workspace/holt/demo-todo/", "todo.js"));
+        // No path argument fails open as "not outside" — the badge is
+        // additive, never a block.
+        assert!(!writes_outside_cwd("/workspace", &serde_json::json!({})));
     }
 
     #[test]

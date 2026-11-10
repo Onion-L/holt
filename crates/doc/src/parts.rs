@@ -201,6 +201,9 @@ pub enum GateVerdict {
     /// The Turn was interrupted while the gate was open; the call settled
     /// as aborted.
     Aborted,
+    /// Full access (issue #88): a write/edit whose target sat outside the
+    /// chat's folder ran without asking — this badge is the visible trace.
+    OutsideProject,
 }
 
 /// The Plan Mode approval card (ADR-plan-mode-is-an-independent-approval-checkpoint): one card per plan submission —

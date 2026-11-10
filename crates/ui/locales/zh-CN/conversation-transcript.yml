@@ -67,6 +67,8 @@ conversation_transcript:
         zh-CN: ⊘ 已拒绝
       denied_note:
         zh-CN: ⊘ 已拒绝 · "%{note}"
+      outside_project:
+        zh-CN: ⚠ 项目外写入
       aborted:
         zh-CN: ⊘ 已中断
   tool:
