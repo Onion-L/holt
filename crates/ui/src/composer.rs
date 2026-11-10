@@ -485,7 +485,7 @@ impl Composer {
 
     /// Capture-knob passthrough (`HOLT_OPEN_DIALOG=model`): open the
     /// combined provider/model menu.
-    pub fn debug_open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pickers
             .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
     }
@@ -966,8 +966,19 @@ impl Render for Composer {
             .when(
                 !self.sending
                     && !self.failed_submissions.contains_key(&self.current_key)
-                    && self.pickers.read(cx).send_setup_block(cx) == Some(true),
+                    && self.pickers.read(cx).send_setup_block(cx).is_some(),
                 |el| {
+                    // Blocked-by-setup explanations (issue #71, review): no
+                    // keyed provider deep-links to Settings → Providers; a
+                    // provider without a model opens the model menu — the
+                    // dimmed send button otherwise has no explanation in
+                    // either case.
+                    let needs_provider = self.pickers.read(cx).send_setup_block(cx) == Some(true);
+                    let caption = if needs_provider {
+                        t!("composer_input.failure.configure_provider")
+                    } else {
+                        t!("composer_input.failure.choose_model")
+                    };
                     el.child(crate::motion::fade_in(
                         "composer-setup-notice",
                         div()
@@ -980,32 +991,39 @@ impl Render for Composer {
                             .text_size(px(11.0))
                             .line_height(px(14.0))
                             .text_color(theme.text_faint)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(t!("composer_input.failure.configure_provider")),
-                            )
-                            .child(
-                                div()
-                                    .id("composer-setup-open")
-                                    .role(gpui::Role::Button)
-                                    .aria_label(t!(
-                                        "pickers_dialogs.provider_model.configure_provider"
-                                    ))
-                                    .focusable()
-                                    .flex_none()
-                                    .px(px(6.0))
-                                    .py(px(2.0))
-                                    .rounded(px(6.0))
-                                    .cursor_pointer()
-                                    .text_color(theme.text_muted)
-                                    .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
-                                    .on_click(cx.listener(|_this, _, _, cx| {
-                                        cx.emit(ComposerEvent::OpenProviderSetup);
-                                    }))
-                                    .child(t!("pickers_dialogs.provider_model.configure_provider")),
-                            ),
+                            // The model case's whole row opens the model
+                            // menu; the provider case's button deep-links.
+                            .when(!needs_provider, |el| el.cursor_pointer())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.pickers.read(cx).send_setup_block(cx) == Some(false) {
+                                    this.open_model_menu(window, cx);
+                                }
+                            }))
+                            .child(div().min_w_0().truncate().child(caption))
+                            .when(needs_provider, |el| {
+                                el.child(
+                                    div()
+                                        .id("composer-setup-open")
+                                        .role(gpui::Role::Button)
+                                        .aria_label(t!(
+                                            "pickers_dialogs.provider_model.configure_provider"
+                                        ))
+                                        .focusable()
+                                        .flex_none()
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .rounded(px(6.0))
+                                        .cursor_pointer()
+                                        .text_color(theme.text_muted)
+                                        .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
+                                        .on_click(cx.listener(|_this, _, _, cx| {
+                                            cx.emit(ComposerEvent::OpenProviderSetup);
+                                        }))
+                                        .child(t!(
+                                            "pickers_dialogs.provider_model.configure_provider"
+                                        )),
+                                )
+                            }),
                     ))
                 },
             );
