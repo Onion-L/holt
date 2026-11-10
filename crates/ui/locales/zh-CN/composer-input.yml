@@ -168,8 +168,12 @@ composer_input:
       zh-CN: 应用这些目录变更？
     allow_once:
       zh-CN: 允许一次
-    always_allow_session:
-      zh-CN: 始终允许 · 本次会话
+    always_allow_session_command:
+      zh-CN: 本次会话内始终允许此命令
+    always_allow_session_file:
+      zh-CN: 本次会话内始终允许此文件
+    always_allow_session_tool:
+      zh-CN: 本次会话内始终允许此工具
     deny:
       zh-CN: 拒绝
     deny_note_placeholder:

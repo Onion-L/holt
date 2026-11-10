@@ -111,6 +111,18 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
         ToolCall::ApplyPatch { .. } => t!("composer_input.approval.gate_patch"),
         _ => t!("composer_input.approval.gate_generic"),
     };
+    // The always-allow grant is deliberately the narrowest thing that works
+    // (permission-gate): bash covers this command and its plain-argument
+    // extensions, write/edit the exact resolved path, everything else the
+    // exact tool. The option label says so — "this session" alone promised
+    // more than the grant delivers (issue #70).
+    let always_allow_label = match call {
+        ToolCall::Exec { .. } => t!("composer_input.approval.always_allow_session_command"),
+        ToolCall::WriteFile { .. } | ToolCall::EditFile { .. } | ToolCall::ApplyPatch { .. } => {
+            t!("composer_input.approval.always_allow_session_file")
+        }
+        _ => t!("composer_input.approval.always_allow_session_tool"),
+    };
     ApprovalPrompt {
         kind: BarKind::Gate,
         title: title.into(),
@@ -122,7 +134,7 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
                 danger: false,
             },
             ApprovalOption {
-                label: t!("composer_input.approval.always_allow_session").into(),
+                label: always_allow_label.into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::AlwaysAllow),
                 danger: false,
             },

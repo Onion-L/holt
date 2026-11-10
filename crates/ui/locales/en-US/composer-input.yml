@@ -168,8 +168,12 @@ composer_input:
       en-US: Apply these catalog changes?
     allow_once:
       en-US: Allow once
-    always_allow_session:
-      en-US: Always allow · this session
+    always_allow_session_command:
+      en-US: Always allow this command · this session
+    always_allow_session_file:
+      en-US: Always allow this file · this session
+    always_allow_session_tool:
+      en-US: Always allow this tool · this session
     deny:
       en-US: Deny
     deny_note_placeholder:
