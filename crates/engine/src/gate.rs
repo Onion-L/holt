@@ -34,22 +34,29 @@ pub(crate) fn is_mutating_tool(name: &str) -> bool {
 
 /// Full-access visibility (issue #88): does this write/edit land outside
 /// the chat's folder? Prefix test on the resolved absolute path —
-/// [`crate::tools::to_absolute`] already normalized the shape. Windows
-/// compares case-insensitively; a casing-only mismatch can still badge on
-/// unix, which is the harmless direction (a badge, not a silent write).
+/// [`crate::tools::to_absolute`] already normalized the shape (forward
+/// slashes; unix spellings joined onto the cwd on Windows, which keeps
+/// them inside the fence). Windows compares case-insensitively; a
+/// casing-only mismatch can still badge on unix, which is the harmless
+/// direction (a badge, not a silent write).
 fn writes_outside_cwd(cwd: &str, arguments: &serde_json::Value) -> bool {
     arg_str(arguments, "path")
         .map(|path| crate::tools::to_absolute(cwd, &path))
         .is_some_and(|resolved| {
-            let cwd = cwd.trim_end_matches(['/', '\\']);
-            let (cwd_norm, resolved_norm) = if cfg!(target_os = "windows") {
-                (cwd.to_lowercase(), resolved.to_lowercase())
-            } else {
-                (cwd.to_string(), resolved)
-            };
-            !resolved_norm
+            // The chat's cwd arrives in the host spelling — backslashes on
+            // Windows — while `to_absolute` normalized the resolved path to
+            // forward slashes. Compare in one spelling.
+            let mut cwd_norm = cwd.trim_end_matches(['/', '\\']).replace('\\', "/");
+            if cfg!(target_os = "windows") {
+                cwd_norm = cwd_norm.to_lowercase();
+                let resolved = resolved.to_lowercase();
+                return !resolved
+                    .strip_prefix(&cwd_norm)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+            }
+            !resolved
                 .strip_prefix(&cwd_norm)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         })
 }
 
@@ -791,27 +798,47 @@ mod tests {
 
     #[test]
     fn outside_cwd_detection_covers_relative_absolute_and_inside_paths() {
-        let cwd = "/workspace/holt/demo-todo";
-        // Absolute sibling outside the folder.
-        assert!(outside_probe(cwd, "/tmp/holt-probe.txt"));
-        // Relative paths resolve against the cwd and stay inside...
-        assert!(!outside_probe(cwd, "todo.js"));
-        assert!(!outside_probe(cwd, "src/index.js"));
-        // ...but a `..` climb out is outside.
-        assert!(outside_probe(cwd, "../sibling/secret.txt"));
-        // The cwd itself (with a trailing separator) is not outside.
-        assert!(!outside_probe(cwd, "."));
+        // Platform-native spellings. Unix absolute paths join the cwd on
+        // Windows (tools::to_absolute keeps unix-trained models inside the
+        // fence), so only a rooted/drive path can be outside there.
+        if cfg!(windows) {
+            let cwd = "C:/workspace/holt/demo-todo";
+            assert!(outside_probe(cwd, "C:/tmp/holt-probe.txt"));
+            assert!(outside_probe(cwd, "D:/other/secret.txt"));
+            assert!(!outside_probe(cwd, "todo.js"));
+            assert!(!outside_probe(cwd, "src/index.js"));
+            assert!(!outside_probe(cwd, "/tmp/holt-probe.txt"));
+            assert!(!outside_probe(cwd, "."));
+        } else {
+            let cwd = "/workspace/holt/demo-todo";
+            // Absolute sibling outside the folder.
+            assert!(outside_probe(cwd, "/tmp/holt-probe.txt"));
+            // Relative paths resolve against the cwd and stay inside...
+            assert!(!outside_probe(cwd, "todo.js"));
+            assert!(!outside_probe(cwd, "src/index.js"));
+            // ...but a `..` climb out is outside.
+            assert!(outside_probe(cwd, "../sibling/secret.txt"));
+            // The cwd itself (with a trailing separator) is not outside.
+            assert!(!outside_probe(cwd, "."));
+        }
     }
 
     #[test]
     fn outside_cwd_detection_is_prefix_safe() {
-        // A sibling sharing the cwd's prefix must not read as inside.
-        assert!(outside_probe(
-            "/workspace/holt/demo",
-            "/workspace/holt/demo-todo/x"
-        ));
-        // Trailing separator on the cwd itself.
-        assert!(!outside_probe("/workspace/holt/demo-todo/", "todo.js"));
+        // A sibling sharing the cwd's prefix must not read as inside; the
+        // host backslash spelling compares equal to the normalized one.
+        if cfg!(windows) {
+            assert!(outside_probe("C:/ws/demo", "C:/ws/demo-todo/x"));
+            assert!(outside_probe("C:/ws/demo", "C:\\ws\\demo-todo\\x"));
+            assert!(!outside_probe("C:\\ws\\demo-todo\\", "todo.js"));
+        } else {
+            assert!(outside_probe(
+                "/workspace/holt/demo",
+                "/workspace/holt/demo-todo/x"
+            ));
+            // Trailing separator on the cwd itself.
+            assert!(!outside_probe("/workspace/holt/demo-todo/", "todo.js"));
+        }
         // No path argument fails open as "not outside" — the badge is
         // additive, never a block.
         assert!(!writes_outside_cwd("/workspace", &serde_json::json!({})));
