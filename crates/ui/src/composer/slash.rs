@@ -167,12 +167,12 @@ impl SlashCandidate {
                 description,
                 input_hint: Some(hint),
                 ..
-            } if description.is_empty() => format!("<{hint}>"),
+            } if description.is_empty() => wrap_hint(hint),
             SlashCandidate::Command {
                 description,
                 input_hint: Some(hint),
                 ..
-            } => format!("{description} · <{hint}>"),
+            } => format!("{description} · {}", wrap_hint(hint)),
             SlashCandidate::Command {
                 description,
                 input_hint: None,
@@ -250,6 +250,18 @@ pub(crate) fn popup_candidates(
 /// are inline `$` mentions, ADR-skill-invocation-is-an-inline-mention).
 pub(crate) fn parse(text: &str) -> Parsed {
     parse_compact(text)
+}
+
+/// Bracket a command's input hint — unless the hint already carries its own
+/// brackets (`<task>`, `[objective | off]`); double-wrapping read as a
+/// template typo in the /workflow row (issue #85).
+fn wrap_hint(hint: &str) -> String {
+    if hint.starts_with('<') && hint.ends_with('>') || hint.starts_with('[') && hint.ends_with(']')
+    {
+        hint.to_owned()
+    } else {
+        format!("<{hint}>")
+    }
 }
 
 /// `/compact` takes no arguments; `/compacted`-style longer words stay
