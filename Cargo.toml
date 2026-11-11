@@ -11,6 +11,7 @@ members = [
     "crates/core",
     "apps/holt",
     "apps/holt-runner",
+    "third_party/gpui-pre-linux",
 ]
 
 [workspace.package]
@@ -126,3 +127,10 @@ opt-level = 2
 # readable.
 [profile.dev.package.holt-core]
 debug = "line-tables-only"
+
+# X11 input and frame-clock fixes for issue #85. gpui-pre 0.3.12 still
+# forwards a key burst to XIM before reading replies, and stops painting
+# when a compositor reports the window fully obscured. See
+# docs/DECISION.md (x11-input-is-serialized-in-a-gpui-pre-linux-patch).
+[patch.crates-io]
+gpui-pre-linux = { path = "third_party/gpui-pre-linux" }

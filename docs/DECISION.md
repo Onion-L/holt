@@ -36,7 +36,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
-| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
+| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [x11-input-is-serialized-in-a-gpui-pre-linux-patch](#x11-input-is-serialized-in-a-gpui-pre-linux-patch) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -861,7 +861,9 @@ is only an identifier; task semantics stay in the chat, commit, and PR titles.
 ## gpui-kit-owns-the-gpui-stack
 
 Holt consumes GPUI through `gpui-kit` with the component and asset features
-disabled, and deletes the vendored GPUI fork. The existing `gpui` crate name
+disabled, and deletes the vendored GPUI fork. Superseded in part by
+`x11-input-is-serialized-in-a-gpui-pre-linux-patch`: only the X11 input and
+frame-clock path is patched in-tree. The existing `gpui` crate name
 is Holt's alias for the Kit facade, so ordinary views do not need import-only
 churn; the small Tokio bridge remains Holt-owned because Kit does not supply
 one. Rejected: keeping a patched fork (the maintenance cost this migration
@@ -900,3 +902,23 @@ The merge is surface-only: the agent's own `spawn_background` /
 `process_status` / `kill_background_process` tools still see processes
 alone, so a run's `callId` never becomes a killable pid on the
 model-facing surface.
+
+## x11-input-is-serialized-in-a-gpui-pre-linux-patch
+
+Issue #85. `gpui-pre-linux` 0.3.12 (the stack `gpui-kit` 0.9.1 pins) forwards
+every key in an X11 batch to XIM, then applies whichever reply arrives.
+Under lag the input method answers Enter, or the next field's keys, before
+earlier characters, so text is dropped, reordered across fields, or
+submitted truncated. The same build stops the frame clock when a compositor
+reports the window fully obscured and does not flush the X connection after
+present, so a frame can sit invisible until the pointer moves. Holt keeps a
+path patch of that one crate: one forwarded key at a time, characters that
+arrive with no input handler are held until the next handler, a mapped
+window keeps its frame clock, and present is flushed. A long silent turn
+says "Still working" after 15s and the elapsed clock uses the same ink as
+the status word. Opening a session focuses the composer before the next
+key. Rejected: a Holt-side unscrambler (a burst that arrives as `ensptx`
+cannot be split back into `memtest` and `npx`), disabling XIM (breaks CJK
+input), and waiting on a newer `gpui-pre` (0.3.12 is what Kit publishes, and
+it still has the single callback slot). The rest of GPUI stays on crates.io;
+a Kit bump that carries the fix drops the patch.

@@ -319,6 +319,15 @@ pub fn sending_bridge(
     }
 }
 
+/// A working phase this long has stopped being a flavour word. The trailer
+/// says it is still working and keeps the clock beside that sentence, so a
+/// multi-minute silent turn is not only a rotating spinner (issue #85).
+pub const LONG_PHASE_AFTER_SECS: i64 = 15;
+
+pub fn working_phase_is_long(elapsed_secs: i64) -> bool {
+    elapsed_secs >= LONG_PHASE_AFTER_SECS
+}
+
 /// "1m 32s"-style elapsed formatting.
 pub fn format_elapsed(secs: i64) -> String {
     let secs = secs.max(0);
@@ -1053,6 +1062,10 @@ mod tests {
         assert_eq!(format_elapsed(59), "59s");
         assert_eq!(format_elapsed(92), "1m 32s");
         assert_eq!(format_elapsed(-5), "0s");
+        assert!(!working_phase_is_long(0));
+        assert!(!working_phase_is_long(14));
+        assert!(working_phase_is_long(15));
+        assert!(working_phase_is_long(120));
     }
 
     #[test]
