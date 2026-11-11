@@ -2783,7 +2783,7 @@ mod tests {
         let events = stream(&model, &context, Some(&options));
         let mut seen_text = String::new();
         let mut done_reason: Option<DoneReason> = None;
-        let mut stream = Box::pin(events);
+        let stream = std::pin::pin!(events);
         while let Some(event) = stream.next().await {
             match event {
                 AssistantMessageEvent::TextDelta { delta, .. } => seen_text.push_str(&delta),
