@@ -235,7 +235,13 @@ async fn compact_on_a_short_chat_finishes_without_blocking_the_queue() {
     assert!(state["error"].is_null(), "{state}");
     assert_eq!(provider.requests().len(), requests_before);
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    assert!(snapshot.to_string().contains("There is nothing to compact"));
+    // The refusal names its reason: a short chat fits the verbatim tail a
+    // compaction keeps, so a summary would save nothing (issue #86).
+    assert!(
+        snapshot
+            .to_string()
+            .contains("whole history fits the recent tail")
+    );
     assert!(!snapshot.to_string().contains("compactionDivider"));
     assert!(!snapshot.to_string().contains("/compact"));
 
@@ -251,7 +257,7 @@ async fn compact_on_a_short_chat_finishes_without_blocking_the_queue() {
     assert!(
         !serde_json::to_string(&provider.requests().last().unwrap().messages)
             .unwrap()
-            .contains("There is nothing to compact")
+            .contains("nothing to compact")
     );
 }
 

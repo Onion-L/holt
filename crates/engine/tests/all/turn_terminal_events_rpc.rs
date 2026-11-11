@@ -430,8 +430,9 @@ async fn a_manual_compaction_publishes_no_event() {
         .unwrap();
 
     // A fresh chat has nothing to compact: the command completes with a
-    // Transcript notice and the queue advances — still never a Turn.
-    common::wait_for_transcript_text(&mut transcript, "nothing to compact").await;
+    // Transcript notice (naming the reason) and the queue advances —
+    // still never a Turn.
+    common::wait_for_transcript_text(&mut transcript, "no history").await;
     let queue = queue_snapshot(&engine, "chat-1").await;
     assert!(queue["activeMessageId"].is_null());
     assert_eq!(queue["pending"], json!([]));

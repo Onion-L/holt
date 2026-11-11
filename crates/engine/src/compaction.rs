@@ -71,6 +71,31 @@ pub(crate) fn has_compactable_content(history: &[AgentMessage]) -> bool {
     )
 }
 
+/// Why [`has_compactable_content`] refused — the manual `/compact`
+/// notice's text (issue #86): a bare "nothing to compact" on a chat with
+/// visible history reads as a malfunction, so the notice names the actual
+/// rule. Three shapes: a chat with no history, one whose turns since the
+/// last compaction still fit the tail, and one that never exceeded the
+/// tail in the first place.
+pub(crate) fn nothing_to_compact_reason(history: &[AgentMessage]) -> String {
+    if history.is_empty() {
+        return "There is nothing to compact yet — the chat has no history.".into();
+    }
+    let budget = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens / 1000;
+    let compacted = history.iter().any(|message| {
+        matches!(message, AgentMessage::Custom(custom) if custom.role == "compactionSummary")
+    });
+    if compacted {
+        format!(
+            "Already compacted — the turns since still fit the recent tail compaction keeps verbatim (about {budget}k tokens)."
+        )
+    } else {
+        format!(
+            "The whole history fits the recent tail compaction keeps verbatim (about {budget}k tokens), so a summary would save nothing."
+        )
+    }
+}
+
 /// Compact `history` through `stream_fn` when the upstream threshold rule
 /// fires (the automatic placements). Returns `None` when it does not.
 #[expect(clippy::too_many_arguments)]
@@ -405,5 +430,45 @@ fn message_timestamp(message: &AgentMessage) -> i64 {
             .get("timestamp")
             .and_then(|value| value.as_i64())
             .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use holt_core::ai::types::{RoleUser, UserContent, UserMessage};
+
+    fn user(text: &str) -> AgentMessage {
+        AgentMessage::User(UserMessage {
+            role: RoleUser,
+            content: UserContent::Text(text.into()),
+            timestamp: 1,
+        })
+    }
+
+    fn summary() -> AgentMessage {
+        AgentMessage::Custom(holt_core::agent::types::CustomAgentMessage::new(
+            "compactionSummary",
+            serde_json::json!({"summary": "done so far", "tokensBefore": 9000}),
+        ))
+    }
+
+    /// Each refusal shape gets its own explanation, and every shape the
+    /// notice can take names the tail budget — the bare "nothing to
+    /// compact" read as a malfunction on chats with visible history
+    /// (issue #86).
+    #[test]
+    fn nothing_to_compact_names_its_reason() {
+        assert!(nothing_to_compact_reason(&[]).contains("no history"));
+        let fresh = vec![user("hi"), user("again")];
+        assert!(!has_compactable_content(&fresh));
+        let reason = nothing_to_compact_reason(&fresh);
+        assert!(reason.contains("whole history fits"), "{reason}");
+        assert!(reason.contains("20k tokens"), "{reason}");
+        let compacted = vec![summary(), user("since then")];
+        assert!(!has_compactable_content(&compacted));
+        let reason = nothing_to_compact_reason(&compacted);
+        assert!(reason.contains("Already compacted"), "{reason}");
+        assert!(reason.contains("20k tokens"), "{reason}");
     }
 }

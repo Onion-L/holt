@@ -903,7 +903,7 @@ impl EngineService {
                 format!("compaction-skipped-{}", message.message_id),
                 MessagePart::Notice {
                     id: "n0".into(),
-                    message: "There is nothing to compact".into(),
+                    message: crate::compaction::nothing_to_compact_reason(&history),
                     goal: None,
                 },
             );

@@ -33,7 +33,7 @@ Not here: the agent loop and Turn execution pipeline (see run-loop); the permiss
 - **Compaction never loses context silently**: dividers and notices mark what happened; a compaction summary newer than a goal's stated-objective stamp forces the next continuation to restate it.
 - **The transcript never shrinks** except edit-last's and rewind's forward prunes; History and transcript share the chat's persistence lock.
 - **A question card is restart-safe by construction** — nothing waits on an RPC; the answer is just the next user message.
-- Nothing to compact completes the `/compact` command with a transcript notice and advances the queue without a model request.
+- Nothing to compact completes the `/compact` command with a transcript notice and advances the queue without a model request. The notice names the refusing rule (issue #86): no history yet, turns since the last compaction still fit the verbatim tail, or the whole history does — never a bare "nothing to compact".
 
 ## Verification
 
