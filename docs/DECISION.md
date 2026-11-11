@@ -860,7 +860,7 @@ is only an identifier; task semantics stay in the chat, commit, and PR titles.
 
 ## linux-input-mitigations-stay-in-holt
 
-Linux Enter waits out a short quiet period before the draft is sent, and
+`3174f8b`. Linux Enter waits out a short quiet period before the draft is sent, and
 for a few seconds after a new session Holt replays printable keys aimed at
 the composer only when the buffer never moved. A quiet turn's working
 trailer keeps the elapsed time in the same run as the flavour word, and
