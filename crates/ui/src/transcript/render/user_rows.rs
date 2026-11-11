@@ -716,6 +716,17 @@ impl Transcript {
             };
             (sending, queued, elapsed, flavour_seed(&chat_id))
         };
+        // A turn with no streamed text or tool output yet is the one that
+        // reads as a hang. The hint joins the elapsed clock once it has
+        // gone on long enough (issue #85).
+        let quiet = !sending && {
+            let state = self.state.read(cx);
+            let entries = match &self.doc_override {
+                Some(doc_id) => state.sub_transcript(doc_id),
+                None => state.transcript.as_slice(),
+            };
+            reply_lacks_visible_output(entries)
+        };
         // All three arms are `Cow<'static, str>` — the flavour table went
         // through the catalog with the rest of this group, so the branches
         // unify on the translated type.
@@ -757,25 +768,26 @@ impl Transcript {
                 ))
                 .child(
                     div()
+                        .flex_none()
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(if queued {
                             theme.warning
                         } else {
                             theme.text_muted
                         })
-                        .child(SharedString::from(if queued {
-                            word.to_string()
+                        .child(SharedString::from(if sending {
+                            if queued {
+                                word.to_string()
+                            } else {
+                                format!("{word}…")
+                            }
                         } else {
-                            format!("{word}…")
+                            // Elapsed rides in the same run as the word, in
+                            // the same ink — a faint sibling was easy to miss
+                            // and the first thing a narrow row clipped.
+                            working_status_text(word.as_ref(), elapsed_secs, quiet)
                         })),
                 )
-                .when(!sending, |el| {
-                    el.child(
-                        div()
-                            .text_color(theme.text_faint)
-                            .child(SharedString::from(format_elapsed(elapsed_secs))),
-                    )
-                })
                 .when(approval_pending, |el| {
                     el.child(div().flex_1()).child(
                         div()

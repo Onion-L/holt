@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use gpui::{
@@ -374,6 +374,14 @@ pub struct Shell {
     /// re-rolled at random each time a chat is selected, so the next visit
     /// to the bare canvas gets a fresh shape.
     new_chat_mark: usize,
+    /// After a new session, printable keys aimed at the composer that the
+    /// platform did not insert are written in (issue #85, Linux). `None`
+    /// outside that window and on other platforms.
+    new_session_capture_until: Option<Instant>,
+    /// `(composer text when the key was dispatched, the key's text)`, in
+    /// order, drained by one flush a millisecond later.
+    capture_keys: Vec<(String, String)>,
+    capture_flush_pending: bool,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
     /// The titlebar's background-process popover (the icon next to the
@@ -834,6 +842,9 @@ impl Shell {
             jump_hints: false,
             window_title: None,
             new_chat_mark: random_mark_index(),
+            new_session_capture_until: None,
+            capture_keys: Vec::new(),
+            capture_flush_pending: false,
             terminal: None,
             background_menu: popover::Popup::default(),
             workflow_stop_arm: None,
@@ -1620,6 +1631,80 @@ impl Shell {
             || self.add_space.is_some()
             || self.file_lookup.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
+    }
+
+    /// A printable key during the new-session window, aimed at the composer
+    /// (nothing focused, or the prompt itself — never the terminal or a
+    /// settings field). Recorded so a flush can put it back if the platform
+    /// dropped it.
+    fn note_captured_key(
+        &mut self,
+        ev: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(until) = self.new_session_capture_until else {
+            return;
+        };
+        if Instant::now() >= until {
+            self.new_session_capture_until = None;
+            self.capture_keys.clear();
+            return;
+        }
+        if self.overlay_owns_keyboard(cx) || !self.capture_targets_composer(window, cx) {
+            return;
+        }
+        let Some(text) = crate::composer::printable_insert(&ev.keystroke) else {
+            return;
+        };
+        self.capture_keys
+            .push((self.composer.read(cx).input_text(cx), text.to_string()));
+        if self.capture_flush_pending {
+            return;
+        }
+        self.capture_flush_pending = true;
+        let window = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1))
+                .await;
+            let flushed = cx
+                .update_window(window, |_, window, cx| {
+                    this.update(cx, |shell, cx| shell.flush_captured_keys(window, cx))
+                        .is_ok()
+                })
+                .unwrap_or(false);
+            if !flushed {
+                let _ = this.update(cx, |shell, _| {
+                    shell.capture_flush_pending = false;
+                    shell.capture_keys.clear();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn capture_targets_composer(&self, window: &Window, cx: &App) -> bool {
+        match window.focused(cx) {
+            None => matches!(self.route, Route::Chat),
+            Some(focused) => focused == self.composer.focus_handle(cx),
+        }
+    }
+
+    fn flush_captured_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_flush_pending = false;
+        let keys = std::mem::take(&mut self.capture_keys);
+        let Some((before, _)) = keys.first() else {
+            return;
+        };
+        let current = self.composer.read(cx).input_text(cx);
+        let texts: Vec<&str> = keys.iter().map(|(_, text)| text.as_str()).collect();
+        let Some(missing) = crate::composer::replay_if_unchanged(before, &current, &texts) else {
+            return;
+        };
+        self.composer.update(cx, |composer, cx| {
+            composer.insert_at_caret(&missing, window, cx);
+        });
     }
 
     /// Track the held modifiers so the sidebar can show its jump hints. Only a
@@ -2753,6 +2838,9 @@ impl Render for Shell {
 
         let root = div()
             .id("shell-root")
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                this.note_captured_key(ev, window, cx);
+            }))
             .relative()
             .flex()
             .flex_row()

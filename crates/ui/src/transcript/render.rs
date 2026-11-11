@@ -31,7 +31,8 @@ use holt_proto::view::tool_chip_content_in;
 use super::agent_avatar::{AgentIdentity, AvatarMood, agent_avatar};
 use super::model::{
     DirectiveChip, Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp,
-    is_agent_call, is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
+    is_agent_call, is_spawn_link, reply_lacks_visible_output, skill_file_display,
+    tool_group_collapses, top_gap_for,
 };
 use super::question_card;
 use super::tool::{
@@ -39,8 +40,8 @@ use super::tool::{
     OUTPUT_LINE_HEIGHT, ToolDetail, chips_height, detail_height, format_kb, tool_group_summary,
 };
 use super::viewport::{
-    SCROLL_BUTTON_THRESHOLD_PX, ViewportFinalizeToken, flavour_seed, flavour_word, format_elapsed,
-    sending_bridge,
+    SCROLL_BUTTON_THRESHOLD_PX, ViewportFinalizeToken, flavour_seed, flavour_word, sending_bridge,
+    working_status_text,
 };
 use super::{BlobFetch, FOLD_TWEEN_WINDOW, FoldState, Transcript, TranscriptEvent};
 use crate::i18n::t;
