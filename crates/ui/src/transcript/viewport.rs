@@ -263,6 +263,31 @@ pub const FLAVOUR_WORDS: [&str; 20] = [
 ];
 pub const FLAVOUR_ROTATE_SECS: i64 = 7;
 
+/// After this long with no streamed output, the trailer stops rotating flavour
+/// words and says the turn is still working. The elapsed time beside it is
+/// the progress; a carousel of words alone reads as a hang.
+pub const STILL_WORKING_SECS: i64 = 15;
+
+/// The trailer's status phrase: queued, sending, a flavour word, or — once a
+/// quiet phase has run for [`STILL_WORKING_SECS`] — an explicit still-working
+/// line that no longer rotates.
+pub fn working_phrase(
+    queued: bool,
+    sending: bool,
+    seed: u64,
+    elapsed_secs: i64,
+) -> std::borrow::Cow<'static, str> {
+    if queued {
+        crate::i18n::t!("conversation_transcript.user_row.queued_hint")
+    } else if sending {
+        crate::i18n::t!("conversation_transcript.user_row.sending")
+    } else if elapsed_secs >= STILL_WORKING_SECS {
+        crate::i18n::t!("conversation_transcript.user_row.still_working")
+    } else {
+        flavour_word(seed, elapsed_secs)
+    }
+}
+
 /// The localized flavour word for a seed at an elapsed time.
 pub fn flavour_word(seed: u64, elapsed_secs: i64) -> std::borrow::Cow<'static, str> {
     let step = (elapsed_secs.max(0) / FLAVOUR_ROTATE_SECS) as u64;
@@ -1053,6 +1078,21 @@ mod tests {
         assert_eq!(format_elapsed(59), "59s");
         assert_eq!(format_elapsed(92), "1m 32s");
         assert_eq!(format_elapsed(-5), "0s");
+    }
+
+    #[test]
+    fn a_long_quiet_phase_stops_rotating_flavour_words() {
+        let seed = flavour_seed("chat-1");
+        assert_eq!(
+            working_phrase(false, false, seed, STILL_WORKING_SECS - 1),
+            flavour_word(seed, STILL_WORKING_SECS - 1)
+        );
+        let settled = working_phrase(false, false, seed, STILL_WORKING_SECS);
+        assert_ne!(settled, flavour_word(seed, STILL_WORKING_SECS));
+        assert_eq!(settled, working_phrase(false, false, seed, 180));
+        // Sending and queued keep their own phrases even past the threshold.
+        assert_ne!(working_phrase(false, true, seed, 180), settled);
+        assert_ne!(working_phrase(true, true, seed, 180), settled);
     }
 
     #[test]

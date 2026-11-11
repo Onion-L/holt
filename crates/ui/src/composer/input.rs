@@ -16,9 +16,10 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollEvent, SharedString, Task, TextRun, TextStyle,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, point, prelude::*, px, size,
+    EventEmitter, FocusHandle, Focusable, KeyBinding, KeyDownEvent, KeyUpEvent, Keystroke,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollEvent, SharedString, Task, TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window,
+    WrappedLine, actions, div, point, prelude::*, px, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -193,6 +194,68 @@ enum EditKind {
     Insert,
     Delete,
 }
+/// Where a plain character key should land while an IME composition may be marked.
+///
+/// Linux delivers the hardware key and, separately, the IME's preedit. A key
+/// whose range is `None` used to replace the whole marked span, so a
+/// composition of "es" plus the next letter "t" became "t" (`memtest` →
+/// `memt`). The key commits the composition and inserts after it. An IME
+/// commit still goes through [`EntityInputHandler::replace_text_in_range`]
+/// and may replace the marked span — that is a conversion, not a key.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TypedInsert {
+    /// The marked text is already this character. Keep it and drop the mark.
+    Keep { cursor: usize },
+    /// Replace `replace` (a caret, or the current selection) with the character.
+    Insert { replace: Range<usize> },
+}
+
+pub(crate) fn typed_insert(
+    content: &str,
+    selected: Range<usize>,
+    marked: Option<Range<usize>>,
+    ch: &str,
+) -> TypedInsert {
+    if let Some(marked) = marked {
+        let marked_text = content.get(marked.start..marked.end).unwrap_or("");
+        if marked_text == ch {
+            return TypedInsert::Keep {
+                cursor: marked.end.min(content.len()),
+            };
+        }
+        let at = marked.end.min(content.len());
+        return TypedInsert::Insert { replace: at..at };
+    }
+    let start = selected.start.min(content.len());
+    let end = selected.end.min(content.len()).max(start);
+    TypedInsert::Insert {
+        replace: start..end,
+    }
+}
+
+/// A second KeyDown of the same character before its KeyUp is the Linux IME
+/// echoing the press (Wayland turns a one-character commit into another
+/// KeyDown). A real double letter has a KeyUp between the presses, and a
+/// key repeat is `held`.
+pub(crate) fn swallows_ime_echo(guard: Option<&str>, ch: &str, held: bool) -> bool {
+    !held && guard == Some(ch)
+}
+
+/// A printable character with no modifier other than Shift. Shortcuts, Enter,
+/// and arrows are not characters — their bindings must still run.
+pub(crate) fn plain_typed_char(keystroke: &Keystroke) -> Option<&str> {
+    if !keystroke.modifiers.is_subset_of(&Modifiers::shift()) {
+        return None;
+    }
+    let ch = keystroke.key_char.as_deref()?;
+    let mut chars = ch.chars();
+    let one = chars.next()?;
+    if chars.next().is_some() || one.is_control() {
+        return None;
+    }
+    Some(ch)
+}
+
 /// Bind the composer keymap. Call once at app boot.
 pub fn init(cx: &mut App) {
     let ctx = Some("Composer");
@@ -472,6 +535,9 @@ pub struct ComposerInput {
     /// Caret blink anchor: reset on every keystroke/caret move so the caret is
     /// solid while typing and blinks at [`CARET_BLINK_MS`] when idle.
     blink_anchor: Instant,
+    /// The character just inserted by a key, until that key's KeyUp. See
+    /// [`swallows_ime_echo`].
+    echo_guard: Option<String>,
     /// Half-period repaint driver, alive only while the input is focused.
     blink_task: Option<Task<()>>,
     // -- undo history --
@@ -550,6 +616,7 @@ impl ComposerInput {
             layout_epoch: 0,
             display_is_placeholder: true,
             blink_anchor: Instant::now(),
+            echo_guard: None,
             blink_task: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -799,9 +866,81 @@ impl ComposerInput {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_edit = None;
+        self.echo_guard = None;
         self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
+    }
+
+    /// Insert one typed character. A hardware key must not erase an open IME
+    /// composition, and a second delivery of the same press must not insert
+    /// it twice. The character is in the document, or the echo was dropped;
+    /// the caller stops propagation so the platform's own insert does not
+    /// run as well.
+    pub(crate) fn accept_typed_char(
+        &mut self,
+        ch: &str,
+        held: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if swallows_ime_echo(self.echo_guard.as_deref(), ch, held) {
+            self.echo_guard = None;
+            return;
+        }
+        if held {
+            self.echo_guard = None;
+        }
+        match typed_insert(
+            &self.content,
+            self.selected_range.clone(),
+            self.marked_range.clone(),
+            ch,
+        ) {
+            TypedInsert::Keep { cursor } => {
+                self.marked_range = None;
+                self.selected_range = cursor..cursor;
+                self.follow_cursor = true;
+                self.reset_blink();
+                self.echo_guard = Some(ch.to_string());
+                cx.emit(ComposerInputEvent::Edited);
+                cx.notify();
+            }
+            TypedInsert::Insert { replace } => {
+                // The composition stays in the document; the character lands
+                // after it. Clearing the mark first keeps `replace_text_in_range`
+                // from treating this key as an IME commit of the whole span.
+                self.marked_range = None;
+                self.selected_range = replace;
+                self.replace_text_in_range(None, ch, window, cx);
+                self.echo_guard = Some(ch.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn release_typed_char(&mut self, ch: &str) {
+        if self.echo_guard.as_deref() == Some(ch) {
+            self.echo_guard = None;
+        }
+    }
+
+    fn on_typed_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ch) = plain_typed_char(&event.keystroke) else {
+            return;
+        };
+        self.accept_typed_char(ch, event.is_held, window, cx);
+        cx.stop_propagation();
+    }
+
+    fn on_typed_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        if let Some(ch) = plain_typed_char(&event.keystroke) {
+            self.release_typed_char(ch);
+        }
     }
 
     fn invalidate_mention_tooltip(&mut self) {
@@ -1962,6 +2101,28 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The platform inserts a propagated key with a `None` range. When this
+        // input already took that key, the second delivery (same character,
+        // caret sitting just after it, no composition) is an echo.
+        if range_utf16.is_none()
+            && self.marked_range.is_none()
+            && self.echo_guard.as_deref() == Some(new_text)
+            && self.selected_range.is_empty()
+            && self.selected_range.start >= new_text.len()
+            && self
+                .content
+                .get(self.selected_range.start - new_text.len()..self.selected_range.start)
+                == Some(new_text)
+        {
+            return;
+        }
+        if self
+            .echo_guard
+            .as_deref()
+            .is_some_and(|guard| guard != new_text)
+        {
+            self.echo_guard = None;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -2086,6 +2247,8 @@ impl Render for ComposerInput {
             .key_context(self.key_context)
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
+            .on_key_down(cx.listener(Self::on_typed_key_down))
+            .on_key_up(cx.listener(Self::on_typed_key_up))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
@@ -2583,6 +2746,108 @@ mod tests {
                     "the overflow scrolls internally"
                 );
             });
+        });
+    }
+
+    #[test]
+    fn a_character_key_commits_a_composition_instead_of_replacing_it() {
+        // "memtest" with "es" still marked, then "t": the key must not erase "es".
+        assert_eq!(
+            typed_insert("memtes", 6..6, Some(4..6), "t"),
+            TypedInsert::Insert { replace: 6..6 }
+        );
+        // The marked text is already this character — keep it, drop the mark.
+        assert_eq!(
+            typed_insert("n", 1..1, Some(0..1), "n"),
+            TypedInsert::Keep { cursor: 1 }
+        );
+        // No composition: the selection is replaced, the way a key always did.
+        assert_eq!(
+            typed_insert("ab", 0..2, None, "c"),
+            TypedInsert::Insert { replace: 0..2 }
+        );
+        assert!(swallows_ime_echo(Some("o"), "o", false));
+        assert!(
+            !swallows_ime_echo(Some("o"), "o", true),
+            "a repeat is a new character"
+        );
+        assert!(!swallows_ime_echo(None, "o", false));
+        assert!(
+            plain_typed_char(&gpui::Keystroke {
+                modifiers: gpui::Modifiers::default(),
+                key: "a".into(),
+                key_char: Some("a".into()),
+            })
+            .is_some()
+        );
+        assert!(
+            plain_typed_char(&gpui::Keystroke {
+                modifiers: gpui::Modifiers::control(),
+                key: "a".into(),
+                key_char: Some("a".into()),
+            })
+            .is_none()
+        );
+    }
+
+    /// Linux delivers a key twice (hardware KeyDown, then the IME's
+    /// one-character commit as another KeyDown) and a raw key used to replace
+    /// the open composition. Typing must land once, and "es" + "t" must stay
+    /// "est".
+    #[gpui::test]
+    fn typing_inserts_once_and_does_not_clobber_a_composition(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let (input, cx) = cx.add_window_view(|_window, cx| ComposerInput::new("placeholder", cx));
+        cx.update(|window, app| {
+            let handle = input.read(app).focus_handle.clone();
+            window.focus(&handle, app);
+        });
+        input.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        cx.simulate_input("ab");
+        input.update(cx, |input, _| assert_eq!(input.text(), "ab"));
+
+        // The second KeyDown before KeyUp is the echo.
+        cx.simulate_input("o");
+        cx.simulate_input("o");
+        input.update(cx, |input, _| assert_eq!(input.text(), "abo"));
+
+        cx.update(|window, app| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke {
+                        modifiers: gpui::Modifiers::default(),
+                        key: "o".into(),
+                        key_char: Some("o".into()),
+                    },
+                }),
+                app,
+            );
+        });
+        cx.simulate_input("o");
+        input.update(cx, |input, _| {
+            assert_eq!(
+                input.text(),
+                "aboo",
+                "a real second press follows the key-up"
+            );
+        });
+
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.set_text("memt", cx);
+                input.replace_and_mark_text_in_range(None, "es", None, window, cx);
+            });
+        });
+        input.update(cx, |input, _| {
+            assert_eq!(input.text(), "memtes");
+            assert_eq!(input.marked_range, Some(4..6));
+        });
+        cx.simulate_input("t");
+        input.update(cx, |input, _| {
+            assert_eq!(input.text(), "memtest");
+            assert!(input.marked_range.is_none());
         });
     }
 }

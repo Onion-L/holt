@@ -383,7 +383,7 @@ impl Shell {
                         "titlebar-new-session",
                         icons::PLUS,
                         &theme,
-                        cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                        cx.listener(|this, _, window, cx| this.open_new_session(window, cx)),
                     )),
             )
             // The Scheduled page and Chat manager entries share ONE menu
@@ -533,7 +533,7 @@ impl Shell {
                         "titlebar-new-session",
                         icons::PLUS,
                         &theme,
-                        cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                        cx.listener(|this, _, window, cx| this.open_new_session(window, cx)),
                     )),
             )
             // The Scheduled page and Chat manager entries share ONE menu

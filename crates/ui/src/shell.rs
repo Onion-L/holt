@@ -621,6 +621,9 @@ pub struct Shell {
     /// with nothing focused they go dead. Initial focus lands on the composer
     /// and focus lost with no successor routes back there.
     focus_sub: Option<Subscription>,
+    /// Printable keys that arrive with nothing focused (Ctrl+N's focus gap)
+    /// are inserted into the composer instead of being dropped.
+    key_latch_sub: Option<Subscription>,
     /// Clears the jump hints when the window deactivates: a Cmd+Tab away
     /// swallows the key-up, so without this the chips stay on screen for good.
     activation_sub: Option<Subscription>,
@@ -945,6 +948,7 @@ impl Shell {
             reduced_motion: false,
             motion_active: std::cell::Cell::new(false),
             focus_sub: None,
+            key_latch_sub: None,
             activation_sub: None,
             _ticker: ticker,
             _state_observation: observation,
@@ -1620,6 +1624,32 @@ impl Shell {
             || self.add_space.is_some()
             || self.file_lookup.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
+    }
+
+    /// A printable key with nothing focused is the Ctrl+N gap: the composer
+    /// is on screen but is not the focused text input yet, so the platform
+    /// drops the character. Put it in the composer and focus it. Keys aimed
+    /// at another control (the editor, a dialog) are left alone.
+    fn latch_unfocused_character(
+        &mut self,
+        event: &gpui::KeystrokeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.action.is_some()
+            || !matches!(self.route, Route::Chat)
+            || self.overlay_owns_keyboard(cx)
+        {
+            return;
+        }
+        let handle = self.composer.focus_handle(cx);
+        if handle.is_focused(window) || window.focused(cx).is_some() {
+            return;
+        }
+        if crate::composer::accept_unfocused_char(&self.composer, &event.keystroke, window, cx) {
+            window.focus(&handle, cx);
+            cx.stop_propagation();
+        }
     }
 
     /// Track the held modifiers so the sidebar can show its jump hints. Only a
@@ -2744,6 +2774,11 @@ impl Render for Shell {
                 }
             }));
         }
+        if self.key_latch_sub.is_none() {
+            self.key_latch_sub = Some(cx.observe_keystrokes(|this, event, window, cx| {
+                this.latch_unfocused_character(event, window, cx);
+            }));
+        }
         if matches!(gate, GatePhase::Ready)
             && matches!(self.route, Route::Chat)
             && window.focused(cx).is_none()
@@ -2810,7 +2845,9 @@ impl Render for Shell {
             }))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
-            .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(cx)))
+            .on_action(
+                cx.listener(|this, _: &NewSession, window, cx| this.open_new_session(window, cx)),
+            )
             // Native Settings menu item and the platform convention (Cmd+, on
             // macOS, Ctrl+, elsewhere) always land on the default section.
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {

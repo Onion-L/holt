@@ -119,7 +119,7 @@ impl Shell {
     /// `+` in the titlebar: open the new-session canvas. A set sidebar filter
     /// re-homes the canvas onto that project; under "All" the current pick
     /// (the last selected project, restored from composer defaults) stands.
-    pub(super) fn open_new_session(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.route = Route::Chat;
         let target = {
             let state = self.state.read(cx);
@@ -136,6 +136,10 @@ impl Shell {
         });
         self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
+        // The canvas swap notifies after this returns. Focusing now means the
+        // next key's draw already has the composer focused, so the character
+        // is not dropped on the way in.
+        window.focus(&self.composer.focus_handle(cx), cx);
         cx.notify();
     }
 
