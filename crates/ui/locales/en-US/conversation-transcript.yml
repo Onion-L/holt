@@ -115,6 +115,8 @@ conversation_transcript:
         en-US: "%{count} done"
       failed:
         en-US: "%{count} failed"
+      cancelled:
+        en-US: "%{count} cancelled"
   turn_card:
     edited_files:
       one:

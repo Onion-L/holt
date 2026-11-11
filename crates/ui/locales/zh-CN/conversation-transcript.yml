@@ -115,6 +115,8 @@ conversation_transcript:
         zh-CN: "%{count} 个完成"
       failed:
         zh-CN: "%{count} 个失败"
+      cancelled:
+        zh-CN: "%{count} 个已停止"
   turn_card:
     edited_files:
       one:

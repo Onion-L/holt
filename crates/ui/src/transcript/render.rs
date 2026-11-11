@@ -2253,6 +2253,9 @@ fn subagent_avatar_mood(tool: &ToolItem) -> AvatarMood {
     if tool.is_error
         || (tool.subagent_ref.is_some()
             && matches!(tool.subagent_status, Some(SubagentStatus::Failed)))
+        // A withdrawn child (a stopped run) wears the static open face,
+        // not the smile — cancelled is not done (issue #77).
+        || matches!(tool.subagent_status, Some(SubagentStatus::Cancelled))
     {
         AvatarMood::Failed
     } else if matches!(tool.subagent_status, Some(SubagentStatus::Running)) || !tool.resolved {

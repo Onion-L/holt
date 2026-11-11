@@ -32,7 +32,7 @@ in the same commit.
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [agent-schedules-routines-through-a-tool](#agent-schedules-routines-through-a-tool) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
 | [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
-| [background-processes](subsystems/background-processes.md) | [background-processes-are-chat-owned](#background-processes-are-chat-owned) |
+| [background-processes](subsystems/background-processes.md) | [background-processes-are-chat-owned](#background-processes-are-chat-owned) · [workflow-runs-ride-the-background-list](#workflow-runs-ride-the-background-list) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
@@ -876,3 +876,27 @@ platform (gpui-pre's `SystemNotification` carries no sound field, so the
 `completionNotificationSound` setting is removed), and native Dock quit
 uses GPUI's non-cancellable exit path. Window chrome and
 Cmd+Q still pass through the draft/terminal confirmation gate.
+
+## workflow-runs-ride-the-background-list
+
+`1ec9115`. A live workflow run appears in the background-process list and
+watch as a `kind: workflow` row: no pid or exit fields (the row leaves
+when the run settles — the transcript chip carries the outcome), an
+`agents`/`tokens` progress pair, and `processId` set to the run's
+`callId`, so the popover's stop routes to `StopWorkflow`, never
+`KillBackgroundProcess`. Stopping is a two-click arm on both affordances
+(transcript row, popover), and a stopped run settles a new terminal
+`Cancelled` — on the container, its withdrawn agents, and the graph's
+unstarted steps (skipped) — rather than `Failed`. Rejected: a separate
+`WatchWorkflowRuns` RPC surface (a second popover, watch stream, and
+stop affordance for the user to find, when the background list is
+already where live engine work is browsed); keeping `Failed` for stopped
+runs (the issue #77 report: a withdrawn run read as a failure, its
+pending nodes as forever waiting); an undo-style stop (a cancelled run's
+in-flight agents cannot be un-sent — confirmation before, not
+compensation after).
+
+The merge is surface-only: the agent's own `spawn_background` /
+`process_status` / `kill_background_process` tools still see processes
+alone, so a run's `callId` never becomes a killable pid on the
+model-facing surface.

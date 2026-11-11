@@ -12,11 +12,19 @@ const SUBAGENT_HEADER_AVATAR_GAP: f32 = 4.0;
 
 /// "30 subagents · 8 running · 12 queued · 2 failed" — lifecycle counts by
 /// the same mood the faces wear, with children still waiting for a slot
-/// (unresolved, never bound to a doc) split out; zero buckets omitted.
-/// Settled children's token totals trail it — spend is shown, not capped.
+/// (unresolved, never bound to a doc) split out, and a stopped run's
+/// withdrawn children in their own cancelled bucket (issue #77); zero
+/// buckets omitted. Settled children's token totals trail it — spend is
+/// shown, not capped.
 fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
-    let (mut running, mut queued, mut done, mut failed) = (0, 0, 0, 0);
+    let (mut running, mut queued, mut done, mut failed, mut cancelled) = (0, 0, 0, 0, 0);
     for tool in tools {
+        if matches!(tool.subagent_status, Some(SubagentStatus::Cancelled)) {
+            // Withdrawn by a stop, not failed on its own and not done —
+            // counted by status, ahead of the mood it shares with failures.
+            cancelled += 1;
+            continue;
+        }
         match subagent_avatar_mood(tool) {
             AvatarMood::Running
                 if !tool.resolved
@@ -61,6 +69,10 @@ fn subagent_fanout_summary(tools: &[ToolItem]) -> String {
         (
             failed,
             "conversation_transcript.tool.subagent_fanout.failed",
+        ),
+        (
+            cancelled,
+            "conversation_transcript.tool.subagent_fanout.cancelled",
         ),
         (done, "conversation_transcript.tool.subagent_fanout.done"),
     ] {
@@ -1349,6 +1361,26 @@ mod tests {
         assert_eq!(
             subagent_fanout_summary(&[phased]),
             "Verify · 1 subagent · 1 done"
+        );
+    }
+
+    #[test]
+    fn withdrawn_children_count_cancelled_not_done_or_failed() {
+        // issue #77: a stopped run settles its cut-off agents cancelled —
+        // one bound to a doc mid-flight, one withdrawn before it started.
+        let cut = agent(0, Some(SubagentStatus::Cancelled), true, true);
+        let never_started = agent(1, Some(SubagentStatus::Cancelled), true, false);
+        assert_eq!(subagent_avatar_mood(&cut), AvatarMood::Failed);
+        assert_eq!(subagent_avatar_mood(&never_started), AvatarMood::Failed);
+        let tools = vec![
+            cut,
+            never_started,
+            agent(2, Some(SubagentStatus::Done), true, true),
+            agent(3, Some(SubagentStatus::Failed), true, true),
+        ];
+        assert_eq!(
+            subagent_fanout_summary(&tools),
+            "4 subagents · 1 failed · 2 cancelled · 1 done"
         );
     }
 
