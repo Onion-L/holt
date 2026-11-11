@@ -119,6 +119,9 @@ pub enum SubagentStatus {
     Running,
     Done,
     Failed,
+    /// Stopped from outside before finishing (a workflow run's Stop) —
+    /// terminal like the other settled states, but not a failure.
+    Cancelled,
 }
 
 /// Why a Compaction ran (ADR-compaction-is-not-a-turn): automatic (the History neared the
@@ -858,7 +861,9 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                         // never regress a terminal state.
                         None if !matches!(
                             subagent_status,
-                            Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                            Some(SubagentStatus::Done)
+                                | Some(SubagentStatus::Failed)
+                                | Some(SubagentStatus::Cancelled)
                         ) =>
                         {
                             *subagent_status = Some(SubagentStatus::Running);

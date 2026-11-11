@@ -673,6 +673,10 @@ fn render_agent_node(
         Some(SubagentStatus::Failed) => {
             (t!("conversation_transcript.workflow.failed"), theme.danger)
         }
+        Some(SubagentStatus::Cancelled) => (
+            t!("conversation_transcript.workflow.cancelled"),
+            theme.warning,
+        ),
         None => (
             t!("conversation_transcript.workflow.queued"),
             theme.text_faint,
@@ -695,7 +699,8 @@ fn render_agent_node(
         Some(SubagentStatus::Running) => theme.busy.opacity(0.55),
         Some(SubagentStatus::Failed) => theme.danger.opacity(0.65),
         Some(SubagentStatus::Done) => theme.success.opacity(0.20),
-        _ => theme.border_strong,
+        Some(SubagentStatus::Cancelled) => theme.warning.opacity(0.35),
+        None => theme.border_strong,
     };
     let status_opacity = if node.status == Some(SubagentStatus::Running) {
         let phase = motion::pulse_delta(&motion::HOLT_PULSE, view, cx);
@@ -707,6 +712,7 @@ fn render_agent_node(
         Some(SubagentStatus::Failed) => AvatarMood::Failed,
         Some(SubagentStatus::Done) => AvatarMood::Done,
         Some(SubagentStatus::Running) | None => AvatarMood::Running,
+        Some(SubagentStatus::Cancelled) => AvatarMood::Failed,
     };
     let avatar = identity
         .as_ref()
@@ -942,7 +948,7 @@ mod tests {
             })
             .collect();
         agents.push(agent("v", Some("verify")));
-        let graph = WorkflowGraph::Plan(plan_graph(plan, &agents).unwrap());
+        let graph = WorkflowGraph::Plan(plan_graph(plan, &agents, false).unwrap());
         let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = opened.clone();
         let toggled = Rc::new(std::cell::RefCell::new(Vec::<SharedString>::new()));

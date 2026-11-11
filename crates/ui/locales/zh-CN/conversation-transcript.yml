@@ -191,6 +191,8 @@ conversation_transcript:
       zh-CN: "已完成"
     failed:
       zh-CN: "失败"
+    cancelled:
+      zh-CN: "已停止"
     zoom_in:
       zh-CN: "放大"
     zoom_out:
@@ -203,6 +205,8 @@ conversation_transcript:
       zh-CN: "收起"
     step_waiting:
       zh-CN: "等待中"
+    step_skipped:
+      zh-CN: "已跳过"
     more:
       zh-CN: "还有 %{count} 个"
     show_fewer:
@@ -211,6 +215,8 @@ conversation_transcript:
       zh-CN: "↺ ≤%{max}"
     stop:
       zh-CN: "停止 workflow"
+    stop_confirm:
+      zh-CN: "再点一次确认停止"
     report:
       zh-CN: Workflow「%{name}」已完成
     report_failed:

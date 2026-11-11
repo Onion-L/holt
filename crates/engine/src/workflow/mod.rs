@@ -18,7 +18,11 @@ pub(crate) mod script;
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use holt_core::{
@@ -27,7 +31,8 @@ use holt_core::{
 };
 use holt_doc::{MessagePart, SubagentStatus};
 use holt_proto::WorkflowPlan;
-use tokio::sync::mpsc;
+use holt_rpc::background::{BackgroundProcessKind, BackgroundProcessStatus};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::subagents::{self, ChildTask, Delegation};
@@ -52,12 +57,36 @@ pub(crate) struct Delivery {
     pub(crate) prompt: String,
 }
 
+/// One live run's observable state — what the background-process list
+/// shows while the run lives (issue #77): its name, when it started, and
+/// how far it has gotten. Written by `drive` as children spawn and join.
+struct RunEntry {
+    cancel: CancellationToken,
+    name: String,
+    started_at: u64,
+    agents: AtomicUsize,
+    tokens: AtomicU64,
+}
+
 /// The live runs, by `(chatId, callId)` — the `Workflow` call's id is the
 /// run's handle in the transcript and on `StopWorkflow`.
-#[derive(Default)]
 pub(crate) struct Workflows {
-    runs: Mutex<HashMap<(String, String), CancellationToken>>,
+    runs: Mutex<HashMap<(String, String), Arc<RunEntry>>>,
     deliveries: OnceLock<mpsc::UnboundedSender<Delivery>>,
+    /// Bumped on every run-list change (launch, progress, settle) — the
+    /// background-process watch re-snapshots on it.
+    version: watch::Sender<u64>,
+}
+
+impl Default for Workflows {
+    fn default() -> Self {
+        let (version, _) = watch::channel(0);
+        Self {
+            runs: Mutex::new(HashMap::new()),
+            deliveries: OnceLock::new(),
+            version,
+        }
+    }
 }
 
 impl Workflows {
@@ -65,26 +94,91 @@ impl Workflows {
         let _ = self.deliveries.set(tx);
     }
 
-    fn register(&self, chat_id: &str, call_id: &str, cancel: CancellationToken) {
+    fn register(
+        &self,
+        chat_id: &str,
+        call_id: &str,
+        name: &str,
+        cancel: CancellationToken,
+    ) -> Arc<RunEntry> {
+        let entry = Arc::new(RunEntry {
+            cancel,
+            name: name.to_owned(),
+            started_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            agents: AtomicUsize::new(0),
+            tokens: AtomicU64::new(0),
+        });
         self.runs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((chat_id.to_owned(), call_id.to_owned()), cancel);
+            .insert((chat_id.to_owned(), call_id.to_owned()), entry.clone());
+        self.bump();
+        entry
     }
 
     fn unregister(&self, chat_id: &str, call_id: &str) {
+        if self
+            .runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(chat_id.to_owned(), call_id.to_owned()))
+            .is_some()
+        {
+            self.bump();
+        }
+    }
+
+    /// The run's progress so far, for the background-process list.
+    fn note_progress(&self, chat_id: &str, call_id: &str, agents: usize, tokens: u64) {
+        let runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = runs.get(&(chat_id.to_owned(), call_id.to_owned())) else {
+            return;
+        };
+        entry.agents.store(agents, Ordering::Relaxed);
+        entry.tokens.store(tokens, Ordering::Relaxed);
+        drop(runs);
+        self.bump();
+    }
+
+    /// The live runs as background-process rows: `processId` is the run's
+    /// `callId` — `StopWorkflow`'s handle. A row leaves the list when the
+    /// run settles; the transcript chip carries the outcome.
+    pub(crate) fn list(&self) -> Vec<BackgroundProcessStatus> {
         self.runs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&(chat_id.to_owned(), call_id.to_owned()));
+            .iter()
+            .map(|((chat_id, call_id), entry)| BackgroundProcessStatus {
+                process_id: call_id.clone(),
+                chat_id: chat_id.clone(),
+                command: entry.name.clone(),
+                cwd: String::new(),
+                pid: None,
+                running: true,
+                started_at: entry.started_at,
+                exit_code: None,
+                exited_at: None,
+                kind: BackgroundProcessKind::Workflow,
+                agents: Some(entry.agents.load(Ordering::Relaxed)),
+                tokens: Some(entry.tokens.load(Ordering::Relaxed)),
+            })
+            .collect()
+    }
+
+    /// Wakes `WatchBackgroundProcesses`'s merged stream on run changes.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
+        self.version.subscribe()
     }
 
     /// Stop one run; `false` when no such run is live.
     pub(crate) fn stop(&self, chat_id: &str, call_id: &str) -> bool {
         let runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         match runs.get(&(chat_id.to_owned(), call_id.to_owned())) {
-            Some(cancel) => {
-                cancel.cancel();
+            Some(entry) => {
+                entry.cancel.cancel();
                 true
             }
             None => false,
@@ -92,16 +186,16 @@ impl Workflows {
     }
 
     pub(crate) fn stop_chat(&self, chat_id: &str) {
-        for ((chat, _), cancel) in self.runs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        for ((chat, _), entry) in self.runs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             if chat == chat_id {
-                cancel.cancel();
+                entry.cancel.cancel();
             }
         }
     }
 
     pub(crate) fn stop_all(&self) {
-        for cancel in self.runs.lock().unwrap_or_else(|e| e.into_inner()).values() {
-            cancel.cancel();
+        for entry in self.runs.lock().unwrap_or_else(|e| e.into_inner()).values() {
+            entry.cancel.cancel();
         }
     }
 
@@ -109,6 +203,10 @@ impl Workflows {
         if let Some(tx) = self.deliveries.get() {
             let _ = tx.send(delivery);
         }
+    }
+
+    fn bump(&self) {
+        self.version.send_modify(|v| *v = v.wrapping_add(1));
     }
 }
 
@@ -283,7 +381,7 @@ fn launch(
     };
     d.runtime
         .workflows
-        .register(&chat_id, &call_id, cancel.clone());
+        .register(&chat_id, &call_id, &name, cancel.clone());
     stamp_container(
         &d,
         &call_id,
@@ -391,6 +489,12 @@ async fn drive(d: Delegation, run: Run) {
                 Some(ScriptEvent::Agent(request)) => {
                     let part_id = format!("{}#item-{next_item}", run.container);
                     next_item += 1;
+                    d.runtime.workflows.note_progress(
+                        &d.parent.chat_id,
+                        &run.container,
+                        next_item,
+                        tokens,
+                    );
                     children.spawn(agent(
                         d.clone(),
                         run.container.clone(),
@@ -411,6 +515,12 @@ async fn drive(d: Delegation, run: Run) {
             },
             Some(joined) = children.join_next(), if !children.is_empty() => {
                 tokens += joined.unwrap_or(0);
+                d.runtime.workflows.note_progress(
+                    &d.parent.chat_id,
+                    &run.container,
+                    next_item,
+                    tokens,
+                );
                 stamp_container(&d, &run.container, None, None, Some(tokens));
             }
             result = &mut done => break result.unwrap_or_else(|_| Err("workflow host exited".into())),
@@ -459,11 +569,15 @@ async fn drive(d: Delegation, run: Run) {
         }
     };
     let failed = outcome.is_err() || written.is_err();
+    // A stop from outside is not a failure: the run was withdrawn, not
+    // lost — its journal stays for a `resume` (issue #77).
     stamp_container(
         &d,
         &run.container,
         None,
-        Some(if failed {
+        Some(if stopped {
+            SubagentStatus::Cancelled
+        } else if failed {
             SubagentStatus::Failed
         } else {
             SubagentStatus::Done
@@ -601,7 +715,14 @@ async fn agent(
         },
     )
     .await;
-    subagents::settle_outcome(&d, &part_id, &outcome);
+    // A child the run's stop cut off was withdrawn, not lost: it settles
+    // cancelled, distinct from a child that failed on its own (issue #77).
+    let interrupted = !matches!(&outcome, Ok(child) if child.ok) && d.cancel.is_cancelled();
+    if interrupted {
+        subagents::settle_cancelled(&d, &part_id);
+    } else {
+        subagents::settle_outcome(&d, &part_id, &outcome);
+    }
     let Ok(outcome) = outcome else {
         reply(None);
         return 0;

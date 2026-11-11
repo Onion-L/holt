@@ -380,6 +380,10 @@ pub struct Shell {
     /// terminal toggle). The process LIST stays a watch frame away —
     /// [`AppState::background_processes`].
     background_menu: popover::Popup<()>,
+    /// Armed workflow-stop confirmation from the popover (issue #77): the
+    /// run's call id between the first stop click and its lapse. Mirrors
+    /// the transcript row's own arm — stopping a run is irreversible.
+    workflow_stop_arm: Option<(String, std::time::Instant)>,
     /// Embedded terminal host for right-pane Terminal surfaces — a SEPARATE
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
@@ -832,6 +836,7 @@ impl Shell {
             new_chat_mark: random_mark_index(),
             terminal: None,
             background_menu: popover::Popup::default(),
+            workflow_stop_arm: None,
             right_terminal: None,
             right_plus: popover::Popup::default(),
             external_app_menu: popover::Popup::default(),

@@ -80,6 +80,14 @@ shell_chrome:
       zh-CN: 后台进程
     background_stop:
       zh-CN: 停止进程
+    background_stop_workflow:
+      zh-CN: 停止 workflow
+    background_stop_confirm:
+      zh-CN: 再点一次确认停止
+    background_workflow:
+      zh-CN: "%{agents} 个 agent · %{tokens}"
+    background_workflow_agents:
+      zh-CN: "%{count} 个 agent"
     background_clear:
       zh-CN: 移除
     background_count:

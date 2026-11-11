@@ -93,6 +93,9 @@ impl Process {
             started_at: self.started_at,
             exit_code: state.exit_code,
             exited_at: state.exited_at,
+            kind: Default::default(),
+            agents: None,
+            tokens: None,
         }
     }
 

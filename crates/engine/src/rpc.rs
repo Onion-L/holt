@@ -188,7 +188,7 @@ impl RpcService for EngineService {
             methods::CLOSE_TERMINAL | methods::CLOSE_ALL_TERMINALS => {
                 self.close_terminal(method, params).await
             }
-            methods::LIST_BACKGROUND_PROCESSES => RpcReply::value(&self.background.list()),
+            methods::LIST_BACKGROUND_PROCESSES => RpcReply::value(&self.background_rows()),
             methods::WATCH_BACKGROUND_PROCESSES => Ok(self.watch_background_processes()),
             methods::SUBSCRIBE_BACKGROUND_PROCESS => self.subscribe_background_process(params),
             methods::KILL_BACKGROUND_PROCESS => self.kill_background_process(params),

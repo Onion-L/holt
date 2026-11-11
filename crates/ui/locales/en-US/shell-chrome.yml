@@ -80,6 +80,14 @@ shell_chrome:
       en-US: background processes
     background_stop:
       en-US: Stop process
+    background_stop_workflow:
+      en-US: Stop workflow
+    background_stop_confirm:
+      en-US: Click again to stop
+    background_workflow:
+      en-US: "%{agents} agents · %{tokens}"
+    background_workflow_agents:
+      en-US: "%{count} agents"
     background_clear:
       en-US: Remove from list
     background_count:

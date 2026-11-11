@@ -297,12 +297,13 @@ async fn stopping_a_run_cancels_its_agents_without_a_report() {
     };
     assert_eq!(reply["stopped"], true);
     let snapshot = wait_for(&engine, |s| {
-        part(s, "wf-1").is_some_and(|p| p["subagentStatus"] == "failed")
+        part(s, "wf-1").is_some_and(|p| p["subagentStatus"] == "cancelled")
     })
     .await;
+    // The withdrawn agent reads cancelled too, not failed (issue #77).
     assert_eq!(
         part(&snapshot, "wf-1#item-0").unwrap()["subagentStatus"],
-        "failed"
+        "cancelled"
     );
     wait_for_requests_exact(&provider, 3).await;
     assert!(
@@ -322,6 +323,90 @@ async fn stopping_a_run_cancels_its_agents_without_a_report() {
         panic!("value reply")
     };
     assert_eq!(reply["stopped"], false);
+}
+
+/// The merged background-process rows (`ListBackgroundProcesses`) as JSON.
+async fn background_rows(engine: &holt_engine::LocalEngine) -> Vec<Value> {
+    let RpcReply::Value(value) = engine
+        .handle(methods::LIST_BACKGROUND_PROCESSES, json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("ListBackgroundProcesses did not return a value");
+    };
+    value.as_array().cloned().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_live_run_rides_the_background_process_list_until_it_settles() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        launch(
+            "wf-1",
+            "slow",
+            json!({"steps": [
+                {"id": "s", "title": "Run"},
+                {"id": "after", "title": "After", "after": ["s"]},
+            ]}),
+            "return await agent('Take forever', { step: 's' });",
+            Value::Null,
+        ),
+        ScriptedReply::text("Waiting."),
+    ])
+    .with_chat_script("Take forever", vec![ScriptedReply::Silent]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Go slow").await;
+    common::wait_for_requests(&provider, 3).await;
+
+    // The live run is a workflow row on the chat (issue #77): its handle is
+    // the call id, and its progress names the started agent.
+    let row = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let Some(row) = background_rows(&engine)
+                .await
+                .into_iter()
+                .find(|row| row["kind"] == "workflow")
+            else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            };
+            if row["agents"].as_u64().unwrap_or(0) >= 1 {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the run never appeared with progress");
+    assert_eq!(row["chatId"], "chat-1");
+    assert_eq!(row["processId"], "wf-1");
+    assert_eq!(row["command"], "slow");
+    assert_eq!(row["running"], true);
+
+    // Stopping through the popover's handle settles the run and the row
+    // leaves the list — the transcript chip carries the outcome.
+    engine
+        .handle(
+            methods::STOP_WORKFLOW,
+            json!({"chatId": "chat-1", "callId": "wf-1"}),
+        )
+        .await
+        .unwrap();
+    wait_for(&engine, |s| {
+        part(s, "wf-1").is_some_and(|p| p["subagentStatus"] == "cancelled")
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if background_rows(&engine).await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the settled run never left the list");
 }
 
 #[tokio::test]

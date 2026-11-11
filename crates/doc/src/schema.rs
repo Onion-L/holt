@@ -214,6 +214,7 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
                     SubagentStatus::Running => "running",
                     SubagentStatus::Done => "done",
                     SubagentStatus::Failed => "failed",
+                    SubagentStatus::Cancelled => "cancelled",
                 }
                 .to_owned()
             }),
@@ -355,6 +356,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                     "running" => Some(SubagentStatus::Running),
                     "done" => Some(SubagentStatus::Done),
                     "failed" => Some(SubagentStatus::Failed),
+                    "cancelled" => Some(SubagentStatus::Cancelled),
                     _ => None,
                 }),
                 subagent_tail: p.subagent_tail,

@@ -191,6 +191,8 @@ conversation_transcript:
       en-US: "done"
     failed:
       en-US: "failed"
+    cancelled:
+      en-US: "cancelled"
     zoom_in:
       en-US: "Zoom in"
     zoom_out:
@@ -203,6 +205,8 @@ conversation_transcript:
       en-US: "Collapse"
     step_waiting:
       en-US: "waiting"
+    step_skipped:
+      en-US: "skipped"
     more:
       en-US: "%{count} more"
     show_fewer:
@@ -211,6 +215,8 @@ conversation_transcript:
       en-US: "↺ ≤%{max}"
     stop:
       en-US: "Stop workflow"
+    stop_confirm:
+      en-US: "Click again to stop the run"
     report:
       en-US: Workflow “%{name}” finished
     report_failed:

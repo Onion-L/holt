@@ -467,6 +467,36 @@ impl Shell {
             .collect()
     }
 
+    /// How long an armed popover workflow-stop waits for the confirming
+    /// click — the same window the transcript row's arm uses.
+    const WORKFLOW_STOP_ARM_MS: u64 = 2500;
+
+    /// Arm the popover's workflow stop (issue #77): the row's button turns
+    /// danger-dressed until the confirming click or this timer's lapse.
+    fn arm_workflow_stop(&mut self, call_id: String, cx: &mut Context<Self>) {
+        let at = std::time::Instant::now();
+        self.workflow_stop_arm = Some((call_id.clone(), at));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(Self::WORKFLOW_STOP_ARM_MS))
+                .await;
+            this.update(cx, |this, cx| {
+                // Generation guard: the timer only retires its own arm.
+                if this
+                    .workflow_stop_arm
+                    .as_ref()
+                    .is_some_and(|(armed, armed_at)| armed == &call_id && *armed_at == at)
+                {
+                    this.workflow_stop_arm = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The titlebar's background-process entry (left of the terminal
     /// toggle, user request): an icon with the running-count badge; the
     /// click opens a popover listing the processes with stop/remove and a
@@ -614,7 +644,9 @@ impl Shell {
     }
 
     /// One raised two-line block: the command over `pid · time`, stop or
-    /// remove at the right end.
+    /// remove at the right end. A workflow row (issue #77) shows the run's
+    /// name over its progress and stops through `StopWorkflow` — armed
+    /// first, confirmed by the second click inside the window.
     fn render_background_row(
         &mut self,
         status: &BackgroundProcessStatus,
@@ -627,8 +659,13 @@ impl Shell {
         // The command tooltip needs its own copy; the action button moves
         // `id` into its spawn.
         let tooltip_id = id.clone();
+        let is_workflow = status.kind == holt_rpc::background::BackgroundProcessKind::Workflow;
         let dot = if status.running {
-            theme.success
+            if is_workflow {
+                theme.busy
+            } else {
+                theme.success
+            }
         } else if status.exit_code.unwrap_or(-1) == 0 {
             theme.text_faint
         } else {
@@ -652,9 +689,55 @@ impl Shell {
             .rounded(px(popover::CARD_RADIUS))
             .bg(theme.surface_raised)
             .hover(move |s| s.bg(theme.surface_raised_hover));
-        // Stop (running) or remove (exited) at the right end.
+        // Stop (running) or remove (exited) at the right end. A workflow's
+        // stop is the two-step kind — it withdraws agents irreversibly.
         if let Some(engine) = engine {
             let is_running = status.running;
+            let now_arm = std::time::Instant::now();
+            let armed = is_workflow
+                && self.workflow_stop_arm.as_ref().is_some_and(|(armed, at)| {
+                    armed == &id
+                        && now_arm.duration_since(*at).as_millis() as u64
+                            <= Self::WORKFLOW_STOP_ARM_MS
+                });
+            let (method, params) = if is_workflow {
+                (
+                    methods::STOP_WORKFLOW,
+                    serde_json::json!({
+                        "chatId": status.chat_id,
+                        "callId": status.process_id
+                    }),
+                )
+            } else if is_running {
+                (
+                    methods::KILL_BACKGROUND_PROCESS,
+                    serde_json::json!({ "processId": status.process_id }),
+                )
+            } else {
+                (
+                    methods::REMOVE_BACKGROUND_PROCESS,
+                    serde_json::json!({ "processId": status.process_id }),
+                )
+            };
+            let stop_hint: SharedString = t!(if armed {
+                "shell_chrome.titlebar.background_stop_confirm"
+            } else if is_workflow {
+                "shell_chrome.titlebar.background_stop_workflow"
+            } else {
+                "shell_chrome.titlebar.background_stop"
+            })
+            .into();
+            let clear_hint: SharedString = t!("shell_chrome.titlebar.background_clear").into();
+            let hint = if is_workflow || is_running {
+                stop_hint
+            } else {
+                clear_hint
+            };
+            let icon_color = if armed {
+                theme.danger
+            } else {
+                theme.text_muted
+            };
             let act = div()
                 .id(SharedString::from(format!("bg-act-{id}")))
                 .size(px(24.0))
@@ -664,45 +747,87 @@ impl Shell {
                 .justify_center()
                 .rounded(px(Theme::CONTROL_RADIUS))
                 .cursor_pointer()
-                .tooltip(move |_, cx| {
-                    let key = if is_running {
-                        "shell_chrome.titlebar.background_stop"
+                .when(armed, |el| el.bg(theme.danger.opacity(0.12)))
+                .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(hint.clone())).into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if armed {
+                        this.workflow_stop_arm = None;
+                        cx.notify();
+                        let engine = engine.clone();
+                        let method = method;
+                        let params = params.clone();
+                        cx.spawn(async move |_, _| {
+                            if let Err(error) = engine.client().call(method, params).await {
+                                tracing::warn!(%error, "background process action failed");
+                            }
+                        })
+                        .detach();
+                    } else if is_workflow {
+                        this.arm_workflow_stop(id.clone(), cx);
                     } else {
-                        "shell_chrome.titlebar.background_clear"
-                    };
-                    cx.new(|_| crate::popover::TextTooltip(t!(key).into()))
-                        .into()
-                })
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    let method = if is_running {
-                        methods::KILL_BACKGROUND_PROCESS
-                    } else {
-                        methods::REMOVE_BACKGROUND_PROCESS
-                    };
-                    let engine = engine.clone();
-                    let process_id = id.clone();
-                    cx.spawn(async move |_, _| {
-                        if let Err(error) = engine
-                            .client()
-                            .call(method, serde_json::json!({ "processId": process_id }))
-                            .await
-                        {
-                            tracing::warn!(%error, "background process action failed");
-                        }
-                    })
-                    .detach();
+                        let engine = engine.clone();
+                        let method = method;
+                        let params = params.clone();
+                        cx.spawn(async move |_, _| {
+                            if let Err(error) = engine.client().call(method, params).await {
+                                tracing::warn!(%error, "background process action failed");
+                            }
+                        })
+                        .detach();
+                    }
                 }))
                 .child(
-                    icons::icon(if is_running {
+                    icons::icon(if is_workflow || is_running {
                         icons::STOP
                     } else {
                         icons::CLOSE
                     })
                     .size_3()
-                    .text_color(theme.text_muted),
+                    .text_color(icon_color),
                 );
             block = block.child(act);
         }
+        // A workflow row's second line is its progress, not a pid.
+        let meta = if is_workflow {
+            let agents = status.agents.unwrap_or(0);
+            let tokens = status.tokens.filter(|tokens| *tokens > 0).map(|tokens| {
+                t!(
+                    "conversation_transcript.tool.tokens",
+                    count = crate::token_display::compact_tokens(tokens)
+                )
+                .to_string()
+            });
+            let label = match tokens {
+                Some(tokens) => t!(
+                    "shell_chrome.titlebar.background_workflow",
+                    agents = agents,
+                    tokens = tokens
+                )
+                .to_string(),
+                None => t!(
+                    "shell_chrome.titlebar.background_workflow_agents",
+                    count = agents
+                )
+                .to_string(),
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text_faint)
+                .child(SharedString::from(label))
+                .child(time)
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text_faint)
+                .child(status.pid.map(|pid| pid.to_string()).unwrap_or_default())
+                .child(time)
+        };
         block
             .child(div().size(px(5.0)).flex_none().rounded_full().bg(dot))
             .child(
@@ -731,16 +856,7 @@ impl Shell {
                             })
                             .child(status.command.clone()),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .text_size(crate::typography::ui_rems(10.5))
-                            .text_color(theme.text_faint)
-                            .child(status.pid.map(|pid| pid.to_string()).unwrap_or_default())
-                            .child(time),
-                    ),
+                    .child(meta),
             )
             .into_any_element()
     }

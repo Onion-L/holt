@@ -31,6 +31,9 @@ const PADDING: f32 = 28.0;
 const LOOP_LANE: f32 = 28.0;
 
 /// A plan with the agents its run has started so far, grouped by step.
+/// `cancelled` records a run stopped from outside: steps that never ran
+/// draw skipped, and steps whose agents were withdrawn draw cancelled
+/// (issue #77).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanGraph {
     plan: WorkflowPlan,
@@ -39,11 +42,16 @@ pub struct PlanGraph {
     members: Vec<Vec<usize>>,
     /// Per step: its layer, the longest `after` chain above it.
     layers: Vec<usize>,
+    cancelled: bool,
 }
 
 /// `None` when the plan does not hold together (a run from a build whose
 /// plan check differed); the row then falls back to the agent graph.
-pub(crate) fn plan_graph(plan: WorkflowPlan, agents: &[AgentNode]) -> Option<PlanGraph> {
+pub(crate) fn plan_graph(
+    plan: WorkflowPlan,
+    agents: &[AgentNode],
+    cancelled: bool,
+) -> Option<PlanGraph> {
     let index: HashMap<&str, usize> = plan
         .steps
         .iter()
@@ -84,6 +92,7 @@ pub(crate) fn plan_graph(plan: WorkflowPlan, agents: &[AgentNode]) -> Option<Pla
         nodes: agents.to_vec(),
         members,
         layers,
+        cancelled,
     })
 }
 
@@ -106,6 +115,10 @@ enum StepState {
     Running,
     Done,
     Failed,
+    /// The run was stopped before this step ever started.
+    Skipped,
+    /// The run was stopped while this step's agents were in flight.
+    Cancelled,
 }
 
 impl PlanGraph {
@@ -125,16 +138,19 @@ impl PlanGraph {
 
     fn state(&self, step: usize) -> StepState {
         let statuses = self.members[step].iter().map(|ix| self.nodes[*ix].status);
-        let (mut any, mut running, mut failed) = (false, false, false);
+        let (mut any, mut running, mut failed, mut cancelled) = (false, false, false, false);
         for status in statuses {
             any = true;
             running |= matches!(status, Some(SubagentStatus::Running) | None);
             failed |= status == Some(SubagentStatus::Failed);
+            cancelled |= status == Some(SubagentStatus::Cancelled);
         }
-        match (any, running, failed) {
-            (false, _, _) => StepState::Pending,
-            (_, true, _) => StepState::Running,
-            (_, _, true) => StepState::Failed,
+        match (any, running, failed, cancelled) {
+            (false, _, _, _) if self.cancelled => StepState::Skipped,
+            (false, _, _, _) => StepState::Pending,
+            (_, true, _, _) => StepState::Running,
+            (_, _, true, _) => StepState::Failed,
+            (_, _, _, true) => StepState::Cancelled,
             _ => StepState::Done,
         }
     }
@@ -387,13 +403,19 @@ fn render_card(
         StepState::Running => (theme.busy, theme.busy.opacity(0.55)),
         StepState::Done => (theme.success, theme.success.opacity(0.20)),
         StepState::Failed => (theme.danger, theme.danger.opacity(0.55)),
+        // A withdrawn step is inert, not failed: the quiet pending dress,
+        // with the amber dot separating it from work that never arrived.
+        StepState::Skipped => (theme.text_faint, theme.border_strong),
+        StepState::Cancelled => (theme.warning, theme.warning.opacity(0.35)),
     };
     let settled = members
         .iter()
         .filter(|ix| {
             matches!(
                 graph.nodes[**ix].status,
-                Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                Some(SubagentStatus::Done)
+                    | Some(SubagentStatus::Failed)
+                    | Some(SubagentStatus::Cancelled)
             )
         })
         .count();
@@ -462,9 +484,11 @@ fn render_card(
                 .px(px(10.0 * zoom))
                 .text_size(px(11.0 * zoom))
                 .text_color(theme.text_faint)
-                .child(SharedString::from(t!(
+                .child(SharedString::from(t!(if state == StepState::Skipped {
+                    "conversation_transcript.workflow.step_skipped"
+                } else {
                     "conversation_transcript.workflow.step_waiting"
-                )))
+                })))
         })
         .children(rows)
         .when(members.len() > VISIBLE_AGENTS, |body| {
@@ -514,7 +538,10 @@ fn render_card(
         .bg(theme.surface_overlay)
         .border_1()
         .border_color(border)
-        .when(state == StepState::Pending, |card| card.border_dashed())
+        .when(
+            state == StepState::Pending || state == StepState::Skipped,
+            |card| card.border_dashed(),
+        )
         .flex()
         .flex_col()
         .child(header)
@@ -536,11 +563,14 @@ fn render_agent_row(
         Some(SubagentStatus::Failed) => AvatarMood::Failed,
         Some(SubagentStatus::Done) => AvatarMood::Done,
         Some(SubagentStatus::Running) | None => AvatarMood::Running,
+        // Static eyes (the failed face without motion) — withdrawn, not lost.
+        Some(SubagentStatus::Cancelled) => AvatarMood::Failed,
     };
     let status_color = match node.status {
         Some(SubagentStatus::Running) => theme.busy,
         Some(SubagentStatus::Done) => theme.success,
         Some(SubagentStatus::Failed) => theme.danger,
+        Some(SubagentStatus::Cancelled) => theme.warning,
         None => theme.text_faint,
     };
     let avatar = identity
@@ -628,7 +658,7 @@ mod tests {
 
     #[test]
     fn every_declared_step_is_placed_before_any_agent_runs() {
-        let graph = plan_graph(research_plan(), &[]).unwrap();
+        let graph = plan_graph(research_plan(), &[], false).unwrap();
         assert_eq!(graph.layers, [0, 1, 2, 3, 4]);
         assert!(graph.members.iter().all(Vec::is_empty));
         assert!((0..5).all(|step| graph.state(step) == StepState::Pending));
@@ -645,6 +675,7 @@ mod tests {
                 agent("b", "research", Some(SubagentStatus::Failed)),
                 agent("v", "verify", Some(SubagentStatus::Running)),
             ],
+            false,
         )
         .unwrap();
         assert_eq!(graph.members[0], [0, 1]);
@@ -652,7 +683,35 @@ mod tests {
         assert_eq!(graph.state(1), StepState::Running);
         assert_eq!(graph.state(2), StepState::Pending);
         // An agent outside the plan means the record does not match it.
-        assert!(plan_graph(research_plan(), &[agent("x", "draft", None)]).is_none());
+        assert!(plan_graph(research_plan(), &[agent("x", "draft", None)], false).is_none());
+    }
+
+    #[test]
+    fn a_stopped_run_marks_its_unstarted_steps_skipped_and_in_flight_cancelled() {
+        // issue #77: the research step finished, the verify agent was
+        // withdrawn mid-run, and everything after never ran.
+        let graph = plan_graph(
+            research_plan(),
+            &[
+                agent("a", "research", Some(SubagentStatus::Done)),
+                agent("v", "verify", Some(SubagentStatus::Cancelled)),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(graph.state(0), StepState::Done);
+        assert_eq!(graph.state(1), StepState::Cancelled);
+        assert_eq!(graph.state(2), StepState::Skipped);
+        assert_eq!(graph.state(3), StepState::Skipped);
+        assert_eq!(graph.state(4), StepState::Skipped);
+        // The same steps read waiting/pending while the run still lives.
+        let live = plan_graph(
+            research_plan(),
+            &[agent("a", "research", Some(SubagentStatus::Done))],
+            false,
+        )
+        .unwrap();
+        assert_eq!(live.state(1), StepState::Pending);
     }
 
     #[test]
@@ -661,7 +720,7 @@ mod tests {
             {"id": "write", "title": "Write", "loop": {"to": "draft", "max": 2}},
         ]}))
         .unwrap();
-        assert!(plan_graph(plan, &[]).is_none());
+        assert!(plan_graph(plan, &[], false).is_none());
     }
 
     #[test]
@@ -669,7 +728,7 @@ mod tests {
         let agents: Vec<_> = (0..9)
             .map(|ix| agent(&format!("v{ix}"), "verify", None))
             .collect();
-        let graph = plan_graph(research_plan(), &agents).unwrap();
+        let graph = plan_graph(research_plan(), &agents, false).unwrap();
         assert_eq!(graph.visible(1, false).len(), VISIBLE_AGENTS);
         assert_eq!(graph.visible(1, true).len(), 9);
         let folded = graph.layout(1.0, &|_| false).cards[1].height;

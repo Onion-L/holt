@@ -274,6 +274,12 @@ pub struct Transcript {
     workflow_graph_expanded: Option<SharedString>,
     /// Per workflow run: the plan steps whose folded agent list is open.
     workflow_open_steps: HashMap<SharedString, Vec<SharedString>>,
+    /// Armed workflow-stop confirmation (issue #77): the run's call id
+    /// between the first stop click and its lapse. Stopping a run is
+    /// irreversible — no report, agents withdrawn — so the button asks
+    /// twice. View-layer transient: cleared by the confirming click, the
+    /// lapse timer, or a chat switch.
+    workflow_stop_arm: Option<(String, std::time::Instant)>,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -553,6 +559,7 @@ impl Transcript {
             workflow_graph_drag: None,
             workflow_graph_expanded: None,
             workflow_open_steps: HashMap::new(),
+            workflow_stop_arm: None,
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,
@@ -1470,6 +1477,49 @@ impl Transcript {
         self.workflow_graph_expanded.is_some()
     }
 
+    /// How long an armed workflow-stop confirmation waits for the
+    /// confirming click before lapsing back to the plain stop button.
+    const WORKFLOW_STOP_ARM_MS: u64 = 2500;
+
+    /// Two-step workflow stop (issue #77): the first click arms the run's
+    /// stop button, the second within the window stops it. An arm that
+    /// already lapsed re-arms instead of stopping.
+    fn arm_or_stop_workflow(&mut self, call_id: String, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        let armed = self.workflow_stop_arm.take().is_some_and(|(armed, at)| {
+            armed == call_id
+                && now.duration_since(at).as_millis() as u64 <= Self::WORKFLOW_STOP_ARM_MS
+        });
+        if armed {
+            cx.notify();
+            if let Some(chat_id) = self.chat_id.clone() {
+                cx.emit(TranscriptEvent::StopWorkflow { chat_id, call_id });
+            }
+            return;
+        }
+        self.workflow_stop_arm = Some((call_id.clone(), now));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(Self::WORKFLOW_STOP_ARM_MS))
+                .await;
+            this.update(cx, |this, cx| {
+                // Generation guard: the timer only retires its own arm — a
+                // re-arm after a stop carries a later instant.
+                if this
+                    .workflow_stop_arm
+                    .as_ref()
+                    .is_some_and(|(armed, at)| armed == &call_id && now == *at)
+                {
+                    this.workflow_stop_arm = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The scroll-to-bottom pill's click: glide back to the end and re-pin.
     pub fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
         self.discard_pending_viewport();
@@ -1655,6 +1705,7 @@ impl Transcript {
             }
             self.chat_id = selected;
             self.workflow_graph_expanded = None;
+            self.workflow_stop_arm = None;
             self.rows.clear();
             self.row_cache.clear();
             self.live_parsers.clear();

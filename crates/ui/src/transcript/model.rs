@@ -139,16 +139,19 @@ fn workflow_plan(call: &ToolCall) -> Option<holt_proto::WorkflowPlan> {
 
 /// A workflow call's graph: its plan with the agents started so far, or —
 /// for a run without one, or a record that leaves its plan — the agents
-/// alone, layered by phase.
+/// alone, layered by phase. `status` is the run chip's own state: a
+/// cancelled run marks its unstarted steps skipped (issue #77).
 fn workflow_graph(
     parts: &[MessagePart],
     id: &str,
     call: &ToolCall,
+    status: Option<SubagentStatus>,
 ) -> Option<crate::workflow_graph::WorkflowGraph> {
     use crate::workflow_graph::{WorkflowGraph, agent_graph, plan_graph};
     let agents = workflow_agent_nodes(parts, id);
+    let cancelled = matches!(status, Some(SubagentStatus::Cancelled));
     workflow_plan(call)
-        .and_then(|plan| plan_graph(plan, &agents))
+        .and_then(|plan| plan_graph(plan, &agents, cancelled))
         .map(WorkflowGraph::Plan)
         .or_else(|| agent_graph(&agents).map(WorkflowGraph::Agents))
 }
@@ -710,6 +713,7 @@ fn tool_fingerprint(tools: &[ToolItem], auto_open: bool) -> u64 {
                     Some(SubagentStatus::Running) => 1 << 1,
                     Some(SubagentStatus::Done) => 2 << 1,
                     Some(SubagentStatus::Failed) => 3 << 1,
+                    Some(SubagentStatus::Cancelled) => 4 << 1,
                 },
         );
         if let Some(tail) = &t.subagent_tail {
@@ -940,8 +944,13 @@ pub fn rows_for_entry(
         .parts
         .iter()
         .filter_map(|part| match part {
-            MessagePart::Tool { id, call, .. }
-                if is_workflow_call(call) && workflow_graph(&entry.parts, id, call).is_some() =>
+            MessagePart::Tool {
+                id,
+                call,
+                subagent_status,
+                ..
+            } if is_workflow_call(call)
+                && workflow_graph(&entry.parts, id, call, *subagent_status).is_some() =>
             {
                 Some(id.clone())
             }
@@ -1042,7 +1051,8 @@ pub fn rows_for_entry(
                         group_last_part_ix,
                     );
                     let (_, name) = tool_chip_content(call);
-                    let graph = workflow_graph(&entry.parts, id, call).map(Arc::new);
+                    let graph =
+                        workflow_graph(&entry.parts, id, call, *subagent_status).map(Arc::new);
                     rows.push(Row {
                         id: format!("{}#{}", entry.id, id).into(),
                         version: fnv1a(
@@ -1791,6 +1801,7 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
                         Some(SubagentStatus::Running) => 1 << 1,
                         Some(SubagentStatus::Done) => 2 << 1,
                         Some(SubagentStatus::Failed) => 3 << 1,
+                        Some(SubagentStatus::Cancelled) => 4 << 1,
                     },
             );
             if let Some(tail) = subagent_tail {

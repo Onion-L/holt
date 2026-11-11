@@ -1623,6 +1623,9 @@ impl Transcript {
             Some(SubagentStatus::Running) => Some(t!("conversation_transcript.workflow.running")),
             Some(SubagentStatus::Done) => Some(t!("conversation_transcript.workflow.done")),
             Some(SubagentStatus::Failed) => Some(t!("conversation_transcript.workflow.failed")),
+            Some(SubagentStatus::Cancelled) => {
+                Some(t!("conversation_transcript.workflow.cancelled"))
+            }
             None => None,
         };
         let mut detail: Vec<String> = state.into_iter().map(|s| s.into_owned()).collect();
@@ -1635,39 +1638,48 @@ impl Transcript {
                 .into_owned(),
             );
         }
-        let stop = self
-            .chat_id
-            .clone()
-            .filter(|_| running && self.doc_override.is_none())
-            .map(|chat_id| {
-                let call_id = call_id.to_string();
-                let hint: SharedString = t!("conversation_transcript.workflow.stop").into();
-                div()
-                    .id(SharedString::from(format!("workflow-stop-{call_id}")))
-                    .debug_selector(|| "workflow-stop".to_string())
-                    .flex_none()
-                    .size(px(20.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(crate::theme::ink(0.06)))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip(hint.clone())).into()
-                    })
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(TranscriptEvent::StopWorkflow {
-                            chat_id: chat_id.clone(),
-                            call_id: call_id.clone(),
-                        });
-                    }))
-                    .child(
-                        crate::icons::icon(crate::icons::STOP)
-                            .size(px(12.0))
-                            .text_color(theme.text_muted),
-                    )
+        let stop = (running && self.doc_override.is_none() && self.chat_id.is_some()).then(|| {
+            let call_id = call_id.to_string();
+            // Two-step stop (issue #77): the first click arms (danger
+            // dress), the second inside the window stops the run.
+            let now = std::time::Instant::now();
+            let armed = self.workflow_stop_arm.as_ref().is_some_and(|(armed, at)| {
+                armed == &call_id
+                    && now.duration_since(*at).as_millis() as u64 <= Self::WORKFLOW_STOP_ARM_MS
             });
+            let hint: SharedString = t!(if armed {
+                "conversation_transcript.workflow.stop_confirm"
+            } else {
+                "conversation_transcript.workflow.stop"
+            })
+            .into();
+            let icon_color = if armed {
+                theme.danger
+            } else {
+                theme.text_muted
+            };
+            div()
+                .id(SharedString::from(format!("workflow-stop-{call_id}")))
+                .debug_selector(|| "workflow-stop".to_string())
+                .flex_none()
+                .size(px(20.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(crate::theme::ink(0.06)))
+                .when(armed, |el| el.bg(theme.danger.opacity(0.12)))
+                .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(hint.clone())).into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.arm_or_stop_workflow(call_id.clone(), cx);
+                }))
+                .child(
+                    crate::icons::icon(crate::icons::STOP)
+                        .size(px(12.0))
+                        .text_color(icon_color),
+                )
+        });
         let graph = graph.map(|graph| self.render_workflow_graph(call_id, graph, false, cx));
         let header = div()
             .h(px(CHIP_HEIGHT))
@@ -1883,7 +1895,9 @@ impl Transcript {
                 title: node.label.clone(),
                 frozen: matches!(
                     node.status,
-                    Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                    Some(SubagentStatus::Done)
+                        | Some(SubagentStatus::Failed)
+                        | Some(SubagentStatus::Cancelled)
                 ),
             };
             open_entity.update(cx, move |_, cx| cx.emit(event)).ok();
@@ -2394,7 +2408,9 @@ fn chip_header_row(
             tool.subagent_usage.is_some()
                 && matches!(
                     tool.subagent_status,
-                    Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                    Some(SubagentStatus::Done)
+                        | Some(SubagentStatus::Failed)
+                        | Some(SubagentStatus::Cancelled)
                 ),
             |row| {
                 row.child(

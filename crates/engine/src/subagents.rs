@@ -740,6 +740,29 @@ pub(crate) fn settle_outcome(
     }
 }
 
+/// Settle a spawn chip that a stop from outside withdrew (a workflow
+/// run's Stop): resolved, not an error, `Cancelled` — distinct from a
+/// child that failed on its own merits.
+pub(crate) fn settle_cancelled(d: &Delegation, part_id: &str) {
+    edit_parent_parts(d, |list| {
+        for part in list.iter_mut() {
+            if let MessagePart::Tool {
+                id,
+                resolved,
+                is_error,
+                subagent_status,
+                ..
+            } = part
+                && id == part_id
+            {
+                *resolved = true;
+                *is_error = false;
+                *subagent_status = Some(SubagentStatus::Cancelled);
+            }
+        }
+    });
+}
+
 pub(crate) async fn run_child(d: &Delegation, task: ChildTask) -> Result<ChildOutcome, String> {
     let ChildTask {
         part_id,
