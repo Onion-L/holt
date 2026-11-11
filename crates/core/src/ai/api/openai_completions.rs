@@ -2698,3 +2698,105 @@ fn finish_block(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::types::{
+        AssistantMessageEvent, DoneReason, Message, Model, ProviderId, RoleUser, UserContent,
+        UserMessage,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// End-to-end over a REAL plain-http socket (issue: "providers don't
+    /// support http APIs"): the base URL's scheme is never inspected —
+    /// reqwest sends the request and the SSE stream parses normally.
+    #[tokio::test]
+    async fn streams_over_plain_http_base_urls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let base_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            // Read until the end of the request head.
+            let mut received = Vec::new();
+            loop {
+                let read = socket.read(&mut buf).await.unwrap();
+                assert!(read > 0, "client closed before sending a request");
+                received.extend_from_slice(&buf[..read]);
+                if received.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&received);
+            assert!(
+                head.contains("POST /v1/chat/completions"),
+                "request line: {head}"
+            );
+            assert!(
+                head.to_lowercase().contains("http/1.1"),
+                "wire scheme: {head}"
+            );
+
+            let body = b"data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\r\n\r\ndata: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\rndata: [DONE]\r\n\r\n";
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+
+        let model = Model {
+            id: "probe".into(),
+            api: crate::ai::types::known_api::OPENAI_COMPLETIONS.into(),
+            provider: ProviderId::from("probe".to_string()),
+            base_url: format!("{base_url}/v1"),
+            ..Default::default()
+        };
+        let context = Context {
+            messages: vec![Message::User(UserMessage {
+                role: RoleUser,
+                content: UserContent::Text("hi".into()),
+                timestamp: 0,
+            })],
+            ..Default::default()
+        };
+        let options = OpenAICompletionsOptions {
+            base: StreamOptions {
+                base: crate::ai::types::ProviderRequestOptions {
+                    api_key: Some("probe-key".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let events = stream(&model, &context, Some(&options));
+        let mut seen_text = String::new();
+        let mut done_reason: Option<DoneReason> = None;
+        let mut stream = Box::pin(events);
+        while let Some(event) = stream.next().await {
+            match event {
+                AssistantMessageEvent::TextDelta { delta, .. } => seen_text.push_str(&delta),
+                AssistantMessageEvent::Done { reason, .. } => done_reason = Some(reason),
+                AssistantMessageEvent::Error { .. } => {
+                    panic!("stream errored over plain http");
+                }
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(seen_text, "hello");
+        assert_eq!(done_reason, Some(DoneReason::Stop));
+    }
+}
