@@ -3058,7 +3058,7 @@ mod tests {
                 .update(cx, |shell, cx| shell.render_active_rows(&theme, cx));
             div()
                 .w(px(320.0))
-                .size_full()
+                .h_full()
                 .children(rows.into_iter().map(|(_, _, element)| element))
         }
     }
@@ -3084,9 +3084,9 @@ mod tests {
         });
     }
 
-    /// The pinned row wears its marker; unpinned rows carry no pin. A
-    /// right-click opens the same context menu it always did, without
-    /// selecting the row.
+    /// The pin action mounts on every row — pinned rows wear it permanently,
+    /// unpinned rows reveal it on hover — and a right-click opens the same
+    /// context menu it always did, without selecting the row.
     #[gpui::test]
     fn session_rows_mark_pinned_and_open_the_menu_on_right_click(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
@@ -3125,9 +3125,10 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // The pinned marker: on the pinned row only.
+        // The pin action mounts on every row; visibility is the hover fade,
+        // not the mount.
         assert!(cx.debug_bounds("chat-pin-kept").is_some());
-        assert!(cx.debug_bounds("chat-pin-plain").is_none());
+        assert!(cx.debug_bounds("chat-pin-plain").is_some());
 
         // A right-click opens the context menu; the row itself is not
         // activated.
@@ -3144,6 +3145,54 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert!(state.selected_chat.is_none(), "the row must not activate");
         });
+    }
+
+    /// The identity card waits for the row hover, then stays pinned to the
+    /// row's top-right instead of following the pointer.
+    #[gpui::test]
+    fn session_hover_card_stays_at_the_rows_right_edge(cx: &mut gpui::TestAppContext) {
+        let (_, shell, _dir) = view_menu_shell(cx);
+        let (_, cx) = cx.add_window_view(|_window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            RowsHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+
+        let row = cx.debug_bounds("chat-recent").expect("the row is rendered");
+        let first_pointer = gpui::point(row.left() + px(32.0), row.center().y);
+        cx.simulate_mouse_move(first_pointer, None, Default::default());
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(499));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("session-row-card").is_none());
+
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        let card = cx
+            .debug_bounds("session-row-card")
+            .expect("the delayed card is rendered");
+        assert_eq!(card.left(), row.right());
+        assert_eq!(card.top(), row.top());
+
+        // Moving within the same row does not re-anchor the card.
+        let second_pointer = gpui::point(row.right() - px(72.0), row.center().y);
+        cx.simulate_mouse_move(second_pointer, None, Default::default());
+        cx.run_until_parked();
+        let moved = cx
+            .debug_bounds("session-row-card")
+            .expect("the card stays open");
+        assert_eq!(moved.origin, card.origin);
+
+        cx.simulate_mouse_move(
+            gpui::point(row.right() + px(100.0), row.bottom() + px(100.0)),
+            None,
+            Default::default(),
+        );
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("session-row-card").is_none());
     }
 
     /// Recent folds a Routine's runs into its latest one, marked with the

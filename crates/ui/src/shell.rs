@@ -563,6 +563,8 @@ pub struct Shell {
     resort_epoch: usize,
     /// In-flight session-row drag (sidebar manual reorder).
     sidebar_drag: Option<SidebarRowDragState>,
+    /// Delayed, row-anchored identity card for the hovered session.
+    session_row_hover: SessionRowHover,
     /// Last observed `window.is_window_active()` — rising edge fires a
     /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
     was_window_active: bool,
@@ -924,6 +926,7 @@ impl Shell {
             sidebar_new_keys: std::collections::HashSet::new(),
             resort_epoch: 0,
             sidebar_drag: None,
+            session_row_hover: SessionRowHover::default(),
             was_window_active: false,
             debug_dialog,
             debug_gate,
