@@ -36,7 +36,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
-| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
+| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [x11-input-is-serialized-in-a-gpui-pre-linux-patch](#x11-input-is-serialized-in-a-gpui-pre-linux-patch) · [x11-key-completion-is-the-xim-sync-reply](#x11-key-completion-is-the-xim-sync-reply) · [x11-context-change-retires-an-owed-reply](#x11-context-change-retires-an-owed-reply) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -861,7 +861,9 @@ is only an identifier; task semantics stay in the chat, commit, and PR titles.
 ## gpui-kit-owns-the-gpui-stack
 
 Holt consumes GPUI through `gpui-kit` with the component and asset features
-disabled, and deletes the vendored GPUI fork. The existing `gpui` crate name
+disabled, and deletes the vendored GPUI fork. Superseded in part by
+`x11-input-is-serialized-in-a-gpui-pre-linux-patch`: only the X11 input and
+frame-clock path is patched in-tree. The existing `gpui` crate name
 is Holt's alias for the Kit facade, so ordinary views do not need import-only
 churn; the small Tokio bridge remains Holt-owned because Kit does not supply
 one. Rejected: keeping a patched fork (the maintenance cost this migration
@@ -900,3 +902,62 @@ The merge is surface-only: the agent's own `spawn_background` /
 `process_status` / `kill_background_process` tools still see processes
 alone, so a run's `callId` never becomes a killable pid on the
 model-facing surface.
+
+## x11-input-is-serialized-in-a-gpui-pre-linux-patch
+
+Superseded in part by [x11-key-completion-is-the-xim-sync-reply](#x11-key-completion-is-the-xim-sync-reply): a callback is not the key's completion signal.
+
+Issue #85. `gpui-pre-linux` 0.3.12 (the stack `gpui-kit` 0.9.1 pins) forwards
+every key in an X11 batch to XIM, then applies whichever reply arrives.
+Under lag the input method answers Enter, or the next field's keys, before
+earlier characters, so text is dropped, reordered across fields, or
+submitted truncated. The same build stops the frame clock when a compositor
+reports the window fully obscured and does not flush the X connection after
+present, so a frame can sit invisible until the pointer moves. Holt keeps a
+path patch of that one crate: one forwarded key at a time, characters that
+arrive with no input handler are held until the next handler, a mapped
+window keeps its frame clock, and present is flushed. A long silent turn
+says "Still working" after 15s and the elapsed clock uses the same ink as
+the status word. Opening a session focuses the composer before the next
+key. Rejected: a Holt-side unscrambler (a burst that arrives as `ensptx`
+cannot be split back into `memtest` and `npx`), disabling XIM (breaks CJK
+input), and waiting on a newer `gpui-pre` (0.3.12 is what Kit publishes, and
+it still has the single callback slot). The rest of GPUI stays on crates.io;
+a Kit bump that carries the fix drops the patch.
+
+## x11-key-completion-is-the-xim-sync-reply
+
+Superseded in part by [x11-context-change-retires-an-owed-reply](#x11-context-change-retires-an-owed-reply): an owed sync is also retired when the input context is replaced, and a preedit timeout resets that context before the next key is forwarded.
+
+Issue #85, after review. Treating every XIM callback as "this key is done"
+releases the next key on a preedit, and a second message for the same key
+then completes the key after that. `ForwardEventFlag` was empty, so the
+protocol had no per-key ack to wait for. The patched `zed-xim` delivers
+`XIM_SYNC_REPLY`, keys are forwarded with the synchronous flag, and only
+that reply releases the next key. Preedit and commit update the in-flight
+key. A timeout still inserts locally, and the owed reply stays ignored
+until it arrives or the connection drops — an empty timeout does not clear
+that. Events queued behind the key, including clicks, stay behind it.
+Characters buffered with no handler are delivered only to the field that
+was focused when they were typed (or to the first field, if none was).
+Rejected: correlating callbacks by key serial (`ForwardEventFlag` carries
+none, and commit/preedit have no serial), and dropping the path patches in
+favour of the composer-side echo guard (it mis-handles dead keys, X11
+auto-repeat, and macOS press-and-hold). A Kit bump that carries both the
+sync reply and the gate drops `third_party/gpui-pre-linux` and
+`third_party/zed-xim`.
+
+## x11-context-change-retires-an-owed-reply
+
+Issue #85, second review. Waiting for the old context's `XIM_SYNC_REPLY`
+sticks the ignore count forever once FocusIn has created a new context:
+the reply is rejected because its context id no longer matches, and every
+later key on that connection stays local. Replacing the context retires
+the owed sync and any owed reset, and delivers a key that was still in
+flight. A timeout that had already drawn a preedit also sends `ResetIc`
+and keeps keys local until that reply; sync alone does not clear the
+server composition, so the next forwarded key would otherwise commit it.
+Text buffered for one field is left in place when a different field's
+handler is installed first. Rejected: counting the ignored reply forever
+(CJK stays raw after one focus change) and dropping the buffer on a
+mismatch (the field it was typed for never sees it).

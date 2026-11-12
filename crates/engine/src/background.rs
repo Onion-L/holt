@@ -63,6 +63,9 @@ struct Process {
 struct ProcessState {
     log: OutputLog,
     exited: bool,
+    /// Set when this exit has been claimed, before `exited` is visible.
+    /// Kill racing the supervisor must not queue a second notice.
+    exit_claimed: bool,
     exit_code: Option<i32>,
     exited_at: Option<u64>,
     /// Unix: the process-group id (the leader's pid — spawned with
@@ -169,10 +172,23 @@ impl Process {
             .take();
     }
 
-    /// Finish the session exactly once: publish the exit event, disarm the
-    /// group, and return what the registry owes the chat (the notice and
-    /// the shell-groups record to forget).
-    fn finish(&self, code: i32) -> Option<(ExitNotice, Option<PathBuf>)> {
+    /// Claim this exit once, before it is visible. A second observation
+    /// (kill racing the supervisor) returns false and must not queue
+    /// another notice.
+    fn claim_exit(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.exited || state.exit_claimed {
+            return false;
+        }
+        state.exit_claimed = true;
+        true
+    }
+
+    /// Make the exit visible: the log's `Exit` event, `running: false`, and
+    /// the shell-groups record to forget. The caller queues the notice,
+    /// tail included, before this — a Turn that sees the exit must not be
+    /// able to drain an empty placeholder.
+    fn publish_exit(&self, code: i32) -> Option<PathBuf> {
         let seq = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.exited {
@@ -192,19 +208,11 @@ impl Process {
             state.log.push_exit(code)
         };
         self.changed.send_replace(seq);
-        let tail = self.tail(8, 4096);
-        Some((
-            ExitNotice {
-                command: self.command.clone(),
-                exit_code: code,
-                tail,
-            },
-            self.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .record
-                .take(),
-        ))
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record
+            .take()
     }
 }
 
@@ -337,6 +345,7 @@ impl BackgroundProcesses {
             state: Mutex::new(ProcessState {
                 log: OutputLog::default(),
                 exited: false,
+                exit_claimed: false,
                 exit_code: None,
                 exited_at: None,
                 #[cfg(unix)]
@@ -403,7 +412,7 @@ impl BackgroundProcesses {
                 // The engine is gone; the exit event still reaches any
                 // outstanding subscriber holding the process.
                 None => {
-                    process.finish(code);
+                    let _ = process.publish_exit(code);
                 }
             }
         });
@@ -411,40 +420,35 @@ impl BackgroundProcesses {
 
     /// The supervisor's finish path: queue the chat's exit notice, publish
     /// the exit, forget the shell-groups record, and wake watchers. The
-    /// notice queues BEFORE the exit becomes visible (`running` flips) —
-    /// a Turn starting against a just-exited row must not race past its
-    /// notice — and the tail fills in after `finish` computed it.
+    /// notice, tail included, is queued BEFORE `running` flips. A Turn
+    /// that observes the exit then drains the lines. The previous order
+    /// queued an empty placeholder, flipped `running` inside `finish`, and
+    /// filled the tail afterwards — `take_exit_notices` could drain the
+    /// placeholder and the real tail was dropped on the empty queue
+    /// (Ubuntu CI, `output_exit_stream_and_notice_round_trip`).
     fn record_exit(self: &Arc<Self>, process: &Arc<Process>, code: i32) {
+        if !process.claim_exit() {
+            return;
+        }
+        let notice = ExitNotice {
+            command: process.command.clone(),
+            exit_code: code,
+            tail: process.tail(8, 4096),
+        };
         {
             let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
             if !registry.removed_chats.contains(&process.chat_id) {
                 let notices = registry.notices.entry(process.chat_id.clone()).or_default();
-                notices.push_back(ExitNotice {
-                    command: process.command.clone(),
-                    exit_code: code,
-                    tail: String::new(),
-                });
+                notices.push_back(notice);
                 while notices.len() > MAX_NOTICES_PER_CHAT {
                     notices.pop_front();
                 }
             }
         }
-        let Some((notice, record)) = process.finish(code) else {
-            // A second observation of the same exit (kill racing the
-            // supervisor's poll) — the notice is already queued.
-            return;
-        };
-        if let Some(record) = record {
+        if let Some(record) = process.publish_exit(code) {
             #[cfg(unix)]
             crate::shell_groups::forget(&record);
         }
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(notices) = registry.notices.get_mut(&process.chat_id)
-            && let Some(last) = notices.back_mut()
-        {
-            *last = notice;
-        }
-        drop(registry);
         self.bump();
     }
 

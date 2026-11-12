@@ -723,6 +723,8 @@ impl Transcript {
             t!("conversation_transcript.user_row.queued_hint")
         } else if sending {
             t!("conversation_transcript.user_row.sending")
+        } else if working_phase_is_long(elapsed_secs) {
+            t!("conversation_transcript.user_row.still_working")
         } else {
             flavour_word(seed, elapsed_secs)
         };
@@ -772,7 +774,7 @@ impl Transcript {
                 .when(!sending, |el| {
                     el.child(
                         div()
-                            .text_color(theme.text_faint)
+                            .text_color(theme.text_muted)
                             .child(SharedString::from(format_elapsed(elapsed_secs))),
                     )
                 })
