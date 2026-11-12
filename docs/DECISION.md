@@ -36,7 +36,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
-| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [x11-input-is-serialized-in-a-gpui-pre-linux-patch](#x11-input-is-serialized-in-a-gpui-pre-linux-patch) · [x11-key-completion-is-the-xim-sync-reply](#x11-key-completion-is-the-xim-sync-reply) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
+| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [x11-input-is-serialized-in-a-gpui-pre-linux-patch](#x11-input-is-serialized-in-a-gpui-pre-linux-patch) · [x11-key-completion-is-the-xim-sync-reply](#x11-key-completion-is-the-xim-sync-reply) · [x11-context-change-retires-an-owed-reply](#x11-context-change-retires-an-owed-reply) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -927,6 +927,8 @@ a Kit bump that carries the fix drops the patch.
 
 ## x11-key-completion-is-the-xim-sync-reply
 
+Superseded in part by [x11-context-change-retires-an-owed-reply](#x11-context-change-retires-an-owed-reply): an owed sync is also retired when the input context is replaced, and a preedit timeout resets that context before the next key is forwarded.
+
 Issue #85, after review. Treating every XIM callback as "this key is done"
 releases the next key on a preedit, and a second message for the same key
 then completes the key after that. `ForwardEventFlag` was empty, so the
@@ -944,3 +946,18 @@ favour of the composer-side echo guard (it mis-handles dead keys, X11
 auto-repeat, and macOS press-and-hold). A Kit bump that carries both the
 sync reply and the gate drops `third_party/gpui-pre-linux` and
 `third_party/zed-xim`.
+
+## x11-context-change-retires-an-owed-reply
+
+Issue #85, second review. Waiting for the old context's `XIM_SYNC_REPLY`
+sticks the ignore count forever once FocusIn has created a new context:
+the reply is rejected because its context id no longer matches, and every
+later key on that connection stays local. Replacing the context retires
+the owed sync and any owed reset, and delivers a key that was still in
+flight. A timeout that had already drawn a preedit also sends `ResetIc`
+and keeps keys local until that reply; sync alone does not clear the
+server composition, so the next forwarded key would otherwise commit it.
+Text buffered for one field is left in place when a different field's
+handler is installed first. Rejected: counting the ignored reply forever
+(CJK stays raw after one focus change) and dropping the buffer on a
+mismatch (the field it was typed for never sees it).

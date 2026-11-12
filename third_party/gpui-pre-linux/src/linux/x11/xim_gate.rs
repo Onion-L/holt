@@ -8,9 +8,11 @@
 //! A forwarded key is marked synchronous. Preedit, commit, and a forwarded
 //! copy of the key are text for that key; they do not release the next one.
 //! `XIM_SYNC_REPLY` does. A stalled reply is delivered locally and later
-//! callbacks stay ignored until that reply's sync arrives or the connection
-//! drops. An empty timeout does not clear that ignore count: a commit that
-//! shows up afterwards must not be inserted again.
+//! callbacks stay ignored until that reply's sync arrives, the input
+//! context is replaced, or the connection drops. An empty timeout does not
+//! clear that ignore count. A timeout that already showed a preedit keeps
+//! later keys local until the context is reset, so the old composition
+//! cannot join the next commit.
 
 use std::collections::VecDeque;
 
@@ -21,10 +23,15 @@ pub(crate) struct XimKeyQueue<T> {
     /// The in-flight key already inserted text (commit or a forwarded key).
     /// A timeout must not insert it a second time.
     content_applied: bool,
+    /// The in-flight key drew a preedit. A timeout then owes an input-context
+    /// reset before another key may be forwarded.
+    preedit_seen: bool,
     /// Keys we already delivered locally whose sync reply has not arrived.
     /// Callbacks are ignored until each owed reply shows up. This is not
     /// cleared by a timeout that finds nothing held.
     suppress: usize,
+    /// A preedit was abandoned locally. Keys stay local until [`XimKeyQueue::note_reset`].
+    reset_owed: bool,
 }
 
 impl<T> Default for XimKeyQueue<T> {
@@ -33,7 +40,9 @@ impl<T> Default for XimKeyQueue<T> {
             inflight: None,
             deferred: VecDeque::new(),
             content_applied: false,
+            preedit_seen: false,
             suppress: 0,
+            reset_owed: false,
         }
     }
 }
@@ -96,8 +105,17 @@ impl<T: Clone> XimKeyQueue<T> {
     }
 
     /// Queue `key`. `Deferred` means the caller keeps no copy; the queue owns it.
+    pub(crate) fn owes_reset(&self) -> bool {
+        self.reset_owed
+    }
+
+    /// The input context no longer holds the composition this queue abandoned.
+    pub(crate) fn note_reset(&mut self) {
+        self.reset_owed = false;
+    }
+
     pub(crate) fn push(&mut self, key: T) -> KeyArrival<T> {
-        if self.suppress > 0 {
+        if self.suppress > 0 || self.reset_owed {
             return KeyArrival::Local(key);
         }
         if self.inflight.is_some() {
@@ -106,6 +124,7 @@ impl<T: Clone> XimKeyQueue<T> {
         } else {
             self.inflight = Some(key.clone());
             self.content_applied = false;
+            self.preedit_seen = false;
             KeyArrival::Forward(key)
         }
     }
@@ -124,6 +143,8 @@ impl<T: Clone> XimKeyQueue<T> {
         }
         if inserts {
             self.content_applied = true;
+        } else {
+            self.preedit_seen = true;
         }
         true
     }
@@ -139,6 +160,7 @@ impl<T: Clone> XimKeyQueue<T> {
         }
         self.inflight = None;
         self.content_applied = false;
+        self.preedit_seen = false;
         SyncPlan::Released(self.deferred.drain(..).collect())
     }
 
@@ -146,6 +168,7 @@ impl<T: Clone> XimKeyQueue<T> {
     pub(crate) fn forward_next(&mut self, key: T, rest: Vec<T>) {
         self.inflight = Some(key);
         self.content_applied = false;
+        self.preedit_seen = false;
         self.deferred.extend(rest);
     }
 
@@ -164,7 +187,11 @@ impl<T: Clone> XimKeyQueue<T> {
                 local.push(key);
             }
         }
+        if self.preedit_seen {
+            self.reset_owed = true;
+        }
         self.content_applied = false;
+        self.preedit_seen = false;
         local.extend(self.deferred.drain(..));
         local
     }
@@ -179,6 +206,8 @@ impl<T: Clone> XimKeyQueue<T> {
             }
         }
         self.content_applied = false;
+        self.preedit_seen = false;
+        self.reset_owed = false;
         local.extend(self.deferred.drain(..));
         self.suppress = 0;
         local
@@ -254,6 +283,33 @@ mod tests {
         assert!(queue.on_content(true));
         assert_eq!(queue.on_timeout(), vec![2]);
         assert!(!queue.on_content(true));
+    }
+
+    #[test]
+    fn a_preedit_timeout_stays_local_until_the_context_is_reset() {
+        let mut queue = XimKeyQueue::default();
+        assert_eq!(queue.push(1), KeyArrival::Forward(1));
+        assert!(queue.on_content(false));
+        assert_eq!(queue.on_timeout(), vec![1]);
+        assert!(queue.owes_reset());
+        // The late sync retires the key. It does not clear the composition.
+        assert_eq!(queue.on_sync(), SyncPlan::Ignore);
+        assert_eq!(queue.push(2), KeyArrival::Local(2));
+        queue.note_reset();
+        assert_eq!(queue.push(3), KeyArrival::Forward(3));
+    }
+
+    #[test]
+    fn replacing_the_input_context_clears_an_owed_sync_and_reset() {
+        let mut queue = XimKeyQueue::default();
+        assert_eq!(queue.push(1), KeyArrival::Forward(1));
+        assert!(queue.on_content(false));
+        assert_eq!(queue.on_timeout(), vec![1]);
+        assert_eq!(queue.push(2), KeyArrival::Local(2));
+        // The old sync will never be accepted: the context id changed.
+        assert!(queue.reset().is_empty());
+        assert!(!queue.owes_reset());
+        assert_eq!(queue.push(3), KeyArrival::Forward(3));
     }
 
     #[test]

@@ -921,17 +921,22 @@ impl X11Client {
         state.restore_xim(ximc, xim_handler);
     }
 
-    pub fn reset_ime(&self) {
+    pub fn reset_ime(&self) -> bool {
         let mut state = self.0.borrow_mut();
         state.composing = false;
-        if let Some(mut ximc) = state.ximc.take() {
-            if let Some(xim_handler) = state.xim_handler.as_ref() {
-                ximc.reset_ic(xim_handler.im_id, xim_handler.ic_id).ok();
+        let sent = if let Some(mut ximc) = state.ximc.take() {
+            let sent = if let Some(xim_handler) = state.xim_handler.as_ref() {
+                ximc.reset_ic(xim_handler.im_id, xim_handler.ic_id).is_ok()
             } else {
                 log::error!("bug: xim handler not set in reset_ime");
-            }
+                false
+            };
             state.ximc = Some(ximc);
-        }
+            sent
+        } else {
+            false
+        };
+        sent
     }
 
     pub(crate) fn get_window(&self, win: xproto::Window) -> Option<X11WindowStatePtr> {
@@ -1592,7 +1597,7 @@ fn xim_key_event(event: &Event) -> Option<xproto::KeyPressEvent> {
 
 impl X11Client {
     fn pump_xim_timeout(&self) {
-        let local = {
+        let (local, reset_context) = {
             let mut state = self.0.borrow_mut();
             let stalled = state.xim_wait_since.is_some_and(|since| {
                 state.xim_keys.needs_timeout() && since.elapsed() >= XIM_HOLD_TIMEOUT
@@ -1601,11 +1606,19 @@ impl X11Client {
                 return;
             }
             let local = state.xim_keys.on_timeout();
+            let reset_context = state.xim_keys.owes_reset();
             state.xim_wait_since = state.xim_keys.needs_timeout().then(Instant::now);
-            local
+            (local, reset_context)
         };
         for event in local {
             self.handle_event(event);
+        }
+        // A preedit was shown and then the key was inserted locally. Reset
+        // the context before another key is forwarded, or the server
+        // composition joins the next commit. If the reset cannot be sent,
+        // do not leave keys local forever.
+        if reset_context && !self.reset_ime() {
+            self.0.borrow_mut().xim_keys.note_reset();
         }
     }
 
@@ -1633,6 +1646,14 @@ impl X11Client {
                 self.complete_xim_key();
                 continue;
             }
+            if matches!(callback, XimCallbackEvent::XimIcReplaced) {
+                self.retire_xim_context();
+                continue;
+            }
+            if matches!(callback, XimCallbackEvent::XimResetDone) {
+                self.0.borrow_mut().xim_keys.note_reset();
+                continue;
+            }
             let inserts = !matches!(callback, XimCallbackEvent::XimPreeditEvent(_, _));
             let apply = {
                 let mut state = self.0.borrow_mut();
@@ -1641,6 +1662,20 @@ impl X11Client {
             if apply {
                 self.handle_xim_callback_event(callback);
             }
+        }
+    }
+
+    /// The input context id changed. Replies for the old one will be
+    /// rejected, so an owed sync or reset can never arrive.
+    fn retire_xim_context(&self) {
+        let held = {
+            let mut state = self.0.borrow_mut();
+            let held = state.xim_keys.reset();
+            state.xim_wait_since = None;
+            held
+        };
+        for event in held {
+            self.handle_event(event);
         }
     }
 
@@ -1722,7 +1757,9 @@ impl X11Client {
             XimCallbackEvent::XimPreeditEvent(window, text) => {
                 self.xim_handle_preedit(window, text);
             }
-            XimCallbackEvent::XimSyncReply => {}
+            XimCallbackEvent::XimSyncReply
+            | XimCallbackEvent::XimIcReplaced
+            | XimCallbackEvent::XimResetDone => {}
         };
     }
 

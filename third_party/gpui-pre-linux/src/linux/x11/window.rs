@@ -382,6 +382,27 @@ fn remember_pending(state: &mut X11WindowState, text: &str) {
     push_pending_text(&mut state.pending_text, text);
 }
 
+/// Take buffered text for `focus`. A different field leaves the buffer
+/// where it is, so a handler that installs first cannot discard it.
+fn claim_pending_text<T: Copy + Eq>(
+    text: &mut String,
+    target: &mut Option<T>,
+    focus: Option<T>,
+) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let deliver = match *target {
+        None => true,
+        Some(id) => focus == Some(id),
+    };
+    if !deliver {
+        return None;
+    }
+    *target = None;
+    Some(std::mem::take(text))
+}
+
 fn push_pending_text(pending: &mut String, text: &str) {
     if pending.len() >= PENDING_TEXT_LIMIT {
         return;
@@ -1548,19 +1569,18 @@ impl PlatformWindow for X11Window {
         let pending = {
             let mut state = self.0.state.borrow_mut();
             state.last_input_focus = focus;
-            let pending = std::mem::take(&mut state.pending_text);
-            let pending_focus = state.pending_focus.take();
-            let deliver = !pending.is_empty()
-                && match pending_focus {
-                    // No field had been installed yet: this handler is the
-                    // one the characters were typed for.
-                    None => true,
-                    Some(id) => focus == Some(id),
-                };
-            if !deliver {
+            // No field had been installed yet (`pending_focus` is None):
+            // this handler is the one the characters were typed for.
+            // A different field leaves the buffer for its own handler.
+            let mut text = std::mem::take(&mut state.pending_text);
+            let mut target = state.pending_focus.take();
+            let pending = claim_pending_text(&mut text, &mut target, focus);
+            state.pending_text = text;
+            state.pending_focus = target;
+            let Some(pending) = pending else {
                 state.input_handler = Some(input_handler);
                 return;
-            }
+            };
             pending
         };
         input_handler.replace_text_in_range(None, &pending);
@@ -2122,5 +2142,35 @@ struct TrivialDeactivationHandler {
 impl accesskit::DeactivationHandler for TrivialDeactivationHandler {
     fn deactivate_accessibility(&mut self) {
         (self.callback)();
+    }
+}
+
+#[cfg(test)]
+mod pending_text_tests {
+    use super::claim_pending_text;
+
+    #[test]
+    fn a_different_field_leaves_the_buffer_for_its_target() {
+        let mut text = String::from("mem");
+        let mut target = Some(1u8);
+        assert_eq!(claim_pending_text(&mut text, &mut target, Some(2)), None);
+        assert_eq!(text, "mem");
+        assert_eq!(target, Some(1));
+        assert_eq!(
+            claim_pending_text(&mut text, &mut target, Some(1)),
+            Some(String::from("mem"))
+        );
+        assert!(text.is_empty());
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn the_first_handler_receives_text_buffered_before_any_field() {
+        let mut text = String::from("ork");
+        let mut target = None;
+        assert_eq!(
+            claim_pending_text(&mut text, &mut target, Some(7)),
+            Some(String::from("ork"))
+        );
     }
 }

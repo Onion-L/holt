@@ -11,6 +11,10 @@ pub enum XimCallbackEvent {
     /// The input method finished the key we forwarded. This is the only
     /// callback that releases the next key.
     XimSyncReply,
+    /// A new input context replaced the one an owed sync was for.
+    XimIcReplaced,
+    /// `ResetIc` finished. The server composition is gone.
+    XimResetDone,
 }
 
 pub struct XimHandler {
@@ -78,8 +82,15 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
         _input_method_id: u16,
         input_context_id: u16,
     ) -> Result<(), ClientError> {
+        // FocusIn creates a new context. The previous one's sync reply will
+        // fail `accepts_ic` and can never retire a suppress count.
+        let replaced = self.connected && self.ic_id != input_context_id;
         self.connected = true;
         self.ic_id = input_context_id;
+        if replaced {
+            self.callback_events
+                .push_back(XimCallbackEvent::XimIcReplaced);
+        }
         Ok(())
     }
 
@@ -140,6 +151,23 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
 
     fn handle_close(&mut self, client: &mut C, _input_method_id: u16) -> Result<(), ClientError> {
         client.disconnect()
+    }
+
+    fn handle_reset_ic(
+        &mut self,
+        _client: &mut C,
+        _input_method_id: u16,
+        input_context_id: u16,
+        _preedit_text: &str,
+    ) -> Result<(), ClientError> {
+        // The timed-out key was already inserted locally. The reply's
+        // preedit is the composition we asked the server to drop, not a
+        // new commit.
+        if self.accepts_ic(input_context_id) {
+            self.callback_events
+                .push_back(XimCallbackEvent::XimResetDone);
+        }
+        Ok(())
     }
 
     fn handle_preedit_draw(
