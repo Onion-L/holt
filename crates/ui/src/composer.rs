@@ -26,7 +26,9 @@ mod wizard;
 
 pub use input::*;
 pub use layout::*;
-pub(crate) use linux_input::{NEW_SESSION_CAPTURE, printable_insert, replay_if_unchanged};
+pub(crate) use linux_input::{
+    CapturedKey, NEW_SESSION_CAPTURE, printable_insert, replay_unapplied,
+};
 pub use mentions::{SentMentionSpan, sent_mention_display};
 pub use morph::*;
 pub use send_mode::*;
@@ -500,6 +502,12 @@ impl Composer {
     /// tell a dropped key from one the platform already inserted.
     pub(crate) fn input_text(&self, cx: &App) -> String {
         self.input.read(cx).text().to_string()
+    }
+
+    /// Edit epoch of the prompt. Key recovery compares it per key so a
+    /// replace that leaves the text unchanged still counts as applied.
+    pub(crate) fn input_edit_epoch(&self, cx: &App) -> u64 {
+        self.input.read(cx).edit_epoch()
     }
 
     /// Insert `text` at the caret. Used when a printable key reached the

@@ -15,8 +15,8 @@ use std::time::Duration;
 /// sent. Long enough for a commit already queued behind Enter to land,
 /// short enough that an intentional send does not feel late.
 pub const SUBMIT_QUIET: Duration = Duration::from_millis(40);
-/// How many quiet-waits a burst of late commits may chain before the draft
-/// sends as it stands. Eight waits is about a third of a second.
+/// How many extra quiet periods a burst of late commits may chain after
+/// the first. The draft sends on the ninth wake at the latest, about 360ms.
 pub const SUBMIT_MAX_WAITS: u32 = 8;
 /// After a new session, watch this long for printable keys the platform
 /// accepted but did not insert. The reporter's "wait ~3s" window sits
@@ -63,21 +63,38 @@ pub fn printable_insert(keystroke: &gpui::Keystroke) -> Option<&str> {
     Some(text)
 }
 
-/// Keys observed in one capture batch, in order. `first_before` is the
-/// composer text when the first of them was dispatched (before the
-/// platform's own insert). Returns the text to append when NONE of them
-/// landed.
-///
-/// All-or-nothing on purpose: a partial change is an IME replacing a
-/// preedit, or the platform inserting the keys itself. Replaying on top of
-/// that would duplicate characters. A batch where the buffer never moved
-/// is the drop — the new-session handoff, or a key that arrived with no
-/// input handler.
-pub fn replay_if_unchanged(first_before: &str, current: &str, keys: &[&str]) -> Option<String> {
-    if keys.is_empty() || current != first_before {
+/// One printable key observed while the composer might still drop it.
+/// `epoch` is the input's edit epoch at dispatch, before the platform's
+/// own insert.
+pub struct CapturedKey<'a> {
+    pub epoch: u64,
+    pub text: &'a str,
+}
+
+/// Keys the platform did not apply, in order. A key landed when the epoch
+/// advanced before the next observation — including a replace whose text
+/// equals what was already there. Keys that did not land are returned;
+/// keys that did are left out, so one landed key does not drop the rest
+/// and a same-text replace is not inserted twice.
+pub fn replay_unapplied(keys: &[CapturedKey<'_>], final_epoch: u64) -> Option<String> {
+    if keys.is_empty() {
         return None;
     }
-    Some(keys.concat())
+    let mut missing = String::new();
+    for (index, key) in keys.iter().enumerate() {
+        let next_epoch = keys
+            .get(index + 1)
+            .map(|key| key.epoch)
+            .unwrap_or(final_epoch);
+        if next_epoch == key.epoch {
+            missing.push_str(key.text);
+        }
+    }
+    if missing.is_empty() {
+        None
+    } else {
+        Some(missing)
+    }
 }
 
 #[cfg(test)]
@@ -133,15 +150,21 @@ mod tests {
     }
 
     #[test]
-    fn replay_appends_only_when_the_buffer_did_not_move() {
-        assert_eq!(
-            replay_if_unchanged("", "", &["/", "w"]).as_deref(),
-            Some("/w")
-        );
-        // The platform inserted the keys itself.
-        assert_eq!(replay_if_unchanged("", "/w", &["/", "w"]), None);
-        // An IME commit replaced the preedit; replaying would duplicate it.
-        assert_eq!(replay_if_unchanged("ni", "你", &["你"]), None);
-        assert_eq!(replay_if_unchanged("", "", &[]), None);
+    fn replay_returns_only_the_keys_the_platform_did_not_apply() {
+        let dropped = [captured(0, "/"), captured(0, "w")];
+        assert_eq!(replay_unapplied(&dropped, 0).as_deref(), Some("/w"));
+        // Each key's insert advanced the epoch, including a replace whose
+        // text equals the selection it wrote over.
+        let applied = [captured(0, "a")];
+        assert_eq!(replay_unapplied(&applied, 1), None);
+        // The first key landed. The other two did not, and are not dropped
+        // with it.
+        let partial = [captured(0, "m"), captured(1, "e"), captured(1, "m")];
+        assert_eq!(replay_unapplied(&partial, 1).as_deref(), Some("em"));
+        assert_eq!(replay_unapplied(&[], 0), None);
+    }
+
+    fn captured(epoch: u64, text: &str) -> CapturedKey<'_> {
+        CapturedKey { epoch, text }
     }
 }

@@ -380,7 +380,7 @@ pub struct Shell {
     new_session_capture_until: Option<Instant>,
     /// `(composer text when the key was dispatched, the key's text)`, in
     /// order, drained by one flush a millisecond later.
-    capture_keys: Vec<(String, String)>,
+    capture_keys: Vec<(String, String, u64)>,
     capture_flush_pending: bool,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
@@ -1657,8 +1657,11 @@ impl Shell {
         let Some(text) = crate::composer::printable_insert(&ev.keystroke) else {
             return;
         };
-        self.capture_keys
-            .push((self.composer.read(cx).input_text(cx), text.to_string()));
+        self.capture_keys.push((
+            self.composer.read(cx).input_text(cx),
+            text.to_string(),
+            self.composer.read(cx).input_edit_epoch(cx),
+        ));
         if self.capture_flush_pending {
             return;
         }
@@ -1694,12 +1697,18 @@ impl Shell {
     fn flush_captured_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.capture_flush_pending = false;
         let keys = std::mem::take(&mut self.capture_keys);
-        let Some((before, _)) = keys.first() else {
+        if keys.is_empty() {
             return;
-        };
-        let current = self.composer.read(cx).input_text(cx);
-        let texts: Vec<&str> = keys.iter().map(|(_, text)| text.as_str()).collect();
-        let Some(missing) = crate::composer::replay_if_unchanged(before, &current, &texts) else {
+        }
+        let final_epoch = self.composer.read(cx).input_edit_epoch(cx);
+        let captured: Vec<crate::composer::CapturedKey<'_>> = keys
+            .iter()
+            .map(|(_, text, epoch)| crate::composer::CapturedKey {
+                epoch: *epoch,
+                text,
+            })
+            .collect();
+        let Some(missing) = crate::composer::replay_unapplied(&captured, final_epoch) else {
             return;
         };
         self.composer.update(cx, |composer, cx| {
