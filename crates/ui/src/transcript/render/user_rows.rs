@@ -716,16 +716,7 @@ impl Transcript {
             };
             (sending, queued, elapsed, flavour_seed(&chat_id))
         };
-        // All three arms are `Cow<'static, str>` — the flavour table went
-        // through the catalog with the rest of this group, so the branches
-        // unify on the translated type.
-        let word: std::borrow::Cow<'static, str> = if queued {
-            t!("conversation_transcript.user_row.queued_hint")
-        } else if sending {
-            t!("conversation_transcript.user_row.sending")
-        } else {
-            flavour_word(seed, elapsed_secs)
-        };
+        let word = working_phrase(queued, sending, seed, elapsed_secs);
         let theme = Theme::of(cx).clone();
         // A pending Approval pauses the Turn; the trailer carries the
         // Esc-interrupt hint (prototype 3-A) so the keyboard path is
@@ -772,7 +763,7 @@ impl Transcript {
                 .when(!sending, |el| {
                     el.child(
                         div()
-                            .text_color(theme.text_faint)
+                            .text_color(theme.text_muted)
                             .child(SharedString::from(format_elapsed(elapsed_secs))),
                     )
                 })

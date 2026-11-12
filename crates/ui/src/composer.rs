@@ -661,6 +661,26 @@ impl Focusable for Composer {
         self.input.focus_handle(cx)
     }
 }
+
+/// Insert a character that arrived while this composer was not the focused
+/// text input (the new-session focus gap). Returns false when the key is not
+/// a plain character.
+pub(crate) fn accept_unfocused_char(
+    composer: &Entity<Composer>,
+    keystroke: &gpui::Keystroke,
+    window: &mut Window,
+    cx: &mut impl gpui::AppContext,
+) -> bool {
+    let Some(ch) = input::plain_typed_char(keystroke) else {
+        return false;
+    };
+    composer.update(cx, |composer, cx| {
+        composer.input.update(cx, |input, cx| {
+            input.accept_typed_char(ch, false, window, cx)
+        });
+    });
+    true
+}
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();

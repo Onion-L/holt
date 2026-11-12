@@ -368,6 +368,8 @@ conversation_transcript:
       en-US: Queued — will send automatically
     sending:
       en-US: Sending
+    still_working:
+      en-US: Still working
     to_interrupt:
       en-US: to interrupt
   flavour:

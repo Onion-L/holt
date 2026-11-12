@@ -39,8 +39,8 @@ use super::tool::{
     OUTPUT_LINE_HEIGHT, ToolDetail, chips_height, detail_height, format_kb, tool_group_summary,
 };
 use super::viewport::{
-    SCROLL_BUTTON_THRESHOLD_PX, ViewportFinalizeToken, flavour_seed, flavour_word, format_elapsed,
-    sending_bridge,
+    SCROLL_BUTTON_THRESHOLD_PX, ViewportFinalizeToken, flavour_seed, format_elapsed,
+    sending_bridge, working_phrase,
 };
 use super::{BlobFetch, FOLD_TWEEN_WINDOW, FoldState, Transcript, TranscriptEvent};
 use crate::i18n::t;
