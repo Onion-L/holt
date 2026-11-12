@@ -60,6 +60,10 @@ jobs:
               ok=1
               break
             fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "apt attempt ${attempt} failed"
+              break
+            fi
             echo "apt attempt ${attempt} failed; retrying"
             sleep $((attempt * 5))
           done
