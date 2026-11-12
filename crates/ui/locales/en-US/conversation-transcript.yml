@@ -370,6 +370,8 @@ conversation_transcript:
       en-US: Sending
     to_interrupt:
       en-US: to interrupt
+    still_working:
+      en-US: still working
   flavour:
     thinking:
       en-US: Thinking

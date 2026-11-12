@@ -13,6 +13,7 @@ mod approval_bar;
 mod input;
 mod input_element;
 mod layout;
+mod linux_input;
 mod mentions;
 mod morph;
 mod popups;
@@ -25,6 +26,9 @@ mod wizard;
 
 pub use input::*;
 pub use layout::*;
+pub(crate) use linux_input::{
+    CapturedKey, NEW_SESSION_CAPTURE, printable_insert, replay_unapplied,
+};
 pub use mentions::{SentMentionSpan, sent_mention_display};
 pub use morph::*;
 pub use send_mode::*;
@@ -39,8 +43,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, SharedString,
-    Subscription, Task, Window, div, prelude::*, px,
+    App, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
 use holt_proto::{ProviderId, SlashCommand};
@@ -492,6 +496,31 @@ impl Composer {
 
     pub fn is_sending(&self) -> bool {
         self.sending
+    }
+
+    /// The prompt text. The shell's new-session key recovery reads it to
+    /// tell a dropped key from one the platform already inserted.
+    pub(crate) fn input_text(&self, cx: &App) -> String {
+        self.input.read(cx).text().to_string()
+    }
+
+    /// Edit epoch of the prompt. Key recovery compares it per key so a
+    /// replace that leaves the text unchanged still counts as applied.
+    pub(crate) fn input_edit_epoch(&self, cx: &App) -> u64 {
+        self.input.read(cx).edit_epoch()
+    }
+
+    /// Insert `text` at the caret. Used when a printable key reached the
+    /// window and the platform did not write it into the prompt.
+    pub(crate) fn insert_at_caret(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            input.replace_text_in_range(None, text, window, cx);
+        });
     }
     fn render_input_with_completion(&self) -> gpui::Div {
         div().relative().child(self.input.clone())

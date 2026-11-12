@@ -36,7 +36,7 @@ in the same commit.
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
-| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
+| UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [linux-input-mitigations-stay-in-holt](#linux-input-mitigations-stay-in-holt) · [linux-replay-follows-applied-edits](#linux-replay-follows-applied-edits) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
 
 ---
 
@@ -857,6 +857,38 @@ English task slug from the prompt or automatic title (translation/model
 latency, and the title does not exist at admission); and renaming at push or
 PR creation (needless local/remote ref and upstream churn). The readable name
 is only an identifier; task semantics stay in the chat, commit, and PR titles.
+
+## linux-input-mitigations-stay-in-holt
+
+Superseded in part by [linux-replay-follows-applied-edits](#linux-replay-follows-applied-edits): a dropped key is one whose edit epoch did not advance, not one that left the string unchanged.
+
+`3174f8b`. Linux Enter waits out a short quiet period before the draft is sent, and
+for a few seconds after a new session Holt replays printable keys aimed at
+the composer only when the buffer never moved. A quiet turn's working
+trailer keeps the elapsed time in the same run as the flavour word, and
+after eight seconds with no visible reply it says it is still working.
+Rejected: patching or vendoring the platform (gpui-kit owns the stack),
+turning IME off (the reporter types Chinese), treating an empty
+marked-range replace as commit-on-blur (that path is also backspace and
+IME cancel), inventing a token counter the session proto does not have,
+and spinning `refresh_windows` to paper over a stuck Linux frame loop (a
+lost X11 refresh timer, or a Wayland `schedule_frame` that no-ops while a
+frame is already scheduled, lives in the platform; Holt cannot set
+`frame_waker`). Keys the platform never delivers, and commits that land on
+whichever field is focused now, stay unrecovered.
+
+## linux-replay-follows-applied-edits
+
+Issue #85, second review of the Holt-side Linux mitigations. A held Enter's
+timer keeps the generation it was armed with, so cancelling the hold and
+pressing Enter again cannot be submitted by the old timer. Undo and redo
+count as edits and start the quiet period again. Key recovery replays a
+key only when the edit epoch did not advance before the next observation.
+A replace that writes the same character over a selection has advanced the
+epoch, so it is not inserted twice, and a key that never landed is still
+replayed when an earlier key in the batch did. Rejected: treating an
+unchanged string as "nothing landed" (a same-text replace looks unchanged),
+and dropping the whole batch when any one key landed.
 
 ## gpui-kit-owns-the-gpui-stack
 

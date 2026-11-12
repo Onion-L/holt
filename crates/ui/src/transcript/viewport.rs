@@ -329,6 +329,30 @@ pub fn format_elapsed(secs: i64) -> String {
     }
 }
 
+/// A turn that has shown no text, reasoning, or tool output for this long
+/// gets an explicit "still working" — flavour words alone read as a hang
+/// (issue #85). There is no session token counter to show instead.
+pub const STILL_WORKING_AFTER_SECS: i64 = 8;
+
+pub fn show_still_working(elapsed_secs: i64, quiet: bool) -> bool {
+    quiet && elapsed_secs >= STILL_WORKING_AFTER_SECS
+}
+
+/// The working trailer's label: the flavour word, the elapsed time in the
+/// same run (so a narrow row cannot clip the clock off), and the
+/// still-working hint once a quiet turn has gone on long enough.
+pub fn working_status_text(word: &str, elapsed_secs: i64, quiet: bool) -> String {
+    let elapsed = format_elapsed(elapsed_secs);
+    if show_still_working(elapsed_secs, quiet) {
+        format!(
+            "{word}… {elapsed} · {}",
+            crate::i18n::t!("conversation_transcript.user_row.still_working")
+        )
+    } else {
+        format!("{word}… {elapsed}")
+    }
+}
+
 /// Layout state for the most recent locally-sent turn (notes-app parity):
 /// EVERY send reserves the space below the prompt for the reply — a trailing
 /// runway pad sized `usable − turn height`, i.e. a min-height for the turn,
@@ -1053,6 +1077,24 @@ mod tests {
         assert_eq!(format_elapsed(59), "59s");
         assert_eq!(format_elapsed(92), "1m 32s");
         assert_eq!(format_elapsed(-5), "0s");
+    }
+
+    #[test]
+    fn a_quiet_turn_says_it_is_still_working_after_eight_seconds() {
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(working_status_text("Noodling", 3, true), "Noodling… 3s");
+        assert_eq!(
+            working_status_text("Noodling", 8, true),
+            "Noodling… 8s · still working"
+        );
+        // Output has started: the clock stays, the hint does not.
+        assert_eq!(
+            working_status_text("Noodling", 92, false),
+            "Noodling… 1m 32s"
+        );
+        assert!(!show_still_working(7, true));
+        assert!(show_still_working(8, true));
+        assert!(!show_still_working(8, false));
     }
 
     #[test]

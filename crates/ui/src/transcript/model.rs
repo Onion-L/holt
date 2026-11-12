@@ -1832,6 +1832,32 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
     fnv1a(&acc)
 }
 
+/// The working trailer is waiting on a reply that has not shown anything
+/// yet: no assistant text, reasoning, or tool/card after the latest user
+/// entry. An empty streaming placeholder does not count — that is how a
+/// turn looks before the first token (issue #85).
+pub(crate) fn reply_lacks_visible_output(entries: &[SessionMessageEntry]) -> bool {
+    for entry in entries.iter().rev() {
+        if entry.role == MessageRole::User {
+            break;
+        }
+        if entry.parts.iter().any(part_is_visible_progress) {
+            return false;
+        }
+    }
+    true
+}
+
+fn part_is_visible_progress(part: &MessagePart) -> bool {
+    match part {
+        MessagePart::Text { text, .. } | MessagePart::Reasoning { text, .. } => {
+            !text.trim().is_empty()
+        }
+        MessagePart::CompactionDivider { .. } => false,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1853,6 +1879,50 @@ mod tests {
             status: Some(status),
             continuation_of: None,
         }
+    }
+
+    #[test]
+    fn a_reply_with_no_visible_output_is_quiet() {
+        let user = SessionMessageEntry {
+            id: "u".into(),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text {
+                id: "t".into(),
+                text: "go".into(),
+            }],
+            created_at: 0,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        };
+        assert!(reply_lacks_visible_output(std::slice::from_ref(&user)));
+        let empty = assistant(
+            "a",
+            MessageStatus::Streaming,
+            vec![MessagePart::Text {
+                id: "t2".into(),
+                text: "  ".into(),
+            }],
+        );
+        assert!(reply_lacks_visible_output(&[user.clone(), empty]));
+        let wrote = assistant(
+            "a",
+            MessageStatus::Streaming,
+            vec![MessagePart::Text {
+                id: "t2".into(),
+                text: "hello".into(),
+            }],
+        );
+        assert!(!reply_lacks_visible_output(&[user.clone(), wrote]));
+        let failed = assistant(
+            "a",
+            MessageStatus::Streaming,
+            vec![MessagePart::Error {
+                id: "e".into(),
+                message: "nope".into(),
+            }],
+        );
+        assert!(!reply_lacks_visible_output(&[user, failed]));
     }
 
     #[test]

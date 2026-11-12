@@ -134,6 +134,16 @@ impl Shell {
             }
             s.select_chat(None, cx);
         });
+        // Linux drops the first keys typed into the new canvas while the
+        // focus handoff has no input handler (issue #85). The shell records
+        // printable keys for a few seconds and writes back the ones the
+        // platform did not insert.
+        #[cfg(target_os = "linux")]
+        {
+            self.new_session_capture_until =
+                Some(std::time::Instant::now() + crate::composer::NEW_SESSION_CAPTURE);
+            self.capture_keys.clear();
+        }
         self.close_titlebar_menu(cx);
         self.close_menu_bar(cx);
         cx.notify();

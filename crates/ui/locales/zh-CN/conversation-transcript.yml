@@ -370,6 +370,8 @@ conversation_transcript:
       zh-CN: 发送中
     to_interrupt:
       zh-CN: 可中断
+    still_working:
+      zh-CN: 仍在工作
   flavour:
     thinking:
       zh-CN: 思考中

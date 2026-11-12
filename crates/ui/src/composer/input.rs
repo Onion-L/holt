@@ -494,6 +494,17 @@ pub struct ComposerInput {
     /// Created once when Waiting promotes; retaining this entity preserves
     /// GPUI's global animation state across prepaint frames.
     mention_tooltip_view: Option<Entity<MentionPathTooltip>>,
+    /// Linux submit settle (issue #85). `edits` counts text changes since
+    /// Enter, `waits` how many quiet periods have already been chained.
+    /// `None` once the draft sends, and always on platforms whose input
+    /// pipeline inserts a character before the key's action.
+    submit_hold: Option<(u64, u32)>,
+    /// Bumped when a held Enter is cancelled. A timer that already left
+    /// `spawn` carries the old value and must not fire the next hold.
+    submit_generation: u64,
+    /// Bumped on every text apply, including a replace whose result equals
+    /// the previous string. Linux key recovery uses it per key.
+    edit_epoch: u64,
 }
 impl ComposerInput {
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
@@ -562,6 +573,9 @@ impl ComposerInput {
             mention_tooltip_popup: None,
             mention_tooltip_task: None,
             mention_tooltip_view: None,
+            submit_hold: None,
+            submit_generation: 0,
+            edit_epoch: 0,
         }
     }
 
@@ -795,10 +809,13 @@ impl ComposerInput {
         self.scroll_left = 0.0;
         self.follow_cursor = true;
         // Programmatic replacement (draft load, clear-on-submit) is a new
-        // document, not an edit — undo must not reach back past it.
+        // document, not an edit — undo must not reach back past it, and a
+        // submit waiting on a trailing commit must not fire into it.
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_edit = None;
+        self.cancel_submit_hold();
+        self.bump_edit_epoch();
         self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
@@ -989,6 +1006,10 @@ impl ComposerInput {
         self.follow_cursor = true;
         // Never merge a subsequent edit into a step that undo just crossed.
         self.last_edit = None;
+        // Undo and redo change the draft. A held Enter must wait out the
+        // quiet period again, and key recovery must see the apply.
+        self.note_submit_edit();
+        self.bump_edit_epoch();
         self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
@@ -1373,11 +1394,77 @@ impl ComposerInput {
     }
 
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(if self.mention_has_selection {
-            ComposerInputEvent::MentionAccept
-        } else {
-            ComposerInputEvent::Submitted
-        });
+        if self.mention_has_selection {
+            // Accepting a completion is not a send; a held Enter must not
+            // fire afterwards into the accepted text.
+            self.cancel_submit_hold();
+            cx.emit(ComposerInputEvent::MentionAccept);
+            return;
+        }
+        // Linux delivers Enter's action before an IME commit that was
+        // already queued behind it, so the draft can still be growing.
+        // Hold the send until the text has been quiet (issue #85).
+        if cfg!(target_os = "linux") {
+            self.arm_submit_hold(cx);
+            return;
+        }
+        cx.emit(ComposerInputEvent::Submitted);
+    }
+
+    fn arm_submit_hold(&mut self, cx: &mut Context<Self>) {
+        if self.submit_hold.is_some() {
+            return;
+        }
+        self.submit_hold = Some((0, 0));
+        self.spawn_submit_wait(0, cx);
+    }
+
+    fn cancel_submit_hold(&mut self) {
+        if self.submit_hold.is_some() {
+            self.submit_generation = self.submit_generation.wrapping_add(1);
+        }
+        self.submit_hold = None;
+    }
+
+    fn bump_edit_epoch(&mut self) {
+        self.edit_epoch = self.edit_epoch.wrapping_add(1);
+    }
+
+    pub(crate) fn edit_epoch(&self) -> u64 {
+        self.edit_epoch
+    }
+
+    fn spawn_submit_wait(&mut self, seen_edits: u64, cx: &mut Context<Self>) {
+        let quiet = super::linux_input::SUBMIT_QUIET;
+        let generation = self.submit_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(quiet).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.submit_generation != generation {
+                    return;
+                }
+                let Some((edits, waits)) = this.submit_hold else {
+                    return;
+                };
+                match super::linux_input::submit_on_wake(edits, seen_edits, waits) {
+                    super::linux_input::SubmitWake::Wait => {
+                        this.submit_hold = Some((edits, waits.saturating_add(1)));
+                        this.spawn_submit_wait(edits, cx);
+                    }
+                    super::linux_input::SubmitWake::Fire => {
+                        this.submit_hold = None;
+                        cx.emit(ComposerInputEvent::Submitted);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn note_submit_edit(&mut self) {
+        if let Some((edits, _)) = &mut self.submit_hold {
+            *edits = edits.wrapping_add(1);
+        }
     }
 
     fn mention_tab(&mut self, _: &MentionTab, _: &mut Window, cx: &mut Context<Self>) {
@@ -1992,6 +2079,8 @@ impl EntityInputHandler for ComposerInput {
         self.marked_range.take();
         self.follow_cursor = true;
         self.reset_blink();
+        self.note_submit_edit();
+        self.bump_edit_epoch();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -2042,6 +2131,8 @@ impl EntityInputHandler for ComposerInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.follow_cursor = true;
         self.reset_blink();
+        self.note_submit_edit();
+        self.bump_edit_epoch();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -2584,5 +2675,244 @@ mod tests {
                 );
             });
         });
+    }
+
+    /// Subscribes on the owned test window. `VisualTestContext::update` takes
+    /// `&mut self`, and a shared borrow of the window cannot make that call.
+    macro_rules! submitted_count {
+        ($cx:expr, $input:expr) => {{
+            let seen = std::rc::Rc::new(std::cell::Cell::new(0u32));
+            let seen_in = seen.clone();
+            let sub = $cx.update(|_, cx| {
+                cx.subscribe($input, move |_, event: &ComposerInputEvent, _| {
+                    if matches!(event, ComposerInputEvent::Submitted) {
+                        seen_in.set(seen_in.get() + 1);
+                    }
+                })
+            });
+            (sub, seen)
+        }};
+    }
+
+    /// Linux delivers Enter before a commit queued behind it. The send waits
+    /// out that commit instead of shipping the truncated draft (issue #85).
+    #[gpui::test]
+    fn linux_submit_waits_out_a_trailing_commit(cx: &mut gpui::TestAppContext) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        let (_sub, seen) = submitted_count!(cx, &input);
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("Run e", cx);
+                input.submit(&Submit, window, cx);
+            });
+        });
+        assert_eq!(seen.get(), 0, "Enter does not send the truncated draft");
+
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 0, "the quiet period has not elapsed");
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "verything", window, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(super::super::linux_input::SUBMIT_QUIET);
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 0, "the late commit restarts the quiet period");
+
+        cx.executor()
+            .advance_clock(super::super::linux_input::SUBMIT_QUIET);
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 1);
+        cx.update(|_, cx| {
+            input.update(cx, |input, _| {
+                assert_eq!(input.text(), "Run everything");
+            });
+        });
+    }
+
+    /// Cancelling a hold and pressing Enter again must wait out a full quiet
+    /// period. The timer from the cancelled hold is still scheduled.
+    #[gpui::test]
+    fn linux_submit_rearm_is_not_fired_by_the_cancelled_timer(cx: &mut gpui::TestAppContext) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        let (_sub, seen) = submitted_count!(cx, &input);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("Run e", cx);
+                input.submit(&Submit, window, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("next", cx);
+                input.submit(&Submit, window, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        assert_eq!(
+            seen.get(),
+            0,
+            "the cancelled timer does not submit the new hold"
+        );
+        cx.executor()
+            .advance_clock(super::super::linux_input::SUBMIT_QUIET);
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 1);
+    }
+
+    /// A replace that writes the same character over a selection still counts
+    /// as applied. Key recovery must not insert it a second time.
+    #[gpui::test]
+    fn same_text_replace_advances_the_edit_epoch(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("a", cx);
+                let epoch = input.edit_epoch();
+                input.replace_text_in_range(Some(0..1), "a", window, cx);
+                assert_ne!(input.edit_epoch(), epoch);
+                assert_eq!(input.text(), "a");
+            });
+        });
+    }
+
+    /// Undo changes the draft. The quiet period starts again from that edit.
+    #[gpui::test]
+    fn linux_submit_undo_restarts_the_quiet_period(cx: &mut gpui::TestAppContext) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        let (_sub, seen) = submitted_count!(cx, &input);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("ab", cx);
+                input.replace_text_in_range(None, "c", window, cx);
+                input.submit(&Submit, window, cx);
+                input.undo(&Undo, window, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(super::super::linux_input::SUBMIT_QUIET);
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 0, "undo keeps the draft from sending");
+        cx.executor()
+            .advance_clock(super::super::linux_input::SUBMIT_QUIET);
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 1);
+        cx.update(|_, cx| {
+            input.update(cx, |input, _| {
+                assert_eq!(input.text(), "ab");
+            });
+        });
+    }
+
+    /// A send the user meant — no further keystroke — goes out after one
+    /// quiet period, not the cap.
+    #[gpui::test]
+    fn linux_submit_fires_once_the_draft_is_quiet(cx: &mut gpui::TestAppContext) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        let (_sub, seen) = submitted_count!(cx, &input);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("done", cx);
+                input.submit(&Submit, window, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(super::super::linux_input::SUBMIT_QUIET);
+        cx.run_until_parked();
+        assert_eq!(seen.get(), 1);
+    }
+
+    /// Accepting a mention is not a send, and a draft swap cancels a held
+    /// Enter rather than firing it into the new document.
+    #[gpui::test]
+    fn linux_submit_hold_does_not_outrun_mention_accept_or_a_new_document(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        let (_sub, seen) = submitted_count!(cx, &input);
+        let accepted = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let accepted_in = accepted.clone();
+        let _accepts = cx.update(|_, cx| {
+            cx.subscribe(&input, move |_, event: &ComposerInputEvent, _| {
+                if matches!(event, ComposerInputEvent::MentionAccept) {
+                    accepted_in.set(accepted_in.get() + 1);
+                }
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.mention_has_selection = true;
+                input.submit(&Submit, window, cx);
+            });
+        });
+        assert_eq!(accepted.get(), 1);
+        assert_eq!(seen.get(), 0);
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.mention_has_selection = false;
+                input.set_text("Run e", cx);
+                input.submit(&Submit, window, cx);
+                input.set_text("", cx);
+            });
+        });
+        cx.executor().advance_clock(
+            super::super::linux_input::SUBMIT_QUIET
+                * (super::super::linux_input::SUBMIT_MAX_WAITS + 1),
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            seen.get(),
+            0,
+            "a replaced document never receives the held Enter"
+        );
+    }
+
+    #[gpui::test]
+    fn submit_is_immediate_where_commits_precede_the_action(cx: &mut gpui::TestAppContext) {
+        if cfg!(target_os = "linux") {
+            return;
+        }
+        let cx = cx.add_empty_window();
+        let input = cx.new(|cx| ComposerInput::new("Message Holt…", cx));
+        let (_sub, seen) = submitted_count!(cx, &input);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("done", cx);
+                input.submit(&Submit, window, cx);
+            });
+        });
+        assert_eq!(seen.get(), 1);
     }
 }
