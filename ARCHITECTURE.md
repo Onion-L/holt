@@ -81,5 +81,5 @@ Plain JSON/JSONL under the data dir; each record written by the engine, atomical
 
 ## Provenance
 
-- GPUI comes from `gpui-kit` with its component and asset features disabled; `Cargo.lock` pins the exact `gpui-pre` stack. Holt owns the UI integration and its small Tokio bridge, not a GPUI fork.
+- GPUI comes from `gpui-kit` with its component and asset features disabled; `Cargo.lock` pins the exact `gpui-pre` stack. Holt owns the UI integration and its small Tokio bridge. The exception is issue #85: `third_party/gpui-pre-linux` and `third_party/zed-xim` are path patches for the X11 input path. A Kit bump that carries the fix drops both.
 - `LICENSE` is GPL-3.0; the exception is `crates/core`, which keeps the MIT license of the pi packages it was ported from.

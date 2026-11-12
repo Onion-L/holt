@@ -46,7 +46,7 @@ use super::{
     clipboard::{self, Clipboard},
     get_reply, get_valuator_axis_index, handle_connection_error, modifiers_from_state,
     pressed_button_from_mask, xcb_flush,
-    xim_gate::{CallbackPlan, KeyArrival, XimKeyQueue},
+    xim_gate::{KeyArrival, SyncPlan, XimKeyQueue, split_at_first_key},
 };
 
 /// How long a forwarded key may wait for its XIM callback before the key is
@@ -762,12 +762,21 @@ impl X11Client {
                 break;
             }
 
-            // A reply can share a batch with keys that were typed before it
-            // arrived. Defer those keys before applying the reply, or the reply
-            // forwards a key the rest of this loop would forward again.
-            let events = self.defer_keys_while_xim_held(events);
-
             for event in events.into_iter() {
+                // A click or a later key must not run while the previous key
+                // is still unanswered: the character would land in whichever
+                // field the click focused. Protocol messages stay in the loop
+                // so the reply can complete that key. Everything else waits,
+                // in order, behind it.
+                let hold = {
+                    let state = self.0.borrow();
+                    state.has_xim() && state.xim_keys.has_inflight() && !is_xim_transport(&event)
+                };
+                if hold {
+                    self.0.borrow_mut().xim_keys.defer(event);
+                    continue;
+                }
+
                 let mut state = self.0.borrow_mut();
                 if !state.has_xim() {
                     let held = state.xim_keys.reset();
@@ -1568,6 +1577,12 @@ fn is_xim_serialized_key(event: &Event) -> bool {
     xim_key_event(event).is_some()
 }
 
+/// Events `filter_event` turns into XIM replies. They must be processed
+/// while a key is held; deferring them would stall the reply forever.
+fn is_xim_transport(event: &Event) -> bool {
+    matches!(event, Event::ClientMessage(_) | Event::SelectionNotify(_))
+}
+
 fn xim_key_event(event: &Event) -> Option<xproto::KeyPressEvent> {
     match event {
         Event::KeyPress(key) | Event::KeyRelease(key) => Some(key.clone()),
@@ -1576,22 +1591,6 @@ fn xim_key_event(event: &Event) -> Option<xproto::KeyPressEvent> {
 }
 
 impl X11Client {
-    fn defer_keys_while_xim_held(&self, events: Vec<Event>) -> Vec<Event> {
-        let mut state = self.0.borrow_mut();
-        if !state.xim_keys.has_inflight() {
-            return events;
-        }
-        let mut keep = Vec::with_capacity(events.len());
-        for event in events {
-            if is_xim_serialized_key(&event) {
-                state.xim_keys.defer(event);
-            } else {
-                keep.push(event);
-            }
-        }
-        keep
-    }
-
     fn pump_xim_timeout(&self) {
         let local = {
             let mut state = self.0.borrow_mut();
@@ -1629,22 +1628,48 @@ impl X11Client {
     }
 
     fn apply_xim_callbacks(&self, callbacks: Vec<XimCallbackEvent>) {
-        let plan = {
-            let mut state = self.0.borrow_mut();
-            let plan = state.xim_keys.on_callback();
-            if !matches!(plan, CallbackPlan::Ignore) {
-                state.xim_wait_since = state.xim_keys.has_inflight().then(Instant::now);
-            }
-            plan
-        };
-        if matches!(plan, CallbackPlan::Ignore) {
-            return;
-        }
         for callback in callbacks {
-            self.handle_xim_callback_event(callback);
+            if matches!(callback, XimCallbackEvent::XimSyncReply) {
+                self.complete_xim_key();
+                continue;
+            }
+            let inserts = !matches!(callback, XimCallbackEvent::XimPreeditEvent(_, _));
+            let apply = {
+                let mut state = self.0.borrow_mut();
+                state.xim_keys.on_content(inserts)
+            };
+            if apply {
+                self.handle_xim_callback_event(callback);
+            }
         }
-        if let CallbackPlan::AppliedThenForward(event) = plan {
+    }
+
+    /// `XIM_SYNC_REPLY` finished the in-flight key. Dispatch what was waiting
+    /// in front of the next key, then forward that key.
+    fn complete_xim_key(&self) {
+        let released = {
+            let mut state = self.0.borrow_mut();
+            match state.xim_keys.on_sync() {
+                SyncPlan::Ignore => return,
+                released => released,
+            }
+        };
+        let SyncPlan::Released(events) = released else {
+            return;
+        };
+        let split = split_at_first_key(events, is_xim_serialized_key);
+        for event in split.before {
+            self.handle_event(event);
+        }
+        if let Some(event) = split.forward {
+            {
+                let mut state = self.0.borrow_mut();
+                state.xim_keys.forward_next(event.clone(), split.rest);
+                state.xim_wait_since = Some(Instant::now());
+            }
             self.forward_xim_key(event);
+        } else {
+            self.0.borrow_mut().xim_wait_since = None;
         }
     }
 
@@ -1675,7 +1700,9 @@ impl X11Client {
         ximc.forward_event(
             xim_handler.im_id,
             xim_handler.ic_id,
-            xim::ForwardEventFlag::empty(),
+            // Synchronous: the input method owes an `XIM_SYNC_REPLY` before
+            // the next key. Preedit and commit alone do not release it.
+            xim::ForwardEventFlag::SYNCHRONOUS,
             &key,
         )
         .context("X11: Failed to forward XIM event")
@@ -1695,6 +1722,7 @@ impl X11Client {
             XimCallbackEvent::XimPreeditEvent(window, text) => {
                 self.xim_handle_preedit(window, text);
             }
+            XimCallbackEvent::XimSyncReply => {}
         };
     }
 

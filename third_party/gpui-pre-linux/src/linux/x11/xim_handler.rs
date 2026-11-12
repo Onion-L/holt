@@ -8,6 +8,9 @@ pub enum XimCallbackEvent {
     XimXEvent(x11rb::protocol::Event),
     XimPreeditEvent(xproto::Window, String),
     XimCommitEvent(xproto::Window, String),
+    /// The input method finished the key we forwarded. This is the only
+    /// callback that releases the next key.
+    XimSyncReply,
 }
 
 pub struct XimHandler {
@@ -34,6 +37,12 @@ impl XimHandler {
 
     pub fn drain_callbacks(&mut self) -> Vec<XimCallbackEvent> {
         self.callback_events.drain(..).collect()
+    }
+
+    /// A reply for a previous input context must not complete the key that
+    /// is in flight on the context we use now.
+    fn accepts_ic(&self, input_context_id: u16) -> bool {
+        !self.connected || self.ic_id == input_context_id
     }
 }
 
@@ -78,14 +87,29 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
         &mut self,
         _client: &mut C,
         _input_method_id: u16,
-        _input_context_id: u16,
+        input_context_id: u16,
         text: &str,
     ) -> Result<(), ClientError> {
-        self.callback_events
-            .push_back(XimCallbackEvent::XimCommitEvent(
-                self.window,
-                String::from(text),
-            ));
+        if self.accepts_ic(input_context_id) {
+            self.callback_events
+                .push_back(XimCallbackEvent::XimCommitEvent(
+                    self.window,
+                    String::from(text),
+                ));
+        }
+        Ok(())
+    }
+
+    fn handle_sync_reply(
+        &mut self,
+        _client: &mut C,
+        _input_method_id: u16,
+        input_context_id: u16,
+    ) -> Result<(), ClientError> {
+        if self.accepts_ic(input_context_id) {
+            self.callback_events
+                .push_back(XimCallbackEvent::XimSyncReply);
+        }
         Ok(())
     }
 
@@ -93,10 +117,13 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
         &mut self,
         _client: &mut C,
         _input_method_id: u16,
-        _input_context_id: u16,
+        input_context_id: u16,
         _flag: xim::ForwardEventFlag,
         xev: C::XEvent,
     ) -> Result<(), ClientError> {
+        if !self.accepts_ic(input_context_id) {
+            return Ok(());
+        }
         match xev.response_type {
             x11rb::protocol::xproto::KEY_PRESS_EVENT => {
                 self.callback_events
@@ -119,7 +146,7 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
         &mut self,
         _client: &mut C,
         _input_method_id: u16,
-        _input_context_id: u16,
+        input_context_id: u16,
         _caret: i32,
         _chg_first: i32,
         _chg_len: i32,
@@ -127,6 +154,9 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
         preedit_string: &str,
         _feedbacks: Vec<xim::Feedback>,
     ) -> Result<(), ClientError> {
+        if !self.accepts_ic(input_context_id) {
+            return Ok(());
+        }
         // XIMReverse: 1, XIMPrimary: 8, XIMTertiary: 32: selected text
         // XIMUnderline: 2, XIMSecondary: 16: underlined text
         // XIMHighlight: 4: normal text

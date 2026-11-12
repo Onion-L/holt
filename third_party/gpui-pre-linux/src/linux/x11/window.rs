@@ -275,8 +275,14 @@ pub struct X11WindowState {
     display: Rc<dyn PlatformDisplay>,
     input_handler: Option<PlatformInputHandler>,
     /// Characters that arrived while no input handler was installed (the
-    /// composer was between frames). Flushed by [`Self::set_input_handler`].
+    /// composer was between frames). Flushed by [`Self::set_input_handler`]
+    /// only when that handler is the same field.
     pending_text: String,
+    /// Field the buffered characters belong to. `None` means no field had
+    /// been installed yet, so the first handler receives them.
+    pending_focus: Option<gpui::FocusId>,
+    /// Last field installed. Text buffered with no handler is attributed to it.
+    last_input_focus: Option<gpui::FocusId>,
     appearance: WindowAppearance,
     background_appearance: WindowBackgroundAppearance,
     maximized_vertical: bool,
@@ -368,6 +374,13 @@ impl rwh::HasDisplayHandle for X11Window {
 }
 
 const PENDING_TEXT_LIMIT: usize = 4096;
+
+fn remember_pending(state: &mut X11WindowState, text: &str) {
+    if state.pending_text.is_empty() {
+        state.pending_focus = state.last_input_focus;
+    }
+    push_pending_text(&mut state.pending_text, text);
+}
 
 fn push_pending_text(pending: &mut String, text: &str) {
     if pending.len() >= PENDING_TEXT_LIMIT {
@@ -854,6 +867,8 @@ impl X11WindowState {
                 atoms: *atoms,
                 input_handler: None,
                 pending_text: String::new(),
+                pending_focus: None,
+                last_input_focus: None,
                 active: false,
                 // The window is not mapped until the client sees `MapNotify`.
                 visibility: WindowVisibility::Hidden,
@@ -1231,7 +1246,7 @@ impl X11WindowStatePtr {
                         state = self.state.borrow_mut();
                         state.input_handler = Some(input_handler);
                     } else {
-                        push_pending_text(&mut state.pending_text, &key_char);
+                        remember_pending(&mut state, &key_char);
                     }
                 }
             }
@@ -1249,7 +1264,7 @@ impl X11WindowStatePtr {
             let mut state = self.state.borrow_mut();
             state.input_handler = Some(input_handler);
         } else {
-            push_pending_text(&mut state.pending_text, &text);
+            remember_pending(&mut state, &text);
         }
     }
 
@@ -1529,10 +1544,20 @@ impl PlatformWindow for X11Window {
     }
 
     fn set_input_handler(&mut self, mut input_handler: PlatformInputHandler) {
+        let focus = input_handler.focus_id();
         let pending = {
             let mut state = self.0.state.borrow_mut();
+            state.last_input_focus = focus;
             let pending = std::mem::take(&mut state.pending_text);
-            if pending.is_empty() {
+            let pending_focus = state.pending_focus.take();
+            let deliver = !pending.is_empty()
+                && match pending_focus {
+                    // No field had been installed yet: this handler is the
+                    // one the characters were typed for.
+                    None => true,
+                    Some(id) => focus == Some(id),
+                };
+            if !deliver {
                 state.input_handler = Some(input_handler);
                 return;
             }

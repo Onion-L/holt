@@ -5,9 +5,12 @@
 //! Enter or the next field's keys before earlier characters, so text is
 //! dropped, reordered, or submitted truncated (Holt issue #85).
 //!
-//! This gate holds the next key until the forwarded one has produced a
-//! callback. A stalled reply is delivered locally and its late callback is
-//! ignored, so a dead input method cannot swallow the rest of the burst.
+//! A forwarded key is marked synchronous. Preedit, commit, and a forwarded
+//! copy of the key are text for that key; they do not release the next one.
+//! `XIM_SYNC_REPLY` does. A stalled reply is delivered locally and later
+//! callbacks stay ignored until that reply's sync arrives or the connection
+//! drops. An empty timeout does not clear that ignore count: a commit that
+//! shows up afterwards must not be inserted again.
 
 use std::collections::VecDeque;
 
@@ -15,7 +18,12 @@ use std::collections::VecDeque;
 pub(crate) struct XimKeyQueue<T> {
     inflight: Option<T>,
     deferred: VecDeque<T>,
-    /// Late callbacks still owed by keys we already delivered locally.
+    /// The in-flight key already inserted text (commit or a forwarded key).
+    /// A timeout must not insert it a second time.
+    content_applied: bool,
+    /// Keys we already delivered locally whose sync reply has not arrived.
+    /// Callbacks are ignored until each owed reply shows up. This is not
+    /// cleared by a timeout that finds nothing held.
     suppress: usize,
 }
 
@@ -24,6 +32,7 @@ impl<T> Default for XimKeyQueue<T> {
         Self {
             inflight: None,
             deferred: VecDeque::new(),
+            content_applied: false,
             suppress: 0,
         }
     }
@@ -31,22 +40,47 @@ impl<T> Default for XimKeyQueue<T> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum KeyArrival<T> {
-    /// Send this key to the input method and wait for its callback.
+    /// Send this key to the input method and wait for its sync reply.
     Forward(T),
-    /// A key is already in flight. Keep this one until that callback.
+    /// A key is already in flight. Keep this one until that reply.
     Deferred,
-    /// The input method's previous replies are being ignored. Insert locally.
+    /// A previous reply is still being ignored. Insert locally.
     Local(T),
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CallbackPlan<T> {
-    /// Apply the callback. Nothing is waiting behind it.
-    Applied,
-    /// Apply the callback, then forward this previously deferred key.
-    AppliedThenForward(T),
-    /// The callback belongs to a key already delivered by [`XimKeyQueue::on_timeout`].
+pub(crate) enum SyncPlan<T> {
+    /// The reply is late, or nothing is in flight. Do not release a key.
     Ignore,
+    /// The in-flight key is done. Events are in arrival order.
+    Released(Vec<T>),
+}
+
+/// Where a released batch goes. Non-keys that preceded the next key are
+/// dispatched first, so a click cannot land in front of the character it
+/// followed.
+pub(crate) struct AfterKey<T> {
+    pub before: Vec<T>,
+    pub forward: Option<T>,
+    pub rest: Vec<T>,
+}
+
+pub(crate) fn split_at_first_key<T>(events: Vec<T>, is_key: impl Fn(&T) -> bool) -> AfterKey<T> {
+    let mut before = Vec::new();
+    let mut rest = events;
+    while rest.first().is_some_and(|event| !is_key(event)) {
+        before.push(rest.remove(0));
+    }
+    let forward = if rest.first().is_some_and(|event| is_key(event)) {
+        Some(rest.remove(0))
+    } else {
+        None
+    };
+    AfterKey {
+        before,
+        forward,
+        rest,
+    }
 }
 
 impl<T: Clone> XimKeyQueue<T> {
@@ -54,8 +88,11 @@ impl<T: Clone> XimKeyQueue<T> {
         self.inflight.is_some()
     }
 
+    /// Only an unanswered forwarded key needs the stall timer. The ignore
+    /// count must not schedule another timeout: that timeout used to clear
+    /// it and re-apply a late commit.
     pub(crate) fn needs_timeout(&self) -> bool {
-        self.inflight.is_some() || self.suppress > 0
+        self.inflight.is_some()
     }
 
     /// Queue `key`. `Deferred` means the caller keeps no copy; the queue owns it.
@@ -68,54 +105,80 @@ impl<T: Clone> XimKeyQueue<T> {
             KeyArrival::Deferred
         } else {
             self.inflight = Some(key.clone());
+            self.content_applied = false;
             KeyArrival::Forward(key)
         }
     }
 
-    /// A key arrived while one was already in flight, split out of the batch
-    /// before that batch's replies are applied. See the client loop.
-    pub(crate) fn defer(&mut self, key: T) {
-        self.deferred.push_back(key);
+    /// An event arrived while one key was in flight. Kept in order behind it.
+    pub(crate) fn defer(&mut self, event: T) {
+        self.deferred.push_back(event);
     }
 
-    pub(crate) fn on_callback(&mut self) -> CallbackPlan<T> {
+    /// Text or a forwarded copy of the in-flight key. `inserts` is false for
+    /// preedit, which does not put a committed character in the field.
+    /// Returns whether the caller should apply it.
+    pub(crate) fn on_content(&mut self, inserts: bool) -> bool {
+        if self.suppress > 0 || self.inflight.is_none() {
+            return false;
+        }
+        if inserts {
+            self.content_applied = true;
+        }
+        true
+    }
+
+    /// The input method finished the in-flight key.
+    pub(crate) fn on_sync(&mut self) -> SyncPlan<T> {
         if self.suppress > 0 {
             self.suppress -= 1;
-            return CallbackPlan::Ignore;
+            return SyncPlan::Ignore;
+        }
+        if self.inflight.is_none() {
+            return SyncPlan::Ignore;
         }
         self.inflight = None;
-        if let Some(next) = self.deferred.pop_front() {
-            self.inflight = Some(next.clone());
-            CallbackPlan::AppliedThenForward(next)
-        } else {
-            CallbackPlan::Applied
-        }
+        self.content_applied = false;
+        SyncPlan::Released(self.deferred.drain(..).collect())
     }
 
-    /// The in-flight reply did not arrive. Deliver every held key locally and
-    /// ignore that many late callbacks. A later timeout with nothing held
-    /// clears a suppress count whose callbacks never came.
+    /// Arm the next key after a sync reply and keep what arrived behind it.
+    pub(crate) fn forward_next(&mut self, key: T, rest: Vec<T>) {
+        self.inflight = Some(key);
+        self.content_applied = false;
+        self.deferred.extend(rest);
+    }
+
+    /// The in-flight reply did not arrive. Deliver held input locally.
+    /// A key whose text was already inserted is not delivered again.
+    /// One owed sync reply stays ignored until it arrives; a later timeout
+    /// with nothing held does not forget it.
     pub(crate) fn on_timeout(&mut self) -> Vec<T> {
         if self.inflight.is_none() && self.deferred.is_empty() {
-            self.suppress = 0;
             return Vec::new();
         }
         let mut local = Vec::new();
         if let Some(key) = self.inflight.take() {
-            local.push(key);
+            self.suppress += 1;
+            if !self.content_applied {
+                local.push(key);
+            }
         }
+        self.content_applied = false;
         local.extend(self.deferred.drain(..));
-        self.suppress = local.len();
         local
     }
 
-    /// The input method connection died. Hand back every held key and forget
-    /// the suppress count; later keys go through the local path.
+    /// The input method connection died. Hand back held input and forget the
+    /// ignore count; later keys go through the local path until XIM returns.
     pub(crate) fn reset(&mut self) -> Vec<T> {
         let mut local = Vec::new();
         if let Some(key) = self.inflight.take() {
-            local.push(key);
+            if !self.content_applied {
+                local.push(key);
+            }
         }
+        self.content_applied = false;
         local.extend(self.deferred.drain(..));
         self.suppress = 0;
         local
@@ -126,59 +189,81 @@ impl<T: Clone> XimKeyQueue<T> {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Ev {
+        Key(u8),
+        Click(u8),
+    }
+
     #[test]
-    fn a_burst_is_forwarded_one_key_at_a_time() {
+    fn a_burst_waits_for_sync_before_the_next_key() {
         let mut queue = XimKeyQueue::default();
         assert_eq!(queue.push(1), KeyArrival::Forward(1));
         assert_eq!(queue.push(2), KeyArrival::Deferred);
         assert_eq!(queue.push(3), KeyArrival::Deferred);
-        assert_eq!(queue.on_callback(), CallbackPlan::AppliedThenForward(2));
+        assert!(queue.on_content(false));
         assert!(queue.has_inflight());
-        assert_eq!(queue.on_callback(), CallbackPlan::AppliedThenForward(3));
-        assert_eq!(queue.on_callback(), CallbackPlan::Applied);
+        assert_eq!(queue.on_sync(), SyncPlan::Released(vec![2, 3]));
         assert!(!queue.has_inflight());
+        assert_eq!(queue.on_sync(), SyncPlan::Ignore);
     }
 
     #[test]
-    fn keys_arriving_before_a_reply_are_not_forwarded_twice() {
-        // The socket batch is [key 2, reply to key 1]. The client defers key 2
-        // before applying the reply, and the reply is what forwards it.
+    fn content_with_nothing_in_flight_is_not_applied() {
+        let mut queue = XimKeyQueue::<u8>::default();
+        assert!(!queue.on_content(true));
+        assert_eq!(queue.on_sync(), SyncPlan::Ignore);
+    }
+
+    #[test]
+    fn a_click_queued_behind_a_key_stays_behind_it() {
         let mut queue = XimKeyQueue::default();
-        assert_eq!(queue.push(1), KeyArrival::Forward(1));
-        queue.defer(2);
-        assert_eq!(queue.on_callback(), CallbackPlan::AppliedThenForward(2));
-        assert_eq!(queue.on_callback(), CallbackPlan::Applied);
+        assert_eq!(queue.push(Ev::Key(1)), KeyArrival::Forward(Ev::Key(1)));
+        queue.defer(Ev::Click(9));
+        queue.defer(Ev::Key(2));
+        let SyncPlan::Released(events) = queue.on_sync() else {
+            panic!("sync should release");
+        };
+        let split = split_at_first_key(events, |event| matches!(event, Ev::Key(_)));
+        assert_eq!(split.before, vec![Ev::Click(9)]);
+        assert_eq!(split.forward, Some(Ev::Key(2)));
+        assert!(split.rest.is_empty());
     }
 
     #[test]
-    fn a_stalled_reply_is_delivered_locally_and_its_callback_ignored() {
+    fn a_stalled_reply_is_delivered_locally_and_a_late_commit_is_not() {
         let mut queue = XimKeyQueue::default();
         assert_eq!(queue.push(1), KeyArrival::Forward(1));
         assert_eq!(queue.push(2), KeyArrival::Deferred);
         assert_eq!(queue.on_timeout(), vec![1, 2]);
-        assert_eq!(queue.on_callback(), CallbackPlan::Ignore);
-        assert_eq!(queue.on_callback(), CallbackPlan::Ignore);
-        assert_eq!(queue.push(3), KeyArrival::Forward(3));
-        assert_eq!(queue.on_callback(), CallbackPlan::Applied);
-    }
-
-    #[test]
-    fn suppress_does_not_last_after_the_callbacks_never_arrive() {
-        let mut queue = XimKeyQueue::default();
-        assert_eq!(queue.push(1), KeyArrival::Forward(1));
-        assert_eq!(queue.on_timeout(), vec![1]);
-        assert!(queue.needs_timeout());
-        assert!(queue.on_timeout().is_empty());
         assert!(!queue.needs_timeout());
-        assert_eq!(queue.push(2), KeyArrival::Forward(2));
+        assert!(queue.on_timeout().is_empty());
+        assert!(!queue.on_content(true));
+        assert_eq!(queue.push(3), KeyArrival::Local(3));
+        assert_eq!(queue.on_sync(), SyncPlan::Ignore);
+        assert_eq!(queue.push(4), KeyArrival::Forward(4));
+        assert!(queue.on_content(true));
+        assert_eq!(queue.on_sync(), SyncPlan::Released(vec![]));
     }
 
     #[test]
-    fn resetting_the_connection_returns_held_keys() {
+    fn timeout_does_not_reinsert_a_key_whose_text_arrived() {
         let mut queue = XimKeyQueue::default();
         assert_eq!(queue.push(1), KeyArrival::Forward(1));
         queue.defer(2);
-        assert_eq!(queue.reset(), vec![1, 2]);
-        assert_eq!(queue.push(3), KeyArrival::Forward(3));
+        assert!(queue.on_content(true));
+        assert_eq!(queue.on_timeout(), vec![2]);
+        assert!(!queue.on_content(true));
+    }
+
+    #[test]
+    fn resetting_the_connection_returns_held_keys_and_clears_suppress() {
+        let mut queue = XimKeyQueue::default();
+        assert_eq!(queue.push(1), KeyArrival::Forward(1));
+        queue.defer(2);
+        assert_eq!(queue.on_timeout(), vec![1, 2]);
+        assert_eq!(queue.push(3), KeyArrival::Local(3));
+        assert!(queue.reset().is_empty());
+        assert_eq!(queue.push(4), KeyArrival::Forward(4));
     }
 }

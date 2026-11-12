@@ -130,7 +130,9 @@ debug = "line-tables-only"
 
 # X11 input and frame-clock fixes for issue #85. gpui-pre 0.3.12 still
 # forwards a key burst to XIM before reading replies, and stops painting
-# when a compositor reports the window fully obscured. See
-# docs/DECISION.md (x11-input-is-serialized-in-a-gpui-pre-linux-patch).
+# when a compositor reports the window fully obscured. zed-xim 0.4.0-zed
+# swallows XIM_SYNC_REPLY, which is the per-key completion signal. See
+# docs/DECISION.md (x11-key-completion-is-the-xim-sync-reply).
 [patch.crates-io]
 gpui-pre-linux = { path = "third_party/gpui-pre-linux" }
+zed-xim = { path = "third_party/zed-xim" }
