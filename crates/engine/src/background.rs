@@ -240,6 +240,12 @@ pub struct BackgroundProcesses {
     /// Bumped on every structural change (spawn, exit, removal); list
     /// watchers re-snapshot on change.
     version: watch::Sender<u64>,
+    /// Runs once, on the supervisor stack, immediately after the row
+    /// becomes exited and before any later notice mutation. The notice
+    /// must already hold its tail here — this is the window the old
+    /// placeholder left empty.
+    #[cfg(test)]
+    exit_probe: Mutex<Option<Box<dyn Fn(&BackgroundProcesses) + Send>>>,
 }
 
 /// Pump one output pipe into the process's log until EOF (the pipe closes
@@ -448,6 +454,18 @@ impl BackgroundProcesses {
         if let Some(record) = process.publish_exit(code) {
             #[cfg(unix)]
             crate::shell_groups::forget(&record);
+        }
+        // Exit is visible. The notice was queued above, with its tail.
+        // A probe here drains synchronously — no later backfill can win
+        // a race against it.
+        #[cfg(test)]
+        if let Some(probe) = self
+            .exit_probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            probe(self);
         }
         self.bump();
     }
@@ -771,6 +789,43 @@ mod tests {
         // Remove accepts the exited entry; clearing sweeps it.
         background.remove(&status.process_id).unwrap();
         assert!(background.list().is_empty());
+    }
+
+    /// Drain at the instant the row becomes exited, on the supervisor
+    /// stack. The old order failed this: `running` flipped while the
+    /// queued notice was still an empty placeholder, and the tail written
+    /// afterwards was dropped. Polling cannot catch that — a schedule
+    /// where the backfill wins still passes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exit_notice_is_complete_at_the_moment_the_row_looks_exited() {
+        let background = BackgroundProcesses::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        *background
+            .exit_probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move |background| {
+            let notices = background.take_exit_notices("chat");
+            let running = background
+                .list()
+                .into_iter()
+                .find(|status| status.chat_id == "chat")
+                .map(|status| status.running);
+            let _ = tx.send((notices, running));
+        }));
+        spawn(&background, "printf 'line-a\nline-b\n'; exit 3").unwrap();
+        let (notices, running) = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("exit probe");
+        assert_eq!(running, Some(false));
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].exit_code, 3);
+        assert!(
+            notices[0].tail.contains("line-b"),
+            "tail at exit visibility: {}",
+            notices[0].tail
+        );
+        assert!(background.take_exit_notices("chat").is_empty());
     }
 
     #[cfg(unix)]
