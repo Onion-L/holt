@@ -640,6 +640,36 @@ impl Pickers {
 
     pub(crate) fn toggle_context_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle(PickerKind::ContextUsage, window, cx);
+        if self.context_usage_open() {
+            let request = {
+                let state = self.state.read(cx);
+                let needed = state
+                    .chat_usage
+                    .as_ref()
+                    .and_then(|usage| usage.context.as_ref())
+                    .is_none();
+                if needed {
+                    state.selected_chat.clone().zip(state.engine().cloned())
+                } else {
+                    None
+                }
+            };
+            if let Some((chat_id, engine)) = request {
+                cx.spawn(async move |_, _| {
+                    if let Err(error) = engine
+                        .client()
+                        .call(
+                            holt_rpc::methods::PREVIEW_CHAT_CONTEXT,
+                            serde_json::json!({"chatId": chat_id}),
+                        )
+                        .await
+                    {
+                        tracing::warn!(%error, "context preview failed");
+                    }
+                })
+                .detach();
+            }
+        }
     }
 
     /// Whether any picker popover is open (shell-side: session-nav shortcuts
@@ -1054,28 +1084,56 @@ impl Pickers {
             .gap(px(8.0))
             .child(
                 div()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(t!("conversation_transcript.usage.title")),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(t!("conversation_transcript.usage.title")),
+                    )
+                    .child(
+                        div()
+                            .id("chat-usage-view-report")
+                            .flex_none()
+                            .px(px(4.0))
+                            .py(px(2.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .text_color(theme.text_muted)
+                            .hover(|style| style.bg(theme.element_hover).text_color(theme.text))
+                            .on_click(|_, window, cx| {
+                                window
+                                    .dispatch_action(Box::new(crate::shell::OpenContextUsage), cx);
+                            })
+                            .child(t!("conversation_transcript.usage.view_report")),
+                    ),
             )
             .child(
                 div()
-                    .id("chat-usage-view-report")
+                    .id("chat-usage-close")
                     .flex_none()
-                    .px(px(5.0))
-                    .py(px(2.0))
+                    .size(px(20.0))
                     .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .cursor_pointer()
-                    .text_color(theme.text_muted)
-                    .hover(|style| style.bg(theme.element_hover).text_color(theme.text))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(crate::shell::OpenContextUsage), cx);
-                    })
-                    .child(t!("conversation_transcript.usage.view_report")),
+                    .hover(|style| style.bg(theme.element_hover))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close(cx);
+                    }))
+                    .child(
+                        crate::icons::icon(crate::icons::MINUS)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                    ),
             );
         let content = div()
             .w_full()
-            .p(px(12.0))
+            .p(px(14.0))
             .flex()
             .flex_col()
             .gap(px(10.0))

@@ -320,9 +320,28 @@ conversation_transcript:
         en-US: SHA
   usage:
     title:
-      en-US: Context report
+      en-US: Context Usage
     view_report:
-      en-US: View report
+      en-US: View Report
+    full:
+      en-US: "%{percent} Full"
+    tokens_of_window:
+      en-US: "%{tokens} / %{window} Tokens"
+    tokens_only:
+      en-US: "%{tokens} Tokens"
+    category:
+      system_prompt:
+        en-US: System prompt
+      tool_definitions:
+        en-US: Tool definitions
+      rules:
+        en-US: Rules
+      skills:
+        en-US: Skills
+      mcp:
+        en-US: "MCP & dynamic tools"
+      conversation:
+        en-US: Conversation
     report:
       empty:
         en-US: Preparing the next-request context preview…
@@ -334,18 +353,49 @@ conversation_transcript:
         en-US: Item token counts are estimates; overall occupancy uses the provider report when available.
       mcp_loading:
         en-US: "Loading MCP servers: %{servers}"
+      tokens_first:
+        en-US: "~%{count} tokens"
       system_prompt:
         en-US: System prompt
       tool_definitions:
         en-US: "Tool definitions · %{count}"
+      tool_definitions_label:
+        en-US: Tool definitions
+      rules_label:
+        en-US: Rules
+      user_rules:
+        en-US: "User Rules"
+      project_rules:
+        en-US: "Project Rules"
       skills:
         en-US: "Skills · %{count}"
+      skills_label:
+        en-US: Skills
+      conversation_label:
+        en-US: Conversation
+      before_first_user_message:
+        en-US: Before first user message
+      turn:
+        en-US: "Turn %{index}"
       user:
         en-US: "User %{index}"
       assistant:
         en-US: "Assistant %{index}"
       tool_result:
         en-US: "Tool result %{index}"
+      desc:
+        system_prompt:
+          en-US: "The system prompt is the set of instructions Holt provides to an agent at the start of every chat. It defines the agent's tone, sets ground rules, and outlines how it should use tools."
+        tool_definitions:
+          en-US: "Tool definitions describe everything the agent can do, such as reading files, running commands, or searching the web. Tool definitions help the agent know what its options are, and Holt manages this for you."
+        rules:
+          en-US: "Rules are standing instructions the agent follows each turn. Use them to define style conventions, security best practices, or general context for how your project fits together. Keep rules focused and lightweight to avoid bloat."
+        skills:
+          en-US: "Skills provide specialized workflows and domain instructions that the agent can load on demand when a task matches their description."
+        mcp:
+          en-US: "MCP tools are external capabilities provided by connected Model Context Protocol servers, allowing the agent to interact with external documentation, services, and APIs."
+        conversation:
+          en-US: "Conversation includes the user messages, assistant responses, and tool outputs accumulated across the turns of this chat."
     kind:
       turn:
         en-US: Turns

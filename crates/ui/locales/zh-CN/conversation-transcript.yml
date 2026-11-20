@@ -320,9 +320,28 @@ conversation_transcript:
         zh-CN: SHA
   usage:
     title:
-      zh-CN: 上下文报告
+      zh-CN: 上下文用量
     view_report:
       zh-CN: 查看报告
+    full:
+      zh-CN: "已用 %{percent}"
+    tokens_of_window:
+      zh-CN: "%{tokens} / %{window} Tokens"
+    tokens_only:
+      zh-CN: "%{tokens} Tokens"
+    category:
+      system_prompt:
+        zh-CN: System prompt
+      tool_definitions:
+        zh-CN: 工具定义
+      rules:
+        zh-CN: 规则
+      skills:
+        zh-CN: 技能
+      mcp:
+        zh-CN: "MCP 与动态工具"
+      conversation:
+        zh-CN: 对话
     report:
       empty:
         zh-CN: 正在生成下一次请求的上下文预览…
@@ -334,18 +353,49 @@ conversation_transcript:
         zh-CN: 各项 token 数为估算值；总占用在 provider 返回数据后采用实测值。
       mcp_loading:
         zh-CN: "正在加载 MCP 服务：%{servers}"
+      tokens_first:
+        zh-CN: "~%{count} tokens"
       system_prompt:
         zh-CN: System prompt
       tool_definitions:
         zh-CN: "工具定义 · %{count}"
+      tool_definitions_label:
+        zh-CN: 工具定义
+      rules_label:
+        zh-CN: 规则
+      user_rules:
+        zh-CN: "用户规则"
+      project_rules:
+        zh-CN: "项目规则"
       skills:
         zh-CN: "技能 · %{count}"
+      skills_label:
+        zh-CN: 技能
+      conversation_label:
+        zh-CN: 对话
+      before_first_user_message:
+        zh-CN: 首条用户消息之前
+      turn:
+        zh-CN: "第 %{index} 轮"
       user:
         zh-CN: "用户 %{index}"
       assistant:
         zh-CN: "助手 %{index}"
       tool_result:
         zh-CN: "工具结果 %{index}"
+      desc:
+        system_prompt:
+          zh-CN: "系统提示词是 Holt 在每次对话开始时提供给智能体的基础指令，用于定义智能体的语气、基本准则以及工具使用方式。"
+        tool_definitions:
+          zh-CN: "工具定义描述了智能体可以执行的所有操作，例如读取文件、运行命令或搜索网页。工具定义帮助智能体了解可用选项，由 Holt 自动管理。"
+        rules:
+          zh-CN: "规则是智能体在每轮对话中遵循的常驻指令。可用于定义代码风格、安全规范或项目整体背景。请保持规则聚焦精简，避免上下文膨胀。"
+        skills:
+          zh-CN: "技能提供专门的工作流与领域指令，当任务匹配其描述时，智能体可按需加载。"
+        mcp:
+          zh-CN: "MCP 工具是由已连接的 Model Context Protocol 服务提供的外部能力，使智能体能够与外部文档、服务和 API 交互。"
+        conversation:
+          zh-CN: "对话包含当前会话各轮次累积的用户消息、助手回复以及工具输出。"
     kind:
       turn:
         zh-CN: 轮次

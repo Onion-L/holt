@@ -90,12 +90,14 @@ pub(crate) struct CacheStats {
 
 impl CacheStats {
     /// Every prompt token the chat's records report.
+    #[cfg(test)]
     fn prompt(&self) -> u64 {
         self.input + self.read + self.written
     }
 
     /// The share of the prompt served from cache. `None` when the chat has no
     /// prompt tokens at all — a rate over zero is not a number to print.
+    #[cfg(test)]
     fn hit_rate(&self) -> Option<f32> {
         let prompt = self.prompt();
         (prompt > 0).then(|| self.read as f32 / prompt as f32)
@@ -103,6 +105,7 @@ impl CacheStats {
 }
 
 /// Everything the ring and its card print, folded out of one frame.
+#[allow(dead_code)]
 pub(crate) struct CardModel {
     pub(crate) gross: u64,
     pub(crate) records: u64,
@@ -180,6 +183,7 @@ fn kind_label(kind: &str) -> String {
 /// `≈`-prefixed per number while the figure is the History estimate, and
 /// absolute tokens when the window is unknown (no percentage then — a guess
 /// divided by an unknown is not a number to print).
+#[cfg(test)]
 pub(crate) fn occupancy_value(occupancy: &Occupancy) -> String {
     let approx = if occupancy.estimated { "≈" } else { "" };
     match occupancy.window.filter(|window| *window > 0) {
@@ -198,6 +202,7 @@ pub(crate) fn occupancy_value(occupancy: &Occupancy) -> String {
 }
 
 /// The usage section's value: the gross total and the records behind it.
+#[cfg(test)]
 fn usage_value(model: &CardModel) -> String {
     format!(
         "{} · {}",
@@ -326,63 +331,235 @@ fn occupancy_ring(fraction: f32, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The popover's two labeled sections. Its frame, title, and report action
-/// belong to the picker; the report view reuses the same frame data directly.
+/// The popover's context breakdown: occupancy percentage and token ratio over
+/// a multi-segment stacked bar, followed by one row per context category.
 pub(crate) fn card_content(usage: &ChatUsage, theme: &Theme) -> Div {
     let model = card_model(usage);
+    let categories = context_categories(usage);
     let mut card = div()
         .debug_selector(|| "chat-usage-card".into())
         .flex()
         .flex_col()
-        .gap(px(7.0))
+        .gap(px(10.0))
         .text_size(crate::typography::ui_rems(12.0))
-        .child(section_header(
-            t!("conversation_transcript.usage.section.context").as_ref(),
-            occupancy_value(&model.occupancy),
+        .child(card_occupancy_header(&model.occupancy, theme))
+        .child(context_stacked_bar(
+            model.occupancy.fraction(),
+            &categories,
             theme,
         ))
-        .child(bar(
-            "context",
-            model.occupancy.fraction(),
-            theme.accent,
-            theme,
-        ));
-    if !model.kinds.is_empty() {
-        card = card
-            .child(div().h(px(2.0)))
-            .child(section_header(
-                t!("conversation_transcript.usage.section.usage").as_ref(),
-                usage_value(&model),
-                theme,
-            ))
-            .child(usage_bar(&model, theme))
-            .children(
-                model
-                    .kinds
+        .child(
+            div().flex().flex_col().gap(px(7.0)).pt(px(2.0)).children(
+                categories
                     .iter()
-                    .enumerate()
-                    .map(|(rank, share)| kind_row(rank, share, theme)),
-            );
-    }
-    if let Some(hit_rate) = model.cache.hit_rate() {
-        card = card
-            .child(div().h(px(2.0)))
-            .child(section_header(
-                t!("conversation_transcript.usage.section.cache_hit").as_ref(),
-                percent(hit_rate as f64),
-                theme,
-            ))
-            .child(bar("cache", hit_rate, theme.accent, theme))
-            .child(footnote(cache_note(&model.cache), theme));
-    }
+                    .map(|category| category_row(category, theme)),
+            ),
+        );
     if let Some(note) = source_note(&model) {
         card = card.child(footnote(note.into_owned(), theme));
     }
     card
 }
 
-/// A section's label (left, bright) and its value (right, muted).
-fn section_header(label: &str, value: String, theme: &Theme) -> Div {
+/// Format an integer token count with thousands commas (`1,729`, `4,262`).
+pub(crate) fn comma_tokens(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn estimate_utf16_tokens(text: &str) -> u64 {
+    (text.encode_utf16().count() as f64 / 4.0).ceil() as u64
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExtractedRule {
+    pub(crate) path: String,
+    pub(crate) content: String,
+    pub(crate) estimated_tokens: u64,
+    pub(crate) is_user_rule: bool,
+}
+
+fn is_home_rule_path(path: &str) -> bool {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from);
+    let Some(home) = home else {
+        return false;
+    };
+    let rule_path = std::path::Path::new(path);
+    rule_path.parent() == Some(home.as_path())
+        || rule_path
+            .parent()
+            .and_then(|parent| parent.parent())
+            .is_some_and(|grand| grand == home.as_path() && path.contains(".claude"))
+}
+
+/// Split the composite System Prompt into its base instructions, any
+/// `Project instructions from <path>:` rule sections (`AGENTS.md`), and the
+/// trailing `<available_skills>` catalog block so the UI does not double-count
+/// rules or skills inside the System prompt row.
+pub(crate) fn split_system_prompt(prompt: &str, fallback_tokens: u64) -> (u64, Vec<ExtractedRule>) {
+    const SKILLS_MARKER: &str = "\n\nThe following skills provide specialized instructions";
+    const SKILLS_TAG_MARKER: &str = "\n\n<available_skills>";
+    const RULE_MARKER: &str = "\n\nProject instructions from ";
+
+    let without_skills = prompt
+        .find(SKILLS_MARKER)
+        .or_else(|| prompt.find(SKILLS_TAG_MARKER))
+        .or_else(|| prompt.find("<available_skills>"))
+        .map_or(prompt, |index| &prompt[..index]);
+
+    let has_skills = without_skills.len() < prompt.len();
+    let mut parts = without_skills.split(RULE_MARKER);
+    let base = parts.next().unwrap_or(without_skills);
+    let mut rules = Vec::new();
+    for segment in parts {
+        let (path, body) = segment
+            .split_once(":\n")
+            .map_or(("", segment), |(path, body)| (path.trim(), body.trim()));
+        let full_chunk = format!("{RULE_MARKER}{segment}");
+        rules.push(ExtractedRule {
+            is_user_rule: is_home_rule_path(path),
+            path: path.to_string(),
+            content: body.to_string(),
+            estimated_tokens: estimate_utf16_tokens(&full_chunk),
+        });
+    }
+
+    let base_tokens = if rules.is_empty() && !has_skills {
+        fallback_tokens
+    } else {
+        estimate_utf16_tokens(base)
+    };
+    (base_tokens, rules)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ContextCategoryShare {
+    pub(crate) key: &'static str,
+    pub(crate) label: String,
+    pub(crate) tokens: u64,
+    pub(crate) color: Hsla,
+}
+
+pub(crate) fn category_color(key: &str) -> Hsla {
+    match key {
+        "system" => gpui::rgb(0x9ca3af).into(),
+        "tools" => gpui::rgb(0x8b5cf6).into(),
+        "rules" => gpui::rgb(0x10b981).into(),
+        "skills" => gpui::rgb(0xf59e0b).into(),
+        "mcp" => gpui::rgb(0xec4899).into(),
+        "conversation" => gpui::rgb(0xe06c55).into(),
+        _ => gpui::rgb(0x9ca3af).into(),
+    }
+}
+
+pub(crate) fn context_categories(usage: &ChatUsage) -> Vec<ContextCategoryShare> {
+    use holt_proto::ChatContextEntryKind as Kind;
+
+    let mut system_tokens = 0u64;
+    let mut tools_tokens = 0u64;
+    let mut rules_tokens = 0u64;
+    let mut skills_tokens = 0u64;
+    let mut mcp_tokens = 0u64;
+    let mut conversation_tokens = 0u64;
+
+    if let Some(snapshot) = usage.context.as_ref() {
+        for entry in &snapshot.entries {
+            match entry.kind {
+                Kind::SystemPrompt => {
+                    let (base, rules) = split_system_prompt(&entry.content, entry.estimated_tokens);
+                    system_tokens += base;
+                    rules_tokens += rules.iter().map(|rule| rule.estimated_tokens).sum::<u64>();
+                }
+                Kind::ToolDefinitions | Kind::Tool => {
+                    tools_tokens += entry.estimated_tokens;
+                }
+                Kind::Skills | Kind::Skill => {
+                    skills_tokens += entry.estimated_tokens;
+                }
+                Kind::McpServer => {
+                    mcp_tokens += entry.estimated_tokens;
+                }
+                Kind::UserMessage | Kind::AssistantMessage | Kind::ToolResult => {
+                    conversation_tokens += entry.estimated_tokens;
+                }
+            }
+        }
+    } else {
+        conversation_tokens = usage.occupancy.tokens;
+    }
+
+    vec![
+        ContextCategoryShare {
+            key: "system",
+            label: t!("conversation_transcript.usage.category.system_prompt").into_owned(),
+            tokens: system_tokens,
+            color: category_color("system"),
+        },
+        ContextCategoryShare {
+            key: "tools",
+            label: t!("conversation_transcript.usage.category.tool_definitions").into_owned(),
+            tokens: tools_tokens,
+            color: category_color("tools"),
+        },
+        ContextCategoryShare {
+            key: "rules",
+            label: t!("conversation_transcript.usage.category.rules").into_owned(),
+            tokens: rules_tokens,
+            color: category_color("rules"),
+        },
+        ContextCategoryShare {
+            key: "skills",
+            label: t!("conversation_transcript.usage.category.skills").into_owned(),
+            tokens: skills_tokens,
+            color: category_color("skills"),
+        },
+        ContextCategoryShare {
+            key: "mcp",
+            label: t!("conversation_transcript.usage.category.mcp").into_owned(),
+            tokens: mcp_tokens,
+            color: category_color("mcp"),
+        },
+        ContextCategoryShare {
+            key: "conversation",
+            label: t!("conversation_transcript.usage.category.conversation").into_owned(),
+            tokens: conversation_tokens,
+            color: category_color("conversation"),
+        },
+    ]
+}
+
+fn card_occupancy_header(occupancy: &Occupancy, theme: &Theme) -> Div {
+    let left = match occupancy.window.filter(|window| *window > 0) {
+        Some(window) => {
+            let pct = percent(occupancy.tokens as f64 / window as f64);
+            t!("conversation_transcript.usage.full", percent = pct).into_owned()
+        }
+        None => t!("conversation_transcript.usage.window_unknown")
+            .trim_start_matches("· ")
+            .to_string(),
+    };
+    let right = match occupancy.window.filter(|window| *window > 0) {
+        Some(window) => t!(
+            "conversation_transcript.usage.tokens_of_window",
+            tokens = format!("~{}", compact_tokens(occupancy.tokens)),
+            window = compact_tokens(window)
+        )
+        .into_owned(),
+        None => t!(
+            "conversation_transcript.usage.tokens_only",
+            tokens = format!("~{}", compact_tokens(occupancy.tokens))
+        )
+        .into_owned(),
+    };
     div()
         .flex()
         .flex_row()
@@ -392,120 +569,96 @@ fn section_header(label: &str, value: String, theme: &Theme) -> Div {
         .child(
             div()
                 .flex_none()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(SharedString::from(label.to_string())),
+                .text_color(theme.text_muted)
+                .child(SharedString::from(left)),
         )
         .child(
             div()
                 .min_w_0()
                 .truncate()
                 .text_color(theme.text_muted)
-                .child(SharedString::from(value)),
+                .child(SharedString::from(right)),
         )
 }
 
-/// The shared track: a rounded groove the fills ride in (the settings
-/// previews' bar geometry).
-fn track(theme: &Theme) -> Div {
+fn context_stacked_bar(fraction: f32, categories: &[ContextCategoryShare], theme: &Theme) -> Div {
+    let active: Vec<&ContextCategoryShare> = categories
+        .iter()
+        .filter(|category| category.tokens > 0)
+        .collect();
+    let total: u64 = active.iter().map(|category| category.tokens).sum();
+    let last = active.len().saturating_sub(1);
+    let mut fill = div()
+        .debug_selector(|| "usage-context-fill".into())
+        .h_full()
+        .w(gpui::relative(fraction.clamp(0.0, 1.0)))
+        .rounded(px(3.0))
+        .overflow_hidden()
+        .flex()
+        .flex_row();
+    if active.is_empty() || total == 0 {
+        fill = fill.bg(theme.accent);
+    } else {
+        for (index, category) in active.iter().enumerate() {
+            let key = category.key;
+            let share = (category.tokens as f32 / total as f32).clamp(0.0, 1.0);
+            let segment = div()
+                .debug_selector(move || format!("usage-category-segment-{key}"))
+                .h_full()
+                .bg(category.color);
+            fill = fill.child(if index == last {
+                segment.flex_1()
+            } else {
+                segment.w(gpui::relative(share))
+            });
+        }
+    }
     div()
-        .h(px(5.0))
+        .debug_selector(|| "usage-context-track".into())
+        .h(px(6.0))
         .w_full()
         .rounded(px(3.0))
         .overflow_hidden()
-        .bg(theme.ink(0.10))
+        .bg(theme.ink(0.12))
+        .child(fill)
 }
 
-/// A bar: one rounded track with a single fill. `name` keys the two debug
-/// selectors the geometry test measures the fraction through.
-fn bar(name: &'static str, fraction: f32, fill: Hsla, theme: &Theme) -> Div {
-    track(theme)
-        .debug_selector(move || format!("usage-{name}-track"))
-        .child(
-            div()
-                .debug_selector(move || format!("usage-{name}-fill"))
-                .h_full()
-                .w(gpui::relative(fraction.clamp(0.0, 1.0)))
-                .rounded(px(3.0))
-                .bg(fill),
-        )
-}
-
-/// The usage bar: one segment per source, in the rows' own order and colors.
-/// The last segment takes the remainder so rounding never leaves a sliver of
-/// bare track at the end.
-fn usage_bar(model: &CardModel, theme: &Theme) -> Div {
-    let last = model.kinds.len().saturating_sub(1);
-    let mut bar = track(theme)
-        .debug_selector(|| "usage-bar".into())
-        .flex()
-        .flex_row();
-    for (rank, share) in model.kinds.iter().enumerate() {
-        let kind = share.kind.clone();
-        let segment = div()
-            .debug_selector(move || format!("usage-segment-{kind}"))
-            .h_full()
-            .bg(kind_color(rank, theme));
-        bar = bar.child(if rank == last {
-            segment.flex_1()
-        } else {
-            segment.w(gpui::relative(share.share.clamp(0.0, 1.0)))
-        });
-    }
-    bar
-}
-
-/// One source's row: dot, name, exact count, share of the total.
-fn kind_row(rank: usize, share: &KindShare, theme: &Theme) -> Div {
-    let kind = share.kind.clone();
+fn category_row(category: &ContextCategoryShare, theme: &Theme) -> Div {
+    let key = category.key;
     div()
-        .debug_selector(move || format!("usage-kind-{kind}"))
+        .debug_selector(move || format!("usage-category-{key}"))
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(6.0))
+        .gap(px(8.0))
         .child(
             div()
                 .flex_none()
-                .size(px(6.0))
-                .rounded_full()
-                .bg(kind_color(rank, theme)),
+                .size(px(10.0))
+                .rounded(px(2.5))
+                .bg(category.color),
         )
         .child(
             div()
                 .min_w_0()
                 .truncate()
-                .text_color(theme.text_muted)
-                .child(SharedString::from(share.label.clone())),
+                .text_color(theme.text)
+                .child(SharedString::from(category.label.clone())),
         )
         .child(div().flex_1())
         .child(
             div()
                 .flex_none()
-                .text_color(theme.text_faint)
-                .child(SharedString::from(compact_tokens(share.tokens))),
+                .text_color(theme.text_muted)
+                .child(SharedString::from(compact_tokens(category.tokens))),
         )
-        .child(
-            div()
-                .flex_none()
-                .w(px(44.0))
-                .text_right()
-                .text_color(theme.text)
-                .child(SharedString::from(percent(share.share as f64))),
-        )
-}
-
-/// A source's color: one hue dimmed by rank, so a five-source breakdown stays
-/// legible without inventing a palette. Segment and dot take the same color,
-/// which is what ties the bar to the rows.
-fn kind_color(rank: usize, theme: &Theme) -> Hsla {
-    theme.accent.opacity((1.0 - rank as f32 * 0.16).max(0.35))
 }
 
 /// The three prompt counts the hit rate divides, in the frame's own
 /// vocabulary so the percentage is auditable against them. A zero write count
 /// stays out: most providers never report cache writes, and a permanent
 /// "0 written" is noise rather than data.
+#[cfg(test)]
 fn cache_note(cache: &CacheStats) -> String {
     if cache.written > 0 {
         t!(
@@ -533,6 +686,33 @@ fn footnote(text: String, theme: &Theme) -> Div {
         .child(SharedString::from(text))
 }
 
+#[derive(Clone, Debug)]
+struct ReportItem {
+    id: String,
+    icon: &'static str,
+    title: String,
+    count: Option<usize>,
+    estimated_tokens: u64,
+    content: String,
+    /// Nested rows shown when the item expands (a turn's messages). Leaves
+    /// keep this empty and show `content` instead.
+    children: Vec<ReportItem>,
+}
+
+#[derive(Clone, Debug)]
+struct ReportSection {
+    id: String,
+    icon: &'static str,
+    icon_color: Hsla,
+    title: String,
+    count: Option<usize>,
+    estimated_tokens: u64,
+    first_row: bool,
+    description: String,
+    content_selector: Option<String>,
+    children: Vec<ReportItem>,
+}
+
 /// The right-pane report. It owns only view state; the engine snapshot stays
 /// immutable between model requests, so streaming transcript notifications do
 /// not re-render kilobytes of expanded prompt and tool text.
@@ -545,6 +725,15 @@ pub(crate) struct ContextUsagePanel {
 }
 
 impl ContextUsagePanel {
+    fn default_expanded() -> HashSet<String> {
+        HashSet::from([
+            "system".to_string(),
+            "tools".to_string(),
+            "rules".to_string(),
+            "conversation".to_string(),
+        ])
+    }
+
     pub(crate) fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let (chat_id, snapshot) = {
             let state = state.read(cx);
@@ -567,7 +756,7 @@ impl ContextUsagePanel {
             let snapshot_changed = next != this.snapshot.as_ref();
             if chat_changed {
                 this.chat_id = chat_id;
-                this.expanded.clear();
+                this.expanded = Self::default_expanded();
                 this.scroll.set_offset(gpui::Point::default());
             }
             if snapshot_changed {
@@ -580,7 +769,7 @@ impl ContextUsagePanel {
         Self {
             snapshot,
             chat_id,
-            expanded: HashSet::new(),
+            expanded: Self::default_expanded(),
             scroll: ScrollHandle::new(),
             _observe: observe,
         }
@@ -635,10 +824,8 @@ impl ContextUsagePanel {
     fn entry_icon(kind: holt_proto::ChatContextEntryKind) -> &'static str {
         use holt_proto::ChatContextEntryKind as Kind;
         match kind {
-            Kind::SystemPrompt => crate::icons::DOCUMENT,
-            Kind::ToolDefinitions | Kind::Tool | Kind::ToolResult => {
-                crate::icons::PROGRAMMING_OUTLINE
-            }
+            Kind::SystemPrompt => crate::icons::SYSTEM_PROMPT,
+            Kind::ToolDefinitions | Kind::Tool | Kind::ToolResult => crate::icons::WRENCH,
             Kind::McpServer => crate::icons::WIDGET,
             Kind::Skills | Kind::Skill => crate::icons::CUBE,
             Kind::UserMessage => crate::icons::CHAT_ROUND_LINE,
@@ -646,6 +833,7 @@ impl ContextUsagePanel {
         }
     }
 
+    #[cfg(test)]
     fn request_label(snapshot: &holt_proto::ChatContextSnapshot) -> String {
         if snapshot.preview {
             t!(
@@ -662,40 +850,362 @@ impl ContextUsagePanel {
         }
     }
 
-    fn render_entry(
-        &self,
-        entry: &holt_proto::ChatContextEntry,
-        depth: usize,
+    fn build_sections(
+        snapshot: &holt_proto::ChatContextSnapshot,
         theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let expanded = self.expanded.contains(&entry.id);
-        let id = entry.id.clone();
-        let title = Self::entry_title(entry);
-        let tokens = format!("~{}", compact_tokens(entry.estimated_tokens));
-        let chevron = if expanded {
-            crate::icons::ALT_ARROW_DOWN
+    ) -> Vec<ReportSection> {
+        use holt_proto::ChatContextEntryKind as Kind;
+
+        let mut sections = Vec::new();
+        let mut extracted_rules = Vec::new();
+        let mut messages: Vec<(bool, ReportItem)> = Vec::new();
+
+        for entry in &snapshot.entries {
+            match entry.kind {
+                Kind::SystemPrompt => {
+                    let (base_tokens, rules) =
+                        split_system_prompt(&entry.content, entry.estimated_tokens);
+                    extracted_rules.extend(rules);
+                    sections.push(ReportSection {
+                        id: entry.id.clone(),
+                        icon: crate::icons::SYSTEM_PROMPT,
+                        icon_color: theme.text_muted,
+                        title: t!("conversation_transcript.usage.report.system_prompt")
+                            .into_owned(),
+                        count: None,
+                        estimated_tokens: base_tokens,
+                        first_row: sections.is_empty(),
+                        description: t!("conversation_transcript.usage.report.desc.system_prompt")
+                            .into_owned(),
+                        content_selector: Some(format!("context-content-{}", entry.id)),
+                        children: Vec::new(),
+                    });
+                }
+                Kind::ToolDefinitions => {
+                    let mut children: Vec<ReportItem> = entry
+                        .children
+                        .iter()
+                        .map(|tool| ReportItem {
+                            id: tool.id.clone(),
+                            icon: crate::icons::WRENCH,
+                            title: Self::entry_title(tool),
+                            count: None,
+                            estimated_tokens: tool.estimated_tokens,
+                            content: Self::format_tool_content(&tool.content),
+                            children: Vec::new(),
+                        })
+                        .collect();
+                    children.sort_by(|a, b| {
+                        b.estimated_tokens
+                            .cmp(&a.estimated_tokens)
+                            .then_with(|| a.title.cmp(&b.title))
+                    });
+                    sections.push(ReportSection {
+                        id: entry.id.clone(),
+                        icon: crate::icons::WRENCH,
+                        icon_color: category_color("tools"),
+                        title: t!("conversation_transcript.usage.report.tool_definitions_label")
+                            .into_owned(),
+                        count: Some(entry.children.len()),
+                        estimated_tokens: entry.estimated_tokens,
+                        first_row: sections.is_empty(),
+                        description: t!(
+                            "conversation_transcript.usage.report.desc.tool_definitions"
+                        )
+                        .into_owned(),
+                        content_selector: None,
+                        children,
+                    });
+                }
+                Kind::Skills => {
+                    let mut children: Vec<ReportItem> = entry
+                        .children
+                        .iter()
+                        .map(|skill| ReportItem {
+                            id: skill.id.clone(),
+                            icon: crate::icons::CUBE,
+                            title: Self::entry_title(skill),
+                            count: None,
+                            estimated_tokens: skill.estimated_tokens,
+                            content: skill.content.clone(),
+                            children: Vec::new(),
+                        })
+                        .collect();
+                    children.sort_by(|a, b| {
+                        b.estimated_tokens
+                            .cmp(&a.estimated_tokens)
+                            .then_with(|| a.title.cmp(&b.title))
+                    });
+                    sections.push(ReportSection {
+                        id: entry.id.clone(),
+                        icon: crate::icons::CUBE,
+                        icon_color: category_color("skills"),
+                        title: t!("conversation_transcript.usage.report.skills_label").into_owned(),
+                        count: Some(entry.children.len()),
+                        estimated_tokens: entry.estimated_tokens,
+                        first_row: sections.is_empty(),
+                        description: t!("conversation_transcript.usage.report.desc.skills")
+                            .into_owned(),
+                        content_selector: None,
+                        children,
+                    });
+                }
+                Kind::McpServer => {
+                    let server_prefix =
+                        entry.name.as_ref().map(|server| format!("mcp__{server}__"));
+                    let mut children: Vec<ReportItem> = entry
+                        .children
+                        .iter()
+                        .map(|tool| {
+                            let raw_title = Self::entry_title(tool);
+                            let clean_title = server_prefix
+                                .as_deref()
+                                .and_then(|prefix| raw_title.strip_prefix(prefix))
+                                .unwrap_or(&raw_title)
+                                .to_string();
+                            ReportItem {
+                                id: tool.id.clone(),
+                                icon: crate::icons::WRENCH,
+                                title: clean_title,
+                                count: None,
+                                estimated_tokens: tool.estimated_tokens,
+                                content: Self::format_tool_content(&tool.content),
+                                children: Vec::new(),
+                            }
+                        })
+                        .collect();
+                    children.sort_by(|a, b| {
+                        b.estimated_tokens
+                            .cmp(&a.estimated_tokens)
+                            .then_with(|| a.title.cmp(&b.title))
+                    });
+                    sections.push(ReportSection {
+                        id: entry.id.clone(),
+                        icon: crate::icons::WIDGET,
+                        icon_color: category_color("mcp"),
+                        title: Self::entry_title(entry),
+                        count: Some(entry.children.len()),
+                        estimated_tokens: entry.estimated_tokens,
+                        first_row: sections.is_empty(),
+                        description: t!("conversation_transcript.usage.report.desc.mcp")
+                            .into_owned(),
+                        content_selector: None,
+                        children,
+                    });
+                }
+                Kind::UserMessage | Kind::AssistantMessage | Kind::ToolResult => {
+                    messages.push((
+                        entry.kind == Kind::UserMessage,
+                        ReportItem {
+                            id: entry.id.clone(),
+                            icon: Self::entry_icon(entry.kind),
+                            title: Self::entry_title(entry),
+                            count: None,
+                            estimated_tokens: entry.estimated_tokens,
+                            content: entry.content.clone(),
+                            children: Vec::new(),
+                        },
+                    ));
+                }
+                Kind::Tool | Kind::Skill => {}
+            }
+        }
+
+        if !extracted_rules.is_empty() {
+            let total_rule_files = extracted_rules.len();
+            let rules_tokens: u64 = extracted_rules
+                .iter()
+                .map(|rule| rule.estimated_tokens)
+                .sum();
+            let mut user_rules = Vec::new();
+            let mut project_rules = Vec::new();
+            for rule in extracted_rules {
+                if rule.is_user_rule {
+                    user_rules.push(rule);
+                } else {
+                    project_rules.push(rule);
+                }
+            }
+            let mut children = Vec::new();
+            if !user_rules.is_empty() {
+                let tokens = user_rules.iter().map(|rule| rule.estimated_tokens).sum();
+                let content = user_rules
+                    .iter()
+                    .map(|rule| format!("# {}\n{}", rule.path, rule.content))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                children.push(ReportItem {
+                    id: "rule-user".into(),
+                    icon: crate::icons::LIST,
+                    title: t!("conversation_transcript.usage.report.user_rules").into_owned(),
+                    count: (user_rules.len() > 1).then_some(user_rules.len()),
+                    estimated_tokens: tokens,
+                    content,
+                    children: Vec::new(),
+                });
+            }
+            if !project_rules.is_empty() {
+                let tokens = project_rules.iter().map(|rule| rule.estimated_tokens).sum();
+                let content = project_rules
+                    .iter()
+                    .map(|rule| format!("# {}\n{}", rule.path, rule.content))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                children.push(ReportItem {
+                    id: "rule-project".into(),
+                    icon: crate::icons::FOLDER,
+                    title: t!("conversation_transcript.usage.report.project_rules").into_owned(),
+                    count: (project_rules.len() > 1).then_some(project_rules.len()),
+                    estimated_tokens: tokens,
+                    content,
+                    children: Vec::new(),
+                });
+            }
+            let rules_section = ReportSection {
+                id: "rules".into(),
+                icon: crate::icons::LIST,
+                icon_color: category_color("rules"),
+                title: t!("conversation_transcript.usage.report.rules_label").into_owned(),
+                count: Some(total_rule_files),
+                estimated_tokens: rules_tokens,
+                first_row: false,
+                description: t!("conversation_transcript.usage.report.desc.rules").into_owned(),
+                content_selector: None,
+                children,
+            };
+            // Place Rules immediately after Tool definitions (or after System prompt).
+            let insert_at = sections
+                .iter()
+                .position(|section| section.id == "tools")
+                .map(|index| index + 1)
+                .or_else(|| {
+                    sections
+                        .iter()
+                        .position(|section| section.id == "system")
+                        .map(|index| index + 1)
+                })
+                .unwrap_or(sections.len());
+            sections.insert(insert_at, rules_section);
+        }
+
+        if !messages.is_empty() {
+            // Group the flat message list into turns: entries before the first
+            // user message stand alone, each user message opens the next turn
+            // and owns everything after it until the following user message.
+            let mut groups: Vec<(bool, Vec<ReportItem>)> = Vec::new();
+            for (is_user, message) in messages {
+                if is_user {
+                    groups.push((true, vec![message]));
+                } else {
+                    match groups.last_mut() {
+                        Some((true, group)) => group.push(message),
+                        _ => match groups.first_mut() {
+                            Some((false, group)) => group.push(message),
+                            _ => groups.push((false, vec![message])),
+                        },
+                    }
+                }
+            }
+            let mut children: Vec<ReportItem> = Vec::new();
+            let mut turn_index = 0;
+            // The section count mirrors the reference layout: total records
+            // across turns, not the number of turn rows.
+            let total_records: usize = groups.iter().map(|(_, group)| group.len()).sum();
+            for (is_turn, group) in groups {
+                let tokens: u64 = group.iter().map(|item| item.estimated_tokens).sum();
+                let count = group.len();
+                turn_index += 1;
+                let (title, id) = if is_turn {
+                    (
+                        t!(
+                            "conversation_transcript.usage.report.turn",
+                            index = turn_index
+                        )
+                        .into_owned(),
+                        format!("turn-{}", group[0].id),
+                    )
+                } else {
+                    (
+                        t!("conversation_transcript.usage.report.before_first_user_message")
+                            .into_owned(),
+                        format!("pre-{}", group[0].id),
+                    )
+                };
+                children.push(ReportItem {
+                    id,
+                    icon: crate::icons::CHAT_ROUND_LINE,
+                    title,
+                    count: Some(count),
+                    estimated_tokens: tokens,
+                    content: String::new(),
+                    children: group,
+                });
+            }
+            let conversation_tokens: u64 = children.iter().map(|item| item.estimated_tokens).sum();
+            sections.push(ReportSection {
+                id: "conversation".into(),
+                icon: crate::icons::CHAT_ROUND_LINE,
+                icon_color: category_color("conversation"),
+                title: t!("conversation_transcript.usage.report.conversation_label").into_owned(),
+                count: Some(total_records),
+                estimated_tokens: conversation_tokens,
+                first_row: sections.is_empty(),
+                description: t!("conversation_transcript.usage.report.desc.conversation")
+                    .into_owned(),
+                content_selector: None,
+                children,
+            });
+        }
+
+        sections
+    }
+
+    fn format_tool_content(content: &str) -> String {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
+            return content.to_string();
+        };
+        let Some(description) = value
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|desc| !desc.is_empty())
+        else {
+            return content.to_string();
+        };
+        if let Some(params) = value.get("parameters")
+            && let Ok(pretty_params) = serde_json::to_string_pretty(params)
+        {
+            format!("{description}\n\n{pretty_params}")
         } else {
-            crate::icons::ALT_ARROW_RIGHT
+            description.to_string()
+        }
+    }
+
+    fn render_item(&self, item: &ReportItem, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let expanded = self.expanded.contains(&item.id);
+        let id = item.id.clone();
+        let selector_id = item.id.clone();
+        let title = item.title.clone();
+        let count = item.count;
+        let tokens = format!("~{}", comma_tokens(item.estimated_tokens));
+        let caret = if expanded {
+            crate::icons::CARET_DOWN
+        } else {
+            crate::icons::CARET_RIGHT
         };
         let header = div()
-            .id(SharedString::from(format!("context-entry-{}", entry.id)))
-            .debug_selector(|| format!("context-entry-{}", entry.id))
-            .h(px(34.0))
+            .id(SharedString::from(format!("context-entry-{}", item.id)))
+            .debug_selector(move || format!("context-entry-{selector_id}"))
+            .h(px(30.0))
             .w_full()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(7.0))
-            .px(px(9.0))
-            .rounded(px(6.0))
+            .gap(px(8.0))
+            .px(px(10.0))
+            .rounded(px(5.0))
             .cursor_pointer()
-            .bg(if depth == 0 {
-                theme.ink(0.035)
-            } else {
-                gpui::transparent_black()
-            })
-            .hover(|style| style.bg(theme.element_hover))
+            .hover(|style| style.bg(theme.ink(0.045)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.expanded.insert(id.clone()) {
                     this.expanded.remove(&id);
@@ -703,66 +1213,240 @@ impl ContextUsagePanel {
                 cx.notify();
             }))
             .child(
-                crate::icons::icon(chevron)
-                    .size(px(11.0))
-                    .text_color(theme.text_muted),
+                div()
+                    .flex_none()
+                    .size(px(12.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        crate::icons::icon(caret)
+                            .size(px(8.5))
+                            .text_color(theme.text_muted),
+                    ),
             )
             .child(
-                crate::icons::icon(Self::entry_icon(entry.kind))
-                    .size(px(13.0))
-                    .text_color(theme.text_muted),
+                div()
+                    .flex_none()
+                    .size(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        crate::icons::icon(item.icon)
+                            .size(px(13.5))
+                            .text_color(theme.text_muted),
+                    ),
             )
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
-                    .truncate()
-                    .text_color(theme.text)
-                    .child(SharedString::from(title)),
+                    .flex()
+                    .flex_row()
+                    .items_baseline()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text)
+                            .child(SharedString::from(title)),
+                    )
+                    .children(count.map(|count| {
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(count.to_string()))
+                    })),
             )
             .child(
                 div()
                     .flex_none()
-                    .text_size(crate::typography::ui_rems(10.5))
-                    .text_color(theme.text_faint)
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted)
                     .child(SharedString::from(tokens)),
             );
         let mut row = div().w_full().flex().flex_col().child(header);
+        if expanded && !item.content.is_empty() {
+            let content_id = item.id.clone();
+            row = row.child(
+                div()
+                    .debug_selector(move || format!("context-content-{content_id}"))
+                    .w_full()
+                    .mt(px(2.0))
+                    .mb(px(6.0))
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .rounded(px(6.0))
+                    .bg(theme.ink(0.035))
+                    .border_1()
+                    .border_color(theme.border)
+                    .font_family(theme.font_mono.clone())
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .line_height(gpui::relative(1.45))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(item.content.clone())),
+            );
+        }
+        if expanded && !item.children.is_empty() {
+            row = row.child(
+                div()
+                    .w_full()
+                    .pb(px(4.0))
+                    .pl(px(14.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .children(
+                        item.children
+                            .iter()
+                            .map(|child| self.render_item(child, theme, cx)),
+                    ),
+            );
+        }
+        row
+    }
+
+    fn render_section(
+        &self,
+        section: &ReportSection,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let expanded = self.expanded.contains(&section.id);
+        let id = section.id.clone();
+        let selector_id = section.id.clone();
+        let title = section.title.clone();
+        let count = section.count;
+        let tokens = if section.first_row {
+            t!(
+                "conversation_transcript.usage.report.tokens_first",
+                count = comma_tokens(section.estimated_tokens)
+            )
+            .into_owned()
+        } else {
+            format!("~{}", comma_tokens(section.estimated_tokens))
+        };
+        let caret = if expanded {
+            crate::icons::CARET_DOWN
+        } else {
+            crate::icons::CARET_RIGHT
+        };
+        let header = div()
+            .id(SharedString::from(format!("context-entry-{}", section.id)))
+            .debug_selector(move || format!("context-entry-{selector_id}"))
+            .h(px(32.0))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .bg(theme.ink(0.055))
+            .hover(|style| style.bg(theme.ink(0.085)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.expanded.insert(id.clone()) {
+                    this.expanded.remove(&id);
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(12.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        crate::icons::icon(caret)
+                            .size(px(8.5))
+                            .text_color(theme.text_muted),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        crate::icons::icon(section.icon)
+                            .size(px(14.0))
+                            .text_color(section.icon_color),
+                    ),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .items_baseline()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(SharedString::from(title)),
+                    )
+                    .children(count.map(|count| {
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(count.to_string()))
+                    })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(tokens)),
+            );
+
+        let mut block = div().w_full().flex().flex_col().child(header);
         if expanded {
-            if !entry.content.is_empty() {
-                row = row.child(
-                    div()
-                        .debug_selector(|| format!("context-content-{}", entry.id))
-                        .w_full()
-                        .px(px(12.0))
-                        .py(px(10.0))
-                        .font_family(theme.font_mono.clone())
-                        .text_size(crate::typography::ui_rems(10.5))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(entry.content.clone())),
-                );
+            let mut desc = div()
+                .w_full()
+                .px(px(8.0))
+                .pt(px(8.0))
+                .pb(px(6.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .line_height(gpui::relative(1.45))
+                .text_color(theme.text_muted)
+                .child(SharedString::from(section.description.clone()));
+            if let Some(selector) = section.content_selector.clone() {
+                desc = desc.debug_selector(move || selector.clone());
             }
-            if !entry.children.is_empty() {
-                row = row.child(
+            block = block.child(desc);
+            if !section.children.is_empty() {
+                block = block.child(
                     div()
                         .w_full()
-                        .ml(px(15.0))
-                        .pl(px(7.0))
-                        .border_l_1()
-                        .border_color(theme.border)
+                        .pb(px(4.0))
                         .flex()
                         .flex_col()
-                        .gap(px(3.0))
+                        .gap(px(2.0))
                         .children(
-                            entry
+                            section
                                 .children
                                 .iter()
-                                .map(|child| self.render_entry(child, depth + 1, theme, cx)),
+                                .map(|item| self.render_item(item, theme, cx)),
                         ),
                 );
             }
         }
-        row
+        block
     }
 }
 
@@ -782,59 +1466,101 @@ impl Render for ContextUsagePanel {
                 .text_color(theme.text_muted)
                 .child(t!("conversation_transcript.usage.report.empty"));
         };
+        let sections = Self::build_sections(snapshot, &theme);
+        let section_ids: Vec<String> = sections.iter().map(|section| section.id.clone()).collect();
+        let top_bar = div()
+            .id("context-usage-header")
+            .flex_none()
+            .h(px(36.0))
+            .px(px(14.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(t!("conversation_transcript.usage.title")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .children((!snapshot.loading_mcp_servers.is_empty()).then(|| {
+                        div()
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(theme.text_muted)
+                            .child(t!(
+                                "conversation_transcript.usage.report.mcp_loading",
+                                servers = snapshot.loading_mcp_servers.join(", ")
+                            ))
+                    }))
+                    .child(
+                        div()
+                            .id("context-usage-toggle-all")
+                            .flex_none()
+                            .size(px(22.0))
+                            .rounded(px(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.element_hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let any_expanded =
+                                    section_ids.iter().any(|id| this.expanded.contains(id));
+                                if any_expanded {
+                                    this.expanded.clear();
+                                } else {
+                                    for id in &section_ids {
+                                        this.expanded.insert(id.clone());
+                                    }
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::TREE_SIDEBAR)
+                                    .size(px(13.0))
+                                    .text_color(theme.text_muted),
+                            ),
+                    ),
+            );
+
         div()
             .id("context-usage-report")
             .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .occlude()
+            .flex()
+            .flex_col()
+            .child(top_bar)
             .child(
                 div()
-                    .w_full()
-                    .p(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .text_size(crate::typography::ui_rems(11.5))
+                    .id("context-usage-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .occlude()
                     .child(
                         div()
+                            .w_full()
+                            .px(px(12.0))
+                            .py(px(10.0))
                             .flex()
                             .flex_col()
-                            .gap(px(3.0))
-                            .pb(px(5.0))
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text)
-                                    .child(t!("conversation_transcript.usage.title")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(10.5))
-                                    .text_color(theme.text_muted)
-                                    .child(Self::request_label(snapshot)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(10.0))
-                                    .text_color(theme.text_faint)
-                                    .child(t!("conversation_transcript.usage.report.estimates")),
-                            )
-                            .children((!snapshot.loading_mcp_servers.is_empty()).then(|| {
-                                div()
-                                    .text_size(crate::typography::ui_rems(10.0))
-                                    .text_color(theme.accent)
-                                    .child(t!(
-                                        "conversation_transcript.usage.report.mcp_loading",
-                                        servers = snapshot.loading_mcp_servers.join(", ")
-                                    ))
-                            })),
-                    )
-                    .children(
-                        snapshot
-                            .entries
-                            .iter()
-                            .map(|entry| self.render_entry(entry, 0, &theme, cx)),
+                            .gap(px(6.0))
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .children(
+                                sections
+                                    .iter()
+                                    .map(|section| self.render_section(section, &theme, cx)),
+                            ),
                     ),
             )
     }
@@ -1126,17 +1852,12 @@ mod tests {
     /// The ring and the card both paint, at the geometry the bars claim:
     /// the arc is stroked in a paint pass and the bars only exist on a layout
     /// pass, so this is where a bad fraction, an unset theme global, or a bar
-    /// that never measured would surface. The two bars are the card's whole
-    /// point, so their widths are checked against the shares they came from.
+    /// that never measured would surface.
     #[gpui::test]
     fn the_ring_and_its_card_paint_their_bars(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
         cx.update(|cx| cx.set_global(Theme::default()));
-        // Turn 800 of a 1000 gross — the other 200 are title plumbing the
-        // card never shows — against a 1M window holding 40k: the usage bar
-        // is all turn, and an occupancy fill of 4%. 200 of the prompt's 920
-        // tokens came from cache: a 21.7% hit rate (the cache section reads
-        // every kind, title included).
-        let usage = decode(json!({
+        let mut usage = decode(json!({
             "gross": 1000,
             "byKind": {
                 "turn": {"input": 560, "output": 40, "cacheRead": 200},
@@ -1144,6 +1865,37 @@ mod tests {
             },
             "recordCount": 3,
             "occupancy": {"tokens": 40000, "contextWindow": 1000000, "estimated": false}
+        }));
+        usage.context = Some(Arc::new(holt_proto::ChatContextSnapshot {
+            model: "gpt-test".into(),
+            preview: false,
+            loading_mcp_servers: Vec::new(),
+            entries: vec![
+                holt_proto::ChatContextEntry {
+                    id: "system".into(),
+                    kind: holt_proto::ChatContextEntryKind::SystemPrompt,
+                    name: None,
+                    content: "system".into(),
+                    estimated_tokens: 10000,
+                    children: Vec::new(),
+                },
+                holt_proto::ChatContextEntry {
+                    id: "tools".into(),
+                    kind: holt_proto::ChatContextEntryKind::ToolDefinitions,
+                    name: None,
+                    content: String::new(),
+                    estimated_tokens: 10000,
+                    children: Vec::new(),
+                },
+                holt_proto::ChatContextEntry {
+                    id: "message-0".into(),
+                    kind: holt_proto::ChatContextEntryKind::UserMessage,
+                    name: None,
+                    content: "hello".into(),
+                    estimated_tokens: 20000,
+                    children: Vec::new(),
+                },
+            ],
         }));
         let window = cx.add_window(|_, cx| UsagePreview::new(Some(usage), cx));
         let mut visual = gpui::VisualTestContext::from_window(*window, cx);
@@ -1155,27 +1907,38 @@ mod tests {
 
         let track = visual.debug_bounds("usage-context-track").unwrap();
         let fill = visual.debug_bounds("usage-context-fill").unwrap();
-        assert_eq!(track.size.height, px(5.0));
+        assert_eq!(track.size.height, px(6.0));
         assert_close(fill.size.width / track.size.width, 0.04, "occupancy fill");
 
-        let bar = visual.debug_bounds("usage-bar").unwrap();
-        let turn = visual.debug_bounds("usage-segment-turn").unwrap();
-        // The only shown kind is the last, so it takes the remainder: the
-        // whole track, never a sliver of bare track left over from float
-        // rounding.
-        assert_close(turn.size.width / bar.size.width, 1.0, "turn segment");
-        assert!(visual.debug_bounds("usage-segment-title").is_none());
-
-        let cache_track = visual.debug_bounds("usage-cache-track").unwrap();
-        let cache_fill = visual.debug_bounds("usage-cache-fill").unwrap();
+        let system_seg = visual
+            .debug_bounds("usage-category-segment-system")
+            .unwrap();
+        let tools_seg = visual.debug_bounds("usage-category-segment-tools").unwrap();
+        let conv_seg = visual
+            .debug_bounds("usage-category-segment-conversation")
+            .unwrap();
         assert_close(
-            cache_fill.size.width / cache_track.size.width,
-            200.0 / 920.0,
-            "cache hit fill",
+            system_seg.size.width / fill.size.width,
+            0.25,
+            "system segment",
+        );
+        assert_close(
+            tools_seg.size.width / fill.size.width,
+            0.25,
+            "tools segment",
+        );
+        assert_close(
+            conv_seg.size.width / fill.size.width,
+            0.50,
+            "conversation segment",
         );
 
-        assert!(visual.debug_bounds("usage-kind-turn").is_some());
-        assert!(visual.debug_bounds("usage-kind-title").is_none());
+        assert!(visual.debug_bounds("usage-category-system").is_some());
+        assert!(visual.debug_bounds("usage-category-tools").is_some());
+        assert!(visual.debug_bounds("usage-category-rules").is_some());
+        assert!(visual.debug_bounds("usage-category-skills").is_some());
+        assert!(visual.debug_bounds("usage-category-mcp").is_some());
+        assert!(visual.debug_bounds("usage-category-conversation").is_some());
     }
 
     /// A fraction of a measured width, within a pixel of layout rounding.
@@ -1299,6 +2062,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn comma_tokens_inserts_thousands_separators() {
+        assert_eq!(comma_tokens(0), "0");
+        assert_eq!(comma_tokens(71), "71");
+        assert_eq!(comma_tokens(564), "564");
+        assert_eq!(comma_tokens(1_729), "1,729");
+        assert_eq!(comma_tokens(80_312), "80,312");
+        assert_eq!(comma_tokens(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn split_system_prompt_extracts_rules_and_excludes_skills_from_base_tokens() {
+        let prompt = "Base instructions here.\n\nProject instructions from /repo/AGENTS.md:\nAlways run tests.\n\nThe following skills provide specialized instructions\n<available_skills>\n<skill><name>demo</name></skill>\n</available_skills>";
+        let (base_tokens, rules) = split_system_prompt(prompt, 999);
+        assert_eq!(
+            base_tokens,
+            estimate_utf16_tokens("Base instructions here.")
+        );
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].path, "/repo/AGENTS.md");
+        assert_eq!(rules[0].content, "Always run tests.");
+        assert!(rules[0].estimated_tokens > 0);
+    }
+
     #[gpui::test]
     fn the_context_report_expands_prompt_tools_and_history(cx: &mut TestAppContext) {
         let _locale = crate::i18n::tests::locale_lock();
@@ -1315,8 +2102,8 @@ mod tests {
                             id: "system".into(),
                             kind: holt_proto::ChatContextEntryKind::SystemPrompt,
                             name: None,
-                            content: "actual system text".into(),
-                            estimated_tokens: 3,
+                            content: "actual system text\n\nProject instructions from /workspace/AGENTS.md:\nproject rules body".into(),
+                            estimated_tokens: 20,
                             children: Vec::new(),
                         },
                         holt_proto::ChatContextEntry {
@@ -1342,6 +2129,14 @@ mod tests {
                             estimated_tokens: 3,
                             children: Vec::new(),
                         },
+                        holt_proto::ChatContextEntry {
+                            id: "message-1".into(),
+                            kind: holt_proto::ChatContextEntryKind::AssistantMessage,
+                            name: None,
+                            content: "actual assistant text".into(),
+                            estimated_tokens: 4,
+                            children: Vec::new(),
+                        },
                     ],
                 })),
                 ..Default::default()
@@ -1353,18 +2148,51 @@ mod tests {
             move |_, cx| ContextUsagePanel::new(state, cx)
         });
         let mut visual = gpui::VisualTestContext::from_window(*window, cx);
-        assert!(visual.debug_bounds("context-content-system").is_none());
-        assert!(visual.debug_bounds("context-entry-tool-0").is_none());
-        assert!(visual.debug_bounds("context-entry-message-0").is_some());
+        // Top-level categories start expanded by default with their descriptions
+        // and child rows visible; leaf items start collapsed until clicked.
+        assert!(visual.debug_bounds("context-content-system").is_some());
+        assert!(visual.debug_bounds("context-entry-tool-0").is_some());
+        assert!(visual.debug_bounds("context-entry-rules").is_some());
+        assert!(visual.debug_bounds("context-entry-rule-project").is_some());
+        assert!(visual.debug_bounds("context-entry-conversation").is_some());
+        // The conversation history is grouped into turns; the turn row is
+        // visible but its messages stay hidden until the turn expands.
+        assert!(
+            visual
+                .debug_bounds("context-entry-turn-message-0")
+                .is_some()
+        );
+        assert!(visual.debug_bounds("context-entry-message-0").is_none());
+        assert!(visual.debug_bounds("context-content-tool-0").is_none());
+        assert!(visual.debug_bounds("context-content-message-0").is_none());
 
+        // Clicking a top-level section toggles it closed and back open.
         let system = visual.debug_bounds("context-entry-system").unwrap();
         visual.simulate_click(system.center(), Default::default());
+        assert!(visual.debug_bounds("context-content-system").is_none());
+        visual.simulate_click(system.center(), Default::default());
         assert!(visual.debug_bounds("context-content-system").is_some());
-        let tools = visual.debug_bounds("context-entry-tools").unwrap();
-        visual.simulate_click(tools.center(), Default::default());
+
+        // Clicking leaf items expands their content blocks.
         let tool = visual.debug_bounds("context-entry-tool-0").unwrap();
         visual.simulate_click(tool.center(), Default::default());
         assert!(visual.debug_bounds("context-content-tool-0").is_some());
+
+        let rule = visual.debug_bounds("context-entry-rule-project").unwrap();
+        visual.simulate_click(rule.center(), Default::default());
+        assert!(
+            visual
+                .debug_bounds("context-content-rule-project")
+                .is_some()
+        );
+
+        // Expanding a turn reveals its message rows; each message row then
+        // expands into its content block.
+        let turn = visual.debug_bounds("context-entry-turn-message-0").unwrap();
+        visual.simulate_click(turn.center(), Default::default());
+        assert!(visual.debug_bounds("context-entry-message-0").is_some());
+        assert!(visual.debug_bounds("context-entry-message-1").is_some());
+
         let message = visual.debug_bounds("context-entry-message-0").unwrap();
         visual.simulate_click(message.center(), Default::default());
         assert!(visual.debug_bounds("context-content-message-0").is_some());
