@@ -98,14 +98,15 @@ pub(crate) async fn append_workspace_instructions(prompt: &mut String, cwd: &str
 /// the last turn are already reflected. The catalog rides along: it is also
 /// what collapses reads of a skill's `SKILL.md` into chips while decoding
 /// tool calls for the transcript.
-async fn run_system_prompt(
+pub(crate) async fn run_system_prompt(
     skills: &crate::skills::Skills,
     cwd: &str,
+    context_window: Option<u64>,
 ) -> (String, crate::skills::Catalog) {
     let catalog = skills.catalog(Some(cwd)).await;
     let mut prompt = system_prompt(cwd);
     append_workspace_instructions(&mut prompt, cwd).await;
-    let block = crate::skills::skills_block(&catalog.winners);
+    let block = crate::skills::skills_block_for_context_window(&catalog.winners, context_window);
     if !block.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&block);
@@ -1941,7 +1942,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // AND the transcript's SKILL.md read collapsing — both see the same
     // live view of the roots.
     *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
-    let (mut system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
+    let (mut system_prompt, catalog) =
+        run_system_prompt(&skills, &cwd, Some(model.context_window)).await;
     if let Some(child) = &chat.child {
         system_prompt = crate::subagents::system_prompt(
             &child.role,
@@ -1949,6 +1951,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             &catalog,
             search_backend.is_some(),
             child.output.is_some(),
+            Some(model.context_window),
         )
         .await;
     } else if let Some(background) = runtime.background.get() {
@@ -2820,7 +2823,7 @@ mod tests {
         std::fs::write(cwd.join("AGENTS.md"), "Leaf rules.").unwrap();
         let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
 
-        let (prompt, _) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (prompt, _) = run_system_prompt(&skills, &cwd.to_string_lossy(), None).await;
         let template = system_prompt(&cwd.to_string_lossy());
         let root_at = prompt.find("Root rules.").expect("root instructions");
         let leaf_at = prompt.find("Leaf rules.").expect("leaf instructions");
@@ -2837,7 +2840,7 @@ mod tests {
             "x".repeat(AGENTS_INSTRUCTIONS_BUDGET * 2),
         )
         .unwrap();
-        let (capped, _) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (capped, _) = run_system_prompt(&skills, &cwd.to_string_lossy(), None).await;
         assert!(capped.contains("[instructions truncated]"));
         assert!(
             capped.chars().count() <= template.chars().count() + AGENTS_INSTRUCTIONS_BUDGET + 64
@@ -2888,7 +2891,7 @@ mod tests {
         let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
 
         // No skills: the template stands alone.
-        let (bare, bare_catalog) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (bare, bare_catalog) = run_system_prompt(&skills, &cwd.to_string_lossy(), None).await;
         assert_eq!(bare, system_prompt(&cwd.to_string_lossy()));
         assert!(bare_catalog.winners.is_empty());
 
@@ -2902,7 +2905,7 @@ mod tests {
             "hidden",
             "name: hidden\ndescription: Manual only.\ndisable-model-invocation: true\n",
         );
-        let (prompt, catalog) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (prompt, catalog) = run_system_prompt(&skills, &cwd.to_string_lossy(), None).await;
         assert!(prompt.starts_with(&system_prompt(&cwd.to_string_lossy())));
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("<name>grill</name>"));
@@ -2930,7 +2933,7 @@ mod tests {
                 &format!("name: bulk-{i:03}\ndescription: {long}\n"),
             );
         }
-        let (capped, _) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (capped, _) = run_system_prompt(&skills, &cwd.to_string_lossy(), None).await;
         let template_len = system_prompt(&cwd.to_string_lossy()).chars().count();
         assert!(capped.chars().count() <= template_len + 2 + crate::skills::SKILL_LISTING_BUDGET);
     }

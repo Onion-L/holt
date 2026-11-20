@@ -16,12 +16,25 @@ use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing
 
 use crate::tools::LocalExecutionEnv;
 
-/// Character budget for the system-prompt skill block (ADR-metadata-only-skill-advertising): past the
-/// limit descriptions truncate, then drop, then trailing skills drop —
-/// never an error, and the task stays the bulk of the context window.
-pub(crate) const SKILL_LISTING_BUDGET: usize = 8 * 1024;
+/// Unknown-window fallback for the system-prompt skill block. Known model
+/// windows use 2% of their tokens instead (about four chars per token).
+pub(crate) const SKILL_LISTING_BUDGET: usize = 8_000;
+const SKILL_LISTING_CONTEXT_PERCENT: usize = 2;
+const APPROX_CHARS_PER_TOKEN: usize = 4;
 /// Description length (chars) the first truncation pass clamps to.
 const SKILL_DESCRIPTION_BUDGET: usize = 160;
+
+fn listing_budget(context_window: Option<u64>) -> usize {
+    context_window
+        .filter(|window| *window > 0)
+        .and_then(|window| usize::try_from(window).ok())
+        .map(|window| {
+            (window / 100 * SKILL_LISTING_CONTEXT_PERCENT)
+                .max(1)
+                .saturating_mul(APPROX_CHARS_PER_TOKEN)
+        })
+        .unwrap_or(SKILL_LISTING_BUDGET)
+}
 
 /// The loader's per-root scan, kept as a pair so precedence can group by
 /// origin before anything crosses the RPC seam.
@@ -101,7 +114,21 @@ impl Catalog {
 /// (by the formatter and here, so the budget counts only what renders);
 /// content never enters the block — the model self-serves `SKILL.md`
 /// through the read tool on the advertised location.
+#[cfg(test)]
 pub(crate) fn skills_block(winners: &[(Skill, SkillRoot)]) -> String {
+    render_skills_block(winners, SKILL_LISTING_BUDGET)
+}
+
+/// Same catalog with the resolved model's budget: 2% of its context window,
+/// falling back to the fixed unknown-window value.
+pub(crate) fn skills_block_for_context_window(
+    winners: &[(Skill, SkillRoot)],
+    context_window: Option<u64>,
+) -> String {
+    render_skills_block(winners, listing_budget(context_window))
+}
+
+fn render_skills_block(winners: &[(Skill, SkillRoot)], budget: usize) -> String {
     let visible: Vec<Skill> = winners
         .iter()
         .map(|(skill, _)| skill)
@@ -113,11 +140,11 @@ pub(crate) fn skills_block(winners: &[(Skill, SkillRoot)]) -> String {
     }
 
     let full = format_skills_for_system_prompt(&visible);
-    if full.chars().count() <= SKILL_LISTING_BUDGET {
+    if full.chars().count() <= budget {
         return full;
     }
 
-    // Pass 2: clamp each description…
+    // First bound every description. Most catalogs stop here.
     let clamped: Vec<Skill> = visible
         .iter()
         .map(|skill| {
@@ -127,12 +154,14 @@ pub(crate) fn skills_block(winners: &[(Skill, SkillRoot)]) -> String {
         })
         .collect();
     let clamped_block = format_skills_for_system_prompt(&clamped);
-    if clamped_block.chars().count() <= SKILL_LISTING_BUDGET {
+    if clamped_block.chars().count() <= budget {
         return clamped_block;
     }
 
-    // …pass 3: drop descriptions entirely.
-    let stripped: Vec<Skill> = clamped
+    // Names and locations are the minimum useful discovery surface. When
+    // they fit, distribute the remaining description space round-robin —
+    // never wipe every description just because the catalog is large.
+    let minimal: Vec<Skill> = clamped
         .iter()
         .map(|skill| {
             let mut skill = skill.clone();
@@ -140,21 +169,50 @@ pub(crate) fn skills_block(winners: &[(Skill, SkillRoot)]) -> String {
             skill
         })
         .collect();
-    let stripped_block = format_skills_for_system_prompt(&stripped);
-    if stripped_block.chars().count() <= SKILL_LISTING_BUDGET {
-        return stripped_block;
+    let minimal_block = format_skills_for_system_prompt(&minimal);
+    let minimal_chars = minimal_block.chars().count();
+    if minimal_chars <= budget {
+        let mut remaining = budget - minimal_chars;
+        let mut allocations = vec![0usize; clamped.len()];
+        loop {
+            let mut changed = false;
+            for (index, skill) in clamped.iter().enumerate() {
+                if remaining == 0 {
+                    break;
+                }
+                let length = skill.description.chars().count();
+                if allocations[index] < length {
+                    allocations[index] += 1;
+                    remaining -= 1;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let fitted: Vec<Skill> = clamped
+            .iter()
+            .zip(allocations)
+            .map(|(skill, allocation)| {
+                let mut skill = skill.clone();
+                skill.description = truncate_chars(&skill.description, allocation);
+                skill
+            })
+            .collect();
+        return format_skills_for_system_prompt(&fitted);
     }
-    // …pass 4: keep only the leading skills that fit. Prefix search over
-    // the upstream formatter so the size math never assumes its layout;
-    // `fits(0)` is the empty block, so this always lands.
+
+    // Only when even the minimal discovery surface is too large do we omit
+    // trailing skills, preserving root precedence instead of hiding the cost.
     let fits = |count: usize| {
-        format_skills_for_system_prompt(&stripped[..count])
+        format_skills_for_system_prompt(&minimal[..count])
             .chars()
             .count()
-            <= SKILL_LISTING_BUDGET
+            <= budget
     };
     let mut low = 0;
-    let mut high = stripped.len();
+    let mut high = minimal.len();
     while low < high {
         let mid = (low + high).div_ceil(2);
         if fits(mid) {
@@ -163,7 +221,7 @@ pub(crate) fn skills_block(winners: &[(Skill, SkillRoot)]) -> String {
             high = mid - 1;
         }
     }
-    format_skills_for_system_prompt(&stripped[..low])
+    format_skills_for_system_prompt(&minimal[..low])
 }
 
 fn truncate_chars(text: &str, limit: usize) -> String {
@@ -565,6 +623,37 @@ mod tests {
             invocation_prompt(&skill, None),
             format_skill_invocation(&skill, None)
         );
+    }
+
+    #[test]
+    fn known_context_windows_scale_the_listing_budget() {
+        assert_eq!(listing_budget(None), 8_000);
+        assert_eq!(listing_budget(Some(200_000)), 16_000);
+
+        let winners: Vec<(Skill, SkillRoot)> = (0..20)
+            .map(|i| catalog_skill(&format!("skill-{i}"), &"x".repeat(400), false))
+            .collect();
+        let visible: Vec<Skill> = winners.iter().map(|(skill, _)| skill.clone()).collect();
+        let full = format_skills_for_system_prompt(&visible);
+        assert!(full.chars().count() > SKILL_LISTING_BUDGET);
+        assert!(full.chars().count() <= 16_000);
+        let block = skills_block_for_context_window(&winners, Some(200_000));
+        assert_eq!(block, full, "every full description fits at 2%");
+    }
+
+    #[test]
+    fn a_small_budget_truncates_descriptions_instead_of_dropping_them_all() {
+        let winners: Vec<(Skill, SkillRoot)> = (0..4)
+            .map(|i| catalog_skill(&format!("skill-{i}"), &"abcdefghij".repeat(16), false))
+            .collect();
+        let block = render_skills_block(&winners, 1_200);
+        assert!(block.chars().count() <= 1_200);
+        assert_eq!(block.matches("<skill>").count(), 4);
+        assert!(!block.contains("<description></description>"));
+        assert!(block.contains('…'));
+        // Every skill gets a useful, truncated description rather than one
+        // skill consuming the whole remaining budget.
+        assert_eq!(block.matches('…').count(), 4);
     }
 
     #[test]

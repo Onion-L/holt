@@ -21,12 +21,12 @@ in the same commit.
 
 | Page | Entries |
 | --- | --- |
-| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) |
+| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
-| [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) |
+| [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [agent-schedules-routines-through-a-tool](#agent-schedules-routines-through-a-tool) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
@@ -96,12 +96,26 @@ the same stance as no-repo-registry.
 
 ## metadata-only-skill-advertising
 
+Partially superseded for catalog budgeting by
+[skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window).
+
 `8d00fbb`. Skills advertise metadata only; full content arrives by the model
 reading `SKILL.md` through the read tool. Rejected: kimi's dedicated skill
 tool with host-side injection (adds a tool and a mid-run steer pipeline)
 and codex's developer-message placement (no such channel; holt rebuilds
 context every run anyway). Manual trigger amended by
 `skill-invocation-is-an-inline-mention` (`2a5c7a4`).
+
+## skill-listing-scales-with-context-window
+
+Skill listing uses 2% of the resolved model's context window (approximated as
+four characters per token), with an 8000-character fallback when the window
+is unknown. Descriptions first clamp to 160 chars, then share the remaining
+space round-robin; only the minimal name/location catalog drops trailing
+entries. Rejected: a fixed 8 KiB budget for every model, clearing every
+description when the clamped catalog overflows, and unlimited metadata.
+The progressive-disclosure design stays: full `SKILL.md` bodies still load on
+demand, and non-skill prompt sections are unchanged.
 
 ## branch-is-live-working-tree-state
 

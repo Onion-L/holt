@@ -34,6 +34,7 @@ pub(crate) async fn system_prompt(
     catalog: &crate::skills::Catalog,
     web_search: bool,
     structured: bool,
+    context_window: Option<u64>,
 ) -> String {
     // The surface `run_agent_command` actually mounts for a child: the
     // read-only set both roles share — `web_search` only when the parent
@@ -74,7 +75,10 @@ The run ends on that call; a plain-text summary is not accepted.",
     }
     crate::agent::append_workspace_instructions(&mut prompt, cwd).await;
     prompt.push_str("\n\n");
-    prompt.push_str(&crate::skills::skills_block(&catalog.winners));
+    prompt.push_str(&crate::skills::skills_block_for_context_window(
+        &catalog.winners,
+        context_window,
+    ));
     prompt
 }
 
@@ -1145,7 +1149,7 @@ mod tests {
     #[tokio::test]
     async fn the_child_prompt_names_the_surface_the_run_mounts() {
         let catalog = empty_catalog();
-        let explorer = system_prompt("explorer", "/tmp/holt", &catalog, false, false).await;
+        let explorer = system_prompt("explorer", "/tmp/holt", &catalog, false, false, None).await;
         assert!(
             explorer.contains(
                 "ls, read, grep, read_chat, and web_fetch only; \
@@ -1155,10 +1159,10 @@ mod tests {
         );
         assert!(!explorer.contains("web_search"));
 
-        let searching = system_prompt("explorer", "/tmp/holt", &catalog, true, false).await;
+        let searching = system_prompt("explorer", "/tmp/holt", &catalog, true, false, None).await;
         assert!(searching.contains("ls, read, grep, read_chat, web_fetch, and web_search only"));
 
-        let worker = system_prompt("worker", "/tmp/holt", &catalog, false, false).await;
+        let worker = system_prompt("worker", "/tmp/holt", &catalog, false, false, None).await;
         assert!(worker.contains("ls, read, grep, read_chat, web_fetch, write, edit, and bash;"));
     }
 

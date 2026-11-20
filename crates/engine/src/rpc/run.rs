@@ -1227,7 +1227,7 @@ impl EngineService {
         let cwd =
             cwd.unwrap_or_else(|| crate::local_fs::home_dir().unwrap_or_else(|| "/".to_string()));
         let (system_prompt, _) =
-            crate::agent::run_system_prompt(&self.skills, &cwd).await;
+            crate::agent::run_system_prompt(&self.skills, &cwd, Some(model.context_window)).await;
         let stream_fn = self
             .runtime
             .stream_fn
