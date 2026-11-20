@@ -321,8 +321,6 @@ conversation_transcript:
   usage:
     title:
       en-US: Context Usage
-    view_report:
-      en-US: View Report
     full:
       en-US: "%{percent} Full"
     tokens_of_window:

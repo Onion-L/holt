@@ -623,10 +623,28 @@ fn context_stacked_bar(fraction: f32, categories: &[ContextCategoryShare], theme
         .child(fill)
 }
 
-fn category_row(category: &ContextCategoryShare, theme: &Theme) -> Div {
+fn category_row(category: &ContextCategoryShare, theme: &Theme) -> gpui::Stateful<Div> {
     let key = category.key;
+    // The popover rows' keys map 1:1 to report section ids except MCP, whose
+    // per-server sections are `mcp-{index}` — the row reveals the first.
+    let section = match key {
+        "mcp" => "mcp-0",
+        other => other,
+    };
     div()
+        .id(SharedString::from(format!("usage-category-{key}")))
         .debug_selector(move || format!("usage-category-{key}"))
+        .cursor_pointer()
+        .rounded(px(4.0))
+        .px(px(6.0))
+        .py(px(3.0))
+        .hover(|style| style.bg(theme.element_hover))
+        .on_click(move |_, window, cx| {
+            window.dispatch_action(
+                Box::new(crate::shell::OpenContextUsageSection(section.into())),
+                cx,
+            );
+        })
         .flex()
         .flex_row()
         .items_center()
@@ -720,6 +738,10 @@ pub(crate) struct ContextUsagePanel {
     snapshot: Option<Arc<holt_proto::ChatContextSnapshot>>,
     chat_id: Option<String>,
     expanded: HashSet<String>,
+    /// Section to scroll to on the next render (the usage popover's category
+    /// rows target one); cleared once its index has been handed to the
+    /// scroll handle.
+    pending_reveal: Option<String>,
     scroll: ScrollHandle,
     _observe: Subscription,
 }
@@ -757,6 +779,7 @@ impl ContextUsagePanel {
             if chat_changed {
                 this.chat_id = chat_id;
                 this.expanded = Self::default_expanded();
+                this.pending_reveal = None;
                 this.scroll.set_offset(gpui::Point::default());
             }
             if snapshot_changed {
@@ -770,9 +793,20 @@ impl ContextUsagePanel {
             snapshot,
             chat_id,
             expanded: Self::default_expanded(),
+            pending_reveal: None,
             scroll: ScrollHandle::new(),
             _observe: observe,
         }
+    }
+
+    /// Reveal a report section for the usage popover's category rows: expand
+    /// it and scroll it to the top of the viewport on the next render. A
+    /// section the snapshot does not have yet (preview still loading) reveals
+    /// once it arrives.
+    pub(crate) fn reveal_section(&mut self, section: &str, cx: &mut Context<Self>) {
+        self.expanded.insert(section.to_string());
+        self.pending_reveal = Some(section.to_string());
+        cx.notify();
     }
 
     fn entry_title(entry: &holt_proto::ChatContextEntry) -> String {
@@ -1467,6 +1501,14 @@ impl Render for ContextUsagePanel {
                 .child(t!("conversation_transcript.usage.report.empty"));
         };
         let sections = Self::build_sections(snapshot, &theme);
+        // The reveal targets a section index; sections must be DIRECT children
+        // of the tracked scroll div for its per-child bounds to line up.
+        if let Some(reveal) = self.pending_reveal.clone()
+            && let Some(index) = sections.iter().position(|section| section.id == reveal)
+        {
+            self.scroll.scroll_to_top_of_item(index);
+            self.pending_reveal = None;
+        }
         let section_ids: Vec<String> = sections.iter().map(|section| section.id.clone()).collect();
         let top_bar = div()
             .id("context-usage-header")
@@ -1547,20 +1589,17 @@ impl Render for ContextUsagePanel {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .occlude()
-                    .child(
-                        div()
-                            .w_full()
-                            .px(px(12.0))
-                            .py(px(10.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .children(
-                                sections
-                                    .iter()
-                                    .map(|section| self.render_section(section, &theme, cx)),
-                            ),
+                    .w_full()
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .children(
+                        sections
+                            .iter()
+                            .map(|section| self.render_section(section, &theme, cx)),
                     ),
             )
     }
@@ -2196,6 +2235,94 @@ mod tests {
         let message = visual.debug_bounds("context-entry-message-0").unwrap();
         visual.simulate_click(message.center(), Default::default());
         assert!(visual.debug_bounds("context-content-message-0").is_some());
+    }
+
+    #[gpui::test]
+    fn a_reveal_expands_the_section_and_hands_the_scroll_target_over(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.chat_usage = Some(ChatUsage {
+                context: Some(Arc::new(holt_proto::ChatContextSnapshot {
+                    model: "gpt-test".into(),
+                    preview: false,
+                    loading_mcp_servers: Vec::new(),
+                    entries: vec![
+                        holt_proto::ChatContextEntry {
+                            id: "system".into(),
+                            kind: holt_proto::ChatContextEntryKind::SystemPrompt,
+                            name: None,
+                            content: "system body".into(),
+                            estimated_tokens: 2,
+                            children: Vec::new(),
+                        },
+                        holt_proto::ChatContextEntry {
+                            id: "message-0".into(),
+                            kind: holt_proto::ChatContextEntryKind::UserMessage,
+                            name: None,
+                            content: "user text".into(),
+                            estimated_tokens: 3,
+                            children: Vec::new(),
+                        },
+                    ],
+                })),
+                ..Default::default()
+            });
+            cx.notify();
+        });
+        let window = cx.add_window({
+            let state = state.clone();
+            move |_, cx| ContextUsagePanel::new(state, cx)
+        });
+        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        // The conversation section starts expanded by default; collapse it so
+        // the reveal has real work to do.
+        assert!(
+            visual
+                .debug_bounds("context-entry-turn-message-0")
+                .is_some()
+        );
+        let conversation = visual.debug_bounds("context-entry-conversation").unwrap();
+        visual.simulate_click(conversation.center(), Default::default());
+        assert!(
+            visual
+                .debug_bounds("context-entry-turn-message-0")
+                .is_none()
+        );
+
+        // Revealing re-expands the section and spends the pending scroll
+        // target on the next paint.
+        window
+            .update(cx, |panel, _, cx| {
+                panel.reveal_section("conversation", cx);
+                assert!(panel.pending_reveal.is_some());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("context-entry-turn-message-0")
+                .is_some()
+        );
+        let revealed = cx.read(|cx| window.read(cx).unwrap().pending_reveal.clone());
+        assert!(revealed.is_none());
+
+        // A section the snapshot lacks keeps its reveal queued until it shows
+        // up (the preview may still be loading).
+        window
+            .update(cx, |panel, _, cx| panel.reveal_section("mcp-0", cx))
+            .unwrap();
+        cx.run_until_parked();
+        let (pending, expanded) = cx.read(|cx| {
+            let panel = window.read(cx).unwrap();
+            (
+                panel.pending_reveal.clone(),
+                panel.expanded.contains("mcp-0"),
+            )
+        });
+        assert_eq!(pending.as_deref(), Some("mcp-0"));
+        assert!(expanded);
     }
 
     #[derive(Default)]

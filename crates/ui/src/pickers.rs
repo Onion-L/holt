@@ -169,6 +169,10 @@ pub struct Pickers {
     refs_target: Option<String>,
     /// Highlighted row in the open list (keyboard nav).
     active: usize,
+    /// The composer pill's current width (composer column minus its padding),
+    /// fed by the composer's width pass. The usage popover spans it so it
+    /// reads as wide as the command menu.
+    composer_width: Option<f32>,
     /// Models-list scroll — keyboard nav keeps the highlighted row in view.
     /// A `UniformListScrollHandle`: the model list virtualizes (7k-model
     /// catalogs must scroll smoothly), and this is its handle; the plain
@@ -353,6 +357,7 @@ impl Pickers {
             refs: Loadable::Idle,
             refs_target: None,
             active: 0,
+            composer_width: None,
             model_scroll: gpui::UniformListScrollHandle::new(),
             model_rows_cache: std::cell::RefCell::new(None),
             catalog_rev: 0,
@@ -631,6 +636,30 @@ impl Pickers {
 
     pub(crate) fn context_usage_open(&self) -> bool {
         self.open_kind() == Some(PickerKind::ContextUsage)
+    }
+
+    /// Feed the composer pill's width through (composer column minus its
+    /// horizontal padding); set during the composer's width pass.
+    pub(crate) fn set_composer_width(&mut self, width: f32) {
+        self.composer_width = Some(width);
+    }
+
+    /// The open usage popover, mounted by the composer ON THE PILL: it spans
+    /// the pill's width, so the pill — not the ring chip — is its anchor, and
+    /// it reads as sitting directly above the composer.
+    pub(crate) fn take_context_usage_overlay(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.mounted_kind() != Some(PickerKind::ContextUsage) {
+            return None;
+        }
+        let closing = self.open.closing_since();
+        Some(popover::anchored_menu_above_end(
+            "context-usage-popover",
+            self.render_context_usage_popover(cx),
+            closing,
+        ))
     }
 
     pub(crate) fn note_context_usage_press(&mut self) {
@@ -1084,32 +1113,9 @@ impl Pickers {
             .gap(px(8.0))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(t!("conversation_transcript.usage.title")),
-                    )
-                    .child(
-                        div()
-                            .id("chat-usage-view-report")
-                            .flex_none()
-                            .px(px(4.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .text_color(theme.text_muted)
-                            .hover(|style| style.bg(theme.element_hover).text_color(theme.text))
-                            .on_click(|_, window, cx| {
-                                window
-                                    .dispatch_action(Box::new(crate::shell::OpenContextUsage), cx);
-                            })
-                            .child(t!("conversation_transcript.usage.view_report")),
-                    ),
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(t!("conversation_transcript.usage.title")),
             )
             .child(
                 div()
@@ -1140,11 +1146,11 @@ impl Pickers {
             .text_size(crate::typography::ui_rems(12.0))
             .child(header)
             .child(crate::chat_usage::card_content(&usage, &theme));
-        self.popover_frame_flush(
-            crate::chat_usage::CARD_WIDTH,
-            content.into_any_element(),
-            cx,
-        )
+        // The command menu spans the composer pill; the composer feeds this
+        // popover its pill width. Until the first width pass lands, fall back
+        // to the card's own width.
+        let width = self.composer_width.unwrap_or(crate::chat_usage::CARD_WIDTH);
+        self.popover_frame_flush(width, content.into_any_element(), cx)
     }
 
     /// The composer footer row: the persistent permission-mode shield
@@ -1213,10 +1219,7 @@ impl Pickers {
                     let content = self.render_mode_popover(cx);
                     Some((PickerKind::Mode, self.popover_frame(300.0, content, cx)))
                 }
-                Some(PickerKind::ContextUsage) => Some((
-                    PickerKind::ContextUsage,
-                    self.render_context_usage_popover(cx),
-                )),
+                // ContextUsage mounts on the composer pill, not here.
                 _ => None,
             };
             let mode_chip = self.mode_chip(&theme, cx);
@@ -1251,23 +1254,16 @@ impl Pickers {
             // The context ring sits immediately left of the branch chip,
             // and on its own when the space has no git (no branch chip to
             // lead). A frame the engine has not published yet renders
-            // nothing rather than an empty ring.
+            // nothing rather than an empty ring. The popover itself mounts
+            // on the composer pill (see `take_context_usage_overlay`) — it
+            // spans the pill, so the pill is its anchor.
             let usage = self.state.read(cx).chat_usage.clone();
             let usage_ring = crate::chat_usage::ring(
                 usage.as_ref(),
                 self.context_usage_open(),
                 &theme,
                 &cx.entity(),
-            )
-            .map(|ring| {
-                attach_overlay_end(
-                    ring,
-                    &mut overlay,
-                    PickerKind::ContextUsage,
-                    "context-usage-popover",
-                    closing,
-                )
-            });
+            );
             if let Some(space) = space.as_ref().filter(|s| s.git_detected) {
                 // One rule for the kind icon and its label (ADR-branch-is-live-working-tree-state).
                 let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());

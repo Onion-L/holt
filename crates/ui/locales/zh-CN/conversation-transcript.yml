@@ -321,8 +321,6 @@ conversation_transcript:
   usage:
     title:
       zh-CN: 上下文用量
-    view_report:
-      zh-CN: 查看报告
     full:
       zh-CN: "已用 %{percent}"
     tokens_of_window:

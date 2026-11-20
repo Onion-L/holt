@@ -94,8 +94,6 @@ actions!(
         OpenFileLookup,
         NewSession,
         OpenSettings,
-        /// The composer usage card's detailed latest-request report.
-        OpenContextUsage,
         /// The Windows menu bar's Exit: routed through the same close gate as
         /// the window's caption button (see `terminal::lifecycle`), never
         /// straight to `cx.quit()`.
@@ -132,6 +130,13 @@ fn random_mark_index() -> usize {
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = shell, no_json)]
 pub struct JumpSession(pub usize);
+
+/// The usage popover's category row: opens the report tab and reveals that
+/// section — expanded and scrolled into view. The payload is the report
+/// section id (`system`, `tools`, `rules`, `skills`, `mcp-0`, `conversation`).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = shell, no_json)]
+pub struct OpenContextUsageSection(pub SharedString);
 
 /// (Re-)apply the whole app keymap: clears every binding, restores the composer
 /// map, then binds the customizable shortcuts from `keymap` (feature-inventory
@@ -2824,9 +2829,13 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::General, cx)
             }))
-            .on_action(cx.listener(|this, _: &OpenContextUsage, _, cx| {
+            .on_action(cx.listener(|this, open: &OpenContextUsageSection, _, cx| {
                 if matches!(this.route, Route::Chat) {
                     this.open_context_usage(cx);
+                    if let Some(panel) = this.context_usage.as_ref() {
+                        let section = open.0.clone();
+                        panel.update(cx, |panel, cx| panel.reveal_section(&section, cx));
+                    }
                     let pickers = this.composer.read(cx).pickers().clone();
                     pickers.update(cx, |pickers, cx| pickers.close(cx));
                 }

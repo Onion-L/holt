@@ -301,6 +301,11 @@ impl Composer {
         let composer_width = width.clamp(0.0, COMPOSER_MAX_WIDTH);
         if composer_width_changed(self.last_available_width, composer_width) {
             self.last_available_width = Some(composer_width);
+            // The usage popover spans the pill (column minus its horizontal
+            // padding) so it reads as wide as the command menu.
+            self.pickers.update(cx, |pickers, _| {
+                pickers.set_composer_width(composer_width - 32.0)
+            });
             // The shell renders before this child, so this queues one more
             // pass after the input has been laid out at its final width. That
             // pass can consume the completed measurement without emitting an
@@ -1352,7 +1357,14 @@ impl Render for Composer {
                         // Both completion popups span the full pill width above it —
                         // the file-mention and slash tokens are mutually exclusive.
                         .children(self.render_file_mention_popup(&theme, cx))
-                        .children(self.render_slash_popup(&theme, cx)),
+                        .children(self.render_slash_popup(&theme, cx))
+                        // The usage popover spans the pill too — mounted here so
+                        // it sits flush above the composer instead of at the
+                        // footer's ring chip.
+                        .children(
+                            self.pickers
+                                .update(cx, |pickers, cx| pickers.take_context_usage_overlay(cx)),
+                        ),
                 ),
         );
         // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
