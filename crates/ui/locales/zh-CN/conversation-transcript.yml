@@ -319,6 +319,33 @@ conversation_transcript:
       sha:
         zh-CN: SHA
   usage:
+    title:
+      zh-CN: 上下文报告
+    view_report:
+      zh-CN: 查看报告
+    report:
+      empty:
+        zh-CN: 正在生成下一次请求的上下文预览…
+      latest_request:
+        zh-CN: "最近一次请求 · %{model}"
+      next_request:
+        zh-CN: "下一次请求预览 · %{model}"
+      estimates:
+        zh-CN: 各项 token 数为估算值；总占用在 provider 返回数据后采用实测值。
+      mcp_loading:
+        zh-CN: "正在加载 MCP 服务：%{servers}"
+      system_prompt:
+        zh-CN: System prompt
+      tool_definitions:
+        zh-CN: "工具定义 · %{count}"
+      skills:
+        zh-CN: "技能 · %{count}"
+      user:
+        zh-CN: "用户 %{index}"
+      assistant:
+        zh-CN: "助手 %{index}"
+      tool_result:
+        zh-CN: "工具结果 %{index}"
     kind:
       turn:
         zh-CN: 轮次

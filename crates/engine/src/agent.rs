@@ -146,6 +146,10 @@ pub(crate) struct ChatRuntime {
     /// until this process has seen a report for the chat, which is exactly
     /// what makes the frame's number an estimate in the meantime.
     pub(crate) usage_last_report: Mutex<Option<crate::usage::LastReport>>,
+    /// Latest main-run Context, captured immediately before transport. Kept
+    /// out of the ledger and all other persistence: the report is a local,
+    /// live inspection surface, not another conversation record.
+    pub(crate) context_snapshot: Mutex<Option<Arc<holt_proto::ChatContextSnapshot>>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
     /// The one-shot Title task's token (ADR-automatic-titles-run-outside-pi-hooks): independent of `cancel`
     /// — a Turn interrupt must not stop title generation; only chat
@@ -240,6 +244,7 @@ impl ChatRuntime {
             usage_tx,
             usage_windows: Mutex::new(Default::default()),
             usage_last_report: Mutex::new(None),
+            context_snapshot: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             goal_check_cancel: Mutex::new(None),
@@ -528,6 +533,7 @@ impl ChatRuntime {
             usage_tx,
             usage_windows: Mutex::new(Default::default()),
             usage_last_report: Mutex::new(None),
+            context_snapshot: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             goal_check_cancel: Mutex::new(None),
@@ -858,7 +864,8 @@ pub(crate) struct AgentRuntime {
     pub(crate) stream_fn: Option<holt_core::agent::types::StreamFn>,
     /// The app-scoped MCP connection pool (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): device-level server
     /// definitions plus the live connections Turns snapshot tools from.
-    /// Connections start lazily — nothing spawns until a Turn needs tools.
+    /// Connections start lazily — nothing spawns until a Turn or an explicit
+    /// Context preview needs tools.
     pub(crate) mcp: crate::mcp::McpPool,
     /// Live provider-retry notices: the run path's `on_retry` callback fans
     /// out here; `WatchTurnRetry` subscribes.
@@ -1700,6 +1707,209 @@ fn on_retry_callback(
     })
 }
 
+#[derive(Clone)]
+pub(crate) struct MainContextAssembly {
+    pub(crate) runtime: Arc<AgentRuntime>,
+    pub(crate) chat: Arc<ChatRuntime>,
+    pub(crate) chat_id: String,
+    pub(crate) cwd: String,
+    pub(crate) reasoning: Option<ReasoningLevel>,
+    pub(crate) model: PiModel,
+    pub(crate) api_key: String,
+    pub(crate) skills: crate::skills::Skills,
+    pub(crate) permission_mode: PermissionMode,
+    pub(crate) plan_mode: bool,
+    pub(crate) provider_mode: bool,
+    /// Real Turns include the MCP snapshot; the first preview pass skips it
+    /// so slow servers do not hold back System prompt, skills, and History.
+    pub(crate) include_mcp: bool,
+    pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
+    pub(crate) providers: Option<Arc<crate::providers::ProviderAdapter>>,
+    pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
+    pub(crate) stream_fn: holt_core::agent::types::StreamFn,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) base_parts: Arc<Mutex<Vec<MessagePart>>>,
+    pub(crate) entry_id: String,
+}
+
+pub(crate) struct AssembledMainContext {
+    pub(crate) system_prompt: String,
+    pub(crate) tools: Vec<holt_core::agent::types::AgentTool>,
+    pub(crate) mcp_bootstrap: Option<Vec<holt_core::ai::types::Message>>,
+}
+
+/// The read-only half of Turn assembly, shared by a real run and the
+/// next-request preview. Card settlement and History writes deliberately do
+/// not belong here: inspecting Context must not advance conversation state.
+pub(crate) async fn assemble_main_context(
+    mut system_prompt: String,
+    assembly: MainContextAssembly,
+) -> AssembledMainContext {
+    let MainContextAssembly {
+        runtime,
+        chat,
+        chat_id,
+        cwd,
+        reasoning,
+        model,
+        api_key,
+        skills,
+        permission_mode,
+        plan_mode,
+        provider_mode,
+        include_mcp,
+        search_backend,
+        providers,
+        attribution,
+        stream_fn,
+        cancel,
+        base_parts,
+        entry_id,
+    } = assembly;
+    let allow_images = model
+        .input
+        .contains(&holt_core::ai::types::ModelInput::Image);
+    let search_backend_present = search_backend.is_some();
+    // Windows spawns carry no process-group bookkeeping (see lib.rs), so only
+    // unix registers the Turn's shells with the reaper.
+    #[cfg(unix)]
+    let shell_registry = Some(crate::shell_groups::registry_dir(&runtime.data_dir));
+    #[cfg(not(unix))]
+    let shell_registry = None;
+    let mut tools = crate::tools::execution_tools_for_model(
+        &cwd,
+        allow_images,
+        search_backend.clone(),
+        attribution.clone(),
+        shell_registry.clone(),
+        runtime.exec_shell.clone(),
+    );
+    let current_chat_id = chat
+        .child
+        .as_ref()
+        .map(|child| child.parent.chat_id.clone())
+        .unwrap_or_else(|| chat_id.clone());
+    // Background tools attribute to the owning chat, even for child runs.
+    if let Some(background) = runtime.background.get() {
+        tools.extend(crate::tools::background::create_background_tools(
+            background.clone(),
+            current_chat_id.clone(),
+            &cwd,
+            runtime.exec_shell.clone(),
+            shell_registry.clone(),
+        ));
+    }
+    tools.push(crate::tools::create_read_chat_tool(
+        runtime.clone(),
+        current_chat_id,
+    ));
+    if let Some(child) = &chat.child {
+        // Children never ask the user; explorers retain only read-only tools.
+        tools.retain(|tool| tool.name != "ask_user");
+        if child.role == "explorer" {
+            tools.retain(|tool| explorer_tool_allowed(&tool.name));
+        }
+        if let Some(output) = &child.output {
+            tools.push(crate::subagents::submit_result_tool(output.clone()));
+        }
+    } else if provider_mode {
+        // Provider Mode mounts catalog research/proposal tools without file
+        // writes, delegation, or an apply tool (the card RPC applies).
+        tools.retain(|tool| crate::provider_mode::provider_mode_tool_allowed(&tool.name));
+        if let Some(model_providers) = &providers {
+            tools.push(crate::tools::create_model_proposal_tool(
+                model_providers.clone(),
+                chat.clone(),
+            ));
+            tools.push(crate::tools::create_request_provider_key_tool(
+                model_providers.clone(),
+                chat.clone(),
+            ));
+            tools.push(crate::tools::create_choose_provider_tool(
+                model_providers.clone(),
+            ));
+        }
+    } else if !plan_mode {
+        // Delegation and its companion tools belong to ordinary main Turns;
+        // planning and Provider Mode use their curated toolsets instead.
+        let delegation = crate::subagents::Delegation {
+            runtime: runtime.clone(),
+            parent: chat.clone(),
+            parent_parts: base_parts.clone(),
+            parent_entry: entry_id.clone(),
+            cwd: cwd.clone(),
+            reasoning,
+            model: model.clone(),
+            api_key: api_key.clone(),
+            skills: skills.clone(),
+            permission_mode,
+            search_backend,
+            stream_fn: stream_fn.clone(),
+            cancel: cancel.clone(),
+            attribution: attribution.clone(),
+        };
+        tools.push(crate::workflow::tool(delegation.clone()));
+        tools.push(crate::subagents::tool(delegation));
+        tools.push(crate::tools::create_todo_tool());
+        if let Some(routines) = runtime.routines.get().cloned() {
+            // The clock is pulled through its tool so changing time never
+            // rewrites the cached prompt prefix.
+            tools.push(crate::tools::create_current_time_tool(routines.clock()));
+            tools.push(crate::tools::create_schedule_routine_tool(
+                runtime.clone(),
+                routines,
+                chat_id.clone(),
+            ));
+        }
+    }
+    // Deferred MCP schemas ride a loader plus a synthetic bootstrap pair;
+    // supporting providers keep the full declarations out of static context.
+    let mcp_bootstrap = if include_mcp && chat.child.is_none() && !provider_mode && !plan_mode {
+        let snapshot = runtime.mcp.agent_tools().await;
+        if snapshot.is_empty() {
+            None
+        } else {
+            let bootstrap = crate::mcp::bootstrap_messages(&snapshot, &model);
+            tools.push(crate::mcp::loader_tool(&snapshot));
+            tools.extend(snapshot);
+            Some(bootstrap)
+        }
+    } else {
+        None
+    };
+    if plan_mode {
+        // Planning adds its prompt block and structured submission channel,
+        // then narrows the assembled set to read-only exploration.
+        system_prompt.push('\n');
+        system_prompt.push_str(&crate::plan_mode::planning_system_block());
+        tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
+        tools.push(crate::tools::submit_plan::create_submit_plan_tool());
+    }
+    if provider_mode {
+        system_prompt.push('\n');
+        system_prompt.push_str(&crate::provider_mode::provider_mode_block(
+            search_backend_present,
+        ));
+    }
+    AssembledMainContext {
+        system_prompt,
+        tools,
+        mcp_bootstrap,
+    }
+}
+
+/// The one History→LLM conversion used by both transport and preview.
+pub(crate) fn convert_main_messages(
+    messages: Vec<AgentMessage>,
+    mcp_bootstrap: Option<&[holt_core::ai::types::Message]>,
+) -> Vec<holt_core::ai::types::Message> {
+    let mut converted = harness_convert_to_llm(messages);
+    if let Some(pair) = mcp_bootstrap {
+        converted.splice(0..0, pair.to_vec());
+    }
+    converted
+}
+
 pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, TurnEnd> {
     Box::pin(run_agent_command_inner(run))
 }
@@ -2044,164 +2254,42 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // The gate is the last hook before a call runs, so the intent journal
     // rides behind it: what it records is what executes.
     let gate = journal_tool_intents(gate, chat.clone());
-    let allow_images = model
-        .input
-        .contains(&holt_core::ai::types::ModelInput::Image);
-    let search_backend_present = search_backend.is_some();
-    // Windows spawns carry no process-group bookkeeping (see lib.rs), so
-    // only unix registers the Turn's shells with the reaper.
-    #[cfg(unix)]
-    let shell_registry = Some(crate::shell_groups::registry_dir(&runtime.data_dir));
-    #[cfg(not(unix))]
-    let shell_registry = None;
-    let mut tools = crate::tools::execution_tools_for_model(
-        &cwd,
-        allow_images,
-        search_backend.clone(),
-        attribution.clone(),
-        shell_registry.clone(),
-        runtime.exec_shell.clone(),
-    );
-    let current_chat_id = chat
-        .child
-        .as_ref()
-        .map(|child| child.parent.chat_id.clone())
-        .unwrap_or_else(|| chat_id.clone());
-    // The background process tools (ADR-background-processes-are-chat-owned) attribute to
-    // the OWNING chat — a subagent's or workflow's spawns land on the
-    // parent chat the user is watching. Plan Mode, Provider Mode, and
-    // Explorer retains drop them with the rest of the executing surface.
-    if let Some(background) = runtime.background.get() {
-        tools.extend(crate::tools::background::create_background_tools(
-            background.clone(),
-            current_chat_id.clone(),
-            &cwd,
-            runtime.exec_shell.clone(),
-            shell_registry.clone(),
-        ));
-    }
-    tools.push(crate::tools::create_read_chat_tool(
-        runtime.clone(),
-        current_chat_id,
-    ));
-    // A new Turn moved past any still-open question (ADR-ask-user-is-a-question-card) — a typed
-    // answer, or the card click that queued this very Turn (already
-    // stamped chosen). Every mode runs questions; no branch here.
+    // Card settlement is a real-Turn side effect, never part of the shared
+    // read-only assembly used by the Context preview.
     crate::tools::ask_user::supersede_question_cards(&chat);
-    if let Some(child) = &chat.child {
-        // A subagent never asks the user (ADR-ask-user-is-a-question-card): its questions are its
-        // findings, reported through the parent. Workers keep the rest of
-        // the default toolset; explorers keep only the read-only surface.
-        tools.retain(|tool| tool.name != "ask_user");
-        if child.role == "explorer" {
-            tools.retain(|tool| explorer_tool_allowed(&tool.name));
-        }
-        if let Some(output) = &child.output {
-            tools.push(crate::subagents::submit_result_tool(output.clone()));
-        }
-    } else if provider_mode {
-        // The Provider Mode surface (ADR-provider-mode-is-a-chat-mode): web research plus the
-        // read-only proposal tool and the Key request (ADR-api-keys-collected-through-key-requests) — no file
-        // access, no delegation, and no apply (the card's button writes).
-        // Outside the mode neither catalog tool is mounted.
-        tools.retain(|tool| crate::provider_mode::provider_mode_tool_allowed(&tool.name));
-        // A new Turn moved past any still-open provider choice — a typed
-        // answer, or the click that queued this very Turn (already
-        // stamped chosen).
+    if provider_mode {
         crate::provider_mode::supersede_choice_cards(&chat);
-        if let Some(model_providers) = &providers {
-            tools.push(crate::tools::create_model_proposal_tool(
-                model_providers.clone(),
-                chat.clone(),
-            ));
-            tools.push(crate::tools::create_request_provider_key_tool(
-                model_providers.clone(),
-                chat.clone(),
-            ));
-            tools.push(crate::tools::create_choose_provider_tool(
-                model_providers.clone(),
-            ));
-        }
-    } else if !plan_mode {
-        // A planning Turn delegates nothing (ADR-plan-mode-is-an-independent-approval-checkpoint): the whitelist below
-        // would drop the tool anyway, so it is simply never mounted.
-        let delegation = crate::subagents::Delegation {
+    }
+    let assembled = assemble_main_context(
+        system_prompt,
+        MainContextAssembly {
             runtime: runtime.clone(),
-            parent: chat.clone(),
-            parent_parts: base_parts.clone(),
-            parent_entry: entry_id.clone(),
+            chat: chat.clone(),
+            chat_id: chat_id.clone(),
             cwd: cwd.clone(),
             reasoning,
             model: model.clone(),
             api_key: api_key.clone(),
             skills: skills.clone(),
             permission_mode,
+            plan_mode,
+            provider_mode,
+            include_mcp: true,
             search_backend,
+            providers,
+            attribution,
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
-            attribution: attribution.clone(),
-        };
-        // Workflows (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation) mount
-        // with delegation: main-chat Turns only, never planning or Provider
-        // Mode (this branch), never inside a child.
-        tools.push(crate::workflow::tool(delegation.clone()));
-        tools.push(crate::subagents::tool(delegation));
-        // The task list (issue #47) mounts on main-chat Turns only — the
-        // MCP policy: subagent, planning, and Provider Mode Turns keep
-        // their curated toolsets (this branch already excludes all three).
-        tools.push(crate::tools::create_todo_tool());
-        if let Some(routines) = runtime.routines.get().cloned() {
-            // The clock's pull channel (ADR-model-facing-time-is-pulled-not-embedded):
-            // mounted beside its consumer so "now" never enters a
-            // prefix-position description.
-            tools.push(crate::tools::create_current_time_tool(routines.clock()));
-            tools.push(crate::tools::create_schedule_routine_tool(
-                runtime.clone(),
-                routines,
-                chat_id.clone(),
-            ));
-        }
-    }
-    // The MCP tools (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the Turn-start snapshot — every enabled
-    // server's tools join the toolset as `mcp__<server>__<tool>` agent
-    // tools, connecting lazily here and only here. Subagent runs, Provider
-    // Mode Turns, and planning Turns (whose read-only retain below
-    // would drop the tools anyway) keep their curated toolsets without
-    // spawning a thing. The schemas defer (ADR-mcp-tool-schemas-defer-through-a-loader): a small loader
-    // joins the toolset and a synthetic bootstrap pair marks the whole
-    // snapshot, so supporting providers keep the definitions out of the
-    // static context until the model loads and calls them.
-    let mcp_bootstrap = if chat.child.is_none() && !provider_mode && !plan_mode {
-        let snapshot = runtime.mcp.agent_tools().await;
-        if snapshot.is_empty() {
-            None
-        } else {
-            let bootstrap = crate::mcp::bootstrap_messages(&snapshot, &model);
-            tools.push(crate::mcp::loader_tool(&snapshot));
-            tools.extend(snapshot);
-            Some(bootstrap)
-        }
-    } else {
-        None
-    };
-    // The planning-turn shaping (ADR-plan-mode-is-an-independent-approval-checkpoint): the planning block appended to
-    // the system prompt, the toolset cut down to the read-only exploration
-    // surface, and `submit_plan` — the structured submission channel whose
-    // typed result becomes the approval card (the `<proposed_plan>` text
-    // convention stays as the fallback; assistant_parts folds complete
-    // blocks into cards either way).
-    if plan_mode {
-        system_prompt.push('\n');
-        system_prompt.push_str(&crate::plan_mode::planning_system_block());
-        tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
-        tools.push(crate::tools::submit_plan::create_submit_plan_tool());
-    }
-    if provider_mode {
-        system_prompt.push('\n');
-        system_prompt.push_str(&crate::provider_mode::provider_mode_block(
-            search_backend_present,
-        ));
-    }
+            base_parts: base_parts.clone(),
+            entry_id: entry_id.clone(),
+        },
+    )
+    .await;
+    let AssembledMainContext {
+        system_prompt,
+        tools,
+        mcp_bootstrap,
+    } = assembled;
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -2214,13 +2302,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         // calls. It is never persisted to the transcript.
         convert_to_llm: Arc::new(move |messages| {
             let bootstrap = mcp_bootstrap.clone();
-            Box::pin(async move {
-                let mut converted = harness_convert_to_llm(messages);
-                if let Some(pair) = bootstrap {
-                    converted.splice(0..0, pair);
-                }
-                converted
-            })
+            Box::pin(async move { convert_main_messages(messages, bootstrap.as_deref()) })
         }),
         transform_context: None,
         get_api_key: None,
@@ -2237,6 +2319,19 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         messages: history,
         tools: Some(tools.clone()),
     };
+    // Capture only the main loop's converted requests. The original
+    // `stream_fn` still serves compaction and gate review, so those auxiliary
+    // calls never replace the user-facing Context report.
+    let main_stream_fn: holt_core::agent::types::StreamFn = {
+        let upstream = stream_fn.clone();
+        let chat = chat.clone();
+        Arc::new(move |model, context, options| {
+            if chat.child.is_none() {
+                crate::usage::capture_context(&chat, model, context);
+            }
+            upstream(model, context, options)
+        })
+    };
     // A resumed Turn continues from its repaired History, which ends on the
     // prompt or a tool result — exactly what the continue entry accepts.
     let mut result = if resume {
@@ -2245,7 +2340,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             config.clone(),
             emit.clone(),
             Some(cancel.clone()),
-            Some(stream_fn.clone()),
+            Some(main_stream_fn.clone()),
         )
         .await
     } else {
@@ -2255,7 +2350,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             config.clone(),
             emit.clone(),
             Some(cancel.clone()),
-            Some(stream_fn.clone()),
+            Some(main_stream_fn.clone()),
         )
         .await
     };
@@ -2327,7 +2422,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 config.clone(),
                 emit.clone(),
                 Some(cancel.clone()),
-                Some(stream_fn.clone()),
+                Some(main_stream_fn.clone()),
             )
             .await
             .map(|continued| [first_run, continued].concat());

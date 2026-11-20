@@ -27,7 +27,7 @@ use std::{
 };
 
 use chrono::Utc;
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, join_all};
 use holt_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{
@@ -83,9 +83,9 @@ impl McpPool {
         })
     }
 
-    /// The Turn-start snapshot (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): every enabled server's listed
-    /// tools, wrapped as standard agent tools. Called once per Turn
-    /// admission by main-chat runs. The file is refreshed first — a hand
+    /// The mounted snapshot (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): every enabled server's listed
+    /// tools, wrapped as standard agent tools. Real Turns and explicit
+    /// Context previews call it on demand. The file is refreshed first — a hand
     /// edit while holt runs lands from the next Turn; a broken one keeps
     /// the last-good set (logged).
     pub(crate) async fn agent_tools(&self) -> Vec<AgentTool> {
@@ -96,51 +96,59 @@ impl McpPool {
                 "mcp config failed to reload; keeping the last-good servers"
             );
         }
-        let mut tools = Vec::new();
-        let mut connections = self.connections.lock().await;
         let definitions = self.servers.get();
-        // Connections for servers that vanished from the config or were
-        // disabled die now — dropping the pool's Arc shuts the child down
-        // (an Arc a running Turn still holds keeps it alive until that
-        // Turn ends, so a mid-Turn disable never kills a tool in use).
-        connections.retain(|name, _| definitions.get(name).is_some_and(|server| server.enabled));
-        for (name, server) in definitions {
-            if !server.enabled {
-                continue;
-            }
-            // A cached connection whose list has gone stale (a child that
-            // died since the last Turn) is dropped and reconnected in the
-            // same pass — a server restarted between Turns works again on
-            // the very next one, no app restart (ADR-mcp-servers-join-as-engine-clients-behind-the-gate).
-            let mut fresh: Option<(Arc<LiveServer>, Vec<Tool>)> = None;
-            if let Some(connection) = connections.get(&name).cloned() {
-                match connection.list_tools().await {
-                    Ok(list) => fresh = Some((connection, list)),
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "holt::mcp",
-                            server = %name,
-                            %error,
-                            "mcp connection went stale; reconnecting for this turn"
-                        );
-                        connections.remove(&name);
-                    }
+        // Config removals close their cached connections up front. Each live
+        // server then initializes independently: one slow or hung endpoint
+        // cannot serialize every other server's snapshot behind it.
+        self.connections
+            .lock()
+            .await
+            .retain(|name, _| definitions.get(name).is_some_and(|server| server.enabled));
+        join_all(definitions.into_iter().filter_map(|(name, server)| {
+            server.enabled.then(|| self.agent_tools_for(name, server))
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// One server's independent snapshot. The pool lock covers only map
+    /// access, never a network handshake or `tools/list`, so independent
+    /// servers really do initialize concurrently.
+    async fn agent_tools_for(&self, name: String, server: McpServer) -> Vec<AgentTool> {
+        let cached = self.connections.lock().await.get(&name).cloned();
+        if let Some(connection) = cached {
+            match connection.list_tools().await {
+                Ok(list) => {
+                    return list
+                        .into_iter()
+                        .filter(|tool| server.allows_tool(&tool.name))
+                        .map(|tool| wrap_server_tool(&name, tool, &connection))
+                        .collect();
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "holt::mcp",
+                        server = %name,
+                        %error,
+                        "mcp connection went stale; reconnecting for this turn"
+                    );
+                    self.connections.lock().await.remove(&name);
                 }
             }
-            let hit = match fresh {
-                Some(hit) => Some(hit),
-                None => connect_fresh(&mut connections, &name, &server).await,
-            };
-            let Some((connection, list)) = hit else {
-                continue;
-            };
-            tools.extend(
-                list.into_iter()
-                    .filter(|tool| server.allows_tool(&tool.name))
-                    .map(|tool| wrap_server_tool(&name, tool, &connection)),
-            );
         }
-        tools
+        let Some((connection, list)) = connect_fresh(&name, &server).await else {
+            return Vec::new();
+        };
+        self.connections
+            .lock()
+            .await
+            .insert(name.clone(), connection.clone());
+        list.into_iter()
+            .filter(|tool| server.allows_tool(&tool.name))
+            .map(|tool| wrap_server_tool(&name, tool, &connection))
+            .collect()
     }
 
     /// One on-demand probe (the Settings Test action): connect, list
@@ -225,14 +233,9 @@ impl McpPool {
     }
 }
 
-/// Connect (or reconnect) one server and list its tools, caching the
-/// live connection on success. `None` — with a log line — skips the
-/// server for this Turn.
-async fn connect_fresh(
-    connections: &mut HashMap<String, Arc<LiveServer>>,
-    name: &str,
-    server: &McpServer,
-) -> Option<(Arc<LiveServer>, Vec<Tool>)> {
+/// Connect one server and list its tools. The caller caches the successful
+/// connection; map locks never cover this network work.
+async fn connect_fresh(name: &str, server: &McpServer) -> Option<(Arc<LiveServer>, Vec<Tool>)> {
     match connect(server).await {
         Ok(connection) => {
             let connection = Arc::new(connection);
@@ -260,7 +263,6 @@ async fn connect_fresh(
                 );
                 return None;
             }
-            connections.insert(name.to_string(), Arc::clone(&connection));
             Some((connection, list))
         }
         // A server that cannot start is skipped for this Turn (log line,

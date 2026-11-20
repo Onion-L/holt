@@ -15,6 +15,12 @@
 //!   timeout's hang stand-in (ticket 03).
 //! - `FIXTURE_SLOW_CALL_MS`: sleep this many ms before answering each
 //!   `tools/call` (ticket 03's per-call timeout).
+//! - `FIXTURE_STALL_LIST_MS`: sleep this many ms inside `tools/list`;
+//!   `FIXTURE_LIST_LOG` + `FIXTURE_SERVER_ID` record start/end markers for
+//!   progressive-preview and parallel-initialization tests.
+//! - `FIXTURE_LIST_BARRIER`: a shared file; each process appends one byte
+//!   at `tools/list` and waits for two bytes, proving both servers reach
+//!   listing before either may finish.
 //! - `FIXTURE_ONE_TOOL_FIRST_LIST`: the first `tools/list` answers with
 //!   only `echo`; later lists answer with the full set (ticket 03's
 //!   listChanged-lands-next-Turn).
@@ -138,6 +144,37 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
         ("notifications/initialized", None) => {}
         ("ping", Some(id)) => reply(&id, serde_json::json!({})),
         ("tools/list", Some(id)) => {
+            if let Ok(path) = std::env::var("FIXTURE_LIST_LOG") {
+                let server = std::env::var("FIXTURE_SERVER_ID").unwrap_or_default();
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut file| writeln!(file, "{server}:start"));
+            }
+            if let Ok(slow) = std::env::var("FIXTURE_STALL_LIST_MS") {
+                let ms: u64 = slow.parse().unwrap_or(0);
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+            if let Ok(path) = std::env::var("FIXTURE_LIST_BARRIER") {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut file| file.write_all(b"x"));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while std::fs::metadata(&path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0)
+                    < 2
+                {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "both MCP fixtures did not reach tools/list"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             let count = LIST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let all = tools();
             let one_tool = std::env::var("FIXTURE_ONE_TOOL_FIRST_LIST").is_ok() && count == 0;
@@ -161,6 +198,14 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
                 result["nextCursor"] = serde_json::json!((offset + 1).to_string());
             }
             reply(&id, result);
+            if let Ok(path) = std::env::var("FIXTURE_LIST_LOG") {
+                let server = std::env::var("FIXTURE_SERVER_ID").unwrap_or_default();
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut file| writeln!(file, "{server}:end"));
+            }
             if let Ok(after) = std::env::var("FIXTURE_LIST_CHANGED_AFTER")
                 && count >= after.parse::<usize>().unwrap_or(0)
             {

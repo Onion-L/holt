@@ -36,6 +36,7 @@ impl Pickers {
             PickerKind::Checkout => "picker-checkout",
             PickerKind::ProviderModel => "picker-model",
             PickerKind::Mode => "picker-mode",
+            PickerKind::ContextUsage => "chat-usage-ring",
             PickerKind::Space => "picker-space",
         };
         let open = self.open_kind() == Some(kind);
@@ -303,6 +304,8 @@ impl Pickers {
                         PickerKind::Space => {}
                         // The mode menu loads nothing; no retry surface exists.
                         PickerKind::Mode => {}
+                        // The usage card has no independent fetch to retry.
+                        PickerKind::ContextUsage => {}
                     }))
                     .child(SharedString::from(t!("pickers_dialogs.common.retry"))),
             )

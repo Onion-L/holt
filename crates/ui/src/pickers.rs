@@ -124,6 +124,8 @@ pub enum PickerKind {
     /// The permission-mode tier menu (ADR-permission-modes-gate-mutations-no-os-sandbox): the footer's persistent
     /// shield control — same chip, same menu, in empty and populated chats.
     Mode,
+    /// The context occupancy ring's click-pinned usage card.
+    ContextUsage,
     /// New-session canvas only: which project the session mints into. A pick
     /// re-keys everything project-derived (refs) via the state observer.
     Space,
@@ -627,6 +629,19 @@ impl Pickers {
         self.open.as_open().copied()
     }
 
+    pub(crate) fn context_usage_open(&self) -> bool {
+        self.open_kind() == Some(PickerKind::ContextUsage)
+    }
+
+    pub(crate) fn note_context_usage_press(&mut self) {
+        self.open
+            .note_trigger_press_matching(|open| *open == PickerKind::ContextUsage);
+    }
+
+    pub(crate) fn toggle_context_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle(PickerKind::ContextUsage, window, cx);
+    }
+
     /// Whether any picker popover is open (shell-side: session-nav shortcuts
     /// go quiet underneath an open popover instead of yanking the session out
     /// from under it).
@@ -655,7 +670,7 @@ impl Pickers {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close(&mut self, cx: &mut Context<Self>) {
         self.animate_close(cx);
         cx.notify();
     }
@@ -725,6 +740,7 @@ impl Pickers {
             PickerKind::ProviderModel => self.selected_model_index(cx),
             // Pre-anchored on the current tier (the Checkout pattern).
             PickerKind::Mode => mode_index(self.effective_permission_mode(cx)),
+            PickerKind::ContextUsage => 0,
             PickerKind::Space => self.selected_space_index(cx),
         };
         if kind == PickerKind::ProviderModel {
@@ -777,6 +793,8 @@ impl Pickers {
             PickerKind::Space => {}
             // The mode menu renders from synced state — nothing to load.
             PickerKind::Mode => {}
+            // The usage card renders from the synced WatchChatUsage frame.
+            PickerKind::ContextUsage => {}
         }
         cx.notify();
     }
@@ -856,6 +874,7 @@ impl Pickers {
                     // mouse-only.
                     Some(PickerKind::ProviderModel) => self.model_rows_len(cx),
                     Some(PickerKind::Mode) => MODE_TIERS.len(),
+                    Some(PickerKind::ContextUsage) => 0,
                     Some(PickerKind::Space) => self.filtered_space_rows(cx).len(),
                     None => 0,
                 };
@@ -1019,6 +1038,57 @@ impl Pickers {
             .into_any_element()
     }
 
+    fn render_context_usage_popover(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let usage = self
+            .state
+            .read(cx)
+            .chat_usage
+            .clone()
+            .expect("the usage popover only mounts with a frame");
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(t!("conversation_transcript.usage.title")),
+            )
+            .child(
+                div()
+                    .id("chat-usage-view-report")
+                    .flex_none()
+                    .px(px(5.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .text_color(theme.text_muted)
+                    .hover(|style| style.bg(theme.element_hover).text_color(theme.text))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(crate::shell::OpenContextUsage), cx);
+                    })
+                    .child(t!("conversation_transcript.usage.view_report")),
+            );
+        let content = div()
+            .w_full()
+            .p(px(12.0))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .text_size(crate::typography::ui_rems(12.0))
+            .child(header)
+            .child(crate::chat_usage::card_content(&usage, &theme));
+        self.popover_frame_flush(
+            crate::chat_usage::CARD_WIDTH,
+            content.into_any_element(),
+            cx,
+        )
+    }
+
     /// The composer footer row: the persistent permission-mode shield
     /// (ADR-permission-modes-gate-mutations-no-os-sandbox) first, then the checkout-kind + branch chip when the picked
     /// (or session's) project has git. In a session the branch chip is live
@@ -1085,6 +1155,10 @@ impl Pickers {
                     let content = self.render_mode_popover(cx);
                     Some((PickerKind::Mode, self.popover_frame(300.0, content, cx)))
                 }
+                Some(PickerKind::ContextUsage) => Some((
+                    PickerKind::ContextUsage,
+                    self.render_context_usage_popover(cx),
+                )),
                 _ => None,
             };
             let mode_chip = self.mode_chip(&theme, cx);
@@ -1121,6 +1195,21 @@ impl Pickers {
             // lead). A frame the engine has not published yet renders
             // nothing rather than an empty ring.
             let usage = self.state.read(cx).chat_usage.clone();
+            let usage_ring = crate::chat_usage::ring(
+                usage.as_ref(),
+                self.context_usage_open(),
+                &theme,
+                &cx.entity(),
+            )
+            .map(|ring| {
+                attach_overlay_end(
+                    ring,
+                    &mut overlay,
+                    PickerKind::ContextUsage,
+                    "context-usage-popover",
+                    closing,
+                )
+            });
             if let Some(space) = space.as_ref().filter(|s| s.git_detected) {
                 // One rule for the kind icon and its label (ADR-branch-is-live-working-tree-state).
                 let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());
@@ -1150,17 +1239,15 @@ impl Pickers {
                     SharedString::from(kind_label),
                     &theme,
                 ));
-                right = right
-                    .children(crate::chat_usage::ring(usage.as_ref(), &theme))
-                    .child(attach_overlay_end(
-                        ref_chip,
-                        &mut overlay,
-                        PickerKind::Branch,
-                        "branch-popover-session",
-                        closing,
-                    ));
+                right = right.children(usage_ring).child(attach_overlay_end(
+                    ref_chip,
+                    &mut overlay,
+                    PickerKind::Branch,
+                    "branch-popover-session",
+                    closing,
+                ));
             } else {
-                right = right.children(crate::chat_usage::ring(usage.as_ref(), &theme));
+                right = right.children(usage_ring);
             }
             return Some(row().child(left).child(right).into_any_element());
         }
@@ -1372,6 +1459,7 @@ impl Render for Pickers {
             Some(PickerKind::Branch)
             | Some(PickerKind::Checkout)
             | Some(PickerKind::Mode)
+            | Some(PickerKind::ContextUsage)
             | Some(PickerKind::Space) => None,
             Some(PickerKind::ProviderModel) => {
                 let content = self.render_provider_model_popover(cx);

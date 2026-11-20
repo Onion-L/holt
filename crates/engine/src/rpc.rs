@@ -198,6 +198,7 @@ impl RpcService for EngineService {
             }
             methods::WATCH_MESSAGE_QUEUE => self.watch_message_queue(params),
             methods::WATCH_CHAT_USAGE => self.watch_chat_usage(params),
+            methods::PREVIEW_CHAT_CONTEXT => self.preview_chat_context(params).await,
             methods::USAGE_STATS => self.usage_stats(params).await,
             methods::WATCH_TURN_TERMINAL_EVENTS => self.watch_turn_terminal_events(),
             methods::WATCH_TURN_RETRY => self.watch_turn_retry(),

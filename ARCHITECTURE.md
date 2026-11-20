@@ -54,7 +54,7 @@ Method names live in `rpc::methods` (code is the contract). Each family's behavi
 | Background processes | `ListBackgroundProcesses`, `WatchBackgroundProcesses`, `SubscribeBackgroundProcess`, `KillBackgroundProcess` | [background-processes](docs/subsystems/background-processes.md) |
 | Transcript and subagent blobs | `WatchDocMessages`, `FetchToolBlob` | [persistence](docs/subsystems/persistence.md), [subagents](docs/subsystems/subagents.md) |
 | Workflow runs | `StopWorkflow` | [workflows](docs/subsystems/workflows.md) |
-| Usage | `WatchChatUsage`, `UsageStats` | [persistence](docs/subsystems/persistence.md) |
+| Usage | `WatchChatUsage`, `PreviewChatContext`, `UsageStats` | [persistence](docs/subsystems/persistence.md), [run-loop](docs/subsystems/run-loop.md) |
 | Tools and integrations settings | `GetMcpSettings`, `GetWebSearchSettings` | [toolset-mechanics](docs/subsystems/toolset-mechanics.md) |
 | Title and goal settings | `GetTitleSettings`, `GetGoalSettings` | [conversation-policy](docs/subsystems/conversation-policy.md), [goals-routines](docs/subsystems/goals-routines.md) |
 

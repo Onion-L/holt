@@ -1,26 +1,25 @@
 //! The chat's token numbers, as composer chrome: a radial ring beside the
-//! branch chip whose arc is the window occupancy, and the card its hover
-//! opens — context occupancy on top, cumulative usage below, each drawn as a
-//! bar instead of a line of text.
+//! branch chip whose arc is the window occupancy, and the card its click
+//! pins above the composer — context occupancy on top, cumulative usage
+//! below, each drawn as a bar instead of a line of text.
 //!
-//! The engine's `ChatUsage` frame is the only input: the totals, the
-//! per-source split, and the occupancy all arrive decided, so this module
-//! re-derives nothing. It only decides how what the frame carries is printed
-//! — which is also why the two numbers stay in two labeled sections: the
-//! occupancy is this request's claim on the window, the usage total is what
-//! every request so far has spent, and adding them together is meaningless.
+//! The card's report opens the latest request's full context in the right
+//! pane. The engine's `ChatUsage` frame is the only input: the totals, the
+//! per-source split, the occupancy, and the captured Context all arrive
+//! decided, so this module re-derives no token counts.
 
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{
-    AnyElement, Context, Div, Hsla, IntoElement, PathBuilder, Render, SharedString, Task, Window,
-    canvas, div, point, prelude::*, px,
+    AnyElement, Context, Div, Entity, Hsla, IntoElement, PathBuilder, Render, ScrollHandle,
+    SharedString, Subscription, Task, Window, canvas, div, point, prelude::*, px,
 };
 
 use crate::{
     i18n::t,
     motion,
+    pickers::Pickers,
     state::{AppState, EngineHandle},
     theme::Theme,
     token_display::compact_tokens,
@@ -41,10 +40,7 @@ const RING_BUTTON: f32 = 20.0;
 const RING_STROKE: f32 = 2.0;
 const RING_SEGMENTS: f32 = 64.0;
 /// Card width: one kind row (dot, name, count, share) with air to spare.
-const CARD_WIDTH: f32 = 300.0;
-/// The hover delay before the card appears — the usage tooltip's own delay
-/// before this change.
-const CARD_DELAY: Duration = Duration::from_millis(350);
+pub(crate) const CARD_WIDTH: f32 = 340.0;
 
 /// How full the window the chat runs next would be, plus where the number
 /// came from — the ring's arc and the card's first section.
@@ -239,12 +235,20 @@ fn source_note(model: &CardModel) -> Option<std::borrow::Cow<'static, str>> {
     }
 }
 
-/// The ring beside the branch chip, and the card its hover opens. `None`
-/// until the chat's frame arrives — an unselected chat, or an engine that
-/// never billed it.
-pub(crate) fn ring(usage: Option<&ChatUsage>, theme: &Theme) -> Option<AnyElement> {
-    let model = Arc::new(card_model(usage?));
-    let card = Arc::clone(&model);
+/// The ring beside the branch chip. A click pins the card above the composer;
+/// it is deliberately not a hover tooltip, so the report action and the
+/// numbers remain reachable with the pointer. `open` comes from the caller:
+/// the footer renders during a `Pickers` update, so reading that entity here
+/// would be a re-entrant GPUI borrow and panic at startup.
+pub(crate) fn ring(
+    usage: Option<&ChatUsage>,
+    open: bool,
+    theme: &Theme,
+    pickers: &Entity<Pickers>,
+) -> Option<gpui::Stateful<Div>> {
+    let occupancy = card_model(usage?).occupancy;
+    let pressed = pickers.clone();
+    let clicked = pickers.clone();
     Some(
         div()
             .id("chat-usage-ring")
@@ -256,16 +260,23 @@ pub(crate) fn ring(usage: Option<&ChatUsage>, theme: &Theme) -> Option<AnyElemen
             .justify_center()
             .rounded(px(6.0))
             .cursor_pointer()
-            .bg(motion::hover_blend(
-                "chat-usage-ring",
-                gpui::transparent_black(),
-                theme.element_hover,
-            ))
+            .bg(if open {
+                theme.element_hover
+            } else {
+                motion::hover_blend(
+                    "chat-usage-ring",
+                    gpui::transparent_black(),
+                    theme.element_hover,
+                )
+            })
             .on_hover(motion::hover_listener("chat-usage-ring"))
-            .tooltip(move |_, cx| cx.new(|_| UsageCard(Arc::clone(&card))).into())
-            .tooltip_show_delay(CARD_DELAY)
-            .child(occupancy_ring(model.occupancy.fraction(), theme))
-            .into_any_element(),
+            .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+                pressed.update(cx, |this, _| this.note_context_usage_press())
+            })
+            .on_click(move |_, window, cx| {
+                clicked.update(cx, |this, cx| this.toggle_context_usage(window, cx))
+            })
+            .child(occupancy_ring(occupancy.fraction(), theme)),
     )
 }
 
@@ -315,66 +326,59 @@ fn occupancy_ring(fraction: f32, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The hover card: two labeled sections, each a header plus a bar, and — for
-/// usage — one row per source.
-struct UsageCard(Arc<CardModel>);
-
-impl Render for UsageCard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
-        let model = self.0.as_ref();
-        let mut card = crate::popover::popover_card(&theme)
-            .debug_selector(|| "chat-usage-card".into())
-            .w(px(CARD_WIDTH))
-            .p(px(12.0))
-            .flex()
-            .flex_col()
-            .gap(px(7.0))
-            .text_size(crate::typography::ui_rems(12.0))
+/// The popover's two labeled sections. Its frame, title, and report action
+/// belong to the picker; the report view reuses the same frame data directly.
+pub(crate) fn card_content(usage: &ChatUsage, theme: &Theme) -> Div {
+    let model = card_model(usage);
+    let mut card = div()
+        .debug_selector(|| "chat-usage-card".into())
+        .flex()
+        .flex_col()
+        .gap(px(7.0))
+        .text_size(crate::typography::ui_rems(12.0))
+        .child(section_header(
+            t!("conversation_transcript.usage.section.context").as_ref(),
+            occupancy_value(&model.occupancy),
+            theme,
+        ))
+        .child(bar(
+            "context",
+            model.occupancy.fraction(),
+            theme.accent,
+            theme,
+        ));
+    if !model.kinds.is_empty() {
+        card = card
+            .child(div().h(px(2.0)))
             .child(section_header(
-                t!("conversation_transcript.usage.section.context").as_ref(),
-                occupancy_value(&model.occupancy),
-                &theme,
+                t!("conversation_transcript.usage.section.usage").as_ref(),
+                usage_value(&model),
+                theme,
             ))
-            .child(bar(
-                "context",
-                model.occupancy.fraction(),
-                theme.accent,
-                &theme,
-            ));
-        if !model.kinds.is_empty() {
-            card = card
-                .child(div().h(px(2.0)))
-                .child(section_header(
-                    t!("conversation_transcript.usage.section.usage").as_ref(),
-                    usage_value(model),
-                    &theme,
-                ))
-                .child(usage_bar(model, &theme))
-                .children(
-                    model
-                        .kinds
-                        .iter()
-                        .enumerate()
-                        .map(|(rank, share)| kind_row(rank, share, &theme)),
-                );
-        }
-        if let Some(hit_rate) = model.cache.hit_rate() {
-            card = card
-                .child(div().h(px(2.0)))
-                .child(section_header(
-                    t!("conversation_transcript.usage.section.cache_hit").as_ref(),
-                    percent(hit_rate as f64),
-                    &theme,
-                ))
-                .child(bar("cache", hit_rate, theme.accent, &theme))
-                .child(footnote(cache_note(&model.cache), &theme));
-        }
-        if let Some(note) = source_note(model) {
-            card = card.child(footnote(note.into_owned(), &theme));
-        }
-        crate::layer::glass_layer(card)
+            .child(usage_bar(&model, theme))
+            .children(
+                model
+                    .kinds
+                    .iter()
+                    .enumerate()
+                    .map(|(rank, share)| kind_row(rank, share, theme)),
+            );
     }
+    if let Some(hit_rate) = model.cache.hit_rate() {
+        card = card
+            .child(div().h(px(2.0)))
+            .child(section_header(
+                t!("conversation_transcript.usage.section.cache_hit").as_ref(),
+                percent(hit_rate as f64),
+                theme,
+            ))
+            .child(bar("cache", hit_rate, theme.accent, theme))
+            .child(footnote(cache_note(&model.cache), theme));
+    }
+    if let Some(note) = source_note(&model) {
+        card = card.child(footnote(note.into_owned(), theme));
+    }
+    card
 }
 
 /// A section's label (left, bright) and its value (right, muted).
@@ -529,6 +533,313 @@ fn footnote(text: String, theme: &Theme) -> Div {
         .child(SharedString::from(text))
 }
 
+/// The right-pane report. It owns only view state; the engine snapshot stays
+/// immutable between model requests, so streaming transcript notifications do
+/// not re-render kilobytes of expanded prompt and tool text.
+pub(crate) struct ContextUsagePanel {
+    snapshot: Option<Arc<holt_proto::ChatContextSnapshot>>,
+    chat_id: Option<String>,
+    expanded: HashSet<String>,
+    scroll: ScrollHandle,
+    _observe: Subscription,
+}
+
+impl ContextUsagePanel {
+    pub(crate) fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let (chat_id, snapshot) = {
+            let state = state.read(cx);
+            (
+                state.selected_chat.clone(),
+                state
+                    .chat_usage
+                    .as_ref()
+                    .and_then(|usage| usage.context.clone()),
+            )
+        };
+        let observe = cx.observe(&state, |this, state, cx| {
+            let state = state.read(cx);
+            let chat_id = state.selected_chat.clone();
+            let chat_changed = chat_id != this.chat_id;
+            let next = state
+                .chat_usage
+                .as_ref()
+                .and_then(|usage| usage.context.as_ref());
+            let snapshot_changed = next != this.snapshot.as_ref();
+            if chat_changed {
+                this.chat_id = chat_id;
+                this.expanded.clear();
+                this.scroll.set_offset(gpui::Point::default());
+            }
+            if snapshot_changed {
+                this.snapshot = next.cloned();
+            }
+            if chat_changed || snapshot_changed {
+                cx.notify();
+            }
+        });
+        Self {
+            snapshot,
+            chat_id,
+            expanded: HashSet::new(),
+            scroll: ScrollHandle::new(),
+            _observe: observe,
+        }
+    }
+
+    fn entry_title(entry: &holt_proto::ChatContextEntry) -> String {
+        use holt_proto::ChatContextEntryKind as Kind;
+        let index = entry
+            .id
+            .strip_prefix("message-")
+            .and_then(|index| index.parse::<usize>().ok())
+            .map_or(0, |index| index + 1);
+        match entry.kind {
+            Kind::SystemPrompt => t!("conversation_transcript.usage.report.system_prompt").into(),
+            Kind::ToolDefinitions => t!(
+                "conversation_transcript.usage.report.tool_definitions",
+                count = entry.children.len()
+            )
+            .into(),
+            Kind::Tool => entry.name.clone().unwrap_or_default(),
+            Kind::McpServer => entry
+                .name
+                .as_ref()
+                .map_or_else(|| "MCP".to_string(), |server| format!("MCP · {server}")),
+            Kind::Skill => entry.name.clone().unwrap_or_default(),
+            Kind::Skills => t!(
+                "conversation_transcript.usage.report.skills",
+                count = entry.children.len()
+            )
+            .into(),
+            Kind::UserMessage => {
+                t!("conversation_transcript.usage.report.user", index = index).into()
+            }
+            Kind::AssistantMessage => t!(
+                "conversation_transcript.usage.report.assistant",
+                index = index
+            )
+            .into(),
+            Kind::ToolResult => {
+                let label = t!(
+                    "conversation_transcript.usage.report.tool_result",
+                    index = index
+                );
+                entry.name.as_ref().map_or_else(
+                    || label.clone().into_owned(),
+                    |name| format!("{label} · {name}"),
+                )
+            }
+        }
+    }
+
+    fn entry_icon(kind: holt_proto::ChatContextEntryKind) -> &'static str {
+        use holt_proto::ChatContextEntryKind as Kind;
+        match kind {
+            Kind::SystemPrompt => crate::icons::DOCUMENT,
+            Kind::ToolDefinitions | Kind::Tool | Kind::ToolResult => {
+                crate::icons::PROGRAMMING_OUTLINE
+            }
+            Kind::McpServer => crate::icons::WIDGET,
+            Kind::Skills | Kind::Skill => crate::icons::CUBE,
+            Kind::UserMessage => crate::icons::CHAT_ROUND_LINE,
+            Kind::AssistantMessage => crate::icons::BOT,
+        }
+    }
+
+    fn request_label(snapshot: &holt_proto::ChatContextSnapshot) -> String {
+        if snapshot.preview {
+            t!(
+                "conversation_transcript.usage.report.next_request",
+                model = snapshot.model
+            )
+            .into_owned()
+        } else {
+            t!(
+                "conversation_transcript.usage.report.latest_request",
+                model = snapshot.model
+            )
+            .into_owned()
+        }
+    }
+
+    fn render_entry(
+        &self,
+        entry: &holt_proto::ChatContextEntry,
+        depth: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let expanded = self.expanded.contains(&entry.id);
+        let id = entry.id.clone();
+        let title = Self::entry_title(entry);
+        let tokens = format!("~{}", compact_tokens(entry.estimated_tokens));
+        let chevron = if expanded {
+            crate::icons::ALT_ARROW_DOWN
+        } else {
+            crate::icons::ALT_ARROW_RIGHT
+        };
+        let header = div()
+            .id(SharedString::from(format!("context-entry-{}", entry.id)))
+            .debug_selector(|| format!("context-entry-{}", entry.id))
+            .h(px(34.0))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .px(px(9.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .bg(if depth == 0 {
+                theme.ink(0.035)
+            } else {
+                gpui::transparent_black()
+            })
+            .hover(|style| style.bg(theme.element_hover))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.expanded.insert(id.clone()) {
+                    this.expanded.remove(&id);
+                }
+                cx.notify();
+            }))
+            .child(
+                crate::icons::icon(chevron)
+                    .size(px(11.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                crate::icons::icon(Self::entry_icon(entry.kind))
+                    .size(px(13.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_color(theme.text)
+                    .child(SharedString::from(title)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from(tokens)),
+            );
+        let mut row = div().w_full().flex().flex_col().child(header);
+        if expanded {
+            if !entry.content.is_empty() {
+                row = row.child(
+                    div()
+                        .debug_selector(|| format!("context-content-{}", entry.id))
+                        .w_full()
+                        .px(px(12.0))
+                        .py(px(10.0))
+                        .font_family(theme.font_mono.clone())
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(entry.content.clone())),
+                );
+            }
+            if !entry.children.is_empty() {
+                row = row.child(
+                    div()
+                        .w_full()
+                        .ml(px(15.0))
+                        .pl(px(7.0))
+                        .border_l_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .children(
+                            entry
+                                .children
+                                .iter()
+                                .map(|child| self.render_entry(child, depth + 1, theme, cx)),
+                        ),
+                );
+            }
+        }
+        row
+    }
+}
+
+impl Render for ContextUsagePanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx).clone();
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return div()
+                .id("context-usage-empty")
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(24.0))
+                .text_center()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .child(t!("conversation_transcript.usage.report.empty"));
+        };
+        div()
+            .id("context-usage-report")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .occlude()
+            .child(
+                div()
+                    .w_full()
+                    .p(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .pb(px(5.0))
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(t!("conversation_transcript.usage.title")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(10.5))
+                                    .text_color(theme.text_muted)
+                                    .child(Self::request_label(snapshot)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(theme.text_faint)
+                                    .child(t!("conversation_transcript.usage.report.estimates")),
+                            )
+                            .children((!snapshot.loading_mcp_servers.is_empty()).then(|| {
+                                div()
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(theme.accent)
+                                    .child(t!(
+                                        "conversation_transcript.usage.report.mcp_loading",
+                                        servers = snapshot.loading_mcp_servers.join(", ")
+                                    ))
+                            })),
+                    )
+                    .children(
+                        snapshot
+                            .entries
+                            .iter()
+                            .map(|entry| self.render_entry(entry, 0, &theme, cx)),
+                    ),
+            )
+    }
+}
+
 pub(crate) fn spawn_watch(
     cx: &mut Context<AppState>,
     handle: EngineHandle,
@@ -588,7 +899,7 @@ mod tests {
     use gpui::{Entity, TestAppContext};
     use holt_rpc::{RpcReply, RpcService, memory_client};
     use serde_json::{Value, json};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     fn frame(gross: u64, window: Option<u64>, estimated: bool) -> Value {
         json!({"gross":gross,"byKind":{"turn":{"input":40000,"output":2000,"cacheRead":3000,"cacheWrite":500}},
@@ -834,7 +1145,7 @@ mod tests {
             "recordCount": 3,
             "occupancy": {"tokens": 40000, "contextWindow": 1000000, "estimated": false}
         }));
-        let window = cx.add_window(|_, _| UsagePreview(Some(usage)));
+        let window = cx.add_window(|_, cx| UsagePreview::new(Some(usage), cx));
         let mut visual = gpui::VisualTestContext::from_window(*window, cx);
 
         let ring = visual.debug_bounds("chat-usage-ring").unwrap();
@@ -880,28 +1191,183 @@ mod tests {
     #[gpui::test]
     fn a_chat_without_a_frame_has_no_ring(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
-        let window = cx.add_window(|_, _| UsagePreview(None));
+        let window = cx.add_window(|_, cx| UsagePreview::new(None, cx));
         let mut visual = gpui::VisualTestContext::from_window(*window, cx);
         assert!(visual.debug_bounds("chat-usage-ring").is_none());
     }
 
     /// The ring beside the card, both mounted in a real window.
-    struct UsagePreview(Option<ChatUsage>);
+    struct UsagePreview {
+        usage: Option<ChatUsage>,
+        pickers: Entity<Pickers>,
+    }
+
+    impl UsagePreview {
+        fn new(usage: Option<ChatUsage>, cx: &mut Context<Self>) -> Self {
+            let state = cx.new(|_| AppState::new());
+            let pickers = cx.new(|cx| Pickers::new(state, cx));
+            Self { usage, pickers }
+        }
+    }
 
     impl Render for UsagePreview {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let theme = Theme::of(cx).clone();
             let card = self
-                .0
+                .usage
                 .as_ref()
-                .map(|usage| cx.new(|_| UsageCard(Arc::new(card_model(usage)))));
+                .map(|usage| card_content(usage, &theme).w(px(CARD_WIDTH)));
+            let open = self.pickers.read(cx).context_usage_open();
             div()
                 .flex()
                 .items_center()
                 .gap(px(4.0))
-                .children(ring(self.0.as_ref(), &theme))
+                .children(ring(self.usage.as_ref(), open, &theme, &self.pickers))
                 .children(card)
         }
+    }
+
+    #[gpui::test]
+    fn the_ring_click_pins_and_unpins_the_usage_popover(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let window = cx.add_window(|_, cx| {
+            UsagePreview::new(Some(decode(frame(780, Some(1_000_000), false))), cx)
+        });
+        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        let ring = visual.debug_bounds("chat-usage-ring").unwrap();
+        visual.simulate_click(ring.center(), Default::default());
+        window
+            .update(cx, |preview, _, cx| {
+                assert!(preview.pickers.read(cx).context_usage_open());
+            })
+            .unwrap();
+        visual.simulate_click(ring.center(), Default::default());
+        window
+            .update(cx, |preview, _, cx| {
+                assert!(!preview.pickers.read(cx).context_usage_open());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn the_context_report_distinguishes_preview_from_a_captured_request() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let mut snapshot = holt_proto::ChatContextSnapshot {
+            model: "gpt-test".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            ContextUsagePanel::request_label(&snapshot),
+            t!(
+                "conversation_transcript.usage.report.latest_request",
+                model = "gpt-test"
+            )
+        );
+        snapshot.preview = true;
+        assert_eq!(
+            ContextUsagePanel::request_label(&snapshot),
+            t!(
+                "conversation_transcript.usage.report.next_request",
+                model = "gpt-test"
+            )
+        );
+    }
+
+    #[test]
+    fn the_report_names_mcp_servers_and_skills_independently() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let entry =
+            |kind: holt_proto::ChatContextEntryKind, name: &str| holt_proto::ChatContextEntry {
+                id: "entry".into(),
+                kind,
+                name: Some(name.into()),
+                content: String::new(),
+                estimated_tokens: 0,
+                children: Vec::new(),
+            };
+        let mcp = entry(holt_proto::ChatContextEntryKind::McpServer, "figma");
+        assert_eq!(ContextUsagePanel::entry_title(&mcp), "MCP · figma");
+        let skill = entry(holt_proto::ChatContextEntryKind::Skill, "grill");
+        assert_eq!(ContextUsagePanel::entry_title(&skill), "grill");
+        let mut skills = entry(holt_proto::ChatContextEntryKind::Skills, "unused");
+        skills.name = None;
+        skills.children = vec![skill];
+        assert_eq!(
+            ContextUsagePanel::entry_title(&skills),
+            t!("conversation_transcript.usage.report.skills", count = 1)
+        );
+    }
+
+    #[gpui::test]
+    fn the_context_report_expands_prompt_tools_and_history(cx: &mut TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.chat_usage = Some(ChatUsage {
+                context: Some(Arc::new(holt_proto::ChatContextSnapshot {
+                    model: "gpt-test".into(),
+                    preview: false,
+                    loading_mcp_servers: Vec::new(),
+                    entries: vec![
+                        holt_proto::ChatContextEntry {
+                            id: "system".into(),
+                            kind: holt_proto::ChatContextEntryKind::SystemPrompt,
+                            name: None,
+                            content: "actual system text".into(),
+                            estimated_tokens: 3,
+                            children: Vec::new(),
+                        },
+                        holt_proto::ChatContextEntry {
+                            id: "tools".into(),
+                            kind: holt_proto::ChatContextEntryKind::ToolDefinitions,
+                            name: None,
+                            content: String::new(),
+                            estimated_tokens: 5,
+                            children: vec![holt_proto::ChatContextEntry {
+                                id: "tool-0".into(),
+                                kind: holt_proto::ChatContextEntryKind::Tool,
+                                name: Some("read".into()),
+                                content: "actual read schema".into(),
+                                estimated_tokens: 5,
+                                children: Vec::new(),
+                            }],
+                        },
+                        holt_proto::ChatContextEntry {
+                            id: "message-0".into(),
+                            kind: holt_proto::ChatContextEntryKind::UserMessage,
+                            name: None,
+                            content: "actual user text".into(),
+                            estimated_tokens: 3,
+                            children: Vec::new(),
+                        },
+                    ],
+                })),
+                ..Default::default()
+            });
+            cx.notify();
+        });
+        let window = cx.add_window({
+            let state = state.clone();
+            move |_, cx| ContextUsagePanel::new(state, cx)
+        });
+        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        assert!(visual.debug_bounds("context-content-system").is_none());
+        assert!(visual.debug_bounds("context-entry-tool-0").is_none());
+        assert!(visual.debug_bounds("context-entry-message-0").is_some());
+
+        let system = visual.debug_bounds("context-entry-system").unwrap();
+        visual.simulate_click(system.center(), Default::default());
+        assert!(visual.debug_bounds("context-content-system").is_some());
+        let tools = visual.debug_bounds("context-entry-tools").unwrap();
+        visual.simulate_click(tools.center(), Default::default());
+        let tool = visual.debug_bounds("context-entry-tool-0").unwrap();
+        visual.simulate_click(tool.center(), Default::default());
+        assert!(visual.debug_bounds("context-content-tool-0").is_some());
+        let message = visual.debug_bounds("context-entry-message-0").unwrap();
+        visual.simulate_click(message.center(), Default::default());
+        assert!(visual.debug_bounds("context-content-message-0").is_some());
     }
 
     #[derive(Default)]

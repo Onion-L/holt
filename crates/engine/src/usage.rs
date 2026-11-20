@@ -48,7 +48,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use holt_core::agent::types::StreamFn;
-use holt_core::ai::types::{AssistantMessage, ToolResultMessage, Usage, UsageCost};
+use holt_core::ai::types::{
+    AssistantMessage, Context, Message, Model, Tool, ToolResultMessage, Usage, UsageCost,
+    UserContent,
+};
 
 use crate::agent::ChatRuntime;
 use crate::store::id_is_path_safe;
@@ -249,6 +252,229 @@ pub(crate) fn gross_tokens(usage: &Usage) -> u64 {
     usage.input + usage.output + usage.cache_read + usage.cache_write
 }
 
+/// Capture the exact converted Context the main loop is about to send. This
+/// wrapper is mounted only on the main agent loop — not on compaction, title,
+/// gate-review, or subagent transports — so auxiliary model calls cannot
+/// replace the chat's report.
+pub(crate) fn capture_context(chat: &ChatRuntime, model: &Model, context: &Context) {
+    let snapshot = context_snapshot(model, context);
+    *chat
+        .context_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(snapshot));
+    publish(chat);
+}
+
+/// Publish a next-request preview only while no real request has superseded
+/// it. The slot lock covers the check and write, so a transport capture either
+/// wins before this call or replaces the preview immediately afterwards.
+pub(crate) fn publish_context_preview(
+    chat: &ChatRuntime,
+    model: &Model,
+    context: &Context,
+    loading_mcp_servers: Vec<String>,
+) -> Arc<holt_proto::ChatContextSnapshot> {
+    let mut snapshot = context_snapshot(model, context);
+    snapshot.preview = true;
+    snapshot.loading_mcp_servers = loading_mcp_servers;
+    let mut slot = chat
+        .context_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|current| !current.preview) {
+        return slot.as_ref().expect("checked").clone();
+    }
+    *slot = Some(Arc::new(snapshot));
+    let snapshot = slot.as_ref().expect("just stored").clone();
+    drop(slot);
+    publish(chat);
+    snapshot
+}
+
+fn context_snapshot(model: &Model, context: &Context) -> holt_proto::ChatContextSnapshot {
+    use holt_proto::{ChatContextEntry as Entry, ChatContextEntryKind as Kind};
+
+    let mut entries = Vec::new();
+    if let Some(prompt) = &context.system_prompt {
+        entries.push(Entry {
+            id: "system".into(),
+            kind: Kind::SystemPrompt,
+            name: None,
+            estimated_tokens: holt_core::ai::utils::estimate::estimate_text_tokens(prompt),
+            content: prompt.clone(),
+            children: Vec::new(),
+        });
+    }
+    // Grouping changes only the report's presentation. Neither the provider
+    // tools nor the System Prompt string is rewritten here.
+    let mut builtins = Vec::new();
+    let mut servers: Vec<(String, Vec<Tool>)> = Vec::new();
+    for tool in context.tools.as_deref().unwrap_or_default() {
+        if let Some(server) = mcp_server_name(&tool.name) {
+            if let Some((_, tools)) = servers.iter_mut().find(|(name, _)| name == server) {
+                tools.push(tool.clone());
+            } else {
+                servers.push((server.to_string(), vec![tool.clone()]));
+            }
+        } else {
+            builtins.push(tool.clone());
+        }
+    }
+    if !builtins.is_empty() {
+        let children = tool_entries("tool", &builtins);
+        entries.push(Entry {
+            id: "tools".into(),
+            kind: Kind::ToolDefinitions,
+            name: None,
+            content: String::new(),
+            estimated_tokens: children.iter().map(|tool| tool.estimated_tokens).sum(),
+            children,
+        });
+    }
+    for (index, (server, tools)) in servers.into_iter().enumerate() {
+        let children = tool_entries(&format!("mcp-{index}-tool"), &tools);
+        entries.push(Entry {
+            id: format!("mcp-{index}"),
+            kind: Kind::McpServer,
+            name: Some(server),
+            content: String::new(),
+            estimated_tokens: children.iter().map(|tool| tool.estimated_tokens).sum(),
+            children,
+        });
+    }
+    if let Some(prompt) = &context.system_prompt {
+        entries.extend(skill_entries(prompt));
+    }
+    entries.extend(context.messages.iter().enumerate().map(|(index, message)| {
+        let (kind, name) = match message {
+            Message::User(_) => (Kind::UserMessage, None),
+            Message::Assistant(_) => (Kind::AssistantMessage, None),
+            Message::ToolResult(result) => (Kind::ToolResult, Some(result.tool_name.clone())),
+        };
+        Entry {
+            id: format!("message-{index}"),
+            kind,
+            name,
+            estimated_tokens: holt_core::ai::utils::estimate::estimate_message_tokens(message),
+            content: message_content(message),
+            children: Vec::new(),
+        }
+    }));
+    holt_proto::ChatContextSnapshot {
+        model: model.id.clone(),
+        preview: false,
+        entries,
+        loading_mcp_servers: Vec::new(),
+    }
+}
+
+fn mcp_server_name(tool_name: &str) -> Option<&str> {
+    tool_name
+        .strip_prefix("mcp__")
+        .and_then(|name| name.split_once("__").map(|(server, _)| server))
+}
+
+fn tool_entries(prefix: &str, tools: &[Tool]) -> Vec<holt_proto::ChatContextEntry> {
+    tools
+        .iter()
+        .enumerate()
+        .map(|(index, tool)| holt_proto::ChatContextEntry {
+            id: format!("{prefix}-{index}"),
+            kind: holt_proto::ChatContextEntryKind::Tool,
+            name: Some(tool.name.clone()),
+            estimated_tokens: holt_core::ai::utils::estimate::estimate_text_tokens(
+                &serde_json::to_string(tool).unwrap_or_default(),
+            ),
+            content: serde_json::to_string_pretty(tool)
+                .unwrap_or_else(|_| "[unserializable tool]".into()),
+            children: Vec::new(),
+        })
+        .collect()
+}
+
+/// Keep advertised skills behind one collapsible top-level group while
+/// preserving each child's exact source block in the System Prompt row.
+/// This is a structural reader of the upstream formatter, not an XML rewrite.
+fn skill_entries(prompt: &str) -> Vec<holt_proto::ChatContextEntry> {
+    let Some((_, rest)) = prompt.rsplit_once("<available_skills>") else {
+        return Vec::new();
+    };
+    let block = rest.split("</available_skills>").next().unwrap_or(rest);
+    let mut remaining = block;
+    let mut entries = Vec::new();
+    while let Some(start) = remaining.find("<skill>") {
+        let skill = &remaining[start..];
+        let Some(end) = skill.find("</skill>") else {
+            break;
+        };
+        let end = end + "</skill>".len();
+        let content = skill[..end].trim().to_string();
+        let name = content
+            .split("<name>")
+            .nth(1)
+            .and_then(|rest| rest.split("</name>").next())
+            .map(str::trim)
+            .map(|name| {
+                name.replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'")
+                    .replace("&amp;", "&")
+            });
+        entries.push(holt_proto::ChatContextEntry {
+            id: format!("skill-{}", entries.len()),
+            kind: holt_proto::ChatContextEntryKind::Skill,
+            name,
+            estimated_tokens: holt_core::ai::utils::estimate::estimate_text_tokens(&content),
+            content,
+            children: Vec::new(),
+        });
+        remaining = &skill[end..];
+    }
+    if entries.is_empty() {
+        return entries;
+    }
+    let estimated_tokens = entries.iter().map(|skill| skill.estimated_tokens).sum();
+    vec![holt_proto::ChatContextEntry {
+        id: "skills".into(),
+        kind: holt_proto::ChatContextEntryKind::Skills,
+        name: None,
+        content: String::new(),
+        estimated_tokens,
+        children: entries,
+    }]
+}
+
+/// Only model-facing fields belong here: provider bookkeeping on
+/// `AssistantMessage` and tool `details` are not context. Plain user text
+/// stays readable; structured content retains every block, including images
+/// and provider signatures, as pretty JSON.
+fn message_content(message: &Message) -> String {
+    if let Message::User(user) = message
+        && let UserContent::Text(text) = &user.content
+    {
+        return text.clone();
+    }
+    let value = match message {
+        Message::User(user) => serde_json::json!({
+            "role": "user",
+            "content": user.content,
+        }),
+        Message::Assistant(message) => serde_json::json!({
+            "role": "assistant",
+            "content": message.content,
+        }),
+        Message::ToolResult(result) => serde_json::json!({
+            "role": "toolResult",
+            "toolCallId": result.tool_call_id,
+            "toolName": result.tool_name,
+            "content": result.content,
+            "isError": result.is_error,
+        }),
+    };
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "[unserializable message]".into())
+}
+
 /// The latest main-run provider report: the number the occupancy numerator
 /// divides. Its request input plus both cache fields — what the provider had
 /// to read and write to answer — and nothing else: a subagent's round-trips
@@ -423,6 +649,11 @@ pub(crate) fn watch_snapshot(chat: &ChatRuntime) -> holt_proto::ChatUsage {
             context_window,
             estimated,
         },
+        context: chat
+            .context_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
     }
 }
 

@@ -1377,3 +1377,129 @@ struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
 }
+    /// Explicit report action: build a read-only next-request preview from
+    /// current state. Unlike the usage watch, this may refresh the MCP tool
+    /// snapshot; opening the report is the user's request for that detail.
+    pub(super) async fn preview_chat_context(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        if !crate::store::id_is_path_safe(chat_id) {
+            return Err(RpcError::BadParams("invalid chatId".into()));
+        }
+        let chat = self.runtime.chat(chat_id);
+        let Some((config, cwd, plan_mode, provider_mode)) = ({
+            let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
+            chats.iter().find(|row| row.id == chat_id).map(|row| {
+                (
+                    row.config.clone(),
+                    row.cwd.clone(),
+                    row.plan_mode.is_some(),
+                    row.provider_mode,
+                )
+            })
+        }) else {
+            return Err(RpcError::Failed("chat was deleted".into()));
+        };
+        let Some(config) = config else {
+            return Err(RpcError::Failed("the chat has no model config".into()));
+        };
+        let model = self
+            .providers
+            .resolve_model(config.provider.as_str(), &config.model)
+            .map_err(RpcError::BadParams)?;
+        let cwd =
+            cwd.unwrap_or_else(|| crate::local_fs::home_dir().unwrap_or_else(|| "/".to_string()));
+        let (system_prompt, _) =
+            crate::agent::run_system_prompt(&self.skills, &cwd).await;
+        let stream_fn = self
+            .runtime
+            .stream_fn
+            .clone()
+            .unwrap_or_else(crate::stream::default_stream_fn);
+        let assembly = crate::agent::MainContextAssembly {
+            runtime: self.runtime.clone(),
+            chat: chat.clone(),
+            chat_id: chat_id.to_string(),
+            cwd,
+            reasoning: config.reasoning,
+            model: model.clone(),
+            // The preview never reaches a provider. Delegation tools only
+            // retain this value for a future call that cannot happen here.
+            api_key: String::new(),
+            skills: self.skills.clone(),
+            permission_mode: config.permission_mode,
+            plan_mode,
+            provider_mode,
+            include_mcp: false,
+            search_backend: self.search_backend(),
+            providers: Some(self.providers.clone()),
+            attribution: None,
+            stream_fn,
+            cancel: CancellationToken::new(),
+            base_parts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            entry_id: "context-preview".into(),
+        };
+        let pending = if plan_mode || provider_mode {
+            Vec::new()
+        } else {
+            self.runtime
+                .mcp
+                .definitions()
+                .into_iter()
+                .filter_map(|(name, server)| server.enabled.then_some(name))
+                .collect::<Vec<_>>()
+        };
+        let (base, model) =
+            Self::assemble_preview_context(chat.clone(), assembly.clone(), system_prompt.clone())
+                .await;
+        if chat.is_removed() {
+            return Err(RpcError::Failed("chat was deleted".into()));
+        }
+        let base_snapshot =
+            crate::usage::publish_context_preview(&chat, &model, &base, pending.clone());
+        if pending.is_empty() {
+            return RpcReply::value(base_snapshot.as_ref());
+        }
+
+        // Only the second pass touches MCP. The basic preview above is
+        // already visible while these independent server snapshots load.
+        let mut full_assembly = assembly;
+        full_assembly.include_mcp = true;
+        let (full, model) =
+            Self::assemble_preview_context(chat.clone(), full_assembly, system_prompt).await;
+        if chat.is_removed() {
+            return Err(RpcError::Failed("chat was deleted".into()));
+        }
+        let snapshot = crate::usage::publish_context_preview(&chat, &model, &full, Vec::new());
+        RpcReply::value(snapshot.as_ref())
+    }
+
+    /// One preview pass over the shared real-Turn assembly. Repeating it with
+    /// `include_mcp` changes no System Prompt bytes or persisted History.
+    async fn assemble_preview_context(
+        chat: Arc<ChatRuntime>,
+        assembly: crate::agent::MainContextAssembly,
+        system_prompt: String,
+    ) -> (holt_core::ai::types::Context, holt_core::ai::types::Model) {
+        let model = assembly.model.clone();
+        let assembled = crate::agent::assemble_main_context(system_prompt, assembly).await;
+        let crate::agent::AssembledMainContext {
+            system_prompt,
+            tools,
+            mcp_bootstrap,
+        } = assembled;
+        let history = chat
+            .history
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let context = holt_core::ai::types::Context {
+            system_prompt: Some(system_prompt),
+            messages: crate::agent::convert_main_messages(history, mcp_bootstrap.as_deref()),
+            tools: Some(tools.iter().map(|tool| tool.to_tool()).collect()),
+        };
+        (context, model)
+    }
+

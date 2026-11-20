@@ -319,6 +319,33 @@ conversation_transcript:
       sha:
         en-US: SHA
   usage:
+    title:
+      en-US: Context report
+    view_report:
+      en-US: View report
+    report:
+      empty:
+        en-US: Preparing the next-request context preview…
+      latest_request:
+        en-US: "Latest request · %{model}"
+      next_request:
+        en-US: "Next request preview · %{model}"
+      estimates:
+        en-US: Item token counts are estimates; overall occupancy uses the provider report when available.
+      mcp_loading:
+        en-US: "Loading MCP servers: %{servers}"
+      system_prompt:
+        en-US: System prompt
+      tool_definitions:
+        en-US: "Tool definitions · %{count}"
+      skills:
+        en-US: "Skills · %{count}"
+      user:
+        en-US: "User %{index}"
+      assistant:
+        en-US: "Assistant %{index}"
+      tool_result:
+        en-US: "Tool result %{index}"
     kind:
       turn:
         en-US: Turns

@@ -124,6 +124,46 @@ boundary.
 pi-core hook (the harness hook registry did not exist). Buys: a separately
 configured model, parallel execution, failure without touching the Turn.
 
+## context-report-captures-the-main-request
+
+Partially superseded for the no-snapshot case by
+[context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview).
+
+The detailed Context report captures the main agent loop's converted
+`Context` immediately before transport and rides the existing `WatchChatUsage` frame as memory-only data. Rejected: reconstructing
+the request from the transcript or persisted History (loses the exact system
+prompt, mounted tools, MCP bootstrap, and conversion order), capturing every
+engine-owned call (compaction, title, gate review, and subagents would
+overwrite the main conversation), and persisting another raw-request record
+(duplicates sensitive conversation data and goes stale across restart).
+Per-row tokens remain estimates because providers report request-level input,
+not an itemized split.
+
+## context-report-falls-back-to-a-next-request-preview
+
+Partially superseded for MCP loading and grouping by
+[context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently).
+
+An explicitly opened Context report with no captured request builds a marked
+next-request preview through `PreviewChatContext`. The same engine assembly
+and History conversion as the real Turn keep its prompt, tools, MCP bootstrap,
+and message order aligned. Rejected: leaving old chats empty after restart,
+persisting the last raw request, generating previews from the usage watch
+(would connect MCP during ordinary startup), and maintaining a UI-only
+approximation of prompt/tool assembly. Preview work remains read-only and a
+captured main request always wins if it arrives while a preview is building.
+
+## context-preview-loads-mcp-independently
+
+Preview publication has two stages: basic Context first, then independent
+MCP server groups after parallel initialization. Reopening an existing
+preview does not regenerate it merely because the surface opened. MCP server
+and skill groups are presentation-only projections; the complete System
+Prompt string and ordered History are preserved. Rejected: blocking all
+content on the slowest server, holding the pool lock across network calls,
+serial server initialization, rebuilding on every open, and extracting or
+rewriting prompt text to manufacture groups.
+
 ## history-is-a-separate-persisted-record
 
 `d972e67`. The model-facing History is its own append-only JSONL, appended

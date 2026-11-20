@@ -17,12 +17,13 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 | Streaming to the transcript | Agent events are translated into transcript parts in decode and published on a throttled cadence; session status beats on a heartbeat while work runs | `agent.rs` (`STREAM_PUBLISH_INTERVAL`, `SESSION_HEARTBEAT_INTERVAL`), [`decode.rs`](../../crates/engine/src/decode.rs) |
 | Terminal events | `WatchTurnTerminalEvents` carries one typed event per real main-chat Turn, published only after the Turn's transcript, History, and queue completion are durably settled — fire-and-forget, live-only, never able to fail the Turn or delay the queue | [`turn_events.rs`](../../crates/engine/src/turn_events.rs) |
 | Overflow detection | A run that ends on a request the provider rejected as too long before producing anything is the one overflow shape a compaction can retry without taking content back — the detection seam conversation-policy's trigger rides on | `agent.rs` (`ends_on_rejected_overflow`) |
+| Context inspection | The main loop's transport wrapper captures the converted system prompt, tool schemas, and ordered LLM messages of each request into the chat's memory-only `WatchChatUsage` frame. Compaction, gate review, title, and subagent calls do not replace it. With no actual snapshot, `PreviewChatContext` first publishes System prompt, built-in tools, one collapsible Skills group, and History, then publishes the full preview after independent MCP server groups initialize in parallel. Grouping changes report presentation only: System Prompt and History are never rewritten. Per-row tokens use the shared estimator, while request occupancy keeps the provider report | [`crates/engine/src/usage.rs`](../../crates/engine/src/usage.rs) (`capture_context`), [`agent.rs`](../../crates/engine/src/agent.rs) (`assemble_main_context`), [`crates/ui/src/chat_usage.rs`](../../crates/ui/src/chat_usage.rs) |
 | UI cutaways | The streaming entry under the composer; the transient retry chip (a per-second countdown off the notice's `retry_at_ms`, dropped when frames resume); the OS notification on terminal events | [`crates/ui/src/notifications.rs`](../../crates/ui/src/notifications.rs), transcript render |
 
 ## Runtime path
 
 1. **Assemble.** The queue driver hands the admitted run its model, reasoning level, credentials snapshot, cancellation token, and the chat's runtime; the loop builds the system prompt and converts the History to the LLM view.
-2. **Request.** One guarded transport call per round; retries at the request layer surface as notices, a content-free early failure re-dials in place, silence beyond the watchdog fails the request.
+2. **Request.** One guarded transport call per round; the main loop captures its converted Context for the report immediately before transport. Retries at the request layer surface as notices, a content-free early failure re-dials in place, silence beyond the watchdog fails the request.
 3. **Rounds.** Tool calls resolve through the mounted toolset (toolset-mechanics), events decode into transcript parts, streaming publishes throttled.
 4. **End.** The loop settles unresolved tool calls, the Turn ends with one of three outcomes, and the driver settles History, transcript, and queue completion before the terminal event publishes.
 
@@ -33,6 +34,7 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 - **Terminal means durable**: the event publishes only after settlement; a completion that cannot be persisted keeps the queue's error and emits nothing.
 - **Streams are live-only** — no synthetic initial event, no replay across restart; consumers must tolerate a restart mid-Turn (restart repair is conversation-policy's). A resumed Turn is a fresh run over the same History: it continues from the record rather than from its prompt, and a half-received provider stream is re-requested, never continued.
 - A Turn that fails mid-flight keeps an honest record: interrupted Turns keep their partial transcript with synthetic error tool results (see persistence).
+- The Context report follows the **latest main-loop attempt**, including an attempt the provider later rejects. With no captured attempt, the explicitly opened report instead shows a **next-request preview** assembled from current state; neither is a prediction rebuilt by the UI or a raw provider-specific HTTP body.
 
 ## Verification
 
@@ -41,5 +43,11 @@ cargo test -p holt-engine stream
 cargo test -p holt-engine agent
 cargo test -p holt-engine --test all turn
 ```
+
+`cargo test -p holt-engine --test all chat_usage_watch_rpc` additionally proves
+that the report's prompt, tools, messages, and tool results mirror the latest
+main request in order, that a restarted chat's next-request preview is an
+exact prefix of the following real request, and that a slow MCP server does
+not hold back the basic preview or another server's initialization.
 
 The suites cover the idle watchdog and cancel-settle window, the mid-stream re-dial and post-content surfacing, retry notice fan-out, the overflow detection shape, event decoding, and whole Turns through `RpcService::handle` against a scripted provider — persistence, repair, and overflow behavior asserted without a real provider.

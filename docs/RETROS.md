@@ -48,6 +48,13 @@ intuition — three strikes is the only gate.
 
 ## Entries
 
+- Never read an entity from a child render while that same entity is already
+  being updated; pass the derived state down from the caller. The usage ring's
+  `pickers.read(cx)` inside `Pickers::render_footer` panicked on startup, while
+  its isolated preview used a different owner and stayed green; the regression
+  test must mount a full Shell with an existing usage frame (user report).
+  Seen 1× (2026-11-18).
+
 - Before deleting prose as "duplicated," verify every fact in it has
   another home — a section is only removable when each of its facts lands
   somewhere first. A pointer-style rewrite of AGENTS.md claimed zero

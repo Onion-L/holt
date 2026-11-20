@@ -17,7 +17,7 @@ Not here: what a Turn does between writes (see run-loop), when compaction runs (
 | Write choreography | A Turn's records accumulate in memory and land as one batch append at settlement, after queue completion; calls outside the Turn model (the Title task, manual Compaction) append immediately; subagent round-trips — their internal Compaction and auto-review calls included, one `subagent` kind — book into the parent chat's batch, and no child ledger file exists. Writes are fire-and-forget: a failed append costs only the record, and a crash before settlement loses the running Turn's batch, unrepaired, by design | `usage.rs` |
 | Archive and aggregate | Deleting a chat appends its whole ledger segment to the grow-only `usage/archive.jsonl` (best-effort — a failed archive never blocks the delete). The device-level aggregate merges live ledgers and the archive into one unary reply: range metrics, per-(provider, model) series, by-model and by-project breakdowns, a fixed heatmap — strictly read-only and best-effort, a damaged ledger is skipped | `usage.rs`, [`usage_stats.rs`](../../crates/engine/src/usage_stats.rs) |
 | Compaction residue | A compaction summary lands in the History as its own message kind; the transcript keeps dividers with before/after token counts and the trigger — the transcript never shrinks | `history.rs`, `decode.rs` |
-| UI cutaways | Transcript replay renders the collapsed log; the usage widget and usage overview read the ledger and aggregate | [`crates/ui/src/transcript/model.rs`](../../crates/ui/src/transcript/model.rs), [`chat_usage.rs`](../../crates/ui/src/chat_usage.rs) |
+| UI cutaways | Transcript replay renders the collapsed log; the usage widget and usage overview read the ledger and aggregate. The detailed Context report instead reads the latest main-run memory snapshot (see run-loop), never the ledger or another disk record | [`crates/ui/src/transcript/model.rs`](../../crates/ui/src/transcript/model.rs), [`chat_usage.rs`](../../crates/ui/src/chat_usage.rs) |
 
 ## Runtime path
 
@@ -33,6 +33,7 @@ Not here: what a Turn does between writes (see run-loop), when compaction runs (
 - **A record books when the provider reported** — an aborted or errored round-trip still books what its newest partial carried.
 - **Chat ids are path-safety-checked** before any file path is built; an unsafe id loads empty and writes nothing.
 - **One lock per chat**: the transcript and History share the chat's persistence lock, so their settlement order is the write order on disk.
+- **The Context report is not persisted**: its raw prompt, tools, and converted History live only on the chat runtime. After restart the report action uses run-loop's shared assembly to build a clearly marked next-request preview; it never resurrects an old request or writes another conversation record.
 
 ## Verification
 

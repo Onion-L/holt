@@ -94,6 +94,8 @@ actions!(
         OpenFileLookup,
         NewSession,
         OpenSettings,
+        /// The composer usage card's detailed latest-request report.
+        OpenContextUsage,
         /// The Windows menu bar's Exit: routed through the same close gate as
         /// the window's caption button (see `terminal::lifecycle`), never
         /// straight to `cx.quit()`.
@@ -388,6 +390,8 @@ pub struct Shell {
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
     right_terminal: Option<Entity<TerminalPanel>>,
+    /// Latest-request Context report, shared by each chat's reusable surface.
+    context_usage: Option<Entity<crate::chat_usage::ContextUsagePanel>>,
     /// The surface-tab strip's `+` menu (File / Terminal / Git rows).
     right_plus: popover::Popup<()>,
     /// External workspace application picker in the session titlebar.
@@ -840,6 +844,7 @@ impl Shell {
             background_menu: popover::Popup::default(),
             workflow_stop_arm: None,
             right_terminal: None,
+            context_usage: None,
             right_plus: popover::Popup::default(),
             external_app_menu: popover::Popup::default(),
             titlebar_menu: popover::Popup::default(),
@@ -2819,6 +2824,13 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::General, cx)
             }))
+            .on_action(cx.listener(|this, _: &OpenContextUsage, _, cx| {
+                if matches!(this.route, Route::Chat) {
+                    this.open_context_usage(cx);
+                    let pickers = this.composer.read(cx).pickers().clone();
+                    pickers.update(cx, |pickers, cx| pickers.close(cx));
+                }
+            }))
             // The Windows menu bar's Exit is the caption button's twin: it
             // asks the lifecycle gate first (unsaved drafts, running
             // terminals) and quits only once that approves. Calling
@@ -3430,6 +3442,63 @@ mod tests {
                 };
                 assert_ne!(recreated, first, "a closed review is recreated, not reused");
                 assert_eq!(aimed_path(shell, recreated, cx).as_deref(), Some("a.rs"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn context_report_opens_reuses_and_closes_its_surface(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_chat = Some("context-chat".into());
+            // A restored usage frame makes the first Shell render mount the
+            // composer ring immediately, exercising the real startup path.
+            state.chat_usage = Some(holt_proto::ChatUsage::default());
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "context-chat", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-09-11T00:00:00Z"
+                }))
+                .unwrap(),
+            );
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell.route = Route::Chat;
+            shell.active_chat = "context-chat".into();
+            shell
+        });
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open_context_usage(cx);
+                assert!(shell.right_pane_open(cx));
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::ContextUsage);
+                assert!(shell.context_usage.is_some());
+                assert_eq!(shell.right_surface_rows(cx).len(), 1);
+
+                shell.open_context_usage(cx);
+                assert_eq!(
+                    shell.right_surface_rows(cx).len(),
+                    1,
+                    "the report action reuses the chat's tab"
+                );
+
+                shell.close_right_surface(RightSurface::ContextUsage, window, cx);
+                assert!(shell.context_usage.is_none());
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Picker);
+                shell.open_context_usage(cx);
+                assert_eq!(shell.right_surface_rows(cx).len(), 1);
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::ContextUsage);
             });
         });
     }

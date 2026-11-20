@@ -417,6 +417,71 @@ pub struct ChatUsage {
     pub record_count: u64,
     #[serde(default)]
     pub occupancy: ChatOccupancy,
+    /// The latest main-run request's model-facing contents, captured at the
+    /// transport boundary. Memory-only: after restart the actual snapshot is
+    /// absent; opening the report can explicitly build a next-request preview
+    /// through `PreviewChatContext`. The shared immutable snapshot keeps
+    /// repeated frame and view clones from copying the full Context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<std::sync::Arc<ChatContextSnapshot>>,
+}
+
+/// The contents of one main-run model request, in their context order:
+/// system prompt, tool definitions, then the converted History messages.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatContextSnapshot {
+    pub model: String,
+    /// `true` for a read-only next-request preview assembled from current
+    /// chat state; `false` for a Context captured at the transport boundary.
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub entries: Vec<ChatContextEntry>,
+    /// Enabled MCP servers still loading in a two-stage preview. Empty for
+    /// actual requests and for the base pass when no MCP mount applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loading_mcp_servers: Vec<String>,
+}
+
+/// One expandable context row. Tool definitions use one group row whose
+/// children are the individual tools; every other row is a leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatContextEntry {
+    /// Stable within a snapshot (`system`, `tools`, `message-12`, …), so a
+    /// refreshed request does not collapse rows whose position is unchanged.
+    pub id: String,
+    pub kind: ChatContextEntryKind,
+    /// Tool name, or the tool result's source tool. Other names are localized
+    /// by the client from `kind` and the message's position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The actual system text, tool schema, or model-facing message content.
+    /// Group rows leave this empty and expose their children instead.
+    pub content: String,
+    /// Per-row approximation from the shared estimator. The provider only
+    /// reports request-level input, never a per-item split.
+    pub estimated_tokens: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<ChatContextEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatContextEntryKind {
+    SystemPrompt,
+    ToolDefinitions,
+    Tool,
+    /// One MCP server's tool definitions, grouped independently of built-ins.
+    McpServer,
+    /// One collapsible Skills group; its children are the advertised skills.
+    Skills,
+    /// One skill's metadata block, still present verbatim in System Prompt.
+    Skill,
+    UserMessage,
+    AssistantMessage,
+    ToolResult,
 }
 
 /// One source's summed token fields, as the frame's `byKind` breakdown
@@ -988,6 +1053,19 @@ mod tests {
                 context_window: Some(272_000),
                 estimated: false,
             },
+            context: Some(std::sync::Arc::new(ChatContextSnapshot {
+                model: "gpt-test".into(),
+                preview: false,
+                loading_mcp_servers: Vec::new(),
+                entries: vec![ChatContextEntry {
+                    id: "system".into(),
+                    kind: ChatContextEntryKind::SystemPrompt,
+                    name: None,
+                    content: "prompt".into(),
+                    estimated_tokens: 1,
+                    children: Vec::new(),
+                }],
+            })),
         };
         let value = serde_json::to_value(&frame).unwrap();
         assert_eq!(value["gross"], 780);
@@ -995,6 +1073,8 @@ mod tests {
         assert_eq!(value["byKind"]["auto-review"]["cacheRead"], 7);
         assert_eq!(value["occupancy"]["contextWindow"], 272_000);
         assert_eq!(value["occupancy"]["estimated"], false);
+        assert_eq!(value["context"]["entries"][0]["kind"], "systemPrompt");
+        assert_eq!(value["context"]["entries"][0]["estimatedTokens"], 1);
         assert_eq!(serde_json::from_value::<ChatUsage>(value).unwrap(), frame);
 
         // An older engine's frame (nothing but the total) reads as zeros

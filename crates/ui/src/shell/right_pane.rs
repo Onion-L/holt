@@ -49,6 +49,8 @@ pub enum RightSurface {
     /// chip — [`Shell::resolved_right_active`] shows it as the Space's live
     /// tab when one exists, and as the pick-a-file empty state when not.
     Files,
+    /// The selected chat's latest main-run model Context.
+    ContextUsage,
 }
 
 /// Per-chat panel open flags (holt parity: `sessionPanels` — the terminal and
@@ -147,6 +149,61 @@ impl Render for SurfaceTabGhost {
 }
 
 impl Shell {
+    fn context_usage_panel(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::chat_usage::ContextUsagePanel> {
+        if let Some(panel) = &self.context_usage {
+            return panel.clone();
+        }
+        let panel = cx.new(|cx| crate::chat_usage::ContextUsagePanel::new(self.state.clone(), cx));
+        self.context_usage = Some(panel.clone());
+        panel
+    }
+
+    /// The usage card's report action: one reusable Context tab per chat,
+    /// opened through the same right-pane host as the other surfaces.
+    pub(super) fn open_context_usage(&mut self, cx: &mut Context<Self>) {
+        self.context_usage_panel(cx);
+        let key = self.panel_key(cx);
+        let tabs = self.right_tabs.entry(key).or_default();
+        if !tabs.contains(&RightSurface::ContextUsage) {
+            tabs.push(RightSurface::ContextUsage);
+        }
+        if !self.right_pane_open(cx) {
+            self.toggle_right_pane(cx);
+        }
+        self.set_right_active(RightSurface::ContextUsage, cx);
+        let request = {
+            let state = self.state.read(cx);
+            let needed = state
+                .chat_usage
+                .as_ref()
+                .and_then(|usage| usage.context.as_ref())
+                .is_none();
+            if needed {
+                state.selected_chat.clone().zip(state.engine().cloned())
+            } else {
+                None
+            }
+        };
+        if let Some((chat_id, engine)) = request {
+            cx.spawn(async move |_, _| {
+                if let Err(error) = engine
+                    .client()
+                    .call(
+                        methods::PREVIEW_CHAT_CONTEXT,
+                        serde_json::json!({"chatId": chat_id}),
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "context preview failed");
+                }
+            })
+            .detach();
+        }
+    }
+
     pub(super) fn right_terminal_panel(&mut self, cx: &mut Context<Self>) -> Entity<TerminalPanel> {
         if let Some(terminal) = &self.right_terminal {
             return terminal.clone();
@@ -242,6 +299,10 @@ impl Shell {
                     .map(|tab| (*surface, tab.title().into())),
                 // Not a strip chip — the Space's file tabs represent it.
                 RightSurface::Files => None,
+                RightSurface::ContextUsage => Some((
+                    *surface,
+                    SharedString::from(t!("conversation_transcript.usage.title")),
+                )),
             })
             .collect();
         rows.extend(stored_rows);
@@ -390,6 +451,7 @@ impl Shell {
             // per-tab bookkeeping. Opening the tree column is the caller's
             // (the picker action) — a restored pick must not pop the tree.
             RightSurface::Files => {}
+            RightSurface::ContextUsage => {}
             RightSurface::Picker => {}
         }
         cx.notify();
@@ -920,7 +982,11 @@ impl Shell {
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
                 }
             }
-            // Never a strip chip, so never closed through here.
+            RightSurface::ContextUsage => {
+                // No tab owns the report anymore; dropping its observer also
+                // stops snapshot comparisons while the surface is closed.
+                self.context_usage = None;
+            }
             RightSurface::Files | RightSurface::Picker => {}
         }
         self.panels.update(&key, |p| {
@@ -1076,6 +1142,7 @@ impl Shell {
                 },
                 // File browsing shares this host with Git and Terminal.
                 RightSurface::Files => self.render_file_tree_surface(cx),
+                RightSurface::ContextUsage => self.context_usage_panel(cx).into_any_element(),
                 // The Git panel owns its whole surface (header included).
                 RightSurface::Git(id) if self.git_panels.contains_key(&id) => self
                     .git_panels
@@ -1422,6 +1489,7 @@ impl Shell {
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::File(_) => icons::DOCUMENT,
                 RightSurface::TurnReview(_) => icons::EYE,
+                RightSurface::ContextUsage => icons::CHART_COLUMN,
                 _ => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working
