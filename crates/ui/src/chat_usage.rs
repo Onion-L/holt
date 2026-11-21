@@ -727,6 +727,9 @@ struct ReportSection {
     estimated_tokens: u64,
     first_row: bool,
     description: String,
+    /// Verbatim body shown under the description when the section is open.
+    /// Empty for sections whose detail lives in `children`.
+    content: String,
     content_selector: Option<String>,
     children: Vec<ReportItem>,
 }
@@ -911,6 +914,7 @@ impl ContextUsagePanel {
                         first_row: sections.is_empty(),
                         description: t!("conversation_transcript.usage.report.desc.system_prompt")
                             .into_owned(),
+                        content: entry.content.clone(),
                         content_selector: Some(format!("context-content-{}", entry.id)),
                         children: Vec::new(),
                     });
@@ -947,6 +951,7 @@ impl ContextUsagePanel {
                             "conversation_transcript.usage.report.desc.tool_definitions"
                         )
                         .into_owned(),
+                        content: String::new(),
                         content_selector: None,
                         children,
                     });
@@ -980,6 +985,7 @@ impl ContextUsagePanel {
                         first_row: sections.is_empty(),
                         description: t!("conversation_transcript.usage.report.desc.skills")
                             .into_owned(),
+                        content: String::new(),
                         content_selector: None,
                         children,
                     });
@@ -1023,6 +1029,7 @@ impl ContextUsagePanel {
                         first_row: sections.is_empty(),
                         description: t!("conversation_transcript.usage.report.desc.mcp")
                             .into_owned(),
+                        content: String::new(),
                         content_selector: None,
                         children,
                     });
@@ -1104,6 +1111,7 @@ impl ContextUsagePanel {
                 estimated_tokens: rules_tokens,
                 first_row: false,
                 description: t!("conversation_transcript.usage.report.desc.rules").into_owned(),
+                content: String::new(),
                 content_selector: None,
                 children,
             };
@@ -1186,6 +1194,7 @@ impl ContextUsagePanel {
                 first_row: sections.is_empty(),
                 description: t!("conversation_transcript.usage.report.desc.conversation")
                     .into_owned(),
+                content: String::new(),
                 content_selector: None,
                 children,
             });
@@ -1450,6 +1459,7 @@ impl ContextUsagePanel {
 
         let mut block = div().w_full().flex().flex_col().child(header);
         if expanded {
+            let has_content = !section.content.is_empty();
             let mut desc = div()
                 .w_full()
                 .px(px(8.0))
@@ -1459,10 +1469,31 @@ impl ContextUsagePanel {
                 .line_height(gpui::relative(1.45))
                 .text_color(theme.text_muted)
                 .child(SharedString::from(section.description.clone()));
-            if let Some(selector) = section.content_selector.clone() {
+            if !has_content && let Some(selector) = section.content_selector.clone() {
                 desc = desc.debug_selector(move || selector.clone());
             }
             block = block.child(desc);
+            if has_content {
+                let selector = section.content_selector.clone();
+                let mut body = div()
+                    .w_full()
+                    .min_w_0()
+                    .mb(px(6.0))
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .rounded(px(6.0))
+                    .bg(theme.ink(0.035))
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_size(crate::typography::ui_rems(14.0))
+                    .line_height(gpui::relative(1.45))
+                    .text_color(theme.text)
+                    .child(SharedString::from(section.content.clone()));
+                if let Some(selector) = selector {
+                    body = body.debug_selector(move || selector);
+                }
+                block = block.child(body);
+            }
             if !section.children.is_empty() {
                 block = block.child(
                     div()
@@ -2187,6 +2218,16 @@ mod tests {
             move |_, cx| ContextUsagePanel::new(state, cx)
         });
         let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        window
+            .update(cx, |panel, _, _| {
+                let snapshot = panel.snapshot.as_ref().expect("snapshot");
+                let system = ContextUsagePanel::build_sections(snapshot, &Theme::default())
+                    .into_iter()
+                    .find(|section| section.id == "system")
+                    .expect("system section");
+                assert_eq!(system.content, snapshot.entries[0].content);
+            })
+            .unwrap();
         // Top-level categories start expanded by default with their descriptions
         // and child rows visible; leaf items start collapsed until clicked.
         assert!(visual.debug_bounds("context-content-system").is_some());
