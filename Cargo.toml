@@ -117,12 +117,10 @@ strip = "symbols"
 
 [profile.dev]
 opt-level = 0
+# Line tables only: full debuginfo across the workspace and dependencies
+# dominates link time in the rebuild-and-restart dev loop; backtrace line
+# numbers survive, variable inspection does not.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
-
-# holt-core is edited in-tree; full debuginfo on its 63.5k lines inflates
-# incremental artifacts for no debugger gain. Line tables keep backtraces
-# readable.
-[profile.dev.package.holt-core]
-debug = "line-tables-only"

@@ -74,6 +74,8 @@ does not run.
 - Run: `cargo run -p holt` (headed only; no CLI; debug build — a release
   build's binary conflicts with an installed holt). Data lives under
   `~/.holt`; override with `HOLT_DATA_DIR`.
+- Dev loop: `cargo watch -w crates -w apps -x 'run -p holt'` rebuilds and
+  restarts the app on save (one-time `cargo install cargo-watch`).
 - Check / lint: `cargo check --workspace`, `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`.
 - Test: `cargo test --workspace`; focus with `-p`. `crates/core` live
