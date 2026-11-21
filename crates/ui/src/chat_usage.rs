@@ -451,12 +451,12 @@ pub(crate) struct ContextCategoryShare {
 
 pub(crate) fn category_color(key: &str) -> Hsla {
     match key {
-        "system" => gpui::rgb(0x9ca3af).into(),
-        "tools" => gpui::rgb(0x8b5cf6).into(),
-        "rules" => gpui::rgb(0x10b981).into(),
-        "skills" => gpui::rgb(0xf59e0b).into(),
-        "mcp" => gpui::rgb(0xec4899).into(),
-        "conversation" => gpui::rgb(0xe06c55).into(),
+        "system" => gpui::rgb(0xd2b83f).into(),
+        "tools" => gpui::rgb(0x6366b3).into(),
+        "rules" => gpui::rgb(0xd99a3d).into(),
+        "skills" => gpui::rgb(0x5aa6c8).into(),
+        "mcp" => gpui::rgb(0xb65e32).into(),
+        "conversation" => gpui::rgb(0x249b78).into(),
         _ => gpui::rgb(0x9ca3af).into(),
     }
 }
@@ -704,6 +704,241 @@ fn footnote(text: String, theme: &Theme) -> Div {
         .child(SharedString::from(text))
 }
 
+/// Repo and branch of the selected chat, plus the occupancy the summary
+/// prints. Kept off the snapshot so a report or a checkout change can refresh
+/// the header without rebuilding the prompt text.
+fn usage_facts(state: &AppState) -> (Occupancy, String) {
+    let chat = state.selected_chat_row();
+    let location = checkout_label(
+        chat.and_then(|chat| chat.cwd.as_deref()),
+        chat.and_then(|chat| chat.branch.as_deref()),
+    );
+    let occupancy = state
+        .chat_usage
+        .as_ref()
+        .map(|usage| Occupancy {
+            tokens: usage.occupancy.tokens,
+            window: usage.occupancy.context_window,
+            estimated: usage.occupancy.estimated,
+        })
+        .unwrap_or(Occupancy {
+            tokens: 0,
+            window: None,
+            estimated: false,
+        });
+    (occupancy, location)
+}
+
+fn checkout_label(cwd: Option<&str>, branch: Option<&str>) -> String {
+    let project = cwd
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(|cwd| holt_proto::view::project_label(Some(cwd)));
+    let branch = branch.map(str::trim).filter(|branch| !branch.is_empty());
+    match (project, branch) {
+        (Some(project), Some(branch)) => format!("{project} · {branch}"),
+        (Some(project), None) => project,
+        (None, Some(branch)) => branch.to_string(),
+        (None, None) => t!("conversation_transcript.usage.report.no_repo").into_owned(),
+    }
+}
+
+fn context_value(occupancy: &Occupancy) -> String {
+    match occupancy.window.filter(|window| *window > 0) {
+        Some(window) => compact_tokens(window),
+        None => t!("conversation_transcript.usage.window_unknown")
+            .trim_start_matches('·')
+            .trim()
+            .to_string(),
+    }
+}
+
+fn used_value(occupancy: &Occupancy) -> String {
+    let tokens = comma_tokens(occupancy.tokens);
+    let mark = if occupancy.estimated { "≈" } else { "" };
+    match occupancy.window.filter(|window| *window > 0) {
+        Some(window) => {
+            let share = percent(occupancy.tokens as f64 / window as f64);
+            format!("{mark}{tokens} · {mark}{share}")
+        }
+        None => format!("{mark}{tokens}"),
+    }
+}
+
+/// One category bar. Every row shares the same rounded token axis so the
+/// lengths and the three tick labels describe the same scale.
+struct CategoryBar {
+    key: &'static str,
+    label: String,
+    tokens: u64,
+    share: f32,
+    color: Hsla,
+}
+
+const CHART_LABEL_WIDTH: f32 = 112.0;
+const CHART_VALUE_WIDTH: f32 = 52.0;
+const CHART_COLUMN_GAP: f32 = 8.0;
+
+/// The smallest whole-number mantissa × 10ⁿ ceiling that contains the
+/// largest category. The finer steps keep bars from looking needlessly short
+/// (6.2k uses a 7k axis, not 10k), while the midpoint stays round.
+fn chart_ceiling(peak: u64) -> u64 {
+    if peak == 0 {
+        return 1;
+    }
+    let magnitude = 10f64.powf((peak as f64).log10().floor());
+    let mantissa = (peak as f64 / magnitude).ceil();
+    (mantissa * magnitude) as u64
+}
+
+fn category_bars(categories: &[ContextCategoryShare]) -> Vec<CategoryBar> {
+    let mut rows: Vec<&ContextCategoryShare> = categories
+        .iter()
+        .filter(|category| category.tokens > 0)
+        .collect();
+    rows.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.label.cmp(&b.label)));
+    let ceiling = chart_ceiling(rows.first().map(|category| category.tokens).unwrap_or(0));
+    rows.into_iter()
+        .map(|category| CategoryBar {
+            key: category.key,
+            label: category.label.clone(),
+            tokens: category.tokens,
+            share: category.tokens as f32 / ceiling as f32,
+            color: category.color,
+        })
+        .collect()
+}
+
+fn category_bars_view(bars: &[CategoryBar], theme: &Theme) -> gpui::Stateful<Div> {
+    let root = div().id("context-usage-bars").w_full();
+    if bars.is_empty() {
+        return root;
+    }
+
+    let ceiling = chart_ceiling(bars[0].tokens);
+    let grid_color = theme.ink(0.12);
+    let grid = div()
+        .debug_selector(|| "context-usage-chart-grid".into())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(CHART_LABEL_WIDTH + CHART_COLUMN_GAP))
+        .right(px(CHART_VALUE_WIDTH + CHART_COLUMN_GAP))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(px(1.0))
+                .bg(grid_color),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(gpui::relative(0.5))
+                .w(px(1.0))
+                .bg(grid_color),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(1.0))
+                .bg(grid_color),
+        );
+
+    let plot = div()
+        .relative()
+        .w_full()
+        .pt(px(4.0))
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .child(grid)
+        .children(bars.iter().map(|bar| {
+            let key = bar.key;
+            div()
+                .w_full()
+                .h(px(32.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(CHART_COLUMN_GAP))
+                .child(
+                    div()
+                        .debug_selector(move || format!("context-usage-label-{key}"))
+                        .flex_none()
+                        .w(px(CHART_LABEL_WIDTH))
+                        .min_w_0()
+                        .truncate()
+                        .text_right()
+                        .text_size(crate::typography::ui_rems(13.0))
+                        .text_color(theme.text_muted)
+                        .child(bar.label.clone()),
+                )
+                .child(
+                    div()
+                        .debug_selector(move || format!("context-usage-track-{key}"))
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(20.0))
+                        .child(
+                            div()
+                                .debug_selector(move || format!("context-usage-bar-{key}"))
+                                .h_full()
+                                .w(gpui::relative(bar.share))
+                                .rounded(px(1.0))
+                                .bg(bar.color),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(CHART_VALUE_WIDTH))
+                        .truncate()
+                        .text_size(crate::typography::ui_rems(12.5))
+                        .text_color(theme.text)
+                        .child(format!("~{}", compact_tokens(bar.tokens))),
+                )
+        }));
+
+    let tick = |value: u64| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.text_faint)
+            .child(compact_tokens(value))
+    };
+    let axis = div()
+        .debug_selector(|| "context-usage-chart-axis".into())
+        .w_full()
+        .pt(px(6.0))
+        .flex()
+        .flex_row()
+        .gap(px(CHART_COLUMN_GAP))
+        .child(div().flex_none().w(px(CHART_LABEL_WIDTH)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .child(tick(0).text_left())
+                .child(tick(ceiling / 2).text_center())
+                .child(tick(ceiling).text_right()),
+        )
+        .child(div().flex_none().w(px(CHART_VALUE_WIDTH)));
+
+    root.flex().flex_col().gap(px(6.0)).child(plot).child(axis)
+}
+
 #[derive(Clone, Debug)]
 struct ReportItem {
     id: String,
@@ -735,9 +970,14 @@ struct ReportSection {
 
 /// The right-pane report. It owns only view state; the engine snapshot stays
 /// immutable between model requests, so streaming transcript notifications do
-/// not re-render kilobytes of expanded prompt and tool text.
+/// not re-render kilobytes of expanded prompt and tool text. Occupancy and
+/// the checkout label are copied beside the snapshot because a provider
+/// report or a branch change can move the summary without a new Context.
 pub(crate) struct ContextUsagePanel {
     snapshot: Option<Arc<holt_proto::ChatContextSnapshot>>,
+    occupancy: Occupancy,
+    /// `repo · branch` for the selected chat, or the localized empty label.
+    location: String,
     chat_id: Option<String>,
     expanded: HashSet<String>,
     /// Section to scroll to on the next render (the usage popover's category
@@ -759,14 +999,17 @@ impl ContextUsagePanel {
     }
 
     pub(crate) fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let (chat_id, snapshot) = {
+        let (chat_id, snapshot, occupancy, location) = {
             let state = state.read(cx);
+            let (occupancy, location) = usage_facts(state);
             (
                 state.selected_chat.clone(),
                 state
                     .chat_usage
                     .as_ref()
                     .and_then(|usage| usage.context.clone()),
+                occupancy,
+                location,
             )
         };
         let observe = cx.observe(&state, |this, state, cx| {
@@ -778,6 +1021,8 @@ impl ContextUsagePanel {
                 .as_ref()
                 .and_then(|usage| usage.context.as_ref());
             let snapshot_changed = next != this.snapshot.as_ref();
+            let (occupancy, location) = usage_facts(state);
+            let facts_changed = occupancy != this.occupancy || location != this.location;
             if chat_changed {
                 this.chat_id = chat_id;
                 this.expanded = Self::default_expanded();
@@ -787,12 +1032,18 @@ impl ContextUsagePanel {
             if snapshot_changed {
                 this.snapshot = next.cloned();
             }
-            if chat_changed || snapshot_changed {
+            if facts_changed {
+                this.occupancy = occupancy;
+                this.location = location;
+            }
+            if chat_changed || snapshot_changed || facts_changed {
                 cx.notify();
             }
         });
         Self {
             snapshot,
+            occupancy,
+            location,
             chat_id,
             expanded: Self::default_expanded(),
             pending_reveal: None,
@@ -1498,6 +1749,132 @@ impl ContextUsagePanel {
         }
         block
     }
+
+    fn render_summary(
+        &self,
+        snapshot: &Arc<holt_proto::ChatContextSnapshot>,
+        theme: &Theme,
+    ) -> impl IntoElement {
+        let categories = context_categories(&ChatUsage {
+            context: Some(Arc::clone(snapshot)),
+            occupancy: holt_proto::ChatOccupancy {
+                tokens: self.occupancy.tokens,
+                context_window: self.occupancy.window,
+                estimated: self.occupancy.estimated,
+            },
+            ..ChatUsage::default()
+        });
+        let bars = category_bars(&categories);
+        let model = if snapshot.model.is_empty() {
+            "—".to_string()
+        } else {
+            snapshot.model.clone()
+        };
+        let fact = |label: String, value: String| {
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_faint)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(crate::typography::ui_rems(14.0))
+                        .text_color(theme.text)
+                        .child(value),
+                )
+        };
+        div()
+            .id("context-usage-summary")
+            .flex_none()
+            .w_full()
+            .px(px(14.0))
+            .pt(px(12.0))
+            .pb(px(14.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .flex_col()
+            .gap(px(14.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(16.0))
+                            .child(fact(
+                                t!("conversation_transcript.usage.report.repo").into_owned(),
+                                self.location.clone(),
+                            ))
+                            .child(fact(
+                                t!("conversation_transcript.usage.report.model").into_owned(),
+                                model,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(16.0))
+                            .child(fact(
+                                t!("conversation_transcript.usage.report.context_size")
+                                    .into_owned(),
+                                context_value(&self.occupancy),
+                            ))
+                            .child(fact(
+                                t!("conversation_transcript.usage.report.used").into_owned(),
+                                used_value(&self.occupancy),
+                            )),
+                    )
+                    .when(self.occupancy.estimated, |facts| {
+                        facts.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child(t!("conversation_transcript.usage.note.estimated")),
+                        )
+                    })
+                    .when(snapshot.preview, |facts| {
+                        facts.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child(t!(
+                                    "conversation_transcript.usage.report.next_request",
+                                    model = snapshot.model.clone()
+                                )),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .pt(px(4.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(15.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(t!("conversation_transcript.usage.report.chart_title")),
+                    )
+                    .child(category_bars_view(&bars, theme)),
+            )
+    }
 }
 
 impl Render for ContextUsagePanel {
@@ -1517,15 +1894,14 @@ impl Render for ContextUsagePanel {
                 .child(t!("conversation_transcript.usage.report.empty"));
         };
         let sections = Self::build_sections(snapshot, &theme);
-        // The reveal targets a section index; sections must be DIRECT children
-        // of the tracked scroll div for its per-child bounds to line up.
+        // The reveal targets a section index. The summary is the scroll's first
+        // direct child, so a section sits one past its index in `sections`.
         if let Some(reveal) = self.pending_reveal.clone()
             && let Some(index) = sections.iter().position(|section| section.id == reveal)
         {
-            self.scroll.scroll_to_top_of_item(index);
+            self.scroll.scroll_to_top_of_item(index + 1);
             self.pending_reveal = None;
         }
-        let section_ids: Vec<String> = sections.iter().map(|section| section.id.clone()).collect();
         let top_bar = div()
             .id("context-usage-header")
             .flex_none()
@@ -1559,36 +1935,7 @@ impl Render for ContextUsagePanel {
                                 "conversation_transcript.usage.report.mcp_loading",
                                 servers = snapshot.loading_mcp_servers.join(", ")
                             ))
-                    }))
-                    .child(
-                        div()
-                            .id("context-usage-toggle-all")
-                            .flex_none()
-                            .size(px(22.0))
-                            .rounded(px(4.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme.element_hover))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let any_expanded =
-                                    section_ids.iter().any(|id| this.expanded.contains(id));
-                                if any_expanded {
-                                    this.expanded.clear();
-                                } else {
-                                    for id in &section_ids {
-                                        this.expanded.insert(id.clone());
-                                    }
-                                }
-                                cx.notify();
-                            }))
-                            .child(
-                                crate::icons::icon(crate::icons::TREE_SIDEBAR)
-                                    .size(px(13.0))
-                                    .text_color(theme.text_muted),
-                            ),
-                    ),
+                    })),
             );
 
         div()
@@ -1612,6 +1959,7 @@ impl Render for ContextUsagePanel {
                     .flex_col()
                     .gap(px(6.0))
                     .text_size(crate::typography::ui_rems(14.0))
+                    .child(self.render_summary(snapshot, &theme))
                     .children(
                         sections
                             .iter()
@@ -2118,6 +2466,69 @@ mod tests {
     }
 
     #[test]
+    fn the_summary_names_the_checkout_and_prints_occupancy() {
+        let _locale = crate::i18n::tests::locale_lock();
+        assert_eq!(
+            checkout_label(Some("/work/holt/"), Some("main")),
+            "holt · main"
+        );
+        assert_eq!(checkout_label(Some("/work/holt"), None), "holt");
+        assert_eq!(
+            checkout_label(None, None),
+            t!("conversation_transcript.usage.report.no_repo")
+        );
+
+        let measured = Occupancy {
+            tokens: 18_164,
+            window: Some(272_000),
+            estimated: false,
+        };
+        assert_eq!(context_value(&measured), compact_tokens(272_000));
+        assert_eq!(used_value(&measured), "18,164 · 6.7%");
+        let estimated = Occupancy {
+            estimated: true,
+            ..measured
+        };
+        assert_eq!(used_value(&estimated), "≈18,164 · ≈6.7%");
+        let unknown = Occupancy {
+            window: None,
+            ..measured
+        };
+        assert_eq!(
+            context_value(&unknown),
+            t!("conversation_transcript.usage.window_unknown")
+                .trim_start_matches('·')
+                .trim()
+        );
+        assert_eq!(used_value(&unknown), "18,164");
+    }
+
+    #[test]
+    fn the_bars_share_a_rounded_token_axis() {
+        let categories = [
+            ("system", "System prompt", 25),
+            ("tools", "Tool definitions", 0),
+            ("conversation", "Conversation", 75),
+        ]
+        .map(|(key, label, tokens)| ContextCategoryShare {
+            key,
+            label: label.into(),
+            tokens,
+            color: category_color(key),
+        });
+        let bars = category_bars(&categories);
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].label, "Conversation");
+        assert!((bars[0].share - 0.9375).abs() < 1e-5);
+        assert_eq!(bars[1].label, "System prompt");
+        assert!((bars[1].share - 0.3125).abs() < 1e-5);
+        assert_eq!(chart_ceiling(6_200), 7_000);
+        assert_eq!(chart_ceiling(93_000), 100_000);
+        assert_eq!(chart_ceiling(18_000), 20_000);
+        assert_eq!(chart_ceiling(0), 1);
+    }
+
+    #[test]
     fn comma_tokens_inserts_thousands_separators() {
         assert_eq!(comma_tokens(0), "0");
         assert_eq!(comma_tokens(71), "71");
@@ -2203,6 +2614,7 @@ mod tests {
             move |_, cx| ContextUsagePanel::new(state, cx)
         });
         let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(gpui::size(px(1920.0), px(1600.0)));
         window
             .update(cx, |panel, _, _| {
                 let snapshot = panel.snapshot.as_ref().expect("snapshot");
@@ -2230,6 +2642,33 @@ mod tests {
         assert!(visual.debug_bounds("context-entry-message-0").is_none());
         assert!(visual.debug_bounds("context-content-tool-0").is_none());
         assert!(visual.debug_bounds("context-content-message-0").is_none());
+
+        // The report's horizontal bars and their grid share one plot column;
+        // the category labels stay outside it and every row starts together.
+        let grid = visual.debug_bounds("context-usage-chart-grid").unwrap();
+        let conversation_track = visual
+            .debug_bounds("context-usage-track-conversation")
+            .unwrap();
+        let system_track = visual.debug_bounds("context-usage-track-system").unwrap();
+        let conversation_label = visual
+            .debug_bounds("context-usage-label-conversation")
+            .unwrap();
+        let conversation_bar = visual
+            .debug_bounds("context-usage-bar-conversation")
+            .unwrap();
+        assert_eq!(grid.origin.x, conversation_track.origin.x);
+        assert_eq!(grid.size.width, conversation_track.size.width);
+        assert_eq!(conversation_track.origin.x, system_track.origin.x);
+        assert_eq!(conversation_track.size.height, px(20.0));
+        assert_eq!(conversation_bar.size.height, conversation_track.size.height);
+        assert!(conversation_bar.size.width > px(0.0));
+        assert!(conversation_bar.size.width < conversation_track.size.width);
+        assert!(
+            conversation_label.origin.x + conversation_label.size.width
+                <= conversation_track.origin.x
+        );
+        assert!(visual.debug_bounds("context-usage-chart-axis").is_some());
+        assert!(visual.debug_bounds("context-usage-toggle-all").is_none());
 
         // Clicking a top-level section toggles it closed and back open.
         let system = visual.debug_bounds("context-entry-system").unwrap();

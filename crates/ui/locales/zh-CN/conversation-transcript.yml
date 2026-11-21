@@ -351,6 +351,18 @@ conversation_transcript:
         zh-CN: 各项 token 数为估算值；总占用在 provider 返回数据后采用实测值。
       mcp_loading:
         zh-CN: "正在加载 MCP 服务：%{servers}"
+      repo:
+        zh-CN: 仓库
+      model:
+        zh-CN: 模型
+      context_size:
+        zh-CN: 上下文
+      used:
+        zh-CN: 已用
+      no_repo:
+        zh-CN: 未选择仓库
+      chart_title:
+        zh-CN: 各类估算 token
       system_prompt:
         zh-CN: System prompt
       tool_definitions:
