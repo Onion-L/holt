@@ -1230,7 +1230,7 @@ impl ContextUsagePanel {
         let header = div()
             .id(SharedString::from(format!("context-entry-{}", item.id)))
             .debug_selector(move || format!("context-entry-{selector_id}"))
-            .h(px(30.0))
+            .h(px(34.0))
             .w_full()
             .flex()
             .flex_row()
@@ -1284,14 +1284,14 @@ impl ContextUsagePanel {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
                             .text_color(theme.text)
                             .child(SharedString::from(title)),
                     )
                     .children(count.map(|count| {
                         div()
                             .flex_none()
-                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from(count.to_string()))
                     })),
@@ -1299,7 +1299,7 @@ impl ContextUsagePanel {
             .child(
                 div()
                     .flex_none()
-                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_size(crate::typography::ui_rems(14.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(tokens)),
             );
@@ -1319,7 +1319,7 @@ impl ContextUsagePanel {
                     .border_1()
                     .border_color(theme.border)
                     .font_family(theme.font_mono.clone())
-                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_size(crate::typography::ui_rems(12.0))
                     .line_height(gpui::relative(1.45))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(item.content.clone())),
@@ -1372,7 +1372,7 @@ impl ContextUsagePanel {
         let header = div()
             .id(SharedString::from(format!("context-entry-{}", section.id)))
             .debug_selector(move || format!("context-entry-{selector_id}"))
-            .h(px(32.0))
+            .h(px(36.0))
             .w_full()
             .flex()
             .flex_row()
@@ -1427,7 +1427,7 @@ impl ContextUsagePanel {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(SharedString::from(title)),
@@ -1435,7 +1435,7 @@ impl ContextUsagePanel {
                     .children(count.map(|count| {
                         div()
                             .flex_none()
-                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from(count.to_string()))
                     })),
@@ -1443,7 +1443,7 @@ impl ContextUsagePanel {
             .child(
                 div()
                     .flex_none()
-                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_size(crate::typography::ui_rems(14.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(tokens)),
             );
@@ -1455,7 +1455,7 @@ impl ContextUsagePanel {
                 .px(px(8.0))
                 .pt(px(8.0))
                 .pb(px(6.0))
-                .text_size(crate::typography::ui_rems(12.0))
+                .text_size(crate::typography::ui_rems(14.0))
                 .line_height(gpui::relative(1.45))
                 .text_color(theme.text_muted)
                 .child(SharedString::from(section.description.clone()));
@@ -1496,7 +1496,7 @@ impl Render for ContextUsagePanel {
                 .justify_center()
                 .p(px(24.0))
                 .text_center()
-                .text_size(crate::typography::ui_rems(12.0))
+                .text_size(crate::typography::ui_rems(14.0))
                 .text_color(theme.text_muted)
                 .child(t!("conversation_transcript.usage.report.empty"));
         };
@@ -1524,7 +1524,7 @@ impl Render for ContextUsagePanel {
             .gap(px(8.0))
             .child(
                 div()
-                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_size(crate::typography::ui_rems(14.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(t!("conversation_transcript.usage.title")),
@@ -1537,7 +1537,7 @@ impl Render for ContextUsagePanel {
                     .gap(px(8.0))
                     .children((!snapshot.loading_mcp_servers.is_empty()).then(|| {
                         div()
-                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
                             .child(t!(
                                 "conversation_transcript.usage.report.mcp_loading",
@@ -1595,7 +1595,7 @@ impl Render for ContextUsagePanel {
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_size(crate::typography::ui_rems(14.0))
                     .children(
                         sections
                             .iter()
