@@ -725,7 +725,6 @@ struct ReportSection {
     title: String,
     count: Option<usize>,
     estimated_tokens: u64,
-    first_row: bool,
     description: String,
     /// Verbatim body shown under the description when the section is open.
     /// Empty for sections whose detail lives in `children`.
@@ -911,7 +910,6 @@ impl ContextUsagePanel {
                             .into_owned(),
                         count: None,
                         estimated_tokens: base_tokens,
-                        first_row: sections.is_empty(),
                         description: t!("conversation_transcript.usage.report.desc.system_prompt")
                             .into_owned(),
                         content: entry.content.clone(),
@@ -946,7 +944,6 @@ impl ContextUsagePanel {
                             .into_owned(),
                         count: Some(entry.children.len()),
                         estimated_tokens: entry.estimated_tokens,
-                        first_row: sections.is_empty(),
                         description: t!(
                             "conversation_transcript.usage.report.desc.tool_definitions"
                         )
@@ -982,7 +979,6 @@ impl ContextUsagePanel {
                         title: t!("conversation_transcript.usage.report.skills_label").into_owned(),
                         count: Some(entry.children.len()),
                         estimated_tokens: entry.estimated_tokens,
-                        first_row: sections.is_empty(),
                         description: t!("conversation_transcript.usage.report.desc.skills")
                             .into_owned(),
                         content: String::new(),
@@ -1026,7 +1022,6 @@ impl ContextUsagePanel {
                         title: Self::entry_title(entry),
                         count: Some(entry.children.len()),
                         estimated_tokens: entry.estimated_tokens,
-                        first_row: sections.is_empty(),
                         description: t!("conversation_transcript.usage.report.desc.mcp")
                             .into_owned(),
                         content: String::new(),
@@ -1109,7 +1104,6 @@ impl ContextUsagePanel {
                 title: t!("conversation_transcript.usage.report.rules_label").into_owned(),
                 count: Some(total_rule_files),
                 estimated_tokens: rules_tokens,
-                first_row: false,
                 description: t!("conversation_transcript.usage.report.desc.rules").into_owned(),
                 content: String::new(),
                 content_selector: None,
@@ -1191,7 +1185,6 @@ impl ContextUsagePanel {
                 title: t!("conversation_transcript.usage.report.conversation_label").into_owned(),
                 count: Some(total_records),
                 estimated_tokens: conversation_tokens,
-                first_row: sections.is_empty(),
                 description: t!("conversation_transcript.usage.report.desc.conversation")
                     .into_owned(),
                 content: String::new(),
@@ -1364,15 +1357,7 @@ impl ContextUsagePanel {
         let selector_id = section.id.clone();
         let title = section.title.clone();
         let count = section.count;
-        let tokens = if section.first_row {
-            t!(
-                "conversation_transcript.usage.report.tokens_first",
-                count = comma_tokens(section.estimated_tokens)
-            )
-            .into_owned()
-        } else {
-            format!("~{}", comma_tokens(section.estimated_tokens))
-        };
+        let tokens = format!("~{}", comma_tokens(section.estimated_tokens));
         let caret = if expanded {
             crate::icons::CARET_DOWN
         } else {

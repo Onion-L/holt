@@ -351,8 +351,6 @@ conversation_transcript:
         zh-CN: 各项 token 数为估算值；总占用在 provider 返回数据后采用实测值。
       mcp_loading:
         zh-CN: "正在加载 MCP 服务：%{servers}"
-      tokens_first:
-        zh-CN: "~%{count} tokens"
       system_prompt:
         zh-CN: System prompt
       tool_definitions:

@@ -351,8 +351,6 @@ conversation_transcript:
         en-US: Item token counts are estimates; overall occupancy uses the provider report when available.
       mcp_loading:
         en-US: "Loading MCP servers: %{servers}"
-      tokens_first:
-        en-US: "~%{count} tokens"
       system_prompt:
         en-US: System prompt
       tool_definitions:
