@@ -24,7 +24,7 @@ use gpui::{
     Subscription, Task, Window, div, prelude::*, px,
 };
 
-use holt_proto::{Model, PermissionMode, Provider, ProviderId, ReasoningLevel, RepoRef};
+use holt_proto::{ChatUsage, Model, PermissionMode, Provider, ProviderId, ReasoningLevel, RepoRef};
 
 /// Display cap for the ref list (t3code shows pages of 100 with a status
 /// footer; a flat cap + "Showing X of Y refs" reads the same without
@@ -292,6 +292,17 @@ impl Pickers {
             });
             if std::mem::replace(&mut this.turn_live, turn_live) && !turn_live {
                 this.refresh_refs(cx);
+            }
+            // The usage popover's frame can vanish mid-open — a chat switch
+            // clears it, an engine reconnect drops the watch — and an open
+            // picker with nothing left to show would keep swallowing
+            // shortcuts and remount over whatever chat comes next. Close it
+            // instead; the user's next ring click reopens it on the new
+            // frame.
+            if this.open_kind() == Some(PickerKind::ContextUsage)
+                && state.read(cx).chat_usage.is_none()
+            {
+                this.close(cx);
             }
             cx.notify();
         });
@@ -654,10 +665,16 @@ impl Pickers {
         if self.mounted_kind() != Some(PickerKind::ContextUsage) {
             return None;
         }
+        // The frame can vanish under a mounted popover — a chat switch clears
+        // it (`AppState::select_chat`), and the engine watch ends on a
+        // reconnect or delete. The picker closes itself on the same loss; this
+        // guard covers the exit-animation frames in between, unmounting the
+        // overlay rather than expecting a frame that is already gone.
+        let usage = self.state.read(cx).chat_usage.clone()?;
         let closing = self.open.closing_since();
         Some(popover::anchored_menu_above_end(
             "context-usage-popover",
-            self.render_context_usage_popover(cx),
+            self.render_context_usage_popover(usage, cx),
             closing,
         ))
     }
@@ -670,34 +687,11 @@ impl Pickers {
     pub(crate) fn toggle_context_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle(PickerKind::ContextUsage, window, cx);
         if self.context_usage_open() {
-            let request = {
-                let state = self.state.read(cx);
-                let needed = state
-                    .chat_usage
-                    .as_ref()
-                    .and_then(|usage| usage.context.as_ref())
-                    .is_none();
-                if needed {
-                    state.selected_chat.clone().zip(state.engine().cloned())
-                } else {
-                    None
-                }
-            };
-            if let Some((chat_id, engine)) = request {
-                cx.spawn(async move |_, _| {
-                    if let Err(error) = engine
-                        .client()
-                        .call(
-                            holt_rpc::methods::PREVIEW_CHAT_CONTEXT,
-                            serde_json::json!({"chatId": chat_id}),
-                        )
-                        .await
-                    {
-                        tracing::warn!(%error, "context preview failed");
-                    }
-                })
-                .detach();
-            }
+            let state = self.state.clone();
+            cx.spawn(async move |_, cx| {
+                crate::chat_usage::request_context_preview(state.downgrade(), cx).await
+            })
+            .detach();
         }
     }
 
@@ -1097,14 +1091,8 @@ impl Pickers {
             .into_any_element()
     }
 
-    fn render_context_usage_popover(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_context_usage_popover(&self, usage: ChatUsage, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let usage = self
-            .state
-            .read(cx)
-            .chat_usage
-            .clone()
-            .expect("the usage popover only mounts with a frame");
         let header = div()
             .flex()
             .flex_row()

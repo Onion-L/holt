@@ -272,6 +272,12 @@ pub struct AppState {
     message_queue_task: Option<Task<()>>,
     pub(crate) chat_usage: Option<holt_proto::ChatUsage>,
     chat_usage_task: Option<Task<()>>,
+    /// The chat a `PreviewChatContext` request is currently in flight for.
+    /// One at a time: the report tab and the usage popover can both ask, and
+    /// each preview build mounts MCP — duplicates are cost, not freshness.
+    /// Cleared when the frame's snapshot lands (or the reply fails), and on
+    /// every chat switch.
+    pub(crate) context_preview_pending: Option<String>,
     /// The selected chat's Turn change sets (ADR-turn-change-sets-and-review), keyed by each Turn's
     /// user-message id: the live current Turn's moving set from
     /// `WatchTurnChangeSet`, its frozen final at settle, and history restored
@@ -358,6 +364,7 @@ impl AppState {
             message_queue_task: None,
             chat_usage: None,
             chat_usage_task: None,
+            context_preview_pending: None,
             turn_change_sets: HashMap::new(),
             turn_restores: HashMap::new(),
             turn_change_set_task: None,
@@ -1148,6 +1155,9 @@ impl AppState {
         self.transcript_task = None;
         self.chat_usage = None;
         self.chat_usage_task = None;
+        // The in-flight preview belongs to the dropped runtime; leaving it
+        // set would block the same chat's next preview under the new engine.
+        self.context_preview_pending = None;
         self.message_queue = None;
         self.message_queue_task = None;
         self.turn_change_sets.clear();
@@ -1429,6 +1439,8 @@ impl AppState {
         self.transcript_task = None;
         self.chat_usage = None;
         self.chat_usage_task = None;
+        // The preview in flight belongs to the chat we are leaving.
+        self.context_preview_pending = None;
         self.message_queue = None;
         self.message_queue_task = None;
         self.turn_change_sets.clear();

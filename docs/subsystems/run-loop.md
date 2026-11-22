@@ -17,7 +17,7 @@ Not here: what the model is told (see prompts-skills), how work is admitted and 
 | Streaming to the transcript | Agent events are translated into transcript parts in decode and published on a throttled cadence; session status beats on a heartbeat while work runs | `agent.rs` (`STREAM_PUBLISH_INTERVAL`, `SESSION_HEARTBEAT_INTERVAL`), [`decode.rs`](../../crates/engine/src/decode.rs) |
 | Terminal events | `WatchTurnTerminalEvents` carries one typed event per real main-chat Turn, published only after the Turn's transcript, History, and queue completion are durably settled — fire-and-forget, live-only, never able to fail the Turn or delay the queue | [`turn_events.rs`](../../crates/engine/src/turn_events.rs) |
 | Overflow detection | A run that ends on a request the provider rejected as too long before producing anything is the one overflow shape a compaction can retry without taking content back — the detection seam conversation-policy's trigger rides on | `agent.rs` (`ends_on_rejected_overflow`) |
-| Context inspection | The main loop's transport wrapper captures the converted system prompt, tool schemas, and ordered LLM messages of each request into the chat's memory-only `WatchChatUsage` frame. Compaction, gate review, title, and subagent calls do not replace it. With no actual snapshot, `PreviewChatContext` first publishes System prompt, built-in tools, one collapsible Skills group, and History, then publishes the full preview after independent MCP server groups initialize in parallel. Grouping changes report presentation only: System Prompt and History are never rewritten. Per-row tokens use the shared estimator, while request occupancy keeps the provider report | [`crates/engine/src/usage.rs`](../../crates/engine/src/usage.rs) (`capture_context`), [`agent.rs`](../../crates/engine/src/agent.rs) (`assemble_main_context`), [`crates/ui/src/chat_usage.rs`](../../crates/ui/src/chat_usage.rs) |
+| Context inspection | The main loop's transport wrapper captures the converted system prompt, tool schemas, and ordered LLM messages of each request into the chat's memory-only `WatchChatUsage` frame — but only while a usage watch holds the stream open: the capture costs a full prompt copy, so an unwatched chat skips it and retires any preview the request superseded; the report then rebuilds on demand. Compaction, gate review, title, and subagent calls never replace the capture. With no actual snapshot, `PreviewChatContext` targets the request the queue runs NEXT (the same answer as the occupancy denominator — the chat's own selection once the queue is empty) and first publishes System prompt, built-in tools, one collapsible Skills group, and History, then publishes the full preview after independent MCP server groups initialize in parallel under a per-server single-flight gate. Grouping changes report presentation only: System Prompt and History are never rewritten. Per-row tokens use the shared estimator, while request occupancy keeps the provider report. Every frame carries the cached snapshot JSON — one deep serialization per snapshot, one clone per publish; the lossy watch makes carry-only-on-change unsound | [`crates/engine/src/usage.rs`](../../crates/engine/src/usage.rs) (`capture_context`, `clear_context_preview`), [`agent.rs`](../../crates/engine/src/agent.rs) (`assemble_main_context`), [`crates/ui/src/chat_usage.rs`](../../crates/ui/src/chat_usage.rs) |
 | UI cutaways | The streaming entry under the composer; the transient retry chip (a per-second countdown off the notice's `retry_at_ms`, dropped when frames resume); the OS notification on terminal events | [`crates/ui/src/notifications.rs`](../../crates/ui/src/notifications.rs), transcript render |
 
 ## Runtime path
@@ -46,8 +46,19 @@ cargo test -p holt-engine --test all turn
 
 `cargo test -p holt-engine --test all chat_usage_watch_rpc` additionally proves
 that the report's prompt, tools, messages, and tool results mirror the latest
-main request in order, that a restarted chat's next-request preview is an
-exact prefix of the following real request, and that a slow MCP server does
-not hold back the basic preview or another server's initialization.
+main request in order, that a restarted chat's next-request preview targets the
+request the queue runs next (model and folder included) and aligns with the
+following real request's assembly, that moving the model picker rebuilds a
+published preview, that a turn run without a watch captures nothing and
+retires the preview it superseded, that concurrent previews spawn each MCP
+server once, and that a slow MCP server does not hold back the basic preview
+or another server's initialization.
+
+Two preview deltas remain by design, both documented here rather than
+silently smoothed over: a queued request whose chat is pinned to a session
+worktree previews against the request's fallback cwd (materialization
+happens at admission, and the preview is read-only), and a queued
+background workflow previews the ordinary main prompt (its run swaps in the
+workflow's own system prompt at execution).
 
 The suites cover the idle watchdog and cancel-settle window, the mid-stream re-dial and post-content surfacing, retry notice fan-out, the overflow detection shape, event decoding, and whole Turns through `RpcService::handle` against a scripted provider — persistence, repair, and overflow behavior asserted without a real provider.

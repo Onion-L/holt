@@ -347,8 +347,6 @@ conversation_transcript:
         zh-CN: "最近一次请求 · %{model}"
       next_request:
         zh-CN: "下一次请求预览 · %{model}"
-      estimates:
-        zh-CN: 各项 token 数为估算值；总占用在 provider 返回数据后采用实测值。
       mcp_loading:
         zh-CN: "正在加载 MCP 服务：%{servers}"
       repo:
@@ -385,6 +383,8 @@ conversation_transcript:
         zh-CN: 首条用户消息之前
       turn:
         zh-CN: "第 %{index} 轮"
+      unknown_entry:
+        zh-CN: 上下文条目
       user:
         zh-CN: "用户 %{index}"
       assistant:
@@ -404,22 +404,8 @@ conversation_transcript:
           zh-CN: "MCP 工具是由已连接的 Model Context Protocol 服务提供的外部能力，使智能体能够与外部文档、服务和 API 交互。"
         conversation:
           zh-CN: "对话包含当前会话各轮次累积的用户消息、助手回复以及工具输出。"
-    kind:
-      turn:
-        zh-CN: 轮次
-      subagent:
-        zh-CN: Subagent
-      compaction:
-        zh-CN: 上下文压缩
-      auto_review:
-        zh-CN: 自动审查
     window_unknown:
       zh-CN: · 窗口未知
-    records:
-      one:
-        zh-CN: "%{count} 条记录"
-      other:
-        zh-CN: "%{count} 条记录"
     note:
       estimated_unknown:
         zh-CN: "由历史记录估算；窗口大小未知。"
@@ -427,17 +413,6 @@ conversation_transcript:
         zh-CN: 在下一条回复报告用量之前，此数值由历史记录估算。
       window_unknown:
         zh-CN: 上下文窗口大小未知。
-    section:
-      context:
-        zh-CN: 上下文
-      usage:
-        zh-CN: 用量
-      cache_hit:
-        zh-CN: 缓存命中
-    cache_note:
-      zh-CN: "输入 %{input} · 读取 %{read}"
-    cache_note_written:
-      zh-CN: "输入 %{input} · 读取 %{read} · 写入 %{written}"
   user_row:
     open_skill:
       zh-CN: 打开 SKILL.md

@@ -3334,6 +3334,137 @@ mod tests {
         }
     }
 
+    /// The usage popover must survive its frame vanishing underneath it: a
+    /// chat switch clears `chat_usage` while the popover is still mounted
+    /// (its exit animation keeps it so for ~140ms), and the composer's
+    /// re-render reads that same state. This is the full-Shell regression
+    /// for the `.expect` panic the review found — mount the shell, open the
+    /// popover, switch chats, and let the re-render run.
+    #[gpui::test]
+    fn the_usage_popover_survives_a_chat_switch(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            for id in ["usage-chat", "other-chat"] {
+                state.chats.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "deviceId": "test-device", "archived": false,
+                        "cwd": "/tmp", "createdAt": "2026-11-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                );
+            }
+            state.selected_chat = Some("usage-chat".into());
+            // An existing usage frame: the ring renders and the popover has
+            // something to mount.
+            state.chat_usage = Some(
+                serde_json::from_value(serde_json::json!({
+                    "gross": 780,
+                    "byKind": {"turn": {"input": 700, "output": 70, "cacheRead": 7, "cacheWrite": 3}},
+                    "recordCount": 1,
+                    "occupancy": {"tokens": 710, "contextWindow": 1000000, "estimated": false}
+                }))
+                .unwrap(),
+            );
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell.route = Route::Chat;
+            shell.active_chat = "usage-chat".into();
+            shell
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("chat-usage-ring").is_some(),
+            "the composer renders the ring for a chat with a frame"
+        );
+
+        // Open the popover exactly as the ring's click does.
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                let pickers = shell.composer.read(cx).pickers().clone();
+                pickers.update(cx, |pickers, cx| pickers.toggle_context_usage(window, cx));
+            });
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("chat-usage-card").is_some(),
+            "the popover mounts the usage card"
+        );
+
+        // The frame vanishes the way a chat switch makes it. The picker
+        // observes the same loss: it closes (nothing left to show, and an
+        // open picker would keep swallowing shortcuts over the new chat),
+        // and the composer's re-render unmounts the overlay without
+        // expecting a frame.
+        state.update(cx, |state, cx| {
+            state.select_chat(Some("other-chat".into()), cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("chat-usage-card").is_none(),
+            "the overlay unmounts with its frame"
+        );
+        // Let the exit animation finish before the new chat's first frame
+        // lands: a frame arriving inside the ~100ms exit paints within the
+        // dying overlay, and that transient is the old popover leaving —
+        // not a reopen. The closing phase times its own `Instant` off the
+        // wall while the reap timer rides the test executor's fake clock,
+        // so both have to move past the exit span.
+        std::thread::sleep(std::time::Duration::from_millis(130));
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(130));
+        cx.run_until_parked();
+        assert!(
+            !cx.read(|cx| {
+                shell
+                    .read(cx)
+                    .composer
+                    .read(cx)
+                    .pickers()
+                    .read(cx)
+                    .context_usage_open()
+            }),
+            "the picker itself closes, not just the overlay"
+        );
+
+        // The new chat's next frame does NOT resurrect the popover: it
+        // stays closed until the user's own ring click on the new chat.
+        state.update(cx, |state, cx| {
+            state.chat_usage = Some(
+                serde_json::from_value(serde_json::json!({
+                    "gross": 1,
+                    "byKind": {},
+                    "recordCount": 1,
+                    "occupancy": {"tokens": 1, "contextWindow": 1000000, "estimated": true}
+                }))
+                .unwrap(),
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-usage-card").is_none());
+
+        // A fresh open on the new chat's frame re-mounts it.
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                let pickers = shell.composer.read(cx).pickers().clone();
+                pickers.update(cx, |pickers, cx| pickers.toggle_context_usage(window, cx));
+            });
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-usage-card").is_some());
+    }
+
     /// The Turn review companion (ADR-turn-change-sets-and-review ticket 04): a card's Review opens
     /// ONE read-only surface in the right pane and aims it at the Turn's
     /// file; a second selection re-aims that same surface rather than

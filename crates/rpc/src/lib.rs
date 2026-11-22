@@ -166,9 +166,15 @@ pub mod methods {
     pub const WATCH_CHAT_USAGE: &str = "WatchChatUsage";
     /// Build and return the read-only next-request Context preview for the
     /// detailed report. Params `{chatId}`; replies `holt_proto::ChatContextSnapshot`.
-    /// `WatchChatUsage` first carries the basic preview (MCP names still in
-    /// `loadingMcpServers`), then the same preview with independent MCP
-    /// server groups and one collapsible Skills group after initialization.
+    /// Either report surface asks for it — the usage card's category rows or
+    /// the right-pane tab — and the UI keeps one request in flight per chat.
+    /// The preview targets the request the queue runs next — the executing
+    /// item first, then the pending head, else the chat's own selection.
+    /// `WatchChatUsage` first carries the basic preview (System prompt,
+    /// built-in tools, one collapsible Skills group, and History, with the
+    /// still-loading MCP servers in `loadingMcpServers`), then the same
+    /// preview with independent MCP server groups once initialization
+    /// finishes under the per-server single-flight gate.
     pub const PREVIEW_CHAT_CONTEXT: &str = "PreviewChatContext";
     /// The Usage overview's device-level aggregate (one unary reply):
     /// params `{days: 7|30|90}`, replying `holt_proto::UsageStatsReply`.

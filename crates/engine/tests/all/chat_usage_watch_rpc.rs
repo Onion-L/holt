@@ -69,10 +69,15 @@ async fn window_of(engine: &holt_engine::LocalEngine, model_id: &str) -> Option<
 
 /// Set the chat's selected model exactly as the model picker does.
 async fn select_model(engine: &holt_engine::LocalEngine, model: &str) {
+    select_model_on(engine, "chat-1", model).await;
+}
+
+/// `select_model` for a chat the shared helper does not hardcode.
+async fn select_model_on(engine: &holt_engine::LocalEngine, chat_id: &str, model: &str) {
     engine
         .handle(
             methods::MUTATE,
-            json!({"op": "setChatConfig", "chatId": "chat-1", "config": {
+            json!({"op": "setChatConfig", "chatId": chat_id, "config": {
                 "provider": "openai",
                 "model": model,
                 "reasoning": null,
@@ -611,4 +616,231 @@ async fn the_record_count_is_replay_state_not_a_ledger_read() {
     let after = next_frame(&mut reopened).await;
     assert_eq!(after["recordCount"], json!(2), "{after}");
     assert_eq!(after["gross"], json!(2 * 122), "{after}");
+}
+
+/// The preview targets the request the queue runs NEXT — the same answer as
+/// the occupancy denominator — so a queued run on another model or folder is
+/// what the report shows, not the composer's current selection.
+#[tokio::test]
+async fn preview_targets_the_request_the_queue_runs_next() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("done")]);
+    let engine = fixture.engine(&provider);
+    setup_chat(&engine, "chat-1").await;
+    select_model(&engine, "openai/gpt-5.4").await;
+    let mut usage = usage_watch(&engine).await;
+
+    // Pause the queue the way an interrupt does, so the enqueued run stays
+    // pending: never admitted, so the chat row still carries the selection
+    // above while the queue's head carries a different model and folder.
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            json!({"chatId":"chat-1","command":{"kind":"interrupt"}}),
+        )
+        .await
+        .unwrap();
+    let queued_cwd = fixture.data_dir.path().join("queued-cwd");
+    std::fs::create_dir(&queued_cwd).unwrap();
+    std::fs::write(queued_cwd.join("AGENTS.md"), "QUEUED CWD RULES").unwrap();
+    let queued_cwd = queued_cwd.to_string_lossy().into_owned();
+    queue_run_on(&engine, &queued_cwd, "m-1", "openai/gpt-5.4-pro", "go").await;
+
+    let RpcReply::Value(preview) = engine
+        .handle(methods::PREVIEW_CHAT_CONTEXT, json!({"chatId": "chat-1"}))
+        .await
+        .unwrap()
+    else {
+        panic!("PreviewChatContext did not return a value");
+    };
+    assert_eq!(
+        preview["model"],
+        json!("gpt-5.4-pro"),
+        "the preview follows the queued head, not the chat's selection: {preview}"
+    );
+    let entries = preview["entries"].as_array().unwrap();
+    let system = entries
+        .iter()
+        .find(|entry| entry["kind"] == json!("systemPrompt"))
+        .expect("the preview carries the system prompt");
+    // The AGENTS.md walk ran against the QUEUED request's cwd.
+    let content = system["content"].as_str().unwrap();
+    assert!(
+        content.contains("QUEUED CWD RULES"),
+        "the queued request's folder owns the preview's rules walk: {content}"
+    );
+
+    // The queue really held the item pending (no run booked anything), so
+    // the head — not an admitted, config-stamped row — answered the preview.
+    let frame = frame_until(&mut usage, |frame| {
+        frame["context"]["preview"] == json!(true)
+    })
+    .await;
+    assert_eq!(frame["recordCount"], json!(0), "{frame}");
+}
+
+/// Moving the model picker invalidates a published preview: the frame drops
+/// its context until the next report open rebuilds against the new target.
+#[tokio::test]
+async fn moving_the_selection_rebuilds_a_published_preview() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("done")]);
+    let engine = fixture.engine(&provider);
+    setup_chat(&engine, "chat-1").await;
+    select_model(&engine, "openai/gpt-5.4").await;
+    let mut usage = usage_watch(&engine).await;
+
+    engine
+        .handle(methods::PREVIEW_CHAT_CONTEXT, json!({"chatId": "chat-1"}))
+        .await
+        .unwrap();
+    let preview = frame_until(&mut usage, |frame| {
+        frame["context"]["preview"] == json!(true)
+    })
+    .await;
+    assert_eq!(preview["context"]["model"], json!("gpt-5.4"));
+
+    select_model(&engine, "openai/gpt-5.4-pro").await;
+    let cleared = frame_until(&mut usage, |frame| {
+        // Skip the preview frame itself; the next frame is the clear's.
+        frame["context"].is_null() && frame["occupancy"]["contextWindow"].is_u64()
+    })
+    .await;
+    assert!(cleared["context"].is_null(), "{cleared}");
+
+    // Reopening rebuilds against the new selection.
+    let RpcReply::Value(rebuilt) = engine
+        .handle(methods::PREVIEW_CHAT_CONTEXT, json!({"chatId": "chat-1"}))
+        .await
+        .unwrap()
+    else {
+        panic!("PreviewChatContext did not return a value");
+    };
+    assert_eq!(rebuilt["model"], json!("gpt-5.4-pro"), "{rebuilt}");
+}
+
+/// Concurrent previews (one per chat) share one subprocess per MCP server:
+/// the per-server single-flight gate must hold while both connect at once.
+#[tokio::test]
+async fn concurrent_previews_spawn_each_mcp_server_once() {
+    let fixture = Fixture::new();
+    let spawn_log = fixture.data_dir.path().join("mcp-spawn-log");
+    std::fs::write(
+        fixture.data_dir.path().join("mcp.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "mcpServers": {
+                "only": {
+                    "command": env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
+                    "env": {
+                        // A long tools/list keeps both previews inside the
+                        // connect window at once — the race the gate owns.
+                        "FIXTURE_STALL_LIST_MS": "800",
+                        "FIXTURE_SPAWN_LOG": spawn_log,
+                    }
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = Arc::new(fixture.engine(&provider));
+    setup_chat(&engine, "chat-1").await;
+    setup_chat(&engine, "chat-2").await;
+    select_model_on(&engine, "chat-1", "openai/gpt-5.4").await;
+    select_model_on(&engine, "chat-2", "openai/gpt-5.4").await;
+
+    let preview = |chat_id: &'static str| {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            engine
+                .handle(methods::PREVIEW_CHAT_CONTEXT, json!({"chatId": chat_id}))
+                .await
+        })
+    };
+    let (a, b) = tokio::join!(preview("chat-1"), preview("chat-2"));
+    a.unwrap().unwrap();
+    b.unwrap().unwrap();
+
+    let spawns = std::fs::read_to_string(&spawn_log).unwrap();
+    assert_eq!(
+        spawns.lines().count(),
+        1,
+        "one server, one subprocess, however many concurrent callers: {spawns}"
+    );
+}
+
+/// The capture costs a full prompt/message copy, so it is skipped while
+/// nobody holds a usage watch — an unwatched chat's report builds its
+/// preview on demand instead of capturing every request for nobody.
+#[tokio::test]
+async fn a_turn_run_without_a_usage_watch_captures_no_context() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("done")]).with_usage(Usage {
+        input: 700,
+        output: 70,
+        cache_read: 7,
+        cache_write: 3,
+        total_tokens: 780,
+        ..Default::default()
+    });
+    let engine = fixture.engine(&provider);
+    setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // No usage watch is open while the turn runs.
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
+    wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let mut usage = usage_watch(&engine).await;
+    let frame = next_frame(&mut usage).await;
+    assert!(frame["context"].is_null(), "{frame}");
+    assert_eq!(frame["recordCount"], json!(1), "{frame}");
+
+    // The report's own open still builds one on demand.
+    let RpcReply::Value(preview) = engine
+        .handle(methods::PREVIEW_CHAT_CONTEXT, json!({"chatId": "chat-1"}))
+        .await
+        .unwrap()
+    else {
+        panic!("PreviewChatContext did not return a value");
+    };
+    assert_eq!(preview["preview"], json!(true), "{preview}");
+}
+
+/// A preview published in a watched moment does not survive the unwatched
+/// turn that supersedes it: the capture is skipped (nobody is watching),
+/// and the preview it would have replaced is retired — the next
+/// subscription's frame reports the slot empty, so the report rebuilds on
+/// demand instead of showing the stale shape.
+#[tokio::test]
+async fn an_unwatched_turn_retires_a_stale_preview() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("done")]);
+    let engine = fixture.engine(&provider);
+    setup_chat(&engine, "chat-1").await;
+    select_model(&engine, "openai/gpt-5.4").await;
+
+    // The watched moment: the report opens and publishes a preview.
+    let mut usage = usage_watch(&engine).await;
+    engine
+        .handle(methods::PREVIEW_CHAT_CONTEXT, json!({"chatId": "chat-1"}))
+        .await
+        .unwrap();
+    frame_until(&mut usage, |frame| {
+        frame["context"]["preview"] == json!(true)
+    })
+    .await;
+    drop(usage);
+
+    // The turn runs unwatched: its capture is skipped, and the preview it
+    // superseded must not survive it.
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
+    wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // Back on the chat: the opening frame reports the slot empty.
+    let mut reopened = usage_watch(&engine).await;
+    let frame = next_frame(&mut reopened).await;
+    assert!(frame["context"].is_null(), "{frame}");
 }

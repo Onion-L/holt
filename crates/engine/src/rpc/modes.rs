@@ -108,7 +108,7 @@ impl EngineService {
     pub(super) fn enter_plan_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
         self.set_provider_mode(chat_id, false)?;
-        {
+        let entered = {
             let mut chats = self
                 .runtime
                 .chats
@@ -125,7 +125,8 @@ impl EngineService {
                     "the chat has a goal — clear it first (/goal off)".into(),
                 ));
             }
-            if chat.plan_mode.is_none() {
+            let entered = chat.plan_mode.is_none();
+            if entered {
                 let entry_mode = chat
                     .config
                     .as_ref()
@@ -137,6 +138,14 @@ impl EngineService {
                 persist_chats(&self.data_dir, &chats)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
             }
+            entered
+        };
+        // Planning rewrites the next request's prompt and MCP mount, so a
+        // preview of the pre-planning shape is stale. Cleared outside the
+        // chats lock: the clear publishes a usage frame, which touches the
+        // queue and History locks.
+        if entered && let Some(runtime) = self.runtime.loaded_chat(chat_id) {
+            crate::usage::clear_context_preview(&runtime);
         }
         self.runtime.publish_chats();
         RpcReply::value(&self.plan_mode_state(chat_id)?)
@@ -171,6 +180,9 @@ impl EngineService {
                 &chat,
                 holt_doc::parts::PlanApprovalVerdict::Dismissed,
             );
+            // Leaving planning restores the ordinary prompt and MCP mount for
+            // the next request — a preview of the planning shape is stale.
+            crate::usage::clear_context_preview(&chat);
         }
         RpcReply::value(&self.plan_mode_state(chat_id)?)
     }
@@ -239,6 +251,11 @@ impl EngineService {
             changed
         };
         if changed {
+            // Provider Mode swaps the next request's prompt and MCP mount,
+            // so a preview of the other shape is stale.
+            if let Some(chat) = self.runtime.loaded_chat(chat_id) {
+                crate::usage::clear_context_preview(&chat);
+            }
             self.runtime.publish_chats();
         }
         Ok(())
@@ -332,6 +349,11 @@ impl EngineService {
         };
         self.runtime.publish_chats();
         if let Some(chat) = self.runtime.loaded_chat(chat_id) {
+            if matches!(lifecycle, Lifecycle::Approved) {
+                // Approval ends planning: the next request is an ordinary
+                // Turn, so a preview of the planning shape is stale.
+                crate::usage::clear_context_preview(&chat);
+            }
             crate::plan_mode::settle_plan_cards(
                 &chat,
                 match lifecycle {

@@ -432,6 +432,13 @@ pub struct ChatUsage {
 #[serde(rename_all = "camelCase")]
 pub struct ChatContextSnapshot {
     pub model: String,
+    /// The working directory the request runs in — the engine's own answer
+    /// (the queued request's folder, not the chat row's stale one), so the
+    /// report classifies rule provenance against the folder the request
+    /// actually walked. Absent from older engines; the report then falls
+    /// back to its coarsest grouping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// `true` for a read-only next-request preview assembled from current
     /// chat state; `false` for a Context captured at the transport boundary.
     #[serde(default)]
@@ -482,6 +489,12 @@ pub enum ChatContextEntryKind {
     UserMessage,
     AssistantMessage,
     ToolResult,
+    /// A newer engine's entry kind this build does not name. Without it one
+    /// unknown kind would fail the whole `ChatUsage` decode and take the
+    /// usage numbers down with the report; an `Unknown` entry degrades to a
+    /// generic report row instead.
+    #[serde(other)]
+    Unknown,
 }
 
 /// One source's summed token fields, as the frame's `byKind` breakdown
@@ -1055,6 +1068,7 @@ mod tests {
             },
             context: Some(std::sync::Arc::new(ChatContextSnapshot {
                 model: "gpt-test".into(),
+                cwd: None,
                 preview: false,
                 loading_mcp_servers: Vec::new(),
                 entries: vec![ChatContextEntry {

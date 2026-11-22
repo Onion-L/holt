@@ -252,17 +252,75 @@ pub(crate) fn gross_tokens(usage: &Usage) -> u64 {
     usage.input + usage.output + usage.cache_read + usage.cache_write
 }
 
+/// The chat's live Context report: the shared immutable snapshot plus its
+/// serialized JSON, written together under one lock so a frame's spliced
+/// `context` always matches the snapshot the engine would hand out.
+pub(crate) struct ContextSlot {
+    pub(crate) snapshot: Arc<holt_proto::ChatContextSnapshot>,
+    pub(crate) json: Arc<serde_json::Value>,
+}
+
 /// Capture the exact converted Context the main loop is about to send. This
 /// wrapper is mounted only on the main agent loop — not on compaction, title,
 /// gate-review, or subagent transports — so auxiliary model calls cannot
 /// replace the chat's report.
-pub(crate) fn capture_context(chat: &ChatRuntime, model: &Model, context: &Context) {
-    let snapshot = context_snapshot(model, context);
+///
+/// The capture costs a full prompt/message/tool copy, so it is skipped while
+/// nobody holds a `WatchChatUsage` stream: the report is an inspection
+/// surface someone opened, and an unwatched chat's later open builds a
+/// `PreviewChatContext` on demand. A preview left over from a watched
+/// moment is retired here too — the request this capture belongs to just
+/// superseded it, and the next subscription's frame must say so rather
+/// than keep showing it.
+pub(crate) fn capture_context(chat: &ChatRuntime, model: &Model, context: &Context, cwd: &str) {
+    if chat.usage_tx.receiver_count() == 0 {
+        clear_preview(chat);
+        return;
+    }
+    let snapshot = context_snapshot(model, context, cwd);
+    store_snapshot(chat, snapshot);
+    publish(chat);
+}
+
+/// Install a freshly built snapshot as the chat's current context report,
+/// caching its serialized form so a frame publish splices the same JSON
+/// instead of deep-serializing the whole Context again.
+fn store_snapshot(chat: &ChatRuntime, snapshot: holt_proto::ChatContextSnapshot) {
+    let json = serde_json::to_value(&snapshot).expect("context snapshot serializes");
     *chat
         .context_snapshot
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(snapshot));
-    publish(chat);
+        .unwrap_or_else(|e| e.into_inner()) = Some(ContextSlot {
+        snapshot: Arc::new(snapshot),
+        json: Arc::new(json),
+    });
+}
+
+/// Drop a preview snapshot so the next report open rebuilds it against
+/// current state. A captured real request is kept — it stays the truth about
+/// the last request even when the selection or a mode moves.
+pub(crate) fn clear_context_preview(chat: &ChatRuntime) {
+    if clear_preview(chat) {
+        publish(chat);
+    }
+}
+
+/// The slot manipulation behind [`clear_context_preview`]: retire a preview
+/// without publishing anything. The caller decides whether a frame should
+/// say so — the next forced subscription publish reports the empty slot
+/// either way.
+fn clear_preview(chat: &ChatRuntime) -> bool {
+    let mut slot = chat
+        .context_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let cleared = slot
+        .as_ref()
+        .is_some_and(|current| current.snapshot.preview);
+    if cleared {
+        *slot = None;
+    }
+    cleared
 }
 
 /// Publish a next-request preview only while no real request has superseded
@@ -272,26 +330,38 @@ pub(crate) fn publish_context_preview(
     chat: &ChatRuntime,
     model: &Model,
     context: &Context,
+    cwd: &str,
     loading_mcp_servers: Vec<String>,
 ) -> Arc<holt_proto::ChatContextSnapshot> {
-    let mut snapshot = context_snapshot(model, context);
+    let mut snapshot = context_snapshot(model, context, cwd);
     snapshot.preview = true;
     snapshot.loading_mcp_servers = loading_mcp_servers;
     let mut slot = chat
         .context_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().is_some_and(|current| !current.preview) {
-        return slot.as_ref().expect("checked").clone();
+    if slot
+        .as_ref()
+        .is_some_and(|current| !current.snapshot.preview)
+    {
+        return slot.as_ref().expect("checked").snapshot.clone();
     }
-    *slot = Some(Arc::new(snapshot));
-    let snapshot = slot.as_ref().expect("just stored").clone();
+    let json = serde_json::to_value(&snapshot).expect("context snapshot serializes");
+    *slot = Some(ContextSlot {
+        snapshot: Arc::new(snapshot.clone()),
+        json: Arc::new(json),
+    });
+    let snapshot = slot.as_ref().expect("just stored").snapshot.clone();
     drop(slot);
     publish(chat);
     snapshot
 }
 
-fn context_snapshot(model: &Model, context: &Context) -> holt_proto::ChatContextSnapshot {
+fn context_snapshot(
+    model: &Model,
+    context: &Context,
+    cwd: &str,
+) -> holt_proto::ChatContextSnapshot {
     use holt_proto::{ChatContextEntry as Entry, ChatContextEntryKind as Kind};
 
     let mut entries = Vec::new();
@@ -362,6 +432,7 @@ fn context_snapshot(model: &Model, context: &Context) -> holt_proto::ChatContext
     }));
     holt_proto::ChatContextSnapshot {
         model: model.id.clone(),
+        cwd: Some(cwd.to_string()),
         preview: false,
         entries,
         loading_mcp_servers: Vec::new(),
@@ -569,6 +640,9 @@ pub(crate) fn set_selected_model(chat: &ChatRuntime, selected: Option<String>) {
     if changed {
         // The denominator moved, so the frame moves with it: with nothing in
         // the queue next, the selection's window IS the occupancy divisor.
+        // A preview built for the previous selection is stale the same way —
+        // the next report open rebuilds it against the new target.
+        clear_context_preview(chat);
         publish(chat);
     }
 }
@@ -585,6 +659,10 @@ pub(crate) fn set_selected_model(chat: &ChatRuntime, selected: Option<String>) {
 /// chat's queue runs next, the chat's own selection while the queue holds
 /// nothing, and absent when that window is unknown (a custom model) — the
 /// UI then shows absolute tokens instead of a percentage.
+///
+/// The frame itself carries no Context: [`publish`] splices the chat's
+/// cached snapshot JSON in, so a booking between two requests does not
+/// re-serialize the whole prompt and message list.
 pub(crate) fn watch_snapshot(chat: &ChatRuntime) -> holt_proto::ChatUsage {
     let mut totals = chat
         .usage_totals
@@ -649,19 +727,34 @@ pub(crate) fn watch_snapshot(chat: &ChatRuntime) -> holt_proto::ChatUsage {
             context_window,
             estimated,
         },
-        context: chat
-            .context_snapshot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone(),
+        context: None,
     }
 }
 
 /// Publish the chat's frame. Every booking publishes once, and the watch
 /// keeps only the latest value for a lagging subscriber, so publishing from
 /// several places is cheap and lossy by design.
+///
+/// The Context rides EVERY frame as the chat's cached snapshot JSON: one
+/// deep serialization per snapshot, one JSON clone per booking. The clone
+/// is the accepted trade — the watch is lossy (a subscriber that was not
+/// polling sees only the newest value), so "carry the context only when it
+/// changed" would let a capture's frame be superseded by the settlement's
+/// and never seen at all; a delta protocol would need a lossless channel
+/// first.
 pub(crate) fn publish(chat: &ChatRuntime) {
-    let frame = serde_json::to_value(watch_snapshot(chat)).expect("usage frame serializes");
+    let context = chat
+        .context_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|slot| slot.json.clone());
+    let mut frame = serde_json::to_value(watch_snapshot(chat)).expect("usage frame serializes");
+    if let Some(context) = context
+        && let Some(object) = frame.as_object_mut()
+    {
+        object.insert("context".into(), (*context).clone());
+    }
     let _ = chat.usage_tx.send(frame);
 }
 

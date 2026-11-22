@@ -174,34 +174,11 @@ impl Shell {
             self.toggle_right_pane(cx);
         }
         self.set_right_active(RightSurface::ContextUsage, cx);
-        let request = {
-            let state = self.state.read(cx);
-            let needed = state
-                .chat_usage
-                .as_ref()
-                .and_then(|usage| usage.context.as_ref())
-                .is_none();
-            if needed {
-                state.selected_chat.clone().zip(state.engine().cloned())
-            } else {
-                None
-            }
-        };
-        if let Some((chat_id, engine)) = request {
-            cx.spawn(async move |_, _| {
-                if let Err(error) = engine
-                    .client()
-                    .call(
-                        methods::PREVIEW_CHAT_CONTEXT,
-                        serde_json::json!({"chatId": chat_id}),
-                    )
-                    .await
-                {
-                    tracing::warn!(%error, "context preview failed");
-                }
-            })
-            .detach();
-        }
+        let state = self.state.clone();
+        cx.spawn(async move |_, cx| {
+            crate::chat_usage::request_context_preview(state.downgrade(), cx).await
+        })
+        .detach();
     }
 
     pub(super) fn right_terminal_panel(&mut self, cx: &mut Context<Self>) -> Entity<TerminalPanel> {

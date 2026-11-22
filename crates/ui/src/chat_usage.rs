@@ -1,12 +1,17 @@
 //! The chat's token numbers, as composer chrome: a radial ring beside the
 //! branch chip whose arc is the window occupancy, and the card its click
-//! pins above the composer — context occupancy on top, cumulative usage
-//! below, each drawn as a bar instead of a line of text.
+//! pins above the composer — occupancy on top, the context breakdown as a
+//! stacked bar and one row per category below.
 //!
-//! The card's report opens the latest request's full context in the right
-//! pane. The engine's `ChatUsage` frame is the only input: the totals, the
-//! per-source split, the occupancy, and the captured Context all arrive
-//! decided, so this module re-derives no token counts.
+//! The card's rows open the right-pane report: the latest request's full
+//! context (system prompt, rules, tools, skills, MCP servers, the
+//! conversation grouped by turns), fed by the same frame's context
+//! snapshot. The engine's `ChatUsage` frame is the only input: the headline
+//! numbers — gross, per-kind sums, occupancy, per-entry estimates — are the
+//! engine's, never recomputed here. The one re-derivation is the report's
+//! rule rows: the frame carries the System Prompt as one entry, so each
+//! rule section's share is re-estimated from that same text to split what
+//! the engine reports whole.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -39,7 +44,9 @@ const RING_BUTTON: f32 = 20.0;
 /// Stroke width of the ring, and the polyline resolution of its two arcs.
 const RING_STROKE: f32 = 2.0;
 const RING_SEGMENTS: f32 = 64.0;
-/// Card width: one kind row (dot, name, count, share) with air to spare.
+/// Card width: one context-category row (dot, name, tokens) with air to
+/// spare; the composer feeds the popover its pill width and falls back to
+/// this until the first width pass.
 pub(crate) const CARD_WIDTH: f32 = 340.0;
 
 /// How full the window the chat runs next would be, plus where the number
@@ -65,160 +72,15 @@ impl Occupancy {
     }
 }
 
-/// One source's share of the chat's gross usage.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct KindShare {
-    /// The frame's kind key (`turn`, `subagent`, …) — the row's stable id.
-    pub(crate) kind: String,
-    pub(crate) label: String,
-    pub(crate) tokens: u64,
-    /// One source's share of the shown usage — the gross less the title
-    /// task's plumbing; the rows and the stacked bar share it.
-    pub(crate) share: f32,
-}
-
-/// The prompt side of the chat's spend: what the provider had to read, and
-/// how much of it came back out of its cache. A cache write is prompt the
-/// provider processed (and stored) for later — never a hit; an uncached input
-/// token is a miss.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CacheStats {
-    pub(crate) input: u64,
-    pub(crate) read: u64,
-    pub(crate) written: u64,
-}
-
-impl CacheStats {
-    /// Every prompt token the chat's records report.
-    #[cfg(test)]
-    fn prompt(&self) -> u64 {
-        self.input + self.read + self.written
+/// The frame's occupancy, folded for the ring and the card's header — the
+/// only arithmetic this module does; the tokens themselves are the
+/// engine's.
+pub(crate) fn occupancy_of(usage: &ChatUsage) -> Occupancy {
+    Occupancy {
+        tokens: usage.occupancy.tokens,
+        window: usage.occupancy.context_window,
+        estimated: usage.occupancy.estimated,
     }
-
-    /// The share of the prompt served from cache. `None` when the chat has no
-    /// prompt tokens at all — a rate over zero is not a number to print.
-    #[cfg(test)]
-    fn hit_rate(&self) -> Option<f32> {
-        let prompt = self.prompt();
-        (prompt > 0).then(|| self.read as f32 / prompt as f32)
-    }
-}
-
-/// Everything the ring and its card print, folded out of one frame.
-#[allow(dead_code)]
-pub(crate) struct CardModel {
-    pub(crate) gross: u64,
-    pub(crate) records: u64,
-    pub(crate) occupancy: Occupancy,
-    /// Sources by descending tokens — the bar's segment order and the rows'
-    /// order are the same list.
-    pub(crate) kinds: Vec<KindShare>,
-    /// The prompt side, over the same records: what the cache did for this
-    /// chat. A subset of `gross` (which also carries output), never a segment
-    /// of the usage bar.
-    pub(crate) cache: CacheStats,
-}
-
-/// Fold the frame into what the card prints. The share arithmetic is the only
-/// thing this module computes: the tokens themselves are the engine's. The
-/// title task's round-trips are excluded: they are plumbing the chat runs
-/// behind the user's back — usage, but not the chat's work — so the usage
-/// section never shows them, and its shares cover the shown kinds alone.
-pub(crate) fn card_model(usage: &ChatUsage) -> CardModel {
-    let mut kinds: Vec<KindShare> = usage
-        .by_kind
-        .iter()
-        .filter(|(kind, _)| kind.as_str() != "title")
-        .map(|(kind, sum)| {
-            let tokens = sum.input + sum.output + sum.cache_read + sum.cache_write;
-            KindShare {
-                kind: kind.clone(),
-                label: kind_label(kind),
-                tokens,
-                share: 0.0,
-            }
-        })
-        .collect();
-    let shown = kinds.iter().map(|share| share.tokens).sum::<u64>();
-    for share in &mut kinds {
-        share.share = if shown > 0 {
-            share.tokens as f32 / shown as f32
-        } else {
-            0.0
-        };
-    }
-    // Descending by size, ties broken by name so the order is stable across
-    // renders (BTreeMap order alone would put the smallest first).
-    kinds.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.label.cmp(&b.label)));
-    CardModel {
-        gross: usage.gross,
-        records: usage.record_count,
-        occupancy: Occupancy {
-            tokens: usage.occupancy.tokens,
-            window: usage.occupancy.context_window,
-            estimated: usage.occupancy.estimated,
-        },
-        cache: CacheStats {
-            input: usage.by_kind.values().map(|sum| sum.input).sum(),
-            read: usage.by_kind.values().map(|sum| sum.cache_read).sum(),
-            written: usage.by_kind.values().map(|sum| sum.cache_write).sum(),
-        },
-        kinds,
-    }
-}
-
-/// A source kind as the card names it. An unknown key — a newer engine's new
-/// source — prints as the key itself, never dropped.
-fn kind_label(kind: &str) -> String {
-    match kind {
-        "turn" => t!("conversation_transcript.usage.kind.turn").into_owned(),
-        "subagent" => t!("conversation_transcript.usage.kind.subagent").into_owned(),
-        "compaction" => t!("conversation_transcript.usage.kind.compaction").into_owned(),
-        "auto-review" => t!("conversation_transcript.usage.kind.auto_review").into_owned(),
-        other => other.to_string(),
-    }
-}
-
-/// The occupancy as the card's first section prints it: `7.7k / 272k · 2.8%`,
-/// `≈`-prefixed per number while the figure is the History estimate, and
-/// absolute tokens when the window is unknown (no percentage then — a guess
-/// divided by an unknown is not a number to print).
-#[cfg(test)]
-pub(crate) fn occupancy_value(occupancy: &Occupancy) -> String {
-    let approx = if occupancy.estimated { "≈" } else { "" };
-    match occupancy.window.filter(|window| *window > 0) {
-        Some(window) => format!(
-            "{approx}{} / {} · {approx}{}",
-            compact_tokens(occupancy.tokens),
-            compact_tokens(window),
-            percent(occupancy.tokens as f64 / window as f64),
-        ),
-        None => format!(
-            "{approx}{} {}",
-            compact_tokens(occupancy.tokens),
-            t!("conversation_transcript.usage.window_unknown")
-        ),
-    }
-}
-
-/// The usage section's value: the gross total and the records behind it.
-#[cfg(test)]
-fn usage_value(model: &CardModel) -> String {
-    format!(
-        "{} · {}",
-        compact_tokens(model.gross),
-        if model.records == 1 {
-            t!(
-                "conversation_transcript.usage.records.one",
-                count = model.records
-            )
-        } else {
-            t!(
-                "conversation_transcript.usage.records.other",
-                count = model.records
-            )
-        }
-    )
 }
 
 /// A fraction as a percentage with one decimal, a trailing `.0` dropped —
@@ -231,8 +93,8 @@ pub(crate) fn percent(fraction: f64) -> String {
 
 /// The one line of prose the card keeps: where the occupancy number came
 /// from, and what is missing when the window is unknown.
-fn source_note(model: &CardModel) -> Option<std::borrow::Cow<'static, str>> {
-    match (model.occupancy.estimated, model.occupancy.window) {
+fn source_note(occupancy: &Occupancy) -> Option<std::borrow::Cow<'static, str>> {
+    match (occupancy.estimated, occupancy.window) {
         (true, None) => Some(t!("conversation_transcript.usage.note.estimated_unknown")),
         (true, Some(_)) => Some(t!("conversation_transcript.usage.note.estimated")),
         (false, None) => Some(t!("conversation_transcript.usage.note.window_unknown")),
@@ -251,7 +113,7 @@ pub(crate) fn ring(
     theme: &Theme,
     pickers: &Entity<Pickers>,
 ) -> Option<gpui::Stateful<Div>> {
-    let occupancy = card_model(usage?).occupancy;
+    let occupancy = occupancy_of(usage?);
     let pressed = pickers.clone();
     let clicked = pickers.clone();
     Some(
@@ -334,7 +196,7 @@ fn occupancy_ring(fraction: f32, theme: &Theme) -> AnyElement {
 /// The popover's context breakdown: occupancy percentage and token ratio over
 /// a multi-segment stacked bar, followed by one row per context category.
 pub(crate) fn card_content(usage: &ChatUsage, theme: &Theme) -> Div {
-    let model = card_model(usage);
+    let occupancy = occupancy_of(usage);
     let categories = context_categories(usage);
     let mut card = div()
         .debug_selector(|| "chat-usage-card".into())
@@ -342,9 +204,9 @@ pub(crate) fn card_content(usage: &ChatUsage, theme: &Theme) -> Div {
         .flex_col()
         .gap(px(10.0))
         .text_size(crate::typography::ui_rems(12.0))
-        .child(card_occupancy_header(&model.occupancy, theme))
+        .child(card_occupancy_header(&occupancy, theme))
         .child(context_stacked_bar(
-            model.occupancy.fraction(),
+            occupancy.fraction(),
             &categories,
             theme,
         ))
@@ -355,7 +217,7 @@ pub(crate) fn card_content(usage: &ChatUsage, theme: &Theme) -> Div {
                     .map(|category| category_row(category, theme)),
             ),
         );
-    if let Some(note) = source_note(&model) {
+    if let Some(note) = source_note(&occupancy) {
         card = card.child(footnote(note.into_owned(), theme));
     }
     card
@@ -386,26 +248,41 @@ pub(crate) struct ExtractedRule {
     pub(crate) is_user_rule: bool,
 }
 
-fn is_home_rule_path(path: &str) -> bool {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from);
-    let Some(home) = home else {
+/// A rule is user-level when it is NOT on the project walk: every project
+/// `AGENTS.md` sits on the ancestor chain of the chat's cwd, and personal
+/// rules (`~/.claude/…`) do not. Both inputs are engine-side strings (the
+/// walked rule paths and the chat's folder), so a remote engine's paths
+/// classify correctly — the env-var sniff this replaces judged the UI
+/// machine's `HOME` instead.
+fn is_user_rule_path(path: &str, cwd: Option<&str>) -> bool {
+    let Some(cwd) = cwd else {
+        // No folder to walk against: keep the project grouping, matching
+        // the walk-less chat the engine itself runs.
         return false;
     };
-    let rule_path = std::path::Path::new(path);
-    rule_path.parent() == Some(home.as_path())
-        || rule_path
-            .parent()
-            .and_then(|parent| parent.parent())
-            .is_some_and(|grand| grand == home.as_path() && path.contains(".claude"))
+    let Some(rule_dir) = std::path::Path::new(path).parent() else {
+        return true;
+    };
+    let mut dir = Some(std::path::Path::new(cwd));
+    while let Some(current) = dir {
+        if current == rule_dir {
+            return false;
+        }
+        dir = current.parent();
+    }
+    true
 }
 
 /// Split the composite System Prompt into its base instructions, any
 /// `Project instructions from <path>:` rule sections (`AGENTS.md`), and the
 /// trailing `<available_skills>` catalog block so the UI does not double-count
-/// rules or skills inside the System prompt row.
-pub(crate) fn split_system_prompt(prompt: &str, fallback_tokens: u64) -> (u64, Vec<ExtractedRule>) {
+/// rules or skills inside the System prompt row. `cwd` classifies each rule
+/// as project (on the walk) or user-level (see [`is_user_rule_path`]).
+pub(crate) fn split_system_prompt(
+    prompt: &str,
+    fallback_tokens: u64,
+    cwd: Option<&str>,
+) -> (u64, Vec<ExtractedRule>) {
     const SKILLS_MARKER: &str = "\n\nThe following skills provide specialized instructions";
     const SKILLS_TAG_MARKER: &str = "\n\n<available_skills>";
     const RULE_MARKER: &str = "\n\nProject instructions from ";
@@ -426,7 +303,7 @@ pub(crate) fn split_system_prompt(prompt: &str, fallback_tokens: u64) -> (u64, V
             .map_or(("", segment), |(path, body)| (path.trim(), body.trim()));
         let full_chunk = format!("{RULE_MARKER}{segment}");
         rules.push(ExtractedRule {
-            is_user_rule: is_home_rule_path(path),
+            is_user_rule: is_user_rule_path(path, cwd),
             path: path.to_string(),
             content: body.to_string(),
             estimated_tokens: estimate_utf16_tokens(&full_chunk),
@@ -475,7 +352,14 @@ pub(crate) fn context_categories(usage: &ChatUsage) -> Vec<ContextCategoryShare>
         for entry in &snapshot.entries {
             match entry.kind {
                 Kind::SystemPrompt => {
-                    let (base, rules) = split_system_prompt(&entry.content, entry.estimated_tokens);
+                    // The category split only sums rule tokens — the
+                    // user/project classification is the report's concern,
+                    // not the bar's.
+                    let (base, rules) = split_system_prompt(
+                        &entry.content,
+                        entry.estimated_tokens,
+                        snapshot.cwd.as_deref(),
+                    );
                     system_tokens += base;
                     rules_tokens += rules.iter().map(|rule| rule.estimated_tokens).sum::<u64>();
                 }
@@ -490,6 +374,11 @@ pub(crate) fn context_categories(usage: &ChatUsage) -> Vec<ContextCategoryShare>
                 }
                 Kind::UserMessage | Kind::AssistantMessage | Kind::ToolResult => {
                     conversation_tokens += entry.estimated_tokens;
+                }
+                Kind::Unknown => {
+                    // A newer engine's entry kind: count it as prompt-side
+                    // chrome rather than dropping its tokens from the bar.
+                    system_tokens += entry.estimated_tokens;
                 }
             }
         }
@@ -547,16 +436,19 @@ fn card_occupancy_header(occupancy: &Occupancy, theme: &Theme) -> Div {
             .trim_start_matches("· ")
             .to_string(),
     };
+    // The `≈` mark follows the frame's `estimated` flag exactly as the report
+    // summary's does — a measured occupancy prints bare numbers.
+    let mark = if occupancy.estimated { "≈" } else { "" };
     let right = match occupancy.window.filter(|window| *window > 0) {
         Some(window) => t!(
             "conversation_transcript.usage.tokens_of_window",
-            tokens = format!("~{}", compact_tokens(occupancy.tokens)),
+            tokens = format!("{mark}{}", compact_tokens(occupancy.tokens)),
             window = compact_tokens(window)
         )
         .into_owned(),
         None => t!(
             "conversation_transcript.usage.tokens_only",
-            tokens = format!("~{}", compact_tokens(occupancy.tokens))
+            tokens = format!("{mark}{}", compact_tokens(occupancy.tokens))
         )
         .into_owned(),
     };
@@ -672,31 +564,7 @@ fn category_row(category: &ContextCategoryShare, theme: &Theme) -> gpui::Statefu
         )
 }
 
-/// The three prompt counts the hit rate divides, in the frame's own
-/// vocabulary so the percentage is auditable against them. A zero write count
-/// stays out: most providers never report cache writes, and a permanent
-/// "0 written" is noise rather than data.
-#[cfg(test)]
-fn cache_note(cache: &CacheStats) -> String {
-    if cache.written > 0 {
-        t!(
-            "conversation_transcript.usage.cache_note_written",
-            input = compact_tokens(cache.input),
-            read = compact_tokens(cache.read),
-            written = compact_tokens(cache.written)
-        )
-        .into_owned()
-    } else {
-        t!(
-            "conversation_transcript.usage.cache_note",
-            input = compact_tokens(cache.input),
-            read = compact_tokens(cache.read)
-        )
-        .into_owned()
-    }
-}
-
-/// The card's small print: the cache counts and the occupancy's source.
+/// The card's small print: the occupancy's source note.
 fn footnote(text: String, theme: &Theme) -> Div {
     div()
         .text_size(crate::typography::ui_rems(10.0))
@@ -716,11 +584,7 @@ fn usage_facts(state: &AppState) -> (Occupancy, String) {
     let occupancy = state
         .chat_usage
         .as_ref()
-        .map(|usage| Occupancy {
-            tokens: usage.occupancy.tokens,
-            window: usage.occupancy.context_window,
-            estimated: usage.occupancy.estimated,
-        })
+        .map(occupancy_of)
         .unwrap_or(Occupancy {
             tokens: 0,
             window: None,
@@ -1020,6 +884,13 @@ impl ContextUsagePanel {
                 .chat_usage
                 .as_ref()
                 .and_then(|usage| usage.context.as_ref());
+            // Deep equality, deliberately. Pointer identity was tried and
+            // rejected: every frame decodes a fresh Arc, so identity marks
+            // every booking frame as a change and rebuilds the whole report
+            // while it is open; the lossy watch also makes identity-based
+            // revision schemes unsound. The compare walks content only while
+            // the report panel lives, and a frame's own decode already paid
+            // the same walk.
             let snapshot_changed = next != this.snapshot.as_ref();
             let (occupancy, location) = usage_facts(state);
             let facts_changed = occupancy != this.occupancy || location != this.location;
@@ -1105,6 +976,12 @@ impl ContextUsagePanel {
                     |name| format!("{label} · {name}"),
                 )
             }
+            // A newer engine's entry kind: name it when the entry carries
+            // one, otherwise fall back to the generic label — the row and its
+            // tokens stay visible either way.
+            Kind::Unknown => entry.name.clone().unwrap_or_else(|| {
+                t!("conversation_transcript.usage.report.unknown_entry").into_owned()
+            }),
         }
     }
 
@@ -1117,6 +994,7 @@ impl ContextUsagePanel {
             Kind::Skills | Kind::Skill => crate::icons::CUBE,
             Kind::UserMessage => crate::icons::CHAT_ROUND_LINE,
             Kind::AssistantMessage => crate::icons::BOT,
+            Kind::Unknown => crate::icons::WIDGET,
         }
     }
 
@@ -1150,8 +1028,14 @@ impl ContextUsagePanel {
         for entry in &snapshot.entries {
             match entry.kind {
                 Kind::SystemPrompt => {
-                    let (base_tokens, rules) =
-                        split_system_prompt(&entry.content, entry.estimated_tokens);
+                    // The engine records the request's own working directory
+                    // on the snapshot — the rule classification walks against
+                    // it, not the chat row's possibly-stale folder.
+                    let (base_tokens, rules) = split_system_prompt(
+                        &entry.content,
+                        entry.estimated_tokens,
+                        snapshot.cwd.as_deref(),
+                    );
                     extracted_rules.extend(rules);
                     sections.push(ReportSection {
                         id: entry.id.clone(),
@@ -1295,6 +1179,20 @@ impl ContextUsagePanel {
                     ));
                 }
                 Kind::Tool | Kind::Skill => {}
+                // A newer engine's entry kind: show it as its own leaf under
+                // the conversation rather than dropping the row.
+                Kind::Unknown => messages.push((
+                    false,
+                    ReportItem {
+                        id: entry.id.clone(),
+                        icon: Self::entry_icon(entry.kind),
+                        title: Self::entry_title(entry),
+                        count: None,
+                        estimated_tokens: entry.estimated_tokens,
+                        content: entry.content.clone(),
+                        children: Vec::new(),
+                    },
+                )),
             }
         }
 
@@ -1401,8 +1299,11 @@ impl ContextUsagePanel {
             for (is_turn, group) in groups {
                 let tokens: u64 = group.iter().map(|item| item.estimated_tokens).sum();
                 let count = group.len();
-                turn_index += 1;
+                // Only real user messages advance the turn counter — an MCP
+                // bootstrap pair (a tool call and result with no user message
+                // ahead of it) forms a pre-group that must not eat "Turn 1".
                 let (title, id) = if is_turn {
+                    turn_index += 1;
                     (
                         t!(
                             "conversation_transcript.usage.report.turn",
@@ -1992,7 +1893,14 @@ pub(crate) fn spawn_watch(
                     if this
                         .update(cx, |state, cx| {
                             if state.selected_chat.as_deref() == Some(&chat_id) {
+                                // A landed snapshot answers the pending
+                                // preview request — the slot frees for the
+                                // next one.
+                                let snapshot_landed = usage.context.is_some();
                                 state.chat_usage = Some(usage);
+                                if snapshot_landed {
+                                    state.context_preview_pending = None;
+                                }
                                 cx.notify();
                             }
                         })
@@ -2021,6 +1929,84 @@ pub(crate) fn spawn_watch(
     })
 }
 
+/// Ask the engine for the report's next-request Context preview — the shared
+/// request path for the usage popover and the right-pane report tab.
+///
+/// One request per chat at a time: the pending marker keeps the two surfaces
+/// from racing each other into duplicate preview builds (each one mounts
+/// MCP). The unary reply doubles as the watch's fallback — if the frame
+/// stream dropped the snapshot, it lands here instead, so the report never
+/// parks on its preparing state; a failed reply frees the marker so the next
+/// open retries.
+pub(crate) async fn request_context_preview(
+    state: gpui::WeakEntity<AppState>,
+    cx: &mut gpui::AsyncApp,
+) {
+    let request = state
+        .update(cx, |state, _| {
+            let chat_id = state.selected_chat.clone()?;
+            let engine = state.engine().cloned()?;
+            let needed = state
+                .chat_usage
+                .as_ref()
+                .and_then(|usage| usage.context.as_ref())
+                .is_none()
+                && state.context_preview_pending.as_deref() != Some(chat_id.as_str());
+            needed.then(|| {
+                state.context_preview_pending = Some(chat_id.clone());
+                (chat_id, engine)
+            })
+        })
+        .ok()
+        .flatten();
+    let Some((chat_id, engine)) = request else {
+        return;
+    };
+    let reply = engine
+        .client()
+        .call(
+            methods::PREVIEW_CHAT_CONTEXT,
+            serde_json::json!({"chatId": chat_id}),
+        )
+        .await;
+    match reply {
+        Ok(value) => {
+            let snapshot: Option<holt_proto::ChatContextSnapshot> =
+                serde_json::from_value(value).ok();
+            let _ = state.update(cx, |state, cx| {
+                if state.selected_chat.as_deref() != Some(chat_id.as_str()) {
+                    return;
+                }
+                state.context_preview_pending = None;
+                // The watch normally lands the frame first; grafting only
+                // matters when it dropped this snapshot — otherwise this is
+                // a no-op.
+                if let Some(snapshot) = snapshot
+                    && state
+                        .chat_usage
+                        .as_ref()
+                        .and_then(|usage| usage.context.as_ref())
+                        .is_none()
+                    && let Some(usage) = state.chat_usage.as_mut()
+                {
+                    usage.context = Some(Arc::new(snapshot));
+                    cx.notify();
+                }
+            });
+        }
+        Err(error) => {
+            tracing::warn!(%error, "context preview failed");
+            // A failed preview frees the slot so the next open retries
+            // instead of parking on the pending marker forever.
+            let _ = state.update(cx, |state, _| {
+                if state.context_preview_pending.as_deref() == Some(chat_id.as_str()) {
+                    state.context_preview_pending = None;
+                }
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2039,196 +2025,45 @@ mod tests {
         WatchCoordinator::decode(value).unwrap()
     }
 
-    /// One source's row, by the key the frame carries it under.
-    fn row<'a>(model: &'a CardModel, kind: &str) -> &'a KindShare {
-        model
-            .kinds
-            .iter()
-            .find(|share| share.kind == kind)
-            .unwrap_or_else(|| panic!("no {kind} row"))
-    }
-
     #[test]
-    fn the_card_splits_the_shown_usage_by_kind_largest_first() {
+    fn occupancy_folds_the_frame_and_a_blank_frame_stays_empty() {
         let _locale = crate::i18n::tests::locale_lock();
-        let model = card_model(&decode(json!({
-            "gross": 1000,
-            "byKind": {
-                "turn": {"input": 400, "output": 100, "cacheRead": 300}
-            },
-            "recordCount": 3,
+        let usage = decode(json!({
             "occupancy": {"tokens": 700, "contextWindow": 1000, "estimated": false}
-        })));
+        }));
+        let occupancy = occupancy_of(&usage);
+        assert_eq!(occupancy.tokens, 700);
+        assert_eq!(occupancy.window, Some(1000));
+        assert!(!occupancy.estimated);
+        assert!((occupancy.fraction() - 0.7).abs() < 1e-6);
 
-        // The four token fields per kind, summed and shared over the shown
-        // usage — the row's own count and the bar's segment width.
-        assert_eq!(row(&model, "turn").tokens, 800);
-        assert_eq!(
-            row(&model, "turn").label,
-            t!("conversation_transcript.usage.kind.turn").as_ref()
-        );
-        assert!((row(&model, "turn").share - 1.0).abs() < 1e-6);
-        // Prompt-side tokens: uncached input, reads, writes — the cache
-        // section's three numbers and its rate.
-        assert_eq!(model.cache.input, 400);
-        assert_eq!(model.cache.read, 300);
-        assert_eq!(model.cache.written, 0);
-        assert_eq!(model.records, 3);
-        assert_eq!(occupancy_value(&model.occupancy), "700 / 1k · 70%");
-    }
-
-    /// The title task's tokens are usage the card never shows: no row, no
-    /// bar segment, and the remaining kinds' shares renormalized over what
-    /// is shown. The header keeps the ledger's own totals — a title-only
-    /// chat simply shows no usage section at all.
-    #[test]
-    fn the_title_tasks_tokens_stay_out_of_the_usage_section() {
-        let model = card_model(&decode(json!({
-            "gross": 1100,
-            "byKind": {
-                "turn": {"input": 700, "output": 100},
-                "subagent": {"input": 100, "output": 100},
-                "title": {"input": 90, "output": 10}
-            },
-            "recordCount": 9,
-            "occupancy": {"tokens": 1, "contextWindow": null, "estimated": true}
-        })));
-        assert!(model.kinds.iter().all(|share| share.kind != "title"));
-        assert!((row(&model, "turn").share - 0.8).abs() < 1e-6);
-        assert!((row(&model, "subagent").share - 0.2).abs() < 1e-6);
-        assert_eq!(model.gross, 1100);
-        assert_eq!(model.records, 9);
-
-        let only_titles = card_model(&decode(json!({
-            "gross": 100,
-            "byKind": {"title": {"input": 100}},
-            "recordCount": 1,
-            "occupancy": {"tokens": 0, "contextWindow": null, "estimated": true}
-        })));
-        assert!(only_titles.kinds.is_empty());
-    }
-
-    #[test]
-    fn the_hit_rate_divides_reads_by_every_prompt_token() {
-        let _locale = crate::i18n::tests::locale_lock();
-        // A write is prompt the provider processed and stored, so it widens
-        // the denominator: 300 reads of 400 input + 300 read + 300 written.
-        let cache = CacheStats {
-            input: 400,
-            read: 300,
-            written: 300,
-        };
-        assert_eq!(cache.prompt(), 1000);
-        assert_eq!(percent(cache.hit_rate().unwrap() as f64), "30%");
-        assert_eq!(
-            cache_note(&cache),
-            t!(
-                "conversation_transcript.usage.cache_note_written",
-                input = "400",
-                read = "300",
-                written = "300"
-            )
-        );
-
-        // A provider that never reports writes keeps them out of the print.
-        let reads_only = CacheStats {
-            input: 200,
-            read: 800,
-            written: 0,
-        };
-        assert_eq!(percent(reads_only.hit_rate().unwrap() as f64), "80%");
-        assert_eq!(
-            cache_note(&reads_only),
-            t!(
-                "conversation_transcript.usage.cache_note",
-                input = "200",
-                read = "800"
-            )
-        );
-
-        // No prompt tokens at all: no rate to print, and no section.
-        assert_eq!(CacheStats::default().hit_rate(), None);
-    }
-
-    #[test]
-    fn the_frame_supplies_the_cache_numbers() {
-        let model = card_model(&decode(json!({
-            "gross": 1050,
-            "byKind": {
-                "turn": {"input": 400, "output": 100, "cacheRead": 300},
-                "title": {"input": 100, "output": 100, "cacheWrite": 50}
-            },
-            "occupancy": {"tokens": 700, "contextWindow": 1000}
-        })));
-        assert_eq!(model.cache.input, 500);
-        assert_eq!(model.cache.read, 300);
-        assert_eq!(model.cache.written, 50);
-        // Every kind contributes to the cache totals, not just the turns.
-        assert_eq!(percent(model.cache.hit_rate().unwrap() as f64), "35.3%");
-    }
-
-    #[test]
-    fn an_unknown_kind_prints_as_its_own_key() {
-        let model = card_model(&decode(json!({
-            "gross": 10,
-            "byKind": {"goal-verifier": {"input": 10}},
-            "occupancy": {"tokens": 10, "contextWindow": 100}
-        })));
-        assert_eq!(row(&model, "goal-verifier").label, "goal-verifier");
-    }
-
-    #[test]
-    fn occupancy_names_its_source_and_a_withheld_window() {
-        let _locale = crate::i18n::tests::locale_lock();
-        let measured = Occupancy {
-            tokens: 7_651,
-            window: Some(272_000),
-            estimated: false,
-        };
-        assert_eq!(occupancy_value(&measured), "7.7k / 272k · 2.8%");
-        assert!((measured.fraction() - 0.0281).abs() < 0.0001);
-
-        // The estimate declares itself, per number.
-        let estimated = Occupancy {
-            estimated: true,
-            ..measured
-        };
-        assert_eq!(occupancy_value(&estimated), "≈7.7k / 272k · ≈2.8%");
-
-        // A custom model's window is withheld: absolute tokens, no share, and
-        // an empty ring rather than a fabricated one.
+        // A custom model's window is withheld: an empty ring arc rather than
+        // a fabricated one.
         let unknown = Occupancy {
             window: None,
-            ..measured
+            ..occupancy
         };
-        assert_eq!(
-            occupancy_value(&unknown),
-            format!(
-                "7.7k {}",
-                t!("conversation_transcript.usage.window_unknown")
-            )
-        );
         assert_eq!(unknown.fraction(), 0.0);
-    }
 
-    #[test]
-    fn a_blank_frame_yields_no_shares_and_no_nan() {
-        let _locale = crate::i18n::tests::locale_lock();
-        let model = card_model(&ChatUsage::default());
-        assert_eq!(model.gross, 0);
-        assert!(model.kinds.is_empty());
-        assert_eq!(model.cache, CacheStats::default());
+        // A blank frame yields no fraction and no NaN — the ring just stays
+        // empty.
+        let blank = occupancy_of(&ChatUsage::default());
         assert_eq!(
-            occupancy_value(&model.occupancy),
-            format!("0 {}", t!("conversation_transcript.usage.window_unknown"))
+            blank,
+            Occupancy {
+                tokens: 0,
+                window: None,
+                estimated: false
+            }
         );
+        assert_eq!(blank.fraction(), 0.0);
     }
 
     #[test]
     fn the_source_note_covers_every_state_of_the_two_flags() {
         let _locale = crate::i18n::tests::locale_lock();
         let of = |estimated, window| {
-            source_note(&card_model(&ChatUsage {
+            source_note(&occupancy_of(&ChatUsage {
                 occupancy: holt_proto::ChatOccupancy {
                     tokens: 1,
                     context_window: window,
@@ -2271,6 +2106,7 @@ mod tests {
         }));
         usage.context = Some(Arc::new(holt_proto::ChatContextSnapshot {
             model: "gpt-test".into(),
+            cwd: None,
             preview: false,
             loading_mcp_servers: Vec::new(),
             entries: vec![
@@ -2421,6 +2257,7 @@ mod tests {
         let _locale = crate::i18n::tests::locale_lock();
         let mut snapshot = holt_proto::ChatContextSnapshot {
             model: "gpt-test".into(),
+            cwd: None,
             ..Default::default()
         };
         assert_eq!(
@@ -2463,6 +2300,111 @@ mod tests {
             ContextUsagePanel::entry_title(&skills),
             t!("conversation_transcript.usage.report.skills", count = 1)
         );
+    }
+
+    /// An MCP bootstrap pair (a tool call and its result with no user message
+    /// ahead of it) forms the conversation's pre-group. It must not eat
+    /// "Turn 1": only real user messages advance the turn counter.
+    #[test]
+    fn a_bootstrap_pair_before_the_first_user_message_does_not_eat_turn_one() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let message = |id: &str, kind: holt_proto::ChatContextEntryKind, content: &str| {
+            holt_proto::ChatContextEntry {
+                id: id.into(),
+                kind,
+                name: None,
+                content: content.into(),
+                estimated_tokens: 1,
+                children: Vec::new(),
+            }
+        };
+        use holt_proto::ChatContextEntryKind as Kind;
+        let snapshot = holt_proto::ChatContextSnapshot {
+            model: "gpt-test".into(),
+            cwd: None,
+            preview: false,
+            loading_mcp_servers: Vec::new(),
+            entries: vec![
+                message("message-0", Kind::AssistantMessage, "bootstrap tool call"),
+                message("message-1", Kind::ToolResult, "bootstrap tool result"),
+                message("message-2", Kind::UserMessage, "first prompt"),
+                message("message-3", Kind::AssistantMessage, "first answer"),
+                message("message-4", Kind::UserMessage, "second prompt"),
+            ],
+        };
+        let sections = ContextUsagePanel::build_sections(&snapshot, &Theme::default());
+        let conversation = sections
+            .iter()
+            .find(|section| section.id == "conversation")
+            .expect("the conversation section builds");
+        let titles: Vec<&str> = conversation
+            .children
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect();
+        assert_eq!(
+            titles[0],
+            t!("conversation_transcript.usage.report.before_first_user_message"),
+            "{titles:?}"
+        );
+        assert_eq!(
+            titles[1],
+            t!("conversation_transcript.usage.report.turn", index = 1),
+            "the first real user message is Turn 1: {titles:?}"
+        );
+        assert_eq!(
+            titles[2],
+            t!("conversation_transcript.usage.report.turn", index = 2),
+            "{titles:?}"
+        );
+    }
+
+    /// A newer engine's entry kind must degrade to a generic report row —
+    /// one unknown kind must never fail the whole frame's decode and take
+    /// the usage numbers down with the report.
+    #[test]
+    fn an_unknown_entry_kind_degrades_to_a_generic_row_not_a_failed_frame() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let usage = decode(json!({
+            "gross": 100,
+            "byKind": {"turn": {"input": 100}},
+            "recordCount": 1,
+            "occupancy": {"tokens": 100, "contextWindow": 1000, "estimated": false},
+            "context": {
+                "model": "gpt-test",
+                "preview": false,
+                "entries": [
+                    {
+                        "id": "future",
+                        "kind": "someFutureKind",
+                        "name": "future entry",
+                        "content": "opaque",
+                        "estimatedTokens": 5
+                    }
+                ]
+            }
+        }));
+        assert_eq!(usage.gross, 100, "the numbers survive the unknown kind");
+        let snapshot = usage.context.as_ref().unwrap();
+        assert_eq!(
+            snapshot.entries[0].kind,
+            holt_proto::ChatContextEntryKind::Unknown
+        );
+        // The report shows the entry by its carried name instead of dropping
+        // it — under the conversation, like every other message-shaped row
+        // (here: inside the pre-first-user-message group).
+        let sections = ContextUsagePanel::build_sections(snapshot, &Theme::default());
+        let conversation = sections
+            .iter()
+            .find(|section| section.id == "conversation")
+            .expect("the conversation section builds");
+        let leaves: Vec<&str> = conversation
+            .children
+            .iter()
+            .flat_map(|group| group.children.iter())
+            .map(|item| item.title.as_str())
+            .collect();
+        assert!(leaves.contains(&"future entry"), "{leaves:?}");
     }
 
     #[test]
@@ -2541,7 +2483,7 @@ mod tests {
     #[test]
     fn split_system_prompt_extracts_rules_and_excludes_skills_from_base_tokens() {
         let prompt = "Base instructions here.\n\nProject instructions from /repo/AGENTS.md:\nAlways run tests.\n\nThe following skills provide specialized instructions\n<available_skills>\n<skill><name>demo</name></skill>\n</available_skills>";
-        let (base_tokens, rules) = split_system_prompt(prompt, 999);
+        let (base_tokens, rules) = split_system_prompt(prompt, 999, Some("/repo/project"));
         assert_eq!(
             base_tokens,
             estimate_utf16_tokens("Base instructions here.")
@@ -2550,6 +2492,27 @@ mod tests {
         assert_eq!(rules[0].path, "/repo/AGENTS.md");
         assert_eq!(rules[0].content, "Always run tests.");
         assert!(rules[0].estimated_tokens > 0);
+        // A walked AGENTS.md above the chat's folder is a project rule.
+        assert!(!rules[0].is_user_rule);
+    }
+
+    /// The classification compares engine-side strings only: a rule off the
+    /// cwd's ancestor chain is user-level even when the UI machine's `HOME`
+    /// says nothing about the engine's paths (a remote engine's `/home/...`
+    /// must not be judged by the local `$HOME`).
+    #[test]
+    fn rules_off_the_cwd_chain_are_user_rules_regardless_of_the_local_home() {
+        let prompt =
+            "Base.\n\nProject instructions from /remote/home/dev/.claude/CLAUDE.md:\nBe terse.";
+        let (_, rules) = split_system_prompt(prompt, 1, Some("/remote/work/project"));
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].is_user_rule, "the personal rule is off the chain");
+
+        // The same path ON the chain (an AGENTS.md the walk picked up above
+        // the chat's folder) stays a project rule.
+        let prompt = "Base.\n\nProject instructions from /remote/home/AGENTS.md:\nBe terse.";
+        let (_, rules) = split_system_prompt(prompt, 1, Some("/remote/home/work/project"));
+        assert!(!rules[0].is_user_rule);
     }
 
     #[gpui::test]
@@ -2561,6 +2524,7 @@ mod tests {
             state.chat_usage = Some(ChatUsage {
                 context: Some(Arc::new(holt_proto::ChatContextSnapshot {
                     model: "gpt-test".into(),
+                    cwd: None,
                     preview: false,
                     loading_mcp_servers: Vec::new(),
                     entries: vec![
@@ -2711,6 +2675,7 @@ mod tests {
             state.chat_usage = Some(ChatUsage {
                 context: Some(Arc::new(holt_proto::ChatContextSnapshot {
                     model: "gpt-test".into(),
+                    cwd: None,
                     preview: false,
                     loading_mcp_servers: Vec::new(),
                     entries: vec![
@@ -2820,14 +2785,8 @@ mod tests {
         }
     }
 
-    fn displayed_occupancy(state: &Entity<AppState>, cx: &TestAppContext) -> Option<String> {
-        cx.read(|cx| {
-            state
-                .read(cx)
-                .chat_usage
-                .as_ref()
-                .map(|usage| occupancy_value(&card_model(usage).occupancy))
-        })
+    fn displayed_occupancy(state: &Entity<AppState>, cx: &TestAppContext) -> Option<Occupancy> {
+        cx.read(|cx| state.read(cx).chat_usage.as_ref().map(occupancy_of))
     }
 
     #[gpui::test]
@@ -2848,30 +2807,30 @@ mod tests {
             state.select_chat(Some("a".into()), cx);
         });
         pump(&runtime, cx);
-        assert_eq!(
-            displayed_occupancy(&state, cx).as_deref(),
-            Some("≈40k / 1M · ≈4%")
-        );
+        let first = displayed_occupancy(&state, cx).unwrap();
+        assert_eq!(first.tokens, 40_000);
+        assert_eq!(first.window, Some(1_000_000));
+        assert!(first.estimated);
         engine.watches.lock().unwrap()[0]
             .1
             .unbounded_send(frame(824000, None, false))
             .unwrap();
         pump(&runtime, cx);
         // The unknown window drops the percentage and the ring's arc with it.
-        assert_eq!(
-            displayed_occupancy(&state, cx).as_deref(),
-            Some(format!("40k {}", t!("conversation_transcript.usage.window_unknown")).as_str())
-        );
+        let unknown = displayed_occupancy(&state, cx).unwrap();
+        assert_eq!(unknown.window, None);
+        assert!(!unknown.estimated);
+        assert_eq!(unknown.fraction(), 0.0);
 
         state.update(cx, |state, cx| state.select_chat(Some("b".into()), cx));
         assert!(displayed_occupancy(&state, cx).is_none());
         pump(&runtime, cx);
         assert!(engine.watches.lock().unwrap()[0].1.is_closed());
         assert_eq!(engine.watches.lock().unwrap()[1].0, "b");
-        assert_eq!(
-            displayed_occupancy(&state, cx).as_deref(),
-            Some("≈40k / 1M · ≈4%")
-        );
+        let next = displayed_occupancy(&state, cx).unwrap();
+        assert_eq!(next.tokens, 40_000);
+        assert_eq!(next.window, Some(1_000_000));
+        assert!(next.estimated);
 
         state.update(cx, |state, cx| {
             state.select_chat(Some("old-engine".into()), cx)
@@ -2881,6 +2840,119 @@ mod tests {
         state.update(cx, |state, cx| state.select_chat(None, cx));
         pump(&runtime, cx);
         assert!(displayed_occupancy(&state, cx).is_none());
+    }
+
+    /// The two report surfaces — the usage popover and the right-pane tab —
+    /// can both ask for a next-request preview while the first is still
+    /// building. One request per chat at a time; and the unary reply doubles
+    /// as the watch's fallback, landing the snapshot when the frame stream
+    /// never carried it.
+    #[gpui::test]
+    fn preview_requests_dedup_per_chat_and_the_reply_lands_when_the_watch_did_not(
+        cx: &mut TestAppContext,
+    ) {
+        /// `WATCH_CHAT_USAGE` serves frames without a context (the sender
+        /// stays alive so the stream does not close); the preview blocks
+        /// until the test releases it, recording one channel per call.
+        struct GateEngine {
+            watches: Mutex<Vec<mpsc::UnboundedSender<Value>>>,
+            previews: Mutex<Vec<tokio::sync::oneshot::Sender<Value>>>,
+        }
+        #[async_trait::async_trait]
+        impl RpcService for GateEngine {
+            async fn handle(&self, method: &str, _: Value) -> Result<RpcReply, RpcError> {
+                if method == methods::WATCH_CHAT_USAGE {
+                    let (tx, rx) = mpsc::unbounded();
+                    tx.unbounded_send(frame(412000, Some(1000000), true))
+                        .unwrap();
+                    self.watches.lock().unwrap().push(tx);
+                    return Ok(RpcReply::Stream(rx.boxed()));
+                }
+                if method == methods::PREVIEW_CHAT_CONTEXT {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    self.previews.lock().unwrap().push(tx);
+                    let reply = rx
+                        .await
+                        .map_err(|_| RpcError::Failed("preview gate dropped".into()))?;
+                    return Ok(RpcReply::Value(reply));
+                }
+                Ok(RpcReply::Stream(futures::stream::pending().boxed()))
+            }
+        }
+
+        let ask = |state: &Entity<AppState>, cx: &mut TestAppContext| {
+            state.update(cx, |_, cx| {
+                cx.spawn(async move |this, cx| request_context_preview(this, cx).await)
+                    .detach();
+            });
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let engine = Arc::new(GateEngine {
+            watches: Mutex::new(Vec::new()),
+            previews: Mutex::new(Vec::new()),
+        });
+        let client = {
+            let _enter = runtime.enter();
+            memory_client(engine.clone())
+        };
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.attach_test_engine(client, cx);
+            state.select_chat(Some("a".into()), cx);
+        });
+        pump(&runtime, cx);
+
+        // The popover's ask: one preview starts and parks on the gate.
+        ask(&state, cx);
+        pump(&runtime, cx);
+        assert_eq!(engine.previews.lock().unwrap().len(), 1);
+        assert_eq!(
+            cx.read(|cx| state.read(cx).context_preview_pending.clone()),
+            Some("a".to_string())
+        );
+
+        // The report tab's ask while the first is still in flight: deduped
+        // by the pending marker — no second build.
+        ask(&state, cx);
+        pump(&runtime, cx);
+        assert_eq!(
+            engine.previews.lock().unwrap().len(),
+            1,
+            "an in-flight preview absorbs the second surface's ask"
+        );
+
+        // The reply lands even though the watch's frames never carried a
+        // context: the graft is the stream's fallback.
+        let gate = engine.previews.lock().unwrap().remove(0);
+        gate.send(json!({
+            "model": "gpt-gated",
+            "preview": true,
+            "entries": [],
+            "loadingMcpServers": [],
+        }))
+        .unwrap();
+        pump(&runtime, cx);
+        cx.read(|cx| {
+            let state = state.read(cx);
+            assert_eq!(state.context_preview_pending, None);
+            let usage = state.chat_usage.as_ref().unwrap();
+            let snapshot = usage.context.as_ref().unwrap();
+            assert_eq!(snapshot.model, "gpt-gated");
+            assert!(snapshot.preview);
+        });
+
+        // A landed snapshot answers the next ask: still no second build (the
+        // one recorded call was already consumed above).
+        ask(&state, cx);
+        pump(&runtime, cx);
+        assert!(
+            engine.previews.lock().unwrap().is_empty(),
+            "a landed snapshot answers the next ask without a new build"
+        );
     }
 
     #[gpui::test]
@@ -2943,38 +3015,26 @@ mod tests {
             // prints it with no re-derivation of its own.
             let engine_frame: ChatUsage = serde_json::from_value(snapshot.clone()).unwrap();
             assert_eq!(usage, &engine_frame);
-            let model = card_model(usage);
             // Pinned end to end: gross 700 + 70 + 7 + 3 with one record, and
             // the occupancy the main run's own request input plus both cache
             // fields (700 + 7 + 3).
-            assert_eq!(model.gross, 780);
-            assert_eq!(model.records, 1);
-            assert_eq!(model.occupancy.tokens, 710);
+            assert_eq!(usage.gross, 780);
+            assert_eq!(usage.record_count, 1);
+            let occupancy = occupancy_of(usage);
+            assert_eq!(occupancy.tokens, 710);
+            assert!(!occupancy.estimated);
             // Prompt 700 + 7 read + 3 written; only the reads hit.
-            assert_eq!(model.cache.prompt(), 710);
-            assert_eq!(model.cache.read, 7);
-            assert_eq!(model.cache.written, 3);
-            let turn = row(&model, "turn");
-            assert_eq!(turn.tokens, 780);
-            assert!((turn.share - 1.0).abs() < 1e-6);
+            let turn = &usage.by_kind["turn"];
+            assert_eq!(turn.input + turn.cache_read + turn.cache_write, 710);
+            assert_eq!(turn.cache_read, 7);
+            assert_eq!(turn.cache_write, 3);
             // Run acceptance stores the request's model on the chat, so a
             // settled queue divides by that model's catalog window — 272k for
             // this one. The UI's job is to print what the frame carries; the
             // catalog number itself is the engine's to know.
-            let window = model.occupancy.window.unwrap();
+            let window = occupancy.window.unwrap();
             assert!(window > 0);
-            let shown = occupancy_value(&model.occupancy);
-            assert!(
-                shown.starts_with("710 / ") && shown.ends_with('%'),
-                "{shown}"
-            );
-            assert_eq!(
-                usage_value(&model),
-                format!(
-                    "780 · {}",
-                    t!("conversation_transcript.usage.records.one", count = 1)
-                )
-            );
+            assert!((occupancy.fraction() - 710.0 / window as f32).abs() < 1e-6);
         });
     }
 }

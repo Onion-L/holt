@@ -21,7 +21,7 @@ in the same commit.
 
 | Page | Entries |
 | --- | --- |
-| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) |
+| [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
@@ -177,6 +177,34 @@ Prompt string and ordered History are preserved. Rejected: blocking all
 content on the slowest server, holding the pool lock across network calls,
 serial server initialization, rebuilding on every open, and extracting or
 rewriting prompt text to manufacture groups.
+
+## context-preview-targets-the-queue-head
+
+A preview's provider, model, reasoning level, and cwd mirror the request the
+queue runs next — the same answer the frame's occupancy denominator already
+follows — falling back to the chat's stored selection only while the queue
+holds nothing. The stored permission mode answers for any target (a
+request's own mode field is vestigial wire compat), and moving the selection
+or toggling Plan/Provider mode clears a published preview so the next open
+rebuilds. Rejected: previewing the composer's current pick while a queued
+item waits on another model or folder (the report would show a model the
+next request never uses), and clearing a captured real request on selection
+moves (the capture stays the truth about the last request). Known deltas,
+accepted: a worktree-pinned queued request previews its fallback cwd, and a
+queued background workflow previews the ordinary main prompt — both are
+documented on the run-loop page.
+
+## mcp-connections-are-per-server-single-flight
+
+One fresh connect per server at a time, held across the handshake by a
+per-server gate the concurrent callers (parallel Turns on different chats,
+a preview against a running Turn) line up behind; the loser re-checks the
+pool and reuses the winner's connection. Rejected: holding the POOL lock
+across network calls (serializes every other server's snapshot, already
+rejected once above) and letting concurrent callers each spawn a subprocess
+(the old pre-parallel behavior's double-connect race: two processes for one
+server, one orphaned at Arc drop, both fighting over the port or lockfile a
+server may hold).
 
 ## history-is-a-separate-persisted-record
 

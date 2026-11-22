@@ -149,8 +149,11 @@ pub(crate) struct ChatRuntime {
     pub(crate) usage_last_report: Mutex<Option<crate::usage::LastReport>>,
     /// Latest main-run Context, captured immediately before transport. Kept
     /// out of the ledger and all other persistence: the report is a local,
-    /// live inspection surface, not another conversation record.
-    pub(crate) context_snapshot: Mutex<Option<Arc<holt_proto::ChatContextSnapshot>>>,
+    /// live inspection surface, not another conversation record. The slot
+    /// pairs the snapshot with its serialized JSON (see
+    /// [`crate::usage::ContextSlot`]) so publishing a frame never
+    /// re-serializes the whole Context.
+    pub(crate) context_snapshot: Mutex<Option<crate::usage::ContextSlot>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
     /// The one-shot Title task's token (ADR-automatic-titles-run-outside-pi-hooks): independent of `cancel`
     /// — a Turn interrupt must not stop title generation; only chat
@@ -2328,9 +2331,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let main_stream_fn: holt_core::agent::types::StreamFn = {
         let upstream = stream_fn.clone();
         let chat = chat.clone();
+        let cwd = cwd.clone();
         Arc::new(move |model, context, options| {
             if chat.child.is_none() {
-                crate::usage::capture_context(&chat, model, context);
+                crate::usage::capture_context(&chat, model, context, &cwd);
             }
             upstream(model, context, options)
         })

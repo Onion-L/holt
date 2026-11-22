@@ -347,8 +347,6 @@ conversation_transcript:
         en-US: "Latest request · %{model}"
       next_request:
         en-US: "Next request preview · %{model}"
-      estimates:
-        en-US: Item token counts are estimates; overall occupancy uses the provider report when available.
       mcp_loading:
         en-US: "Loading MCP servers: %{servers}"
       repo:
@@ -385,6 +383,8 @@ conversation_transcript:
         en-US: Before first user message
       turn:
         en-US: "Turn %{index}"
+      unknown_entry:
+        en-US: Context entry
       user:
         en-US: "User %{index}"
       assistant:
@@ -404,22 +404,8 @@ conversation_transcript:
           en-US: "MCP tools are external capabilities provided by connected Model Context Protocol servers, allowing the agent to interact with external documentation, services, and APIs."
         conversation:
           en-US: "Conversation includes the user messages, assistant responses, and tool outputs accumulated across the turns of this chat."
-    kind:
-      turn:
-        en-US: Turns
-      subagent:
-        en-US: Subagents
-      compaction:
-        en-US: Compaction
-      auto_review:
-        en-US: Auto review
     window_unknown:
       en-US: · window unknown
-    records:
-      one:
-        en-US: "%{count} record"
-      other:
-        en-US: "%{count} records"
     note:
       estimated_unknown:
         en-US: "Estimated from history; the window is unknown."
@@ -427,17 +413,6 @@ conversation_transcript:
         en-US: Estimated from history until the next reply reports usage.
       window_unknown:
         en-US: Context window size is unknown.
-    section:
-      context:
-        en-US: Context
-      usage:
-        en-US: Usage
-      cache_hit:
-        en-US: Cache hit
-    cache_note:
-      en-US: "%{input} input · %{read} read"
-    cache_note_written:
-      en-US: "%{input} input · %{read} read · %{written} written"
   user_row:
     open_skill:
       en-US: Open SKILL.md

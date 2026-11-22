@@ -1195,6 +1195,12 @@ impl EngineService {
     /// Explicit report action: build a read-only next-request preview from
     /// current state. Unlike the usage watch, this may refresh the MCP tool
     /// snapshot; opening the report is the user's request for that detail.
+    ///
+    /// The target mirrors the frame's occupancy answer ([`watch_snapshot`]):
+    /// the request the queue runs next — the executing item first, then the
+    /// pending head — and the chat's own selection once the queue is empty.
+    /// A queued run on another model or folder is therefore what the report
+    /// previews, not the composer's current pick.
     pub(super) async fn preview_chat_context(
         &self,
         params: serde_json::Value,
@@ -1204,28 +1210,55 @@ impl EngineService {
             return Err(RpcError::BadParams("invalid chatId".into()));
         }
         let chat = self.runtime.chat(chat_id);
-        let Some((config, cwd, plan_mode, provider_mode)) = ({
+        let next = chat
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .next_request()
+            .cloned();
+        let (stored_mode, plan_mode, provider_mode, config, cwd) = {
             let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
-            chats.iter().find(|row| row.id == chat_id).map(|row| {
-                (
-                    row.config.clone(),
-                    row.cwd.clone(),
-                    row.plan_mode.is_some(),
-                    row.provider_mode,
-                )
-            })
-        }) else {
-            return Err(RpcError::Failed("chat was deleted".into()));
+            let Some(row) = chats.iter().find(|row| row.id == chat_id) else {
+                return Err(RpcError::Failed("chat was deleted".into()));
+            };
+            (
+                // The stored mode is authoritative for any target — a
+                // request's own mode field is vestigial wire compat.
+                row.config
+                    .as_ref()
+                    .map(|config| config.permission_mode)
+                    .unwrap_or_else(|| self.mode_default.get()),
+                row.plan_mode.is_some(),
+                row.provider_mode,
+                row.config.clone(),
+                row.cwd.clone(),
+            )
         };
-        let Some(config) = config else {
-            return Err(RpcError::Failed("the chat has no model config".into()));
+        let (provider, model_id, reasoning, cwd) = match (&next, &config) {
+            (Some(request), _) => (
+                request.provider.0.clone(),
+                request.model.clone(),
+                request.reasoning,
+                request.cwd.clone(),
+            ),
+            (None, Some(config)) => (
+                config.provider.0.clone(),
+                config.model.clone(),
+                config.reasoning,
+                cwd.unwrap_or_else(|| {
+                    crate::local_fs::home_dir().unwrap_or_else(|| "/".to_string())
+                }),
+            ),
+            // An empty queue and no stored config: there is no next request
+            // to preview.
+            (None, None) => {
+                return Err(RpcError::Failed("the chat has no model config".into()));
+            }
         };
         let model = self
             .providers
-            .resolve_model(config.provider.as_str(), &config.model)
+            .resolve_model(provider.as_str(), &model_id)
             .map_err(RpcError::BadParams)?;
-        let cwd =
-            cwd.unwrap_or_else(|| crate::local_fs::home_dir().unwrap_or_else(|| "/".to_string()));
         let (system_prompt, _) =
             crate::agent::run_system_prompt(&self.skills, &cwd, Some(model.context_window)).await;
         let stream_fn = self
@@ -1238,13 +1271,13 @@ impl EngineService {
             chat: chat.clone(),
             chat_id: chat_id.to_string(),
             cwd,
-            reasoning: config.reasoning,
+            reasoning,
             model: model.clone(),
             // The preview never reaches a provider. Delegation tools only
             // retain this value for a future call that cannot happen here.
             api_key: String::new(),
             skills: self.skills.clone(),
-            permission_mode: config.permission_mode,
+            permission_mode: stored_mode,
             plan_mode,
             provider_mode,
             include_mcp: false,
@@ -1272,8 +1305,14 @@ impl EngineService {
         if chat.is_removed() {
             return Err(RpcError::Failed("chat was deleted".into()));
         }
-        let base_snapshot =
-            crate::usage::publish_context_preview(&chat, &model, &base, pending.clone());
+        let preview_cwd = assembly.cwd.clone();
+        let base_snapshot = crate::usage::publish_context_preview(
+            &chat,
+            &model,
+            &base,
+            &preview_cwd,
+            pending.clone(),
+        );
         if pending.is_empty() {
             return RpcReply::value(base_snapshot.as_ref());
         }
@@ -1287,7 +1326,8 @@ impl EngineService {
         if chat.is_removed() {
             return Err(RpcError::Failed("chat was deleted".into()));
         }
-        let snapshot = crate::usage::publish_context_preview(&chat, &model, &full, Vec::new());
+        let snapshot =
+            crate::usage::publish_context_preview(&chat, &model, &full, &preview_cwd, Vec::new());
         RpcReply::value(snapshot.as_ref())
     }
 
