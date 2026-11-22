@@ -172,8 +172,15 @@ fn render_skills_block(winners: &[(Skill, SkillRoot)], budget: usize) -> String 
     let minimal_block = format_skills_for_system_prompt(&minimal);
     let minimal_chars = minimal_block.chars().count();
     if minimal_chars <= budget {
+        // The block XML-escapes descriptions (`&` renders as five chars),
+        // so the round-robin grants measured in RENDERED chars — a raw
+        // count would let one ampersand-heavy description blow the budget
+        // after the fact. A description that stays cut also pays one char
+        // for its `…` mark, reserved when the first cut char is granted
+        // and returned when the description ends up fitting whole.
         let mut remaining = budget - minimal_chars;
         let mut allocations = vec![0usize; clamped.len()];
+        let mut cut_marks = vec![false; clamped.len()];
         loop {
             let mut changed = false;
             for (index, skill) in clamped.iter().enumerate() {
@@ -181,10 +188,32 @@ fn render_skills_block(winners: &[(Skill, SkillRoot)], budget: usize) -> String 
                     break;
                 }
                 let length = skill.description.chars().count();
-                if allocations[index] < length {
-                    allocations[index] += 1;
+                if allocations[index] >= length {
+                    continue;
+                }
+                let next = skill.description.chars().nth(allocations[index]);
+                let Some(next) = next else {
+                    continue;
+                };
+                let mut cost = escaped_char_len(next);
+                if !cut_marks[index] && allocations[index] + 1 < length {
+                    cost += 1;
+                    if cost > remaining {
+                        continue;
+                    }
+                    cut_marks[index] = true;
                     remaining -= 1;
-                    changed = true;
+                    cost -= 1;
+                }
+                if cost > remaining {
+                    continue;
+                }
+                allocations[index] += 1;
+                remaining -= cost;
+                changed = true;
+                if allocations[index] == length && cut_marks[index] {
+                    cut_marks[index] = false;
+                    remaining += 1;
                 }
             }
             if !changed {
@@ -194,9 +223,11 @@ fn render_skills_block(winners: &[(Skill, SkillRoot)], budget: usize) -> String 
         let fitted: Vec<Skill> = clamped
             .iter()
             .zip(allocations)
-            .map(|(skill, allocation)| {
+            .zip(cut_marks)
+            .map(|((skill, allocation), cut)| {
                 let mut skill = skill.clone();
-                skill.description = truncate_chars(&skill.description, allocation);
+                let prefix: String = skill.description.chars().take(allocation).collect();
+                skill.description = if cut { format!("{prefix}…") } else { prefix };
                 skill
             })
             .collect();
@@ -228,9 +259,27 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
     }
+    // A zero-width slot gets nothing — not even the cut mark, which would
+    // itself overflow the budget the caller is holding us to.
+    if limit == 0 {
+        return String::new();
+    }
     let mut truncated: String = text.chars().take(limit.saturating_sub(1)).collect();
     truncated.push('…');
     truncated
+}
+
+/// One char's rendered width inside the skills block: the upstream
+/// formatter XML-escapes descriptions, so `&` counts five chars, a quote
+/// six, and everything else one. The budget math grants chars in these
+/// units so a fitted block can never exceed its budget after escaping.
+fn escaped_char_len(ch: char) -> usize {
+    match ch {
+        '&' => 5,
+        '<' | '>' => 4,
+        '"' | '\'' => 6,
+        _ => 1,
+    }
 }
 
 /// The engine's fixed skill roots: the project root derives from each
@@ -667,6 +716,47 @@ mod tests {
         assert!(!block.contains(&long));
         // The nearest-first skills survive the cut.
         assert!(block.contains("<name>bulk-skill-000</name>"));
+    }
+
+    #[test]
+    fn escape_heavy_descriptions_stay_inside_the_budget() {
+        // The block XML-escapes descriptions, so `&` renders five chars wide
+        // and a quote six: the round-robin must grant chars by their
+        // RENDERED width, or one ampersand-heavy catalog would blow the
+        // budget after the fact.
+        let spicy = "&\"'<>&\"'<>'".repeat(16);
+        let winners: Vec<(Skill, SkillRoot)> = (0..4)
+            .map(|i| catalog_skill(&format!("skill-{i}"), &spicy, false))
+            .collect();
+        let block = render_skills_block(&winners, 1_200);
+        assert!(
+            block.chars().count() <= 1_200,
+            "rendered {} chars for a 1_200 budget:\n{block}",
+            block.chars().count()
+        );
+        assert_eq!(block.matches("<skill>").count(), 4);
+        // Every description was cut, and each cut mark was paid for out of
+        // the same budget.
+        assert_eq!(block.matches('…').count(), 4);
+
+        // A budget that only fits names and locations grants no description
+        // chars at all — and no cut marks sneak past a zero-width slot.
+        let minimal: Vec<Skill> = winners
+            .iter()
+            .map(|(skill, _)| {
+                let mut skill = skill.clone();
+                skill.description = String::new();
+                skill
+            })
+            .collect();
+        let minimal_chars = format_skills_for_system_prompt(&minimal).chars().count();
+        let bare = render_skills_block(&winners, minimal_chars);
+        assert_eq!(bare.chars().count(), minimal_chars);
+        assert!(!bare.contains('…'));
+        assert!(bare.contains("<description></description>"));
+        // The zero-width clamp holds directly too: nothing, not even the cut
+        // mark, fits a zero budget.
+        assert_eq!(truncate_chars("anything", 0), "");
     }
 
     fn skill_in(root: &Path, name: &str, frontmatter: &str, body: &str) -> String {
