@@ -73,6 +73,11 @@ fn expand(value: &str) -> String {
 pub(crate) struct McpPool {
     servers: McpStore,
     connections: tokio::sync::Mutex<HashMap<String, Arc<LiveServer>>>,
+    /// Per-server connection single-flight: the entry's mutex is held
+    /// across one server's fresh connect, so concurrent callers (parallel
+    /// Turns on different chats, a preview against a running Turn) share
+    /// the first caller's subprocess instead of each spawning one.
+    connecting: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl McpPool {
@@ -80,6 +85,7 @@ impl McpPool {
         Ok(Self {
             servers: McpStore::load(data_dir)?,
             connections: tokio::sync::Mutex::new(HashMap::new()),
+            connecting: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -104,6 +110,10 @@ impl McpPool {
             .lock()
             .await
             .retain(|name, _| definitions.get(name).is_some_and(|server| server.enabled));
+        self.connecting
+            .lock()
+            .await
+            .retain(|name, _| definitions.get(name).is_some_and(|server| server.enabled));
         join_all(definitions.into_iter().filter_map(|(name, server)| {
             server.enabled.then(|| self.agent_tools_for(name, server))
         }))
@@ -115,18 +125,14 @@ impl McpPool {
 
     /// One server's independent snapshot. The pool lock covers only map
     /// access, never a network handshake or `tools/list`, so independent
-    /// servers really do initialize concurrently.
+    /// servers really do initialize concurrently — while the per-server
+    /// single-flight gate keeps one server to one subprocess when several
+    /// callers reach for it at once.
     async fn agent_tools_for(&self, name: String, server: McpServer) -> Vec<AgentTool> {
         let cached = self.connections.lock().await.get(&name).cloned();
         if let Some(connection) = cached {
             match connection.list_tools().await {
-                Ok(list) => {
-                    return list
-                        .into_iter()
-                        .filter(|tool| server.allows_tool(&tool.name))
-                        .map(|tool| wrap_server_tool(&name, tool, &connection))
-                        .collect();
-                }
+                Ok(list) => return allowed_tools(list, &name, &server, &connection),
                 Err(error) => {
                     tracing::warn!(
                         target: "holt::mcp",
@@ -134,9 +140,26 @@ impl McpPool {
                         %error,
                         "mcp connection went stale; reconnecting for this turn"
                     );
-                    self.connections.lock().await.remove(&name);
+                    // Evict by Arc identity: a concurrent caller may have
+                    // already reconnected under this name while our list
+                    // was failing, and its fresh entry must survive ours.
+                    let mut connections = self.connections.lock().await;
+                    remove_stale_entry(&mut connections, &name, &connection);
                 }
             }
+        }
+        let gate = {
+            let mut connecting = self.connecting.lock().await;
+            connecting.entry(name.clone()).or_default().clone()
+        };
+        let _connect = gate.lock().await;
+        // A concurrent caller may have finished connecting while this one
+        // waited on the gate; its fresh entry beats another spawn.
+        let cached = self.connections.lock().await.get(&name).cloned();
+        if let Some(connection) = cached
+            && let Ok(list) = connection.list_tools().await
+        {
+            return allowed_tools(list, &name, &server, &connection);
         }
         let Some((connection, list)) = connect_fresh(&name, &server).await else {
             return Vec::new();
@@ -145,10 +168,7 @@ impl McpPool {
             .lock()
             .await
             .insert(name.clone(), connection.clone());
-        list.into_iter()
-            .filter(|tool| server.allows_tool(&tool.name))
-            .map(|tool| wrap_server_tool(&name, tool, &connection))
-            .collect()
+        allowed_tools(list, &name, &server, &connection)
     }
 
     /// One on-demand probe (the Settings Test action): connect, list
@@ -537,6 +557,34 @@ fn truncate_result(text: &str) -> String {
     out
 }
 
+/// A listed tool set filtered to the server's allow-list and wrapped as
+/// standard agent tools — the shared tail of every `agent_tools_for` path.
+fn allowed_tools(
+    list: Vec<Tool>,
+    name: &str,
+    server: &McpServer,
+    connection: &Arc<LiveServer>,
+) -> Vec<AgentTool> {
+    list.into_iter()
+        .filter(|tool| server.allows_tool(&tool.name))
+        .map(|tool| wrap_server_tool(name, tool, connection))
+        .collect()
+}
+
+/// Evict a stale connection only when the map still holds that very Arc.
+/// Two callers can clone the same dying connection and fail their lists in
+/// any order; by the time the second one evicts, the first may have already
+/// reconnected under the same name — a by-name removal would throw the
+/// fresh entry away and double-spawn the server's subprocess.
+fn remove_stale_entry<V>(connections: &mut HashMap<String, Arc<V>>, name: &str, stale: &Arc<V>) {
+    if connections
+        .get(name)
+        .is_some_and(|current| Arc::ptr_eq(current, stale))
+    {
+        connections.remove(name);
+    }
+}
+
 /// Wrap one listed server tool as a standard agent tool (ADR-mcp-servers-join-as-engine-clients-behind-the-gate): the
 /// two-level name, the description (capped at 2 KB) and input schema as
 /// received, execute forwarding to [`LiveServer::call_text`].
@@ -812,6 +860,31 @@ pub(crate) fn bootstrap_messages(tools: &[AgentTool], model: &Model) -> Vec<Mess
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_eviction_only_removes_the_callers_own_connection() {
+        // The stale-removal race, frozen: two callers clone the same dying
+        // connection; the first fails, reconnects, and installs a fresh
+        // entry under the same name; the second's eviction must find its
+        // own Arc gone and leave the fresh entry alone — a by-name removal
+        // would evict the reconnect and double-spawn the server.
+        let dying = Arc::new(());
+        let fresh = Arc::new(());
+        let mut connections = HashMap::new();
+        connections.insert("server".into(), Arc::clone(&dying));
+
+        // The first caller evicts its own stale Arc.
+        remove_stale_entry(&mut connections, "server", &dying);
+        assert!(!connections.contains_key("server"));
+
+        // A concurrent reconnect lands while the second caller's list is
+        // still failing.
+        connections.insert("server".into(), Arc::clone(&fresh));
+
+        // The second caller, still holding the old Arc, must not remove it.
+        remove_stale_entry(&mut connections, "server", &dying);
+        assert!(Arc::ptr_eq(&connections["server"], &fresh));
+    }
 
     #[test]
     fn descriptions_truncate_at_two_kilobytes_with_a_marker() {

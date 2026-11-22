@@ -7,6 +7,8 @@
 //!
 //! - `FIXTURE_MARKER`: a path touched once the process starts — the lazy-
 //!   start and never-started assertions watch it.
+//! - `FIXTURE_SPAWN_LOG`: a file the process appends one line to at startup
+//!   — the single-flight assertion counts subprocess starts, not lists.
 //! - `FIXTURE_LIST_CHANGED_AFTER`: emit `notifications/tools/list_changed`
 //!   after this many `tools/list` calls (ticket 03).
 //! - `FIXTURE_EXIT_ON_CALL`: exit the process when the Nth `tools/call`
@@ -46,6 +48,13 @@ use std::{
 fn main() {
     if let Ok(marker) = std::env::var("FIXTURE_MARKER") {
         let _ = std::fs::write(&marker, std::process::id().to_string());
+    }
+    if let Ok(path) = std::env::var("FIXTURE_SPAWN_LOG") {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| writeln!(file, "spawn"));
     }
     if let Ok(path) = std::env::var("FIXTURE_WRITE_CWD") {
         let cwd = std::env::current_dir()
