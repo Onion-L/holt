@@ -373,7 +373,7 @@ pub(crate) fn rewind_button(
     div()
         .id(id)
         .debug_selector(move || selector.to_string())
-        .size(px(Theme::SPACE_MD * 2.0))
+        .size(px(20.0))
         .flex_none()
         .flex()
         .items_center()
@@ -385,7 +385,7 @@ pub(crate) fn rewind_button(
         .on_click(on_click)
         .child(
             crate::icons::icon(crate::icons::RESTART)
-                .size(px(14.0))
+                .size(px(12.0))
                 .text_color(theme.text_muted),
         )
         .into_any_element()

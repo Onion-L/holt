@@ -798,14 +798,17 @@ impl Transcript {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(Theme::SPACE_SM));
+                    // The tight code-chip rhythm (markdown/render.rs): the
+                    // buttons' invisible padding already separates the
+                    // glyphs, so a wider gap reads as floating icons.
+                    .gap(px(4.0));
                 let edit = edit_text.map(|text| {
                     let entry_id = edit_entry_id.clone();
                     let chat_id = edit_chat_id.clone();
                     let fade_key = format!("edit-message-hover-{entry_id}");
                     div()
                         .id(SharedString::from(format!("edit-message-{entry_id}")))
-                        .size(px(Theme::SPACE_MD * 2.0))
+                        .size(px(20.0))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -826,7 +829,7 @@ impl Transcript {
                         }))
                         .child(
                             crate::icons::icon(crate::icons::PEN)
-                                .size(px(14.0))
+                                .size(px(12.0))
                                 .text_color(theme.text_muted),
                         )
                 });
@@ -855,7 +858,7 @@ impl Transcript {
                 let lane_id = row.id.clone();
                 div()
                     .debug_selector(move || format!("meta-strip-{lane_id}"))
-                    .h(px(Theme::SPACE_SM + Theme::SPACE_MD * 2.0))
+                    .h(px(Theme::SPACE_SM + 20.0))
                     .pt(px(Theme::SPACE_SM))
                     .w_full()
                     .flex()
@@ -2036,7 +2039,7 @@ impl Transcript {
         let fade_key = format!("copy-message-hover-{entry_id}");
         div()
             .id(SharedString::from(format!("copy-message-{entry_id}")))
-            .size(px(Theme::SPACE_MD * 2.0))
+            .size(px(20.0))
             .flex()
             .items_center()
             .justify_center()
@@ -2059,7 +2062,7 @@ impl Transcript {
                 } else {
                     crate::icons::COPY
                 })
-                .size(px(14.0))
+                .size(px(12.0))
                 .text_color(theme.text_muted),
             )
     }
