@@ -384,7 +384,7 @@ pub(crate) fn rewind_button(
         .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(hint.clone())).into())
         .on_click(on_click)
         .child(
-            crate::icons::icon(crate::icons::RESTART)
+            crate::icons::icon(crate::icons::UNDO_LEFT_ROUND)
                 .size(px(12.0))
                 .text_color(theme.text_muted),
         )
