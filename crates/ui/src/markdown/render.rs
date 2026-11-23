@@ -588,8 +588,11 @@ pub struct FlatText {
 pub fn inline_code_text(theme: &Theme) -> Hsla {
     theme.code_text
 }
+/// The wash stays neutral (a plain ink overlay) — the accent text already
+/// carries the code identity, so an accent-tinted background under it
+/// doubles the blue and tires the eye.
 pub fn inline_code_wash(theme: &Theme) -> Hsla {
-    theme.code_wash
+    theme.ink(0.06)
 }
 /// Rounded-wash geometry: small radius on a slightly inset box (paint-only —
 /// x extends 2px past the glyphs, y insets 2px from the 22px line box).
@@ -642,8 +645,8 @@ fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWei
         // theme underlines in the text color; indigo is reserved for primary
         // actions).
         let is_link = run.style.link.is_some();
-        // Inline code uses the spectrum's code tone; everything else
-        // stays the monochrome foreground.
+        // Inline code uses the spectrum's code tone over a neutral wash;
+        // everything else stays the monochrome foreground.
         let color = if run.style.code {
             inline_code_text(theme)
         } else {
@@ -1675,9 +1678,10 @@ mod tests {
         );
         // Adjacent code runs merge into ONE wash box; separated ones don't.
         assert_eq!(flat.code_ranges, vec![4..9, 14..17]);
-        // Code text is the violet tint; the square run background is gone
-        // (the rounded wash is painted by the canvas underlay instead).
+        // Code text is the accent tint; the square run background is gone
+        // (the rounded neutral wash is painted by the canvas underlay instead).
         assert_eq!(flat.runs[1].color, inline_code_text(&theme));
+        assert_eq!(inline_code_wash(&theme), theme.ink(0.06));
         assert_eq!(flat.runs[1].background_color, None);
         assert_eq!(flat.runs[0].color, theme.text);
     }
