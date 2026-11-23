@@ -1834,6 +1834,29 @@ async fn wait_for_file(path: &std::path::Path) {
     }
 }
 
+/// Remove a worktree file a just-dropped engine was reading. The queue
+/// driver's settle captures the final change set past the queue-idle
+/// frame this suite waits on, and Windows reports a lingering sharing
+/// violation (OS error 32) for a moment after those handles close — so a
+/// removal right after `drop(engine)` races the release there and only
+/// there. The wait is bounded: a holder that never lets go is a finding,
+/// not something to wait out.
+async fn remove_after_settle_releases(path: impl AsRef<std::path::Path>) {
+    let path = path.as_ref();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return,
+            Err(error)
+                if error.raw_os_error() == Some(32) && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("removing {path:?}: {error}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_call_a_crash_cut_off_tells_the_resumed_model_what_it_changed() {
     let fixture = Fixture::new();
@@ -2300,7 +2323,7 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
         .unwrap(),
     )
     .unwrap();
-    std::fs::remove_file(fixture.path("a.txt")).unwrap();
+    remove_after_settle_releases(fixture.path("a.txt")).await;
 
     let engine = fixture.engine(&provider);
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
