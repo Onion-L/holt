@@ -2647,26 +2647,24 @@ async fn a_confirm_sweeps_queued_items_and_lifts_the_pause() {
 }
 
 /// A confirm the re-derivation refuses must not eat the queue: the sweep
-/// dies with the apply, never with a refusal. The user's own pause stands.
+/// dies with the apply, never with a refusal. The user's own pause stands
+/// (parked the way a Stop during a run leaves it — items queued behind a
+/// running Turn, so no attended-send grant can lift it).
 #[tokio::test]
 async fn a_confirm_refused_by_new_conflicts_keeps_the_queue() {
     let fixture = Fixture::new();
-    let engine = fixture.engine(&three_step_provider(Vec::new()));
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = three_step_provider(vec![ScriptedReply::gated(gate.clone(), "later")]);
+    let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
     grant_full_access(&engine, "chat-1").await;
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
     settle_queue(&engine, "chat-1", true).await;
-    rewind_plan(&engine, &common::message_id("three steps")).await;
 
-    // The user parks the queue with two pending sends, then a file moves
-    // on after the dialog opened.
-    engine
-        .handle(
-            methods::QUEUE_COMMAND,
-            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
-        )
-        .await
-        .unwrap();
+    // A second Turn runs, two sends queue behind it, and the user stops
+    // the run: the queue parks with the two still pending.
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "second turn").await;
+    common::wait_for_requests(&provider, 4).await;
     queue_run(
         &engine,
         "chat-1",
@@ -2683,6 +2681,24 @@ async fn a_confirm_refused_by_new_conflicts_keeps_the_queue() {
         "more parked work",
     )
     .await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    gate.notify_one();
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
+    let parked = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        parked["pending"].as_array().map(Vec::len),
+        Some(2),
+        "{parked}"
+    );
+    assert_eq!(parked["paused"], serde_json::json!(true), "{parked}");
+
+    rewind_plan(&engine, &common::message_id("three steps")).await;
     std::fs::write(fixture.path("b.txt"), "moved on\n").unwrap();
 
     let refused = rewind_confirm(&engine).await.unwrap();
