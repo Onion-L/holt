@@ -53,7 +53,8 @@ pub(crate) async fn rewind_call(
 
 /// Apply the staged plan with `ConfirmRewind`. A reply that did not apply
 /// carries the conflicts that refused it — nothing was written; `Err`
-/// carries a phrased failure.
+/// carries the engine's raw refusal phrasing (the caller maps the stable
+/// ones to catalog copy and wraps the rest).
 pub(crate) async fn confirm_rewind_call(
     engine: crate::state::EngineHandle,
     chat_id: String,
@@ -63,13 +64,7 @@ pub(crate) async fn confirm_rewind_call(
         .client()
         .call(holt_rpc::methods::CONFIRM_REWIND, params)
         .await
-        .map_err(|error| {
-            t!(
-                "conversation_transcript.rewind.failed",
-                error = error.to_string()
-            )
-            .into_owned()
-        })?;
+        .map_err(|error| error.to_string())?;
     serde_json::from_value(value)
         .map_err(|_| t!("conversation_transcript.rewind.malformed").into_owned())
 }

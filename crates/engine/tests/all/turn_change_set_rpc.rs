@@ -311,6 +311,27 @@ async fn setup(fixture: &Fixture, engine: &LocalEngine) {
 /// Queue a `run` command with an explicit message id — the identity the
 /// persisted change-set record and the terminal event are keyed by.
 async fn queue_run(engine: &LocalEngine, chat_id: &str, cwd: &str, message_id: &str, prompt: &str) {
+    queue_run_with(
+        engine,
+        chat_id,
+        cwd,
+        message_id,
+        prompt,
+        serde_json::Value::Null,
+    )
+    .await;
+}
+
+/// `queue_run` with a worktree spec riding the request.
+#[allow(clippy::too_many_arguments)]
+async fn queue_run_with(
+    engine: &LocalEngine,
+    chat_id: &str,
+    cwd: &str,
+    message_id: &str,
+    prompt: &str,
+    worktree: serde_json::Value,
+) {
     engine
         .handle(
             methods::QUEUE_COMMAND,
@@ -326,13 +347,29 @@ async fn queue_run(engine: &LocalEngine, chat_id: &str, cwd: &str, message_id: &
                         "reasoning": null,
                         "modelOptions": {},
                         "cwd": cwd,
-                        "sandbox": "workspace-write"
+                        "sandbox": "workspace-write",
+                        "worktree": worktree
                     }
                 }
             }),
         )
         .await
         .unwrap();
+}
+
+/// The queue's current state, off a fresh watch's opening frame.
+async fn queue_snapshot(engine: &LocalEngine, chat_id: &str) -> serde_json::Value {
+    let RpcReply::Stream(mut watch) = engine
+        .handle(
+            methods::WATCH_MESSAGE_QUEUE,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("queue watch")
+    };
+    next_frame(&mut watch).await
 }
 
 /// The change set of one specific Turn by message id.
@@ -2405,14 +2442,25 @@ async fn a_rewind_while_a_turn_runs_interrupts_it_and_waits_out_the_settle() {
     wait_for_requests(&provider, 2).await;
     assert!(fixture.path("a.txt").exists());
 
+    // A file the running Turn already wrote moves underneath the plan:
+    // the verdict is provisional while the run holds the file, and the
+    // confirm stops the run and re-derives — the plan must not dead-end
+    // on a race the stop resolves.
+    std::fs::write(fixture.path("a.txt"), "external\n").unwrap();
     // The plan is read-only: the Turn keeps running while the dialog is
     // open — canceling the dialog must leave the run untouched — and the
     // plan says the confirm will stop it instead of stopping it here.
     let plan = rewind_plan(&engine, &common::message_id("work then stop")).await;
-    assert!(plan.conflicts.is_empty() && !plan.applied);
     assert!(plan.will_stop_turn, "the plan reports the live run");
     assert_eq!(plan.turns, 1, "the interrupted Turn is the cut");
     assert_eq!(plan.steps, 1);
+    assert!(
+        plan.conflicts.is_empty(),
+        "a live Turn's in-flight writes are not a verdict: {plan:?}"
+    );
+    // Back to the step's recorded after side, so the post-stop
+    // re-derivation finds the honest state.
+    std::fs::write(fixture.path("a.txt"), "one\n").unwrap();
 
     // The confirm is the stop: its interrupt reaches the transport; the
     // test releases its terminal event so the Turn settles while the
@@ -2579,9 +2627,14 @@ async fn a_confirm_sweeps_queued_items_and_lifts_the_pause() {
 
     let done = rewind_confirm(&engine).await.unwrap();
     assert!(done.applied);
-    // The queue watch's opening frame is the post-sweep state: empty,
-    // unpaused, nothing active.
+    // The queue comes back clean, not parked: empty, unpaused, nothing
+    // active — asserted on the state itself, not just the watch going
+    // quiet.
     settle_queue(&engine, "chat-1", true).await;
+    let snapshot = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(snapshot["pending"], serde_json::json!([]), "{snapshot}");
+    assert_eq!(snapshot["paused"], serde_json::json!(false), "{snapshot}");
+    assert!(snapshot["activeMessageId"].is_null(), "{snapshot}");
     let plan_after = rewind_plan_result(&engine, &common::message_id("three steps")).await;
     let Err(RpcError::Failed(message)) = plan_after else {
         panic!("the rewound message is gone from the conversation")
@@ -2591,6 +2644,130 @@ async fn a_confirm_sweeps_queued_items_and_lifts_the_pause() {
         "that message is no longer in the conversation (compacted or rewound)"
     );
     assert!(!fixture.path("a.txt").exists(), "the rewind itself applied");
+}
+
+/// A confirm the re-derivation refuses must not eat the queue: the sweep
+/// dies with the apply, never with a refusal. The user's own pause stands.
+#[tokio::test]
+async fn a_confirm_refused_by_new_conflicts_keeps_the_queue() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&three_step_provider(Vec::new()));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    rewind_plan(&engine, &common::message_id("three steps")).await;
+
+    // The user parks the queue with two pending sends, then a file moves
+    // on after the dialog opened.
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    std::fs::write(fixture.path("b.txt"), "moved on\n").unwrap();
+
+    let refused = rewind_confirm(&engine).await.unwrap();
+    assert!(!refused.applied, "the conflict refuses");
+    assert!(!refused.conflicts.is_empty(), "the refusal carries its why");
+    let snapshot = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        snapshot["pending"].as_array().map(Vec::len),
+        Some(2),
+        "the queued prompts survive the refusal: {snapshot}"
+    );
+    assert_eq!(
+        snapshot["paused"],
+        serde_json::json!(true),
+        "the user's own pause stands: {snapshot}"
+    );
+    assert!(snapshot["activeMessageId"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("b.txt")).unwrap(),
+        "moved on\n",
+        "nothing was written"
+    );
+    assert!(fixture.path("a.txt").exists());
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&transcript),
+        ["w-1", "b-1"],
+        "the conversation is untouched"
+    );
+}
+
+/// A message whose Turn never ran (a preparation failure wrote the
+/// transcript entry and nothing else — no History entry, no steps) still
+/// rewinds: the History keeps its prefix exactly, and the cut removes the
+/// bubble and its error row from the conversation.
+#[tokio::test]
+async fn a_never_ran_message_rewinds_conversation_only() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(Vec::new());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    // A session-worktree run on a base that does not exist fails loudly in
+    // preparation: the transcript holds the user bubble and a system error,
+    // the History holds nothing, and the provider is never called.
+    let repo_path = fixture.repo_path();
+    queue_run_with(
+        &engine,
+        "chat-1",
+        &repo_path,
+        "m-nowt",
+        "never runs",
+        serde_json::json!({ "repoPath": repo_path, "base": "no-such-base" }),
+    )
+    .await;
+    common::wait_for_transcript(&engine, "chat-1", "Session worktree could not be prepared").await;
+    let requests_before = provider.requests().len();
+
+    let plan = rewind_plan(&engine, "m-nowt").await;
+    assert!(plan.conflicts.is_empty() && !plan.applied);
+    assert_eq!(plan.turns, 1, "the cut covers only the never-ran bubble");
+    assert_eq!(plan.steps, 0, "nothing of it ever recorded a step");
+
+    let done = rewind_confirm(&engine).await.unwrap();
+    assert!(done.applied);
+    assert_eq!(
+        provider.requests().len(),
+        requests_before,
+        "the never-ran message never reached the provider"
+    );
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&transcript),
+        ["w-1", "b-1"],
+        "the earlier Turn stays in the conversation"
+    );
+    assert!(!transcript.to_string().contains("could not be prepared"));
+    assert!(
+        fixture.path("a.txt").exists(),
+        "the earlier Turn's files stay"
+    );
+    assert_eq!(steps(&fixture).len(), 2, "its steps stay in the log");
 }
 
 /// A message a compaction summarized away still renders in the transcript,
@@ -2644,9 +2821,15 @@ async fn a_compacted_message_refuses_with_its_own_reason() {
     settle_queue(&engine, "chat-1", true).await;
 
     // The transcript still shows the bubble; the History answers with the
-    // summary instead.
+    // summary instead. The refusal lands at PLAN time even while another
+    // Turn is live — a running Turn must not buy a confirmable dialog that
+    // only errors at the confirm.
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(snapshot.to_string().contains("a long conversation"));
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    provider.push(ScriptedReply::gated(gate.clone(), "a later turn"));
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "still running").await;
+    common::wait_for_requests(&provider, 3).await;
     let refused = rewind_plan_result(&engine, &common::message_id("a long conversation")).await;
     let Err(RpcError::Failed(message)) = refused else {
         panic!("expected the compacted target to refuse")
@@ -2655,4 +2838,6 @@ async fn a_compacted_message_refuses_with_its_own_reason() {
         message,
         "that message was compacted away — the summary no longer holds it verbatim"
     );
+    gate.notify_one();
+    settle_queue(&engine, "chat-1", true).await;
 }

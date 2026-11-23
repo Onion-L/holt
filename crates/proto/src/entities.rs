@@ -1225,7 +1225,9 @@ pub struct RewindConflict {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewindReply {
+    #[serde(default)]
     pub turns: usize,
+    #[serde(default)]
     pub steps: usize,
     #[serde(default)]
     pub will_stop_turn: bool,

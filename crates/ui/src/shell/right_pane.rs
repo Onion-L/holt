@@ -789,7 +789,21 @@ impl Shell {
                     });
                     cx.notify();
                 }
-                Err(message) => this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx),
+                Err(message) => {
+                    // The same refusal mapping the plan's error path uses —
+                    // a confirm-time refusal reads like every other.
+                    let copy: SharedString = crate::rewind::rewind_refusal_copy(&message)
+                        .map(Into::into)
+                        .unwrap_or_else(|| {
+                            t!(
+                                "conversation_transcript.rewind.failed",
+                                error = message.as_str()
+                            )
+                            .into_owned()
+                            .into()
+                        });
+                    this.push_holt_notice(HoltNoticeKind::Error, copy, cx);
+                }
             });
         })
         .detach();

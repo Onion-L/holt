@@ -31,7 +31,7 @@
 Long tasks fail at the worst times. The build is two hours in, the agent is mid-run, and the app gets killed. Every other tool tells the model "it may have partly run" and starts over. Holt doesn't.
 
 - **Survives crashes.** When the app is killed mid-run, Holt restores orphan processes, tells the model exactly which files changed since it started, and picks up the Turn automatically. The model sees what happened and decides whether to continue — it doesn't start from scratch.
-- **Rewind to any message.** Every tool call that touches a file records the exact bytes before and after. If the agent goes off track, hover the message you want to return to and rewind — the conversation is trimmed and the files go back together, all or nothing.
+- **Rewind to any message.** Every tool call that touches a file records the exact bytes before and after. If the agent goes off track, hover the message of yours you want to return to and rewind — the conversation is trimmed and the files go back together, all or nothing.
 - **Local only.** No cloud, no accounts, no sync, no telemetry. Chats, transcripts, credentials, and checkpoints live under `~/.holt` and nowhere else.
 - **One process.** No daemon, no CLI. A native desktop app that embeds its backend in-process over a typed memory-RPC transport.
 

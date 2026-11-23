@@ -231,14 +231,16 @@ pub mod methods {
     /// `ConfirmRewind`.
     pub const REWIND_TO_MESSAGE: &str = "RewindToMessage";
     /// Apply the rewind `RewindToMessage` staged: params `{chatId}`;
-    /// replies `holt_proto::RewindReply` with `applied` true. The confirm
-    /// is the destructive step, in one order: interrupt a still-running
-    /// Turn and wait out its settle (a Turn that never settles refuses);
-    /// stop the workflows the cut Turns launched; sweep every queued item
-    /// (the pause self-clears with them); re-derive the plan against
-    /// post-stop state — new conflicts refuse without writing and the
-    /// reply carries them — and apply the fresh plan anchored on the
-    /// staged message. No staged plan is a failure, not an apply.
+    /// replies `holt_proto::RewindReply` with `applied` true. Nothing
+    /// destructive happens before the re-derivation validates: a
+    /// still-running Turn is interrupted and its settle waited out (a
+    /// Turn that never settles refuses with the interrupt's park lifted
+    /// again), then the plan is re-derived against post-stop state — a
+    /// refusal or a new conflict changes nothing but that park and the
+    /// dialog re-opens. The apply then stops the workflows the cut Turns
+    /// launched, sweeps every queued item (the pause self-clears with
+    /// them), writes the fresh plan down whole, and carries it out. No
+    /// staged plan is a failure, not an apply.
     pub const CONFIRM_REWIND: &str = "ConfirmRewind";
     /// Remove a pending ordinary message from the queue: params
     /// `{chatId, messageId}`; replies with the accepted `MessageQueue`

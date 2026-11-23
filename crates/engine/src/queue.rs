@@ -1526,6 +1526,28 @@ mod tests {
     }
 
     #[test]
+    fn clear_pending_sweeps_every_waiting_shape_and_lifts_a_clean_pause() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).expect("pause");
+        queue.clear_pending().expect("clear");
+        let snapshot = queue.snapshot();
+        assert!(snapshot.pending.is_empty());
+        assert!(!snapshot.paused, "nothing left to protect");
+        assert!(snapshot.active_message_id.is_none());
+
+        // A started item keeps the pause: execution still owns the channel,
+        // and the sweep must never touch it.
+        let (mut queue, _dir) = queue_with_pending();
+        queue.start("m-b", 1).expect("start");
+        queue.pause(true).expect("pause");
+        queue.clear_pending().expect("clear");
+        let snapshot = queue.snapshot();
+        assert!(snapshot.pending.is_empty(), "only the waiting items go");
+        assert_eq!(snapshot.active_message_id.as_deref(), Some("m-b"));
+        assert!(snapshot.paused, "the running Turn's park stands");
+    }
+
+    #[test]
     fn edit_changes_only_the_body() {
         let (mut queue, _dir) = queue_with_pending();
         let before = queue.record.pending[0].clone();

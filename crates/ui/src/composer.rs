@@ -503,12 +503,16 @@ impl Composer {
     /// applied, so it can be edited and resent — losslessly: the body
     /// lands in the input and the attachment-ref trailer returns as staged
     /// chips (the images are durable managed files, so the paths are all
-    /// a chip needs). Never over a draft the user started meanwhile, and
-    /// never on a chat the composer is no longer showing — the text is
+    /// a chip needs). Never over a draft the user started meanwhile —
+    /// typed text or staged attachments alike — and never on a chat the
+    /// composer is no longer showing — the text is
     /// simply dropped there (the rewind is done; the draft was never part
     /// of it).
     pub fn refill_after_rewind(&mut self, chat_id: &str, text: &str, cx: &mut Context<Self>) {
-        if self.current_key != chat_id || text.is_empty() || !self.input.read(cx).text().is_empty()
+        if self.current_key != chat_id
+            || text.is_empty()
+            || !self.input.read(cx).text().is_empty()
+            || !self.staged_refs().is_empty()
         {
             return;
         }

@@ -1035,16 +1035,31 @@ Turns it removes, the recorded steps it undoes, whether the confirm will
 stop a running Turn, how many queued items it deletes, the workflows it
 stops by name, and how many plain background processes stay running (they
 carry no Turn attribution; the dialog says so instead of stopping them).
-The confirm is the destructive step, in one engine-side order: interrupt
-the running Turn (the Stop command's own motion) and wait out its settle;
-stop the workflow runs the cut Turns launched (their handle is a call the
-kept History no longer holds — a continuation would report into a
-conversation that no longer contains its Turn); sweep every queued item
-(prompts pointing at the removed conversation die with it, and the pause
-self-clears as the last delete does); re-derive the plan against
-post-stop state so nothing the interrupted Turn wrote escapes the undo —
-new conflicts refuse and write nothing, the dialog re-opens — and apply
-the fresh plan, anchored on the message the user confirmed. The staged
+The confirm interrupts the running Turn (the Stop command's own motion)
+and waits out its settle, then re-derives the plan against post-stop
+state so nothing the interrupted Turn wrote escapes the undo — and
+nothing destructive happens before that re-derivation validates: a
+refusal or a new conflict changes nothing but the interrupt's park on
+the queue (lifted again, unless the user had paused it themselves; a
+Turn that never settles refuses the same way), while the queued prompts
+and the cut Turns' workflows die only with the apply, never with a
+refusal. The apply stops the workflow runs the cut Turns launched
+(their handle is a call the kept History no longer holds — a
+continuation would report into a conversation that no longer contains
+its Turn), sweeps every queued item (prompts pointing at the removed
+conversation die with it, and the pause self-clears as the last delete
+does), and carries out the fresh plan, anchored on the message the user
+confirmed. At plan time, while a Turn runs, the conflict verdict is
+provisional — the run's own in-flight writes read as Changed against
+the checkpoints — so the plan clears conflicts and leaves the verdict to
+the confirm's re-derivation instead of dead-ending the dialog on a race
+the stop resolves. A message a preparation failure left in the
+transcript without a History entry cuts like any other: the History
+keeps its prefix and the cut lands at the next boundary; only a
+compaction's summary stamped after the target refuses, with its own
+reason — keeping a summary that has absorbed what the cut would delete
+is worse than refusing. A failed plan clears any earlier staged one: an
+abandoned plan must not survive a later confirm. The staged
 record carries the whole derivation (the cut Turns, the writes, the
 undone steps) into `rewind.json` before any of it happens, so a crash
 part-way is finished by the next load without re-deriving from a
@@ -1053,9 +1068,7 @@ this because its anchor survived it, while a message cut removes its own
 anchor. A record the retired step-cut build wrote (`toolCallId`, no
 `createdAt`/`cutTurns`) is finished by the same load under that build's
 own cut derivation; a record no build can parse is warned about and kept,
-never silently dropped. A message a compaction summarized away refuses
-with its own reason — the transcript keeps the bubble, the History no
-longer holds it verbatim. Undone steps are the cut Turns' own (subagent
+never silently dropped. Undone steps are the cut Turns' own (subagent
 steps carry the parent Turn's message id), plus clock-orphaned steps
 after the boundary that no kept History holds. When steps exist but the
 work tree can no longer be discovered, the plan refuses with the
@@ -1076,7 +1089,9 @@ every stop-then-rewind a two-click retry); persisting the staged-
 unconfirmed plan (a restart would apply a stale plan to a chat that moved
 on); keeping the queued items through the cut (their prompts answer a
 conversation that no longer exists — stale context, and a pause with
-nothing left to protect); stopping plain background processes with the
+nothing left to protect) — and sweeping them before the re-derivation
+validates (a refused confirm must not eat the queue: the sweep dies with
+the apply); stopping plain background processes with the
 workflows (they carry no Turn attribution, so "launched by a cut Turn" is
 not answerable — a wrong guess kills a user's process); letting a cut
 Turn's workflow run on and report into the cut conversation (the report
