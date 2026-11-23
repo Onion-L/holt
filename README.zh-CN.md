@@ -35,15 +35,18 @@
 
 ## 功能
 
-- **崩溃恢复**——被 `kill -9` 或崩溃中断的 Turn 在下次启动时自动续跑：孤儿进程清理，模型被告知改动，对话继续。
-- **步骤 checkpoint**——每个 write、edit、bash 调用都记录精确的文件改动。存储使用内容寻址格式，每个 chat 有存储上限；超出保留窗口的 blob 会被丢弃，对象库定期整理。
-- **步骤回退**——在任意已完成的工具 chip 上悬停，预览并执行回退。对话在该步截断（包含所有并行的兄弟调用），每个文件回到该步之前的状态。有冲突——某个文件在此后被其他操作改过——则整个回退被拒绝。
-- **自带模型**——内置 provider，也支持自定义 provider 和模型配置，在设置中修改即时生效，无需重启。
-- **权限模式**——按对话设置，可逐项确认变更、交给模型审查，或授予完全访问权限。读操作始终不受限制。
-- **Plan 模式**——agent 先检查工作区并写出计划，经你批准后才开始改动。
-- **逐 Turn 审查**——每个 Turn 的变更集都带 diff；内置 git2 后端，支持分支、checkout diff、历史记录和 fetch。
-- **可扩展**——支持标准 skill 目录下的 skills、MCP server、subagent，以及可切换的网页搜索（智谱、博查、Brave）。
-- **内置终端**——终端面板归属于对话，显示在 transcript 旁边。
+- **崩溃恢复与意图日志**——被 `kill -9` 或崩溃中断的 Turn 在下次启动时自动续跑：清理孤儿进程，对齐变更文件，无缝恢复对话。
+- **步骤 checkpoint 与即时回退**——每个 write、edit、bash 调用都记录精确、基于内容寻址的文件改动前后状态。在任意已完成的工具 chip 上悬停，即可预览并回退改动与对话。
+- **多 Agent 工作流与 Subagent**（`/workflow`）——通过内嵌 QuickJS 执行模型编写的 JavaScript 脚本编排后台 Subagent（`agent()`、`parallel()`、`pipeline()`）。支持预先声明计划图，提供原生 GPUI 交互式拓扑画布（DAG 画布支持平移、缩放、展开以及实时数据流动画）、Token 消耗追踪与断点缓存复用。
+- **带独立验证器的 Goal 目标模式**（`/goal`）——设定持久化目标并跨多个 Turn 自主循环执行。每个 Turn 结束后，独立验证器基于确凿证据（文件 diff、工具输出）评估目标完成度，并自动生成直观可编辑的下一步队列。
+- **定时任务与例程**——支持用户或 Agent 设定计划任务（`schedule_routine`、Cron 表达式或单次定时），归属于指定 Space，并在应用休眠或唤醒后自动进行 Catch-up 补跑。
+- **隔离的 Session Worktree**——按需生成独立的 Git worktree（`<data dir>/worktrees/<chat id>`），让 Agent 在独立分支上探索和修改，完全不影响主工作区。
+- **权限模式与安全防护**——按对话设置：手动逐项确认、模型自动审查（Auto-review）或完全访问权限。读操作始终免审批，项目工作区外的文件写入会带有醒目的警告徽标。
+- **Plan 规划模式**（`/plan`）——Agent 在动手改动前先检查工作区并生成结构化规划方案，经用户审核批准后再开始执行。
+- **自带模型与 Provider 模式**（`/provider`）——内置支持 25+ 主流服务商（Anthropic、OpenAI、DeepSeek、Gemini 等），支持自定义端点与模型记录，并提供“AI 辅助添加”自主目录发现与对话内安全的 API Key 录入。
+- **逐 Turn 变更集与内置 Git**——每个 Turn 的改动均生成变更集与清晰的文件 diff；内置 git2 后端，支持暂存/未暂存对比、分支切换、历史图谱和 fetch。
+- **上下文与 Token 监控**——实时展示 Token 细分指标（输入、输出、缓存命中率）、上下文窗口占用率、完整系统 Prompt 检查器以及逐 Turn 上下文使用报告。
+- **可扩展工具集与内置终端**——支持标准 Skills 目录（`.agents/skills`、`~/.agents/skills`、`~/.holt/skills`）、基于 stdio/HTTP 的 MCP 服务器、可切换网页搜索（默认免 Key Exa、博查、智谱、Brave）与网页抓取、后台进程管理及会话内嵌终端。
 
 ## 安装
 
@@ -80,10 +83,11 @@ UI 只在启动时链接 `crates/engine` 来组装本地后端，功能代码不
 | Crate | 职责 |
 | --- | --- |
 | `apps/holt` | 可执行程序，没有 CLI。 |
-| `crates/ui` | gpui 视图层，与具体 agent 无关，负责渲染 `holt-doc` 中的 `MessagePart`。 |
-| `crates/engine` | 后端适配层：agent loop、provider、凭据、git、skills、终端。 |
-| `crates/core` | Agent 核心（`holt-core`）：provider、流式传输、agent loop、harness。pi v0.84.4 的 Rust 移植版，归 Holt 所有。 |
-| `crates/rpc` | 类型化控制面：分帧、分发、内存传输。 |
+| `apps/holt-runner` | 用于本地评测 Harness 的无头 Turn 运行器，通过 RPC 协议交互。 |
+| `crates/ui` | gpui 视图层（基于 `gpui-kit` 构建），与具体 agent 无关，负责渲染 `holt-doc` 中的 `MessagePart`。 |
+| `crates/engine` | 后端适配层：agent loop、provider、凭据、git、skills、终端、后台进程、工作流。 |
+| `crates/core` | Agent 核心（`holt-core`）：provider、流式传输、agent loop、harness。MIT 授权开源。 |
+| `crates/rpc` | 类型化控制面：分帧、分发、内存传输（`rpc::methods`）。 |
 | `crates/proto` | 共享的协议类型和领域类型。 |
 | `crates/doc` | Transcript 和 History 的传输类型（`MessagePart`、`TranscriptFrame`）。磁盘上的数据是普通 JSON/JSONL，由 `crates/engine` 负责。 |
 | `crates/theme`、`crates/syntax` | 主题库和语法高亮。 |

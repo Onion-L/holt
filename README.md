@@ -36,15 +36,18 @@ Long tasks fail at the worst times. The build is two hours in, the agent is mid-
 
 ## Features
 
-- **Crash recovery** — a Turn interrupted by `kill -9` or a crash resumes automatically on the next launch: orphan processes cleaned up, the model told what changed, the conversation continued.
-- **Step checkpoints** — every write, edit, and bash call records its exact file changes. Storage is content-addressed and bounded per chat; blobs older than the keep window are dropped and the object store is repacked.
-- **Step rewind** — hover any resolved tool chip to preview and apply a rewind. The conversation is cut at that step, all parallel sibling calls included, and every file goes back to its state before the step. Conflicts — a file modified by something else since — block the whole rewind.
-- **Bring your own model** — built-in providers plus custom providers and model records, editable live in Settings without a restart.
-- **Permission modes** — per chat: confirm each change, let a model review pass judge it, or grant full access. Reads are never gated.
-- **Plan mode** — the agent inspects the workspace and writes a plan for approval before touching anything.
-- **Review every Turn** — per-Turn change sets with diffs, plus branches, checkout diffs, history, and fetch on a built-in git2 backend.
-- **Extensible** — skills from the standard skill roots, MCP servers, subagents, and pluggable web search (Zhipu, Bocha, Brave).
-- **Built-in terminals** — chat-owned terminal panes next to the transcript.
+- **Crash recovery & Intent journal** — a Turn interrupted by `kill -9` or a crash resumes automatically on the next launch: orphan processes cleaned up, modified files reconciled, and the conversation picked up seamlessly.
+- **Step checkpoints & Instant rewind** — every write, edit, and bash call records atomic, content-addressed file changes before and after. Hover any resolved step chip to preview and rewind changes and conversation together.
+- **Multi-agent Workflows & Subagents** (`/workflow`) — orchestrate background subagents with model-written JavaScript on embedded QuickJS (`agent()`, `parallel()`, `pipeline()`). Declares explicit plan graphs up front with an interactive spatial GPUI canvas (DAG with pan, zoom, expand, and live link animations), token tracking, and journal-backed resume caching.
+- **Goal mode with independent verifier** (`/goal`) — set durable objectives that run autonomously across multiple turns. After each settled Turn, an independent verifier pass evaluates concrete evidence (file diffs, tool outputs) against the goal and automatically enqueues the next visible, editable step until complete.
+- **Scheduled routines** — user- or agent-defined scheduled prompts (`schedule_routine`, cron expressions, or one-shot at specific dates/times), running in designated Spaces with automatic catch-up runs for missed schedules.
+- **Isolated Session Worktrees** — spawn dedicated Git worktrees (`<data dir>/worktrees/<chat id>`) on demand, allowing agents to explore and make changes on isolated branches without touching your active working copy.
+- **Permission modes & Safe gates** — choose per chat: confirm each change manually, run an automated model review pass, or grant full access. Reads are never gated, and out-of-project writes carry visible warning badges.
+- **Plan mode** (`/plan`) — the agent inspects the workspace and formulates a structured implementation plan for review and approval before touching any files.
+- **Provider mode & Bring your own keys** (`/provider`) — built-in support for 25+ providers (Anthropic, OpenAI, DeepSeek, Gemini, etc.), custom endpoints, model records, and autonomous catalog discovery ("Add with AI") with secure in-transcript API key entry.
+- **Review every Turn** — per-Turn change sets with file diffs, stage/unstage status, branches, checkout diffs, history graph, and fetch powered by an embedded git2 backend.
+- **Context & Token usage inspector** — real-time token breakdown (input, output, cache hit rate), context window occupancy gauge, system prompt inspector, and turn-by-turn context usage report.
+- **Extensible toolset & Terminals** — skills from standard skill roots (`.agents/skills`, `~/.agents/skills`, `~/.holt/skills`), MCP servers over stdio/HTTP, pluggable web search (keyless Exa default, Bocha, Zhipu, Brave) with web fetch, background processes, and chat-owned interactive terminals.
 
 ## Install
 
@@ -83,11 +86,12 @@ trait, so another backend can slot in without touching the UI.
 
 | Crate | Role |
 | --- | --- |
-| `apps/holt` | The binary. No CLI. |
-| `crates/ui` | The gpui viewport — agent-agnostic, renders `MessagePart`s from `holt-doc`. |
-| `crates/engine` | The backend adapter: agent loop, providers, credentials, git, skills, terminals. |
-| `crates/core` | The agent core (`holt-core`): providers, streaming, agent loop, harness. Holt-owned Rust port of pi v0.84.4. |
-| `crates/rpc` | The typed control plane: framing, dispatch, memory transport. |
+| `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
+| `apps/holt-runner` | Headless Turn runner for local eval harnesses through the RPC contract. |
+| `crates/ui` | The gpui viewport (built on `gpui-kit`) — agent-agnostic, renders `MessagePart`s from `holt-doc`. |
+| `crates/engine` | The backend adapter: agent loop, providers, credentials, git, skills, terminals, background processes, workflows. |
+| `crates/core` | The agent core (`holt-core`): providers, streaming, agent loop, harness. MIT-licensed. |
+| `crates/rpc` | The typed control plane: framing, dispatch, memory transport (`rpc::methods`). |
 | `crates/proto` | Shared protocol and domain types. |
 | `crates/doc` | Transcript and History wire types (`MessagePart`, `TranscriptFrame`). Data on disk is plain JSON/JSONL, owned by `crates/engine`. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
