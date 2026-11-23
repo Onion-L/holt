@@ -850,9 +850,9 @@ impl Transcript {
                 });
                 let metadata = metadata
                     .child(timestamp)
-                    .children(rewind)
                     .children(edit)
-                    .children(copy);
+                    .children(copy)
+                    .children(rewind);
                 // The reserved lane is the test surface for the strip's
                 // hover-revealed affordances (its bounds survive the reveal).
                 let lane_id = row.id.clone();
