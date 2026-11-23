@@ -268,13 +268,13 @@ pub(crate) struct ContextSlot {
 /// The capture costs a full prompt/message/tool copy, so it is skipped while
 /// nobody holds a `WatchChatUsage` stream: the report is an inspection
 /// surface someone opened, and an unwatched chat's later open builds a
-/// `PreviewChatContext` on demand. A preview left over from a watched
+/// `PreviewChatContext` on demand. Any snapshot left over from a watched
 /// moment is retired here too — the request this capture belongs to just
 /// superseded it, and the next subscription's frame must say so rather
 /// than keep showing it.
 pub(crate) fn capture_context(chat: &ChatRuntime, model: &Model, context: &Context, cwd: &str) {
     if chat.usage_tx.receiver_count() == 0 {
-        clear_preview(chat);
+        clear_snapshot(chat);
         return;
     }
     let snapshot = context_snapshot(model, context, cwd);
@@ -300,27 +300,29 @@ fn store_snapshot(chat: &ChatRuntime, snapshot: holt_proto::ChatContextSnapshot)
 /// current state. A captured real request is kept — it stays the truth about
 /// the last request even when the selection or a mode moves.
 pub(crate) fn clear_context_preview(chat: &ChatRuntime) {
-    if clear_preview(chat) {
-        publish(chat);
-    }
-}
-
-/// The slot manipulation behind [`clear_context_preview`]: retire a preview
-/// without publishing anything. The caller decides whether a frame should
-/// say so — the next forced subscription publish reports the empty slot
-/// either way.
-fn clear_preview(chat: &ChatRuntime) -> bool {
     let mut slot = chat
         .context_snapshot
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let cleared = slot
+    if !slot
         .as_ref()
-        .is_some_and(|current| current.snapshot.preview);
-    if cleared {
-        *slot = None;
+        .is_some_and(|current| current.snapshot.preview)
+    {
+        return;
     }
-    cleared
+    *slot = None;
+    drop(slot);
+    publish(chat);
+}
+
+/// Retire any snapshot without publishing. An unwatched request supersedes
+/// both actual and preview captures; the next subscription reports the empty
+/// slot so the report rebuilds on demand.
+fn clear_snapshot(chat: &ChatRuntime) {
+    *chat
+        .context_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Publish a next-request preview only while no real request has superseded

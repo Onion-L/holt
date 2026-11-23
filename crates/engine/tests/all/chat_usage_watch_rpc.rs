@@ -844,3 +844,41 @@ async fn an_unwatched_turn_retires_a_stale_preview() {
     let frame = next_frame(&mut reopened).await;
     assert!(frame["context"].is_null(), "{frame}");
 }
+
+/// A captured real request is stale after a later unwatched request too:
+/// keeping it would pair the old request's entries with the new occupancy.
+#[tokio::test]
+async fn an_unwatched_turn_retires_a_stale_actual_snapshot() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("first answer"),
+        ScriptedReply::text("second answer"),
+    ]);
+    let engine = fixture.engine(&provider);
+    setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    let mut usage = usage_watch(&engine).await;
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "first prompt").await;
+    wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let actual = frame_until(&mut usage, |frame| {
+        frame["recordCount"] == json!(1) && frame["context"]["preview"] == json!(false)
+    })
+    .await;
+    assert!(
+        actual["context"]["entries"]
+            .as_array()
+            .is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry["content"] == json!("first prompt"))),
+        "{actual}"
+    );
+    drop(usage);
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "second prompt").await;
+    wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let mut reopened = usage_watch(&engine).await;
+    let frame = next_frame(&mut reopened).await;
+    assert!(frame["context"].is_null(), "{frame}");
+}
