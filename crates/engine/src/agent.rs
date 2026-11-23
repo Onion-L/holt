@@ -204,6 +204,10 @@ pub(crate) struct ChatRuntime {
     /// calls through, so a call left without a result is told apart as
     /// "may have partly run" from "never ran".
     pub(crate) tool_intents: Mutex<std::collections::HashSet<String>>,
+    /// The staged rewind waiting for `ConfirmRewind` (ADR-rewind-to-a-message-is-all-or-nothing):
+    /// in-memory only — a restart forgets it, and only a clean, current
+    /// plan is ever staged. Applying takes it; a newer plan replaces it.
+    pub(crate) rewind: Mutex<Option<crate::rewind::Pending>>,
     /// Set on load when a restart cut the started Turn off and it resumes
     /// rather than recovering as interrupted; consumed by the queue driver.
     pub(crate) resume: std::sync::atomic::AtomicBool,
@@ -264,6 +268,7 @@ impl ChatRuntime {
             usage_pending: Mutex::new(Vec::new()),
             usage_totals: Mutex::new(Default::default()),
             tool_intents: Mutex::new(Default::default()),
+            rewind: Mutex::new(None),
             resume: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -328,7 +333,7 @@ impl ChatRuntime {
             );
         }
         // A rewind a crash cut off finishes before anything reads the
-        // conversation (ADR-rewind-to-a-step-is-all-or-nothing).
+        // conversation (ADR-rewind-to-a-message-is-all-or-nothing).
         if notice.is_none() {
             crate::rewind::finish_pending(data_dir, chat_id, &mut history, &mut transcript);
         }
@@ -557,6 +562,7 @@ impl ChatRuntime {
             // file is set aside inside and the count continues from zero.
             usage_totals: Mutex::new(crate::usage::warm_totals(data_dir, chat_id)),
             tool_intents: Mutex::new(intents),
+            rewind: Mutex::new(None),
             resume: std::sync::atomic::AtomicBool::new(resume),
         }
     }

@@ -691,7 +691,7 @@ pub async fn run_prompt(engine: &LocalEngine, chat_id: &str, cwd: &str, prompt: 
                 "chatId": chat_id,
                 "command": {
                     "kind": "run",
-                    "messageId": format!("message-{}", uuid_tag(prompt)),
+                    "messageId": message_id(prompt),
                     "request": {
                         "prompt": prompt,
                         "provider": "openai",
@@ -716,6 +716,12 @@ fn uuid_tag(text: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("m{hash:x}")
+}
+
+/// The transcript user-message id `run_prompt` queues `prompt` under —
+/// the id a rewind to that message addresses.
+pub fn message_id(prompt: &str) -> String {
+    format!("message-{}", uuid_tag(prompt))
 }
 
 /// Pump session frames until `chat_id` carries `status`. For a transition

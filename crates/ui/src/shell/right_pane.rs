@@ -601,11 +601,12 @@ impl Shell {
             TranscriptEvent::OpenRoutine { routine_id } => {
                 self.open_routine(routine_id.clone(), cx);
             }
-            TranscriptEvent::RewindToStep {
+            TranscriptEvent::RewindToMessage {
                 chat_id,
-                tool_call_id,
+                message_id,
+                text,
             } => {
-                self.plan_rewind(chat_id.clone(), tool_call_id.clone(), cx);
+                self.plan_rewind(chat_id.clone(), message_id.clone(), text.clone(), cx);
             }
             TranscriptEvent::StopWorkflow { chat_id, call_id } => {
                 self.stop_workflow(chat_id.clone(), call_id.clone(), cx);
@@ -671,12 +672,14 @@ impl Shell {
         .detach();
     }
 
-    /// Ask the engine what a rewind to `tool_call_id` would do, then show
-    /// the confirm dialog with that plan.
+    /// Ask the engine what a rewind to just before `message_id` would do,
+    /// then show the confirm dialog with that plan. `text` is the row's raw
+    /// text — the apply refills the composer draft from it.
     pub(super) fn plan_rewind(
         &mut self,
         chat_id: String,
-        tool_call_id: String,
+        message_id: String,
+        text: String,
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -688,19 +691,31 @@ impl Shell {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let planned =
-                crate::rewind::rewind_call(engine, chat_id.clone(), tool_call_id.clone(), true)
-                    .await;
+            let planned = crate::rewind::rewind_call(engine, chat_id.clone(), message_id).await;
             let _ = this.update(cx, |this, cx| match planned {
                 Ok(plan) => {
                     this.rewind_confirm = Some(crate::rewind::RewindConfirm {
                         chat_id,
-                        tool_call_id,
+                        message_text: text,
                         plan,
                     });
                     cx.notify();
                 }
-                Err(message) => this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx),
+                Err(message) => {
+                    // The two stable refusals read as catalog copy; the
+                    // rest keep the engine's phrasing.
+                    let copy: SharedString = crate::rewind::rewind_refusal_copy(&message)
+                        .map(Into::into)
+                        .unwrap_or_else(|| {
+                            t!(
+                                "conversation_transcript.rewind.failed",
+                                error = message.as_str()
+                            )
+                            .into_owned()
+                            .into()
+                        });
+                    this.push_holt_notice(HoltNoticeKind::Error, copy, cx);
+                }
             });
         })
         .detach();
@@ -739,32 +754,37 @@ impl Shell {
         .detach();
     }
 
-    /// Apply a confirmed rewind. The engine re-plans and refuses if a file
-    /// moved on since the dialog opened.
+    /// Apply a confirmed rewind. The engine re-derives the staged plan and
+    /// refuses if anything moved on since the dialog opened; a refusal's
+    /// conflicts re-open the dialog, and an applied rewind returns the
+    /// rewound message's text to the composer as a draft.
     pub(super) fn apply_rewind(
         &mut self,
         chat_id: String,
-        tool_call_id: String,
+        message_text: String,
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let applied =
-                crate::rewind::rewind_call(engine, chat_id.clone(), tool_call_id.clone(), false)
-                    .await;
-            let _ = this.update(cx, |this, cx| match applied {
-                Ok(reply) if reply.applied => this.push_holt_notice(
-                    HoltNoticeKind::Success,
-                    crate::rewind::rewind_summary(&reply).into(),
-                    cx,
-                ),
+            let confirmed = crate::rewind::confirm_rewind_call(engine, chat_id.clone()).await;
+            let _ = this.update(cx, |this, cx| match confirmed {
+                Ok(reply) if reply.applied => {
+                    this.push_holt_notice(
+                        HoltNoticeKind::Success,
+                        crate::rewind::rewind_summary(&reply).into(),
+                        cx,
+                    );
+                    this.composer.update(cx, |composer, cx| {
+                        composer.refill_after_rewind(&chat_id, &message_text, cx)
+                    });
+                }
                 // Something moved on since the plan: show why instead.
                 Ok(plan) => {
                     this.rewind_confirm = Some(crate::rewind::RewindConfirm {
                         chat_id,
-                        tool_call_id,
+                        message_text,
                         plan,
                     });
                     cx.notify();

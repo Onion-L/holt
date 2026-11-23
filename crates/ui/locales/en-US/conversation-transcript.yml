@@ -150,21 +150,51 @@ conversation_transcript:
     title_cant:
       en-US: Can't rewind
     title_confirm:
-      en-US: Rewind to this step?
+      en-US: Rewind to this message?
     conflicts_intro:
       en-US: "Nothing was changed. These files block it:"
     conflict_changed:
-      en-US: changed since that step
+      en-US: changed since that message
     conflict_not_stored:
       en-US: content was not saved
     conflict_unsafe:
       en-US: outside the working tree
     conflict_line:
       en-US: "%{path} — %{reason}"
-    conversation_removed:
-      en-US: The conversation after this step will be removed.
+    removed_intro:
+      one:
+        en-US: "1 turn — this message and everything after it — leaves the conversation."
+      other:
+        en-US: "%{count} turns — this message and everything after it — leave the conversation."
+    steps_undone:
+      one:
+        en-US: "Undoes %{count} recorded step."
+      other:
+        en-US: "Undoes %{count} recorded steps."
+    stop_notice:
+      en-US: "Stops the Turn that is still running."
+    pending_notice:
+      one:
+        en-US: "Deletes 1 queued message with it."
+      other:
+        en-US: "Deletes %{count} queued messages with it."
+    workflows_notice:
+      one:
+        en-US: "Stops the background workflow %{names}."
+      other:
+        en-US: "Stops %{count} background workflows (%{names})."
+    processes_note:
+      one:
+        en-US: "1 background process keeps running — it is not stopped by this rewind."
+      other:
+        en-US: "%{count} background processes keep running — they are not stopped by this rewind."
+    refusal:
+      compacted:
+        en-US: "That message was compacted away — the summary no longer holds it verbatim, so it cannot be rewound to."
+      non_git:
+        en-US: "The chat's working directory is not a Git work tree, so file changes cannot be restored."
     files_intro:
-      en-US: "The conversation after this step will be removed. These files go back to how they were:"
+      en-US: "These files go back to how they were:"
     file_restored:
       en-US: "%{path} — restored"
     file_deleted:
@@ -174,7 +204,7 @@ conversation_transcript:
     button:
       en-US: Rewind
     tooltip:
-      en-US: Rewind to this step
+      en-US: Rewind to this message
     summary:
       none:
         en-US: Rewound the conversation.

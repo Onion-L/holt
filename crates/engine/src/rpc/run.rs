@@ -16,6 +16,7 @@ use super::required_string;
 use crate::EngineService;
 use crate::agent::{AgentRun, ChatRuntime};
 use crate::store::persist_spaces;
+use holt_core::agent::types::AgentMessage;
 
 impl EngineService {
     /// A queued run built from the chat's stored config with a prompt
@@ -1028,93 +1029,266 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({ "messageId": message_id }))
     }
 
-    /// Rewind the chat to just after one tool step
-    /// (ADR-step-checkpoints-in-a-chat-owned-object-store): the conversation
-    /// is cut after the results of the assistant message that made the call,
-    /// and every file a later step changed goes back. Files go first, then
-    /// the step log, then the conversation, so a failure part-way leaves a
-    /// conversation that still describes the files; a conflict writes
-    /// nothing. The chat stays idle afterwards: the user decides what next.
-    pub(super) async fn rewind_to_step(
+    /// The rewind a user message defines (ADR-rewind-to-a-message-is-all-or-nothing): the
+    /// conversation cut before it, every file its Turn and the later ones
+    /// changed put back, and the change sets that die with the cut Turns.
+    /// Read-only — the plan may run while a Turn is live; errors carry the
+    /// refusal.
+    async fn rewind_pending(
         &self,
-        params: serde_json::Value,
-    ) -> Result<RpcReply, RpcError> {
-        let chat_id = required_string(&params, "chatId")?.to_string();
-        let call_id = required_string(&params, "toolCallId")?.to_string();
-        let dry_run = params
-            .get("dryRun")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        if !crate::store::id_is_path_safe(&chat_id) {
-            return Err(RpcError::BadParams("invalid chatId".into()));
-        }
-        let chat = self.runtime.chat(&chat_id);
-        // The driver holds the execution lock for a whole Turn; holding it
-        // here keeps the next one from starting until the rewind is done.
-        let execution = chat.execution.try_lock();
-        let idle = chat.queue.lock().unwrap_or_else(|e| e.into_inner()).idle();
-        let (Ok(_execution), true) = (execution, idle) else {
-            return Err(RpcError::Failed(
-                "a Turn is running in this chat; rewind after it settles".into(),
-            ));
+        chat_id: &str,
+        chat: &Arc<ChatRuntime>,
+        message_id: &str,
+    ) -> Result<(holt_proto::RewindReply, crate::rewind::Pending), RpcError> {
+        let created_at = {
+            let transcript = chat.transcript.read().unwrap_or_else(|e| e.into_inner());
+            let entry = transcript
+                .iter()
+                .find(|entry| entry.id == message_id)
+                .ok_or_else(|| {
+                    RpcError::Failed(
+                        "that message is no longer in the conversation (compacted or rewound)"
+                            .into(),
+                    )
+                })?;
+            if entry.role != MessageRole::User {
+                return Err(RpcError::Failed(
+                    "only a user message can be rewound to".into(),
+                ));
+            }
+            entry.created_at
         };
-
-        let cut = crate::rewind::rewind_cut(
-            &chat.history.read().unwrap_or_else(|e| e.into_inner()),
-            &call_id,
-        )
-        .map_err(RpcError::Failed)?;
-        if crate::checkpoints::dropped_until(&self.data_dir, &chat_id)
+        // A live Turn's messages are only in the JSONL so far — the
+        // in-memory History is replaced at settle — so the verbatim-anchor
+        // question is answerable only once the chat is settled. The
+        // confirm stops and settles the run first, then re-derives: the
+        // check runs again there with the settled History.
+        let queue_idle = chat.queue.lock().unwrap_or_else(|e| e.into_inner()).idle();
+        let cut = {
+            let history = chat.history.read().unwrap_or_else(|e| e.into_inner());
+            // The transcript keeps every user bubble, but a compaction may
+            // have summarized this one away: without a verbatim History
+            // anchor the cut cannot be placed, and keeping a summary that
+            // has absorbed what the cut would delete is worse than
+            // refusing.
+            if queue_idle
+                && !history.iter().any(|message| {
+                    matches!(message, AgentMessage::User(user) if user.timestamp == created_at)
+                })
+            {
+                return Err(RpcError::Failed(
+                    "that message was compacted away — the summary no longer holds it verbatim".into(),
+                ));
+            }
+            crate::rewind::rewind_cut(&history, created_at)
+        };
+        if crate::checkpoints::dropped_until(&self.data_dir, chat_id)
             .is_some_and(|until| cut.boundary < until)
         {
             return Err(RpcError::Failed(
-                "that step is older than the checkpoints this chat keeps".into(),
+                "that message is older than the checkpoints this chat keeps".into(),
             ));
         }
-        crate::rewind::transcript_cut(
+        let (_, cut_turns) = crate::rewind::transcript_cut(
             &chat.transcript.read().unwrap_or_else(|e| e.into_inner()),
-            &cut.group,
+            message_id,
         )
         .map_err(RpcError::Failed)?;
-        let undone: Vec<_> = crate::checkpoints::load(&self.data_dir, &chat_id)
+        // A step of a cut Turn is undone by the Turn's own identity —
+        // subagent steps carry the parent's message id. The clock clause
+        // sweeps the orphans a prune left in the log (an edit-last's
+        // replaced Turns), which no transcript entry names anymore.
+        let cut_ids: std::collections::HashSet<&str> =
+            cut_turns.iter().map(String::as_str).collect();
+        let undone: Vec<_> = crate::checkpoints::load(&self.data_dir, chat_id)
             .into_iter()
             .filter(|step| {
-                step.timestamp > cut.boundary && !cut.retained.contains(&step.tool_call_id)
+                cut_ids.contains(step.message_id.as_str())
+                    || (step.timestamp > cut.boundary && !cut.retained.contains(&step.tool_call_id))
             })
             .collect();
-        let (reply, writes, workdir) = if undone.is_empty() {
+        let (mut reply, writes, workdir) = if undone.is_empty() {
             let reply = holt_proto::RewindReply {
+                turns: cut_turns.len(),
+                steps: 0,
+                will_stop_turn: false,
+                pending_count: 0,
+                workflows_to_stop: Vec::new(),
+                running_processes: 0,
                 files: Vec::new(),
                 conflicts: Vec::new(),
                 applied: false,
             };
             (reply, Vec::new(), None)
         } else {
-            let root = self.turn_change_root(&chat_id)?;
+            let root = self.turn_change_root(chat_id)?;
+            // The house-stable non-Git answer the change-set surface gives:
+            // a work tree that can no longer be discovered must not surface
+            // git2's raw message (the repo may simply be gone).
+            if !self.git.is_work_tree(&root).await {
+                return Err(RpcError::Failed(
+                    super::git_surface::NON_GIT_CHANGE_SET_REASON.into(),
+                ));
+            }
             let workdir = self.git.workdir(&root).await.map_err(RpcError::Failed)?;
-            let store = crate::checkpoints::store_dir(&self.data_dir, &chat_id)
+            let store = crate::checkpoints::store_dir(&self.data_dir, chat_id)
                 .ok_or_else(|| RpcError::BadParams("invalid chatId".into()))?;
             let steps = undone.clone();
             let planned_in = workdir.clone();
-            let (reply, writes) = tokio::task::spawn_blocking(move || {
+            let (mut reply, writes) = tokio::task::spawn_blocking(move || {
                 crate::rewind::plan(&planned_in, &store, &steps)
             })
             .await
             .map_err(|error| RpcError::Failed(format!("rewind task failed: {error}")))?;
+            reply.turns = cut_turns.len();
+            reply.steps = undone.len();
             (reply, writes, Some(workdir))
         };
-        if dry_run || !reply.conflicts.is_empty() {
-            return RpcReply::value(&reply);
+        // What a confirm will do around the cut — the dialog's own lines.
+        // A live Turn at plan time is expected: the confirm stops it, so
+        // the plan says so instead of refusing (canceling the dialog must
+        // leave the run untouched).
+        {
+            let queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            reply.will_stop_turn = !queue.idle();
+            reply.pending_count = queue.snapshot().pending.len() as u32;
         }
-
+        reply.workflows_to_stop = self.runtime.workflows.cut_live(chat_id, &cut.retained);
+        reply.running_processes = self
+            .background_rows()
+            .into_iter()
+            .filter(|row| {
+                row.chat_id == chat_id
+                    && row.running
+                    && row.kind == holt_rpc::background::BackgroundProcessKind::Process
+            })
+            .count() as u32;
         let pending = crate::rewind::Pending {
-            tool_call_id: call_id,
+            message_id: message_id.to_string(),
+            created_at,
+            cut_turns,
             workdir,
             writes,
             undone: undone.into_iter().map(|step| step.tool_call_id).collect(),
         };
+        Ok((reply, pending))
+    }
+
+    /// The execution a rewind's confirm runs under
+    /// (ADR-rewind-to-a-message-is-all-or-nothing): a still chat hands the
+    /// lock over at once; a Turn that is still running is interrupted —
+    /// the confirm is the stop — and the queue parks so nothing is
+    /// admitted behind it while it ends — and the settle is then waited
+    /// out, bounded, because the queue reads idle a moment before the
+    /// Turn's settle releases execution.
+    async fn execution_for_rewind(
+        chat: &Arc<ChatRuntime>,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, RpcError> {
+        if let Ok(execution) = chat.execution.try_lock() {
+            return Ok(execution);
+        }
+        let running = !chat.queue.lock().unwrap_or_else(|e| e.into_inner()).idle();
+        if running {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let stopped = queue.pause(true).and_then(|()| queue.mark_stopped());
+            if let Some(cancel) = chat
+                .cancel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                cancel.cancel();
+            }
+            stopped?;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), chat.execution.lock())
+            .await
+            .map_err(|_| {
+                RpcError::Failed("the chat's Turn did not settle; stop it and rewind again".into())
+            })
+    }
+
+    /// Plan rewinding the chat to just before one user message
+    /// (ADR-rewind-to-a-message-is-all-or-nothing): that message, its Turn,
+    /// and everything after leave the conversation, and every file those
+    /// Turns changed goes back. The plan is read-only — a Turn may keep
+    /// running while the dialog is open, and canceling the dialog must
+    /// leave the chat exactly as it was; the reply's summary fields say
+    /// what a confirm will stop and delete. A clean plan is staged for
+    /// `ConfirmRewind`.
+    pub(super) async fn rewind_to_message(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?.to_string();
+        let message_id = required_string(&params, "messageId")?.to_string();
+        if !crate::store::id_is_path_safe(&chat_id) {
+            return Err(RpcError::BadParams("invalid chatId".into()));
+        }
+        let chat = self.runtime.chat(&chat_id);
+        let (reply, pending) = self.rewind_pending(&chat_id, &chat, &message_id).await?;
+        // A plan a conflict refuses is never staged — there is nothing to
+        // confirm. Staging replaces any earlier plan for this chat.
+        if reply.conflicts.is_empty() {
+            *chat.rewind.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending);
+        }
+        RpcReply::value(&reply)
+    }
+
+    /// Carry out the rewind `RewindToMessage` staged. The confirm is the
+    /// destructive step, in one order: the running Turn (if any) is
+    /// interrupted and its settle waited out; the workflows a cut Turn
+    /// launched are stopped; every queued item is swept — its prompt
+    /// points at a conversation the cut is about to remove — and the
+    /// pause self-clears with them; the plan is then re-derived against
+    /// post-stop state, so nothing the interrupted Turn wrote escapes the
+    /// undo (new conflicts refuse and write nothing — the dialog
+    /// re-opens), and the fresh plan is written down whole and synced
+    /// (`rewind.json`) before any of it happens, so a crash part-way is
+    /// finished by the chat's next load.
+    pub(super) async fn confirm_rewind(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?.to_string();
+        if !crate::store::id_is_path_safe(&chat_id) {
+            return Err(RpcError::BadParams("invalid chatId".into()));
+        }
+        let chat = self.runtime.chat(&chat_id);
+        let staged = chat
+            .rewind
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(staged) = staged else {
+            return Err(RpcError::Failed(
+                "no rewind is waiting to be confirmed".into(),
+            ));
+        };
+        let _execution = Self::execution_for_rewind(&chat).await?;
+        chat.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_pending()
+            .map_err(|error| RpcError::Failed(format!("clear the queue: {error}")))?;
+        let (reply, pending) = self
+            .rewind_pending(&chat_id, &chat, &staged.message_id)
+            .await?;
+        if !reply.conflicts.is_empty() {
+            return RpcReply::value(&reply);
+        }
         crate::rewind::begin(&self.data_dir, &chat_id, &pending)
             .map_err(|error| RpcError::Failed(format!("record the rewind: {error}")))?;
+        // A workflow a cut Turn launched stops with it (its handle is a
+        // call the kept History no longer holds): its continuation would
+        // report into a conversation that no longer contains its Turn.
+        let retained = crate::rewind::rewind_cut(
+            &chat.history.read().unwrap_or_else(|e| e.into_inner()),
+            pending.created_at,
+        )
+        .retained;
+        self.runtime.workflows.stop_cut(&chat_id, &retained);
+        *chat.rewind.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let cut_turns = {
             let mut history = chat.history.write().unwrap_or_else(|e| e.into_inner());

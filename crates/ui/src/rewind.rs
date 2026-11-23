@@ -1,7 +1,8 @@
-//! Rewind to a tool step (ADR-rewind-to-a-step-is-all-or-nothing): a chip's
-//! rewind affordance asks the engine for the plan (`RewindToStep` dry run),
-//! confirms it in a dialog over the conversation, then applies it. A plan
-//! with conflicts cannot be confirmed — the dialog only says why.
+//! Rewind to a user message (ADR-rewind-to-a-message-is-all-or-nothing):
+//! a user row's rewind affordance asks the engine to plan the cut
+//! (`RewindToMessage`), confirms that plan in a dialog over the
+//! conversation, then applies it (`ConfirmRewind`). A plan with conflicts
+//! cannot be confirmed — the dialog only says why.
 
 use std::borrow::Cow;
 
@@ -14,29 +15,53 @@ use holt_proto::{RewindAction, RewindConflictReason, RewindReply};
 use crate::i18n::t;
 use crate::theme::Theme;
 
-/// The step a pending confirm dialog would rewind to, with its plan.
+/// The message a pending confirm dialog would rewind to, with its plan
+/// and the row's raw text (the apply refills the composer draft from it —
+/// after the cut the conversation no longer holds the message to read it
+/// back from).
 #[derive(Clone)]
 pub(crate) struct RewindConfirm {
     pub chat_id: String,
-    pub tool_call_id: String,
+    pub message_text: String,
     pub plan: RewindReply,
 }
 
-/// Run `RewindToStep`; `Err` carries a phrased failure.
+/// Plan a rewind with `RewindToMessage`; `Err` carries a phrased failure.
 pub(crate) async fn rewind_call(
     engine: crate::state::EngineHandle,
     chat_id: String,
-    tool_call_id: String,
-    dry_run: bool,
+    message_id: String,
 ) -> Result<RewindReply, String> {
     let params = serde_json::json!({
         "chatId": chat_id,
-        "toolCallId": tool_call_id,
-        "dryRun": dry_run,
+        "messageId": message_id,
     });
     let value = engine
         .client()
-        .call(holt_rpc::methods::REWIND_TO_STEP, params)
+        .call(holt_rpc::methods::REWIND_TO_MESSAGE, params)
+        .await
+        .map_err(|error| {
+            t!(
+                "conversation_transcript.rewind.failed",
+                error = error.to_string()
+            )
+            .into_owned()
+        })?;
+    serde_json::from_value(value)
+        .map_err(|_| t!("conversation_transcript.rewind.malformed").into_owned())
+}
+
+/// Apply the staged plan with `ConfirmRewind`. A reply that did not apply
+/// carries the conflicts that refused it — nothing was written; `Err`
+/// carries a phrased failure.
+pub(crate) async fn confirm_rewind_call(
+    engine: crate::state::EngineHandle,
+    chat_id: String,
+) -> Result<RewindReply, String> {
+    let params = serde_json::json!({ "chatId": chat_id });
+    let value = engine
+        .client()
+        .call(holt_rpc::methods::CONFIRM_REWIND, params)
         .await
         .map_err(|error| {
             t!(
@@ -66,6 +91,106 @@ fn listed(lines: Vec<String>) -> String {
         ));
     }
     text
+}
+
+/// The dialog's opening line: how much conversation the cut removes —
+/// the reply's own summary, not a fixed sentence.
+fn removed_intro(turns: usize) -> Cow<'static, str> {
+    if turns == 1 {
+        t!("conversation_transcript.rewind.removed_intro.one")
+    } else {
+        t!(
+            "conversation_transcript.rewind.removed_intro.other",
+            count = turns
+        )
+    }
+}
+
+/// The undo scope's own line, when the plan undoes any recorded step.
+fn steps_line(steps: usize) -> Option<Cow<'static, str>> {
+    (steps > 0).then(|| {
+        if steps == 1 {
+            t!(
+                "conversation_transcript.rewind.steps_undone.one",
+                count = steps
+            )
+        } else {
+            t!(
+                "conversation_transcript.rewind.steps_undone.other",
+                count = steps
+            )
+        }
+    })
+}
+
+/// The stop line: a live Turn is interrupted by the confirm — the plan
+/// says so up front, because canceling the dialog must be the user's way
+/// out of that.
+fn stop_line(will_stop: bool) -> Option<Cow<'static, str>> {
+    will_stop.then(|| t!("conversation_transcript.rewind.stop_notice"))
+}
+
+/// The sweep line: queued prompts point at a conversation the cut removes,
+/// so the confirm deletes them with it.
+fn pending_line(count: u32) -> Option<Cow<'static, str>> {
+    (count > 0).then(|| {
+        if count == 1 {
+            t!("conversation_transcript.rewind.pending_notice.one")
+        } else {
+            t!(
+                "conversation_transcript.rewind.pending_notice.other",
+                count = count
+            )
+        }
+    })
+}
+
+/// The workflows a cut Turn launched stop with it, by name.
+fn workflows_line(names: &[String]) -> Option<Cow<'static, str>> {
+    (!names.is_empty()).then(|| {
+        let joined = names.join(", ");
+        if names.len() == 1 {
+            t!(
+                "conversation_transcript.rewind.workflows_notice.one",
+                names = joined
+            )
+        } else {
+            t!(
+                "conversation_transcript.rewind.workflows_notice.other",
+                count = names.len(),
+                names = joined
+            )
+        }
+    })
+}
+
+/// Plain background processes carry no Turn attribution: the rewind does
+/// not stop them, and the dialog says so instead of staying quiet about
+/// work that will outlive the cut.
+fn processes_line(count: u32) -> Option<Cow<'static, str>> {
+    (count > 0).then(|| {
+        if count == 1 {
+            t!("conversation_transcript.rewind.processes_note.one")
+        } else {
+            t!(
+                "conversation_transcript.rewind.processes_note.other",
+                count = count
+            )
+        }
+    })
+}
+
+/// A plan refusal the engine phrases stably, mapped to catalog copy so a
+/// refusal reads like the rest of the dialog instead of raw RPC prose.
+/// The engine phrases are pinned by tests on both sides.
+pub(crate) fn rewind_refusal_copy(error: &str) -> Option<Cow<'static, str>> {
+    if error.contains("compacted away") {
+        Some(t!("conversation_transcript.rewind.refusal.compacted"))
+    } else if error.contains("not a Git work tree") {
+        Some(t!("conversation_transcript.rewind.refusal.non_git"))
+    } else {
+        None
+    }
 }
 
 /// The dialog's title and body, and whether it can be confirmed.
@@ -104,10 +229,31 @@ pub(crate) fn rewind_question(plan: &RewindReply) -> (Cow<'static, str>, String,
             false,
         );
     }
+    let mut body = removed_intro(plan.turns).into_owned();
+    if let Some(steps) = steps_line(plan.steps) {
+        body.push('\n');
+        body.push_str(steps.as_ref());
+    }
+    if let Some(line) = stop_line(plan.will_stop_turn) {
+        body.push('\n');
+        body.push_str(line.as_ref());
+    }
+    if let Some(line) = pending_line(plan.pending_count) {
+        body.push('\n');
+        body.push_str(line.as_ref());
+    }
+    if let Some(line) = workflows_line(&plan.workflows_to_stop) {
+        body.push('\n');
+        body.push_str(line.as_ref());
+    }
+    if let Some(line) = processes_line(plan.running_processes) {
+        body.push('\n');
+        body.push_str(line.as_ref());
+    }
     if plan.files.is_empty() {
         return (
             t!("conversation_transcript.rewind.title_confirm"),
-            t!("conversation_transcript.rewind.conversation_removed").into_owned(),
+            body,
             true,
         );
     }
@@ -130,7 +276,8 @@ pub(crate) fn rewind_question(plan: &RewindReply) -> (Cow<'static, str>, String,
     (
         t!("conversation_transcript.rewind.title_confirm"),
         format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
+            body,
             t!("conversation_transcript.rewind.files_intro"),
             listed(lines)
         ),
@@ -213,32 +360,32 @@ pub(crate) fn rewind_dialog(
     crate::popover::modal("rewind-dialog", viewport, card)
 }
 
-/// A chip's rewind affordance: faint until its chip is hovered.
+/// A user row's rewind affordance, drawn inside the hover metadata strip:
+/// the strip's own reveal is the hover gate, so the button itself stays
+/// plain (same square/hover treatment as the strip's edit button).
 pub(crate) fn rewind_button(
-    group: SharedString,
     id: SharedString,
     theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let hint: SharedString = t!("conversation_transcript.rewind.tooltip").into();
+    let selector = id.clone();
     div()
         .id(id)
+        .debug_selector(move || selector.to_string())
+        .size(px(Theme::SPACE_MD * 2.0))
         .flex_none()
-        .size(px(20.0))
-        .mr(px(4.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(px(Theme::CONTROL_RADIUS))
         .cursor_pointer()
-        .opacity(0.0)
-        .group_hover(group, |s| s.opacity(1.0))
-        .hover(|s| s.bg(crate::theme::ink(0.06)))
+        .hover(|s| s.bg(crate::theme::ink(0.08)))
         .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(hint.clone())).into())
         .on_click(on_click)
         .child(
             crate::icons::icon(crate::icons::RESTART)
-                .size(px(12.0))
+                .size(px(14.0))
                 .text_color(theme.text_muted),
         )
         .into_any_element()
@@ -251,10 +398,114 @@ mod tests {
 
     fn plan(files: Vec<RewindFile>, conflicts: Vec<RewindConflict>) -> RewindReply {
         RewindReply {
+            turns: 1,
+            steps: 0,
+            will_stop_turn: false,
+            pending_count: 0,
+            workflows_to_stop: Vec::new(),
+            running_processes: 0,
             files,
             conflicts,
             applied: false,
         }
+    }
+
+    #[test]
+    fn the_dialog_sizes_the_cut_from_the_reply() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let (title, body, can) = rewind_question(&RewindReply {
+            turns: 3,
+            steps: 2,
+            will_stop_turn: true,
+            pending_count: 2,
+            workflows_to_stop: vec!["audit".into()],
+            running_processes: 1,
+            files: Vec::new(),
+            conflicts: Vec::new(),
+            applied: false,
+        });
+        assert_eq!(title, t!("conversation_transcript.rewind.title_confirm"));
+        assert!(can);
+        assert!(
+            body.contains(
+                t!(
+                    "conversation_transcript.rewind.removed_intro.other",
+                    count = 3
+                )
+                .as_ref()
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains(
+                t!(
+                    "conversation_transcript.rewind.steps_undone.other",
+                    count = 2
+                )
+                .as_ref()
+            ),
+            "{body}"
+        );
+        // The confirm's side effects each get their own line: the stop,
+        // the sweep, the workflows, and the processes left running.
+        assert!(
+            body.contains(t!("conversation_transcript.rewind.stop_notice").as_ref()),
+            "{body}"
+        );
+        assert!(
+            body.contains(
+                t!(
+                    "conversation_transcript.rewind.pending_notice.other",
+                    count = 2
+                )
+                .as_ref()
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains(
+                t!(
+                    "conversation_transcript.rewind.workflows_notice.one",
+                    names = "audit"
+                )
+                .as_ref()
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains(t!("conversation_transcript.rewind.processes_note.one").as_ref()),
+            "{body}"
+        );
+        // A single Turn reads as one, and no side effect is not a line.
+        let (_, body, _) = rewind_question(&RewindReply {
+            turns: 1,
+            steps: 0,
+            ..plan(Vec::new(), Vec::new())
+        });
+        assert!(
+            body.contains(t!("conversation_transcript.rewind.removed_intro.one").as_ref()),
+            "{body}"
+        );
+        assert!(!body.contains("steps"));
+        assert!(!body.contains(t!("conversation_transcript.rewind.stop_notice").as_ref()));
+    }
+
+    /// The two stable engine refusals read as catalog copy; anything else
+    /// falls back to the raw message.
+    #[test]
+    fn the_stable_refusals_map_to_catalog_copy() {
+        let _locale = crate::i18n::tests::locale_lock();
+        let compacted = "that message was compacted away — the summary no longer holds it verbatim";
+        assert_eq!(
+            rewind_refusal_copy(compacted).as_deref(),
+            Some(t!("conversation_transcript.rewind.refusal.compacted").as_ref())
+        );
+        let non_git = "the chat's working directory is not a Git work tree";
+        assert_eq!(
+            rewind_refusal_copy(non_git).as_deref(),
+            Some(t!("conversation_transcript.rewind.refusal.non_git").as_ref())
+        );
+        assert_eq!(rewind_refusal_copy("something else entirely"), None);
     }
 
     #[test]

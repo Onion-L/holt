@@ -498,6 +498,47 @@ impl Composer {
     pub fn is_sending(&self) -> bool {
         self.sending
     }
+
+    /// Return a rewound message's text to the composer after the rewind
+    /// applied, so it can be edited and resent — losslessly: the body
+    /// lands in the input and the attachment-ref trailer returns as staged
+    /// chips (the images are durable managed files, so the paths are all
+    /// a chip needs). Never over a draft the user started meanwhile, and
+    /// never on a chat the composer is no longer showing — the text is
+    /// simply dropped there (the rewind is done; the draft was never part
+    /// of it).
+    pub fn refill_after_rewind(&mut self, chat_id: &str, text: &str, cx: &mut Context<Self>) {
+        if self.current_key != chat_id || text.is_empty() || !self.input.read(cx).text().is_empty()
+        {
+            return;
+        }
+        let parsed = crate::attachments::parse_user_message_images(text);
+        if !parsed.attachments.is_empty() {
+            let staged = self.path_refs.entry(chat_id.to_string()).or_default();
+            for attachment in &parsed.attachments {
+                let path = std::path::PathBuf::from(&attachment.path);
+                if staged.iter().any(|r| r.path == path) {
+                    continue;
+                }
+                // A managed name is a uuid stem (the engine's staged
+                // images); everything else is a picker-bound file the
+                // engine's reclaim refuses anyway.
+                let managed = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok());
+                staged.push(crate::path_refs::PathRef {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    path,
+                    is_dir: false,
+                    managed,
+                });
+            }
+        }
+        self.input
+            .update(cx, |input, cx| input.set_text(parsed.text, cx));
+        cx.notify();
+    }
     fn render_input_with_completion(&self) -> gpui::Div {
         div().relative().child(self.input.clone())
     }
@@ -1597,6 +1638,105 @@ mod tests {
                     !c.pickers.read(cx).provider_mode_draft,
                     "deleting the directive disarms the draft"
                 );
+            });
+        });
+    }
+
+    /// A rewind's composer refill (ADR-rewind-to-a-message-is-all-or-nothing):
+    /// the rewound message's text lands in an empty draft on the chat the
+    /// composer is showing, never over text the user started meanwhile, and
+    /// never on a chat the composer is no longer on.
+    #[gpui::test]
+    fn a_rewind_refill_fills_only_an_empty_draft_on_the_rewound_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.composer.clone())
+            }
+        }
+
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |s, cx| {
+                s.selected_chat = Some("chat-1".into());
+                cx.notify();
+            });
+            let composer = cx.new(|cx| Composer::new(state, cx));
+            TestView { composer }
+        });
+        visual.run_until_parked();
+
+        // An empty draft takes the rewound text.
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                c.refill_after_rewind("chat-1", "fix the parser", cx);
+                assert_eq!(c.input.read(cx).text(), "fix the parser");
+                assert!(c.staged_refs().is_empty());
+                // A draft the user started meanwhile is never clobbered.
+                c.input
+                    .update(cx, |input, cx| input.set_text("meanwhile…", cx));
+                c.refill_after_rewind("chat-1", "fix the parser", cx);
+                assert_eq!(c.input.read(cx).text(), "meanwhile…");
+                // Another chat's rewind never touches this draft.
+                c.refill_after_rewind("chat-other", "fix the parser", cx);
+                assert_eq!(c.input.read(cx).text(), "meanwhile…");
+            });
+        });
+    }
+
+    /// The refill is lossless: the attachment-ref trailer returns as staged
+    /// chips — a uuid stem marks an engine-managed image, a plain name a
+    /// picker-bound file — and the body lands in the input alone. A resent
+    /// round-trips to the same message.
+    #[gpui::test]
+    fn a_rewind_refill_returns_the_trailer_as_staged_chips(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.composer.clone())
+            }
+        }
+
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |s, cx| {
+                s.selected_chat = Some("chat-1".into());
+                cx.notify();
+            });
+            let composer = cx.new(|cx| Composer::new(state, cx));
+            TestView { composer }
+        });
+        visual.run_until_parked();
+
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let raw = format!(
+            "look at these\n\nAttached images (local files, referenced below):\n- /tmp/{uuid}.png\n- /tmp/notes.txt"
+        );
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                c.refill_after_rewind("chat-1", &raw, cx);
+                assert_eq!(c.input.read(cx).text(), "look at these");
+                let refs = c.staged_refs();
+                assert_eq!(refs.len(), 2, "the trailer returns as chips: {refs:?}");
+                let image = refs
+                    .iter()
+                    .find(|r| r.path.extension().is_some_and(|e| e == "png"))
+                    .unwrap();
+                assert!(image.managed, "a uuid stem is an engine-managed image");
+                let text = refs.iter().find(|r| r.path.ends_with("notes.txt")).unwrap();
+                assert!(!text.managed, "a picker-bound file is not managed");
             });
         });
     }

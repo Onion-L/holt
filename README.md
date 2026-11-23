@@ -5,7 +5,8 @@
 <h1 align="center">Holt</h1>
 
 <p align="center">
-  A local coding agent that survives crashes and lets you rewind any step.
+  A local coding agent that survives crashes and lets you rewind to any
+  message.
 </p>
 
 <p align="center">
@@ -30,14 +31,14 @@
 Long tasks fail at the worst times. The build is two hours in, the agent is mid-run, and the app gets killed. Every other tool tells the model "it may have partly run" and starts over. Holt doesn't.
 
 - **Survives crashes.** When the app is killed mid-run, Holt restores orphan processes, tells the model exactly which files changed since it started, and picks up the Turn automatically. The model sees what happened and decides whether to continue — it doesn't start from scratch.
-- **Rewind to any step.** Every tool call that touches a file records the exact bytes before and after. If the agent goes off track, hover any tool chip and rewind — the conversation is trimmed and the files go back together, all or nothing.
+- **Rewind to any message.** Every tool call that touches a file records the exact bytes before and after. If the agent goes off track, hover the message you want to return to and rewind — the conversation is trimmed and the files go back together, all or nothing.
 - **Local only.** No cloud, no accounts, no sync, no telemetry. Chats, transcripts, credentials, and checkpoints live under `~/.holt` and nowhere else.
 - **One process.** No daemon, no CLI. A native desktop app that embeds its backend in-process over a typed memory-RPC transport.
 
 ## Features
 
 - **Crash recovery & Intent journal** — a Turn interrupted by `kill -9` or a crash resumes automatically on the next launch: orphan processes cleaned up, modified files reconciled, and the conversation picked up seamlessly.
-- **Step checkpoints & Instant rewind** — every write, edit, and bash call records atomic, content-addressed file changes before and after. Hover any resolved step chip to preview and rewind changes and conversation together.
+- **Step checkpoints & Instant rewind** — every write, edit, and bash call records atomic, content-addressed file changes before and after. Hover any past message to preview and rewind the changes and conversation together — a Turn still running is interrupted for you.
 - **Multi-agent Workflows & Subagents** (`/workflow`) — orchestrate background subagents with model-written JavaScript on embedded QuickJS (`agent()`, `parallel()`, `pipeline()`). Declares explicit plan graphs up front with an interactive spatial GPUI canvas (DAG with pan, zoom, expand, and live link animations), token tracking, and journal-backed resume caching.
 - **Goal mode with independent verifier** (`/goal`) — set durable objectives that run autonomously across multiple turns. After each settled Turn, an independent verifier pass evaluates concrete evidence (file diffs, tool outputs) against the goal and automatically enqueues the next visible, editable step until complete.
 - **Scheduled routines** — user- or agent-defined scheduled prompts (`schedule_routine`, cron expressions, or one-shot at specific dates/times), running in designated Spaces with automatic catch-up runs for missed schedules.

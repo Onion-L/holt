@@ -16,7 +16,7 @@ pub(crate) mod plan;
 pub(crate) mod script;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
@@ -188,6 +188,33 @@ impl Workflows {
     pub(crate) fn stop_chat(&self, chat_id: &str) {
         for ((chat, _), entry) in self.runs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             if chat == chat_id {
+                entry.cancel.cancel();
+            }
+        }
+    }
+
+    /// The live runs a rewind would cut (ADR-rewind-to-a-message-is-all-or-nothing): every
+    /// run of the chat whose call the kept History no longer holds — the
+    /// names the confirm dialog lists before the user commits. Read-only;
+    /// [`stop_cut`](Self::stop_cut) is the stopping half.
+    pub(crate) fn cut_live(&self, chat_id: &str, retained: &HashSet<String>) -> Vec<String> {
+        self.runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((chat, call_id), _)| chat == chat_id && !retained.contains(call_id))
+            .map(|(_, entry)| entry.name.clone())
+            .collect()
+    }
+
+    /// Stop the runs a rewind cuts (ADR-rewind-to-a-message-is-all-or-nothing): every
+    /// live run of the chat whose call the kept History no longer holds —
+    /// its continuation would report into a conversation that no longer
+    /// contains its Turn. A stopped run settles cancelled, exactly as
+    /// `StopWorkflow` leaves it.
+    pub(crate) fn stop_cut(&self, chat_id: &str, retained: &HashSet<String>) {
+        for ((chat, call_id), entry) in self.runs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if chat == chat_id && !retained.contains(call_id) {
                 entry.cancel.cancel();
             }
         }

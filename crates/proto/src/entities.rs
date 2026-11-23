@@ -1213,11 +1213,28 @@ pub struct RewindConflict {
     pub reason: RewindConflictReason,
 }
 
-/// `RewindToStep` reply. `applied` is false for a dry run and for any
-/// rewind a conflict refused — then nothing was written.
+/// `RewindToMessage` / `ConfirmRewind` reply. `applied` is false for a
+/// plan, and for any rewind a conflict refused — then nothing was
+/// written. `turns` and `steps` size the cut for the confirm dialog: the
+/// Turns the cut removes, and the recorded steps it undoes. The four
+/// summary fields say what a confirm will do around the cut: stop the
+/// running Turn, delete the queued items, stop the workflows a cut Turn
+/// launched, and how many plain background processes stay running (they
+/// carry no Turn attribution — the dialog says so, it does not stop
+/// them).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewindReply {
+    pub turns: usize,
+    pub steps: usize,
+    #[serde(default)]
+    pub will_stop_turn: bool,
+    #[serde(default)]
+    pub pending_count: u32,
+    #[serde(default)]
+    pub workflows_to_stop: Vec<String>,
+    #[serde(default)]
+    pub running_processes: u32,
     pub files: Vec<RewindFile>,
     pub conflicts: Vec<RewindConflict>,
     pub applied: bool,

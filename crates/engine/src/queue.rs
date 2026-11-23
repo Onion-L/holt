@@ -552,6 +552,23 @@ impl Queue {
         self.commit(next)
     }
 
+    /// Remove every pending item at once — the rewind confirm's sweep:
+    /// queued prompts point at a conversation the cut is about to remove,
+    /// so they die with it rather than running against rewound context.
+    /// The pause self-clears exactly as the last delete does (nothing
+    /// remains for it to protect); a started item is execution's property
+    /// and is never touched here.
+    pub fn clear_pending(&mut self) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        next.pending.clear();
+        next.priority.clear();
+        next.attended_grant = None;
+        if next.pending.is_empty() && next.started.is_none() && self.error.is_none() {
+            next.clear_pause_when_empty();
+        }
+        self.commit(next)
+    }
+
     /// Whether a pending row is the goal loop's continuation (ADR-goal-mode-verified-loop-at-turn-settle) —
     /// the RPC layer checks before `delete`, since deleting one pauses the
     /// goal.

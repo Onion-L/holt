@@ -520,7 +520,8 @@ pub struct Shell {
     delete_confirm: Option<String>,
     /// The Turn card's pending restore: `(chat_id, message_id)`.
     restore_confirm: Option<(String, String)>,
-    /// A planned rewind awaiting confirmation (ADR-rewind-to-a-step-is-all-or-nothing).
+    /// A planned rewind awaiting confirmation
+    /// (ADR-rewind-to-a-message-is-all-or-nothing).
     rewind_confirm: Option<crate::rewind::RewindConfirm>,
     /// The app-update dialog is open (download confirm / progress / restart).
     update_dialog: bool,
@@ -1806,7 +1807,7 @@ impl Shell {
                         this.rewind_confirm = None;
                         this.apply_rewind(
                             confirm.chat_id.clone(),
-                            confirm.tool_call_id.clone(),
+                            confirm.message_text.clone(),
                             cx,
                         );
                     })

@@ -277,6 +277,12 @@ impl Composer {
                 let targets = image_paths.clone();
                 let full_path = full_path.clone();
                 let thumb = self.thumb_snapshot(&reference.path.to_string_lossy(), cx);
+                // One tooltip per element (gpui refuses a second): the
+                // error case swaps in its cause, the rest show the path.
+                let tooltip_text: gpui::SharedString = match &thumb {
+                    image_store::Snapshot::Error { cause, .. } => cause.clone(),
+                    _ => full_path.clone().into(),
+                };
                 let thumb_frame = div()
                     .id(("composer-ref-thumb", ix))
                     .size(px(STRIP_THUMB))
@@ -289,7 +295,7 @@ impl Composer {
                         this.open_viewer(targets.clone(), image_index, window, cx);
                     }))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::popover::TextTooltip(full_path.clone().into()))
+                        cx.new(|_| crate::popover::TextTooltip(tooltip_text.clone()))
                             .into()
                     });
                 let thumb_frame = match thumb {
@@ -316,11 +322,7 @@ impl Composer {
                                 )),
                         )
                     }
-                    image_store::Snapshot::Error { cause, .. } => thumb_frame
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| crate::popover::TextTooltip(cause.clone()))
-                                .into()
-                        })
+                    image_store::Snapshot::Error { .. } => thumb_frame
                         .flex()
                         .items_center()
                         .justify_center()

@@ -150,21 +150,51 @@ conversation_transcript:
     title_cant:
       zh-CN: 无法回退
     title_confirm:
-      zh-CN: 回退到这一步？
+      zh-CN: 回退到这条消息？
     conflicts_intro:
       zh-CN: "没有任何更改。以下文件阻止了回退："
     conflict_changed:
-      zh-CN: 自该步骤后已被更改
+      zh-CN: 自该消息后已被更改
     conflict_not_stored:
       zh-CN: 内容未保存
     conflict_unsafe:
       zh-CN: 在工作树之外
     conflict_line:
       zh-CN: "%{path} — %{reason}"
-    conversation_removed:
-      zh-CN: 该步骤之后的对话将被移除。
+    removed_intro:
+      one:
+        zh-CN: 将移除 1 个 Turn——这条消息及其后的所有内容。
+      other:
+        zh-CN: 将移除 %{count} 个 Turn——这条消息及其后的所有内容。
+    steps_undone:
+      one:
+        zh-CN: 撤销 %{count} 个已记录的步骤。
+      other:
+        zh-CN: 撤销 %{count} 个已记录的步骤。
+    stop_notice:
+      zh-CN: 将停止仍在运行的 Turn。
+    pending_notice:
+      one:
+        zh-CN: 随之删除 1 条排队中的消息。
+      other:
+        zh-CN: 随之删除 %{count} 条排队中的消息。
+    workflows_notice:
+      one:
+        zh-CN: 将停止后台工作流 %{names}。
+      other:
+        zh-CN: 将停止 %{count} 个后台工作流（%{names}）。
+    processes_note:
+      one:
+        zh-CN: 1 个后台进程将继续运行——回退不会停止它。
+      other:
+        zh-CN: "%{count} 个后台进程将继续运行——回退不会停止它们。"
+    refusal:
+      compacted:
+        zh-CN: 该消息已被压缩吸收——摘要不再逐字保留它，无法回退到这条消息。
+      non_git:
+        zh-CN: 该聊天的工作目录不是 Git 工作树，无法恢复文件改动。
     files_intro:
-      zh-CN: "该步骤之后的对话将被移除。以下文件将恢复原状："
+      zh-CN: "以下文件将恢复原状："
     file_restored:
       zh-CN: "%{path} — 已恢复"
     file_deleted:
@@ -174,7 +204,7 @@ conversation_transcript:
     button:
       zh-CN: 回退
     tooltip:
-      zh-CN: 回退到这一步
+      zh-CN: 回退到这条消息
     summary:
       none:
         zh-CN: 已回退对话。

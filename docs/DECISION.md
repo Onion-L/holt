@@ -30,10 +30,10 @@ in the same commit.
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [agent-schedules-routines-through-a-tool](#agent-schedules-routines-through-a-tool) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
-| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) |
+| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [rewind-to-a-message-is-all-or-nothing](#rewind-to-a-message-is-all-or-nothing) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [background-processes](subsystems/background-processes.md) | [background-processes-are-chat-owned](#background-processes-are-chat-owned) · [workflow-runs-ride-the-background-list](#workflow-runs-ride-the-background-list) |
-| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
+| [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [rewind-to-a-message-is-all-or-nothing](#rewind-to-a-message-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [workspace-files](subsystems/workspace-files.md) | [file-editing-state-belongs-to-spaces](#file-editing-state-belongs-to-spaces) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [shell-registry](subsystems/shell-registry.md) | [home-space-for-project-less-chats](#home-space-for-project-less-chats) · [self-update-trust-is-per-platform](#self-update-trust-is-per-platform) · [self-update-swaps-the-install-in-place-from-a-release-manifest](#self-update-swaps-the-install-in-place-from-a-release-manifest) |
 | UI, no page | [gpui-kit-owns-the-gpui-stack](#gpui-kit-owns-the-gpui-stack) · [own-send-holds-in-place-when-there-is-reply-room](#own-send-holds-in-place-when-there-is-reply-room) · [main-transcript-is-top-anchored](#main-transcript-is-top-anchored) · [nested-scroll-containers-isolate-wheel-events](#nested-scroll-containers-isolate-wheel-events) · [urls-wrap-after-slashes-never-before](#urls-wrap-after-slashes-never-before) · [ui-strings-live-in-a-compile-time-catalog](#ui-strings-live-in-a-compile-time-catalog) |
@@ -649,7 +649,11 @@ could prune what a checkpoint points at).
 
 ## rewind-to-a-step-is-all-or-nothing
 
-`10cfe6d`, `4b5447b`, `399608d`. A chat rewinds to just after any tool step of
+`10cfe6d`, `4b5447b`, `399608d`. Superseded by
+`rewind-to-a-message-is-all-or-nothing`. What carries over: the
+all-or-nothing refusal before any write, the write-down-whole crash
+safety, and the idle chat with usage remaining.
+A chat rewinds to just after any tool step of
 a settled Turn, conversation and files together, in one action
 (`RewindToStep`). The History is cut after the results of the assistant
 message that made the call — parallel siblings stay, so no call is left
@@ -1012,3 +1016,73 @@ prefill (the user's own calls are not evidence about the vendor, and
 one bad earlier batch would switch the prefill off for good); judging
 the listed catalog rows alone (hiding the one ladder-less model of a
 mixed catalog would pre-tick the next fetch).
+
+## rewind-to-a-message-is-all-or-nothing
+
+Supersedes `rewind-to-a-step-is-all-or-nothing`, including its rejection of
+a message target. A chat rewinds to just before one of its own user
+messages (`RewindToMessage` plans, `ConfirmRewind` applies): that message,
+its Turn, and everything after leave the conversation together, and every
+file those Turns changed goes back to its bytes before the first of them,
+from the step checkpoints. The cut message's text returns to the composer
+as a refill of an empty draft — body in the input, attachment-ref trailers
+back as staged chips (a uuid stem marks an engine-managed image), so a
+resent round-trips exactly — and the next word is the user's, edited.
+The plan is read-only: a Turn still running keeps running while the dialog
+is open, and canceling the dialog leaves the chat untouched. The reply
+sizes both the cut and the confirm's side effects for the dialog — the
+Turns it removes, the recorded steps it undoes, whether the confirm will
+stop a running Turn, how many queued items it deletes, the workflows it
+stops by name, and how many plain background processes stay running (they
+carry no Turn attribution; the dialog says so instead of stopping them).
+The confirm is the destructive step, in one engine-side order: interrupt
+the running Turn (the Stop command's own motion) and wait out its settle;
+stop the workflow runs the cut Turns launched (their handle is a call the
+kept History no longer holds — a continuation would report into a
+conversation that no longer contains its Turn); sweep every queued item
+(prompts pointing at the removed conversation die with it, and the pause
+self-clears as the last delete does); re-derive the plan against
+post-stop state so nothing the interrupted Turn wrote escapes the undo —
+new conflicts refuse and write nothing, the dialog re-opens — and apply
+the fresh plan, anchored on the message the user confirmed. The staged
+record carries the whole derivation (the cut Turns, the writes, the
+undone steps) into `rewind.json` before any of it happens, so a crash
+part-way is finished by the next load without re-deriving from a
+conversation the rewind may already have cut — the step cut never needed
+this because its anchor survived it, while a message cut removes its own
+anchor. A record the retired step-cut build wrote (`toolCallId`, no
+`createdAt`/`cutTurns`) is finished by the same load under that build's
+own cut derivation; a record no build can parse is warned about and kept,
+never silently dropped. A message a compaction summarized away refuses
+with its own reason — the transcript keeps the bubble, the History no
+longer holds it verbatim. Undone steps are the cut Turns' own (subagent
+steps carry the parent Turn's message id), plus clock-orphaned steps
+after the boundary that no kept History holds. When steps exist but the
+work tree can no longer be discovered, the plan refuses with the
+change-set surface's stable non-Git phrase rather than git2's raw
+message.
+Rejected: keeping the step target (its cut point is a place the model
+thinks in, not the user; the message is where the user remembers being,
+and the refilled draft makes re-entry cheap — the mid-Turn file
+granularity the step target kept is the acknowledged loss); a `dryRun`
+parameter on one method (two explicit methods, the house style of
+`ResolveApproval`); the client confirming by re-sending the plan or the
+target (the engine re-derives anchored on the staged message either way);
+stopping the Turn at plan time (a hover click and its cancelable dialog
+must carry no destructive side effect — the settle-wait belongs to the
+confirm); applying only a byte-identical re-derivation (the interrupted
+Turn's own steps always move the plan — the drift refusal would make
+every stop-then-rewind a two-click retry); persisting the staged-
+unconfirmed plan (a restart would apply a stale plan to a chat that moved
+on); keeping the queued items through the cut (their prompts answer a
+conversation that no longer exists — stale context, and a pause with
+nothing left to protect); stopping plain background processes with the
+workflows (they carry no Turn attribution, so "launched by a cut Turn" is
+not answerable — a wrong guess kills a user's process); letting a cut
+Turn's workflow run on and report into the cut conversation (the report
+lands as a Turn answering a message the conversation no longer holds);
+refilling the draft as raw text with the trailer inline (the chips are
+the composer's own shape — a uuid stem marks what the engine may
+reclaim); and rebuilding a compacted target from the raw History JSONL
+(possible, but a first version has no business re-materializing a prefix
+the replay rule deliberately dropped).

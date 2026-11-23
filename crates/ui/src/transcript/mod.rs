@@ -443,12 +443,15 @@ pub enum TranscriptEvent {
     },
     /// A run chat's caption: open its Routine on the Scheduled page.
     OpenRoutine { routine_id: String },
-    /// A settled tool chip's rewind affordance
-    /// (ADR-rewind-to-a-step-is-all-or-nothing): plan and confirm a rewind
-    /// to just after that call.
-    RewindToStep {
+    /// A user row's rewind affordance
+    /// (ADR-rewind-to-a-message-is-all-or-nothing): plan and confirm a
+    /// rewind to just before that message. The payload keeps the row's raw
+    /// text so the composer draft can be refilled after the apply — the
+    /// conversation no longer holds the message to read it back from.
+    RewindToMessage {
         chat_id: String,
-        tool_call_id: String,
+        message_id: String,
+        text: String,
     },
     /// A running workflow row's Stop (ADR-workflows-run-scripts-in-the-background-and-report-by-continuation).
     StopWorkflow { chat_id: String, call_id: String },
@@ -2880,6 +2883,118 @@ mod tests {
             ),
             "{:?}",
             events.borrow()
+        );
+    }
+
+    /// A user row's rewind affordance (ADR-rewind-to-a-message-is-all-or-nothing):
+    /// hovering the row reveals it in the metadata strip, it emits the
+    /// rewind event with the row's raw text (the composer refill source),
+    /// and a Working chat keeps it — the engine interrupts the running
+    /// Turn and waits out its settle.
+    #[gpui::test]
+    fn user_row_rewind_affordance_emits_and_stays_while_working(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        use gpui::AppContext as _;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            s.transcript = vec![SessionMessageEntry {
+                id: "m-1".into(),
+                role: holt_doc::MessageRole::User,
+                parts: vec![holt_doc::MessagePart::Text {
+                    id: "t0".into(),
+                    text: "fix the parser".into(),
+                }],
+                created_at: 0,
+                device_id: "dev".into(),
+                status: None,
+                continuation_of: None,
+            }];
+            s.transcript_replayed = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        // The strip is hover-gated: hovering the reserved lane reveals it.
+        let lane = cx.debug_bounds("meta-strip-m-1").expect("user strip lane");
+        cx.simulate_mouse_move(lane.center(), None, Default::default());
+        cx.run_until_parked();
+        let rewind = cx
+            .debug_bounds("rewind-message-m-1")
+            .expect("rewind affordance drawn");
+        cx.simulate_click(rewind.center(), Default::default());
+        assert!(
+            matches!(
+                events.borrow().last(),
+                Some(TranscriptEvent::RewindToMessage { chat_id, message_id, text })
+                    if chat_id == "chat-1" && message_id == "m-1" && text == "fix the parser"
+            ),
+            "{:?}",
+            events.borrow()
+        );
+
+        // A running Turn keeps the affordance: the engine interrupts the
+        // Turn and waits out its settle, so the click is the interrupt.
+        state.update(cx, |s, cx| {
+            s.begin_pending_send("chat-1", "m-2", chrono::Utc::now());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("rewind-message-m-1").is_some(),
+            "a Working chat still draws the rewind affordance"
+        );
+    }
+
+    /// A pending echo is not a conversation message yet — its strip carries
+    /// the timestamp and copy, but no rewind affordance to plan a cut the
+    /// engine would refuse.
+    #[gpui::test]
+    fn a_pending_echo_row_offers_no_rewind(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (_transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            s.push_echo(
+                "chat-1",
+                SessionMessageEntry {
+                    id: "m-1".into(),
+                    role: holt_doc::MessageRole::User,
+                    parts: vec![holt_doc::MessagePart::Text {
+                        id: "t0".into(),
+                        text: "still sending".into(),
+                    }],
+                    created_at: 0,
+                    device_id: "dev".into(),
+                    status: None,
+                    continuation_of: None,
+                },
+            );
+            s.transcript_replayed = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let lane = cx.debug_bounds("meta-strip-m-1").expect("echo strip lane");
+        cx.simulate_mouse_move(lane.center(), None, Default::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("rewind-message-m-1").is_none(),
+            "a pending echo draws no rewind affordance"
         );
     }
 
