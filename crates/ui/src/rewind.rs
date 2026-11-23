@@ -385,7 +385,7 @@ pub(crate) fn rewind_button(
         .on_click(on_click)
         .child(
             crate::icons::icon(crate::icons::UNDO_LEFT_ROUND)
-                .size(px(12.0))
+                .size(px(14.0))
                 .text_color(theme.text_muted),
         )
         .into_any_element()

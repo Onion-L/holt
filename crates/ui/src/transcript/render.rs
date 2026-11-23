@@ -829,7 +829,7 @@ impl Transcript {
                         }))
                         .child(
                             crate::icons::icon(crate::icons::PEN)
-                                .size(px(12.0))
+                                .size(px(14.0))
                                 .text_color(theme.text_muted),
                         )
                 });
@@ -2062,7 +2062,7 @@ impl Transcript {
                 } else {
                     crate::icons::COPY
                 })
-                .size(px(12.0))
+                .size(px(14.0))
                 .text_color(theme.text_muted),
             )
     }
