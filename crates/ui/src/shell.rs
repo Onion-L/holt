@@ -523,6 +523,10 @@ pub struct Shell {
     /// A planned rewind awaiting confirmation
     /// (ADR-rewind-to-a-message-is-all-or-nothing).
     rewind_confirm: Option<crate::rewind::RewindConfirm>,
+    /// Latest plan/confirm interaction. Chat switches invalidate every reply
+    /// from the previous chat; only an applied confirm outlives its epoch so
+    /// it can still refill the chat it rewound.
+    rewind_epoch: u64,
     /// The app-update dialog is open (download confirm / progress / restart).
     update_dialog: bool,
     /// The About Holt dialog (app menu) is open.
@@ -913,6 +917,7 @@ impl Shell {
             delete_confirm: None,
             restore_confirm: None,
             rewind_confirm: None,
+            rewind_epoch: 0,
             update_dialog: false,
             about_dialog: false,
             archive_confirm: None,
@@ -1078,6 +1083,8 @@ impl Shell {
         // snap, no tween — the panels belong to the destination chat).
         let selected = state.read(cx).selected_chat.clone().unwrap_or_default();
         if selected != self.active_chat {
+            self.rewind_epoch = self.rewind_epoch.wrapping_add(1);
+            self.rewind_confirm = None;
             self.active_chat = selected;
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched boot canvas REPLACES that entry —
@@ -1787,6 +1794,14 @@ impl Shell {
             }
         }
 
+        let selected_chat = self.state.read(cx).selected_chat.clone();
+        if self
+            .rewind_confirm
+            .as_ref()
+            .is_some_and(|confirm| selected_chat.as_deref() != Some(confirm.chat_id.as_str()))
+        {
+            self.rewind_confirm = None;
+        }
         if let Some(confirm) = self.rewind_confirm.clone() {
             let (title, question, can_confirm) = crate::rewind::rewind_question(&confirm.plan);
             overlays.push(crate::rewind::rewind_dialog(
@@ -1808,6 +1823,8 @@ impl Shell {
                         this.apply_rewind(
                             confirm.chat_id.clone(),
                             confirm.message_text.clone(),
+                            confirm.plan.plan_id.clone(),
+                            this.rewind_epoch,
                             cx,
                         );
                     })

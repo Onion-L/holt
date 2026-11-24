@@ -1225,6 +1225,9 @@ pub struct RewindConflict {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewindReply {
+    /// Opaque identity of the staged plan this reply confirms.
+    #[serde(default)]
+    pub plan_id: String,
     #[serde(default)]
     pub turns: usize,
     #[serde(default)]

@@ -105,6 +105,12 @@ pub(crate) struct Queue {
     path: PathBuf,
     error: Option<String>,
     unreadable: bool,
+    /// A confirm or an unfinished durable rewind fences admission without
+    /// rewriting the user's persisted pause.
+    rewind_hold: bool,
+    /// Once the durable record exists, ordinary queue mutations stay fenced
+    /// until the whole rewind has finished.
+    rewind_blocked: bool,
     pub tx: watch::Sender<serde_json::Value>,
 }
 
@@ -166,6 +172,8 @@ impl Queue {
                     path: path.clone(),
                     unreadable: false,
                     error: None,
+                    rewind_hold: false,
+                    rewind_blocked: false,
                     tx,
                 };
                 if let Err(err) = queue.commit(queue.record.clone()) {
@@ -186,6 +194,8 @@ impl Queue {
             path,
             unreadable: error.is_some(),
             error,
+            rewind_hold: false,
+            rewind_blocked: false,
             tx,
         };
         queue.publish();
@@ -203,7 +213,14 @@ impl Queue {
     }
 
     pub fn recover_started(&mut self) -> Option<StartedMessage> {
+        if self.rewind_hold {
+            return None;
+        }
         self.record.started.clone()
+    }
+
+    pub(crate) fn has_started_turn(&self) -> bool {
+        self.record.started.is_some()
     }
 
     pub fn recovered(&mut self, error: Option<String>) {
@@ -267,8 +284,14 @@ impl Queue {
     }
 
     fn commit(&mut self, record: Record) -> Result<(), RpcError> {
-        if self.unreadable {
-            return Err(RpcError::Failed(self.error.clone().unwrap_or_default()));
+        self.commit_inner(record, false)
+    }
+
+    fn commit_inner(&mut self, record: Record, rewind_recovery: bool) -> Result<(), RpcError> {
+        if self.unreadable || (self.rewind_blocked && !rewind_recovery) {
+            return Err(RpcError::Failed(self.error.clone().unwrap_or_else(|| {
+                "A rewind must finish before the queue can change".into()
+            })));
         }
         let mut renamed = false;
         let mut write = || -> Result<(), Box<dyn std::error::Error>> {
@@ -558,7 +581,7 @@ impl Queue {
     /// The pause self-clears exactly as the last delete does (nothing
     /// remains for it to protect); a started item is execution's property
     /// and is never touched here.
-    pub fn clear_pending(&mut self) -> Result<(), RpcError> {
+    pub(crate) fn clear_pending_for_rewind(&mut self) -> Result<(), RpcError> {
         let mut next = self.record.clone();
         next.pending.clear();
         next.priority.clear();
@@ -566,7 +589,51 @@ impl Queue {
         if next.pending.is_empty() && next.started.is_none() && self.error.is_none() {
             next.clear_pause_when_empty();
         }
-        self.commit(next)
+        self.commit_inner(next, true)
+    }
+
+    pub(crate) fn hold_for_rewind(&mut self) {
+        self.rewind_hold = true;
+    }
+
+    pub(crate) fn release_rewind_hold(&mut self) {
+        if !self.rewind_blocked {
+            self.rewind_hold = false;
+        }
+    }
+
+    /// Once `rewind.json` exists, only its own idempotent queue sweep may
+    /// mutate the queue until every recorded write has finished.
+    pub(crate) fn begin_rewind_apply(&mut self) {
+        self.rewind_hold = true;
+        self.rewind_blocked = true;
+    }
+
+    pub(crate) fn block_rewind_recovery(&mut self, error: String) {
+        self.rewind_hold = true;
+        self.rewind_blocked = true;
+        self.error = Some(format!(
+            "Could not finish the rewind: {error}. Reopen the chat after repairing storage"
+        ));
+        self.publish();
+    }
+
+    pub(crate) fn finish_rewind_apply(&mut self) {
+        self.rewind_hold = false;
+        self.rewind_blocked = false;
+    }
+
+    /// Load-time recovery for a message-cut record: its durable intent
+    /// includes the queue sweep, whether the crash happened before or after
+    /// the original confirm reached it.
+    pub(crate) fn recover_rewind(&mut self) -> Result<(), RpcError> {
+        if self.has_started_turn() {
+            return Err(RpcError::Failed(
+                "a started Turn still occupies the queue".into(),
+            ));
+        }
+        self.begin_rewind_apply();
+        self.clear_pending_for_rewind()
     }
 
     /// Whether a pending row is the goal loop's continuation (ADR-goal-mode-verified-loop-at-turn-settle) —
@@ -664,7 +731,7 @@ impl Queue {
     fn head(&self) -> Option<PendingMessage> {
         let by_id =
             |record: &Record, id: &str| record.pending.iter().find(|m| m.message_id == id).cloned();
-        (!self.record.paused && !self.unreadable)
+        (!self.record.paused && !self.unreadable && !self.rewind_hold)
             .then(|| {
                 // The attended grant outranks everything: it exists precisely
                 // to jump a promoted item parked ahead of the pause.
@@ -716,6 +783,11 @@ impl Queue {
     /// holds NOW — an edit that landed between the queue pick and this
     /// checkpoint wins.
     pub fn start(&mut self, message_id: &str, timestamp: i64) -> Result<StartedMessage, RpcError> {
+        if self.rewind_hold {
+            return Err(RpcError::Failed(
+                "A rewind must finish before another Turn can start".into(),
+            ));
+        }
         if self.record.paused {
             return Err(RpcError::Failed("Message queue is paused".into()));
         }
@@ -1529,7 +1601,7 @@ mod tests {
     fn clear_pending_sweeps_every_waiting_shape_and_lifts_a_clean_pause() {
         let (mut queue, _dir) = queue_with_pending();
         queue.pause(true).expect("pause");
-        queue.clear_pending().expect("clear");
+        queue.clear_pending_for_rewind().expect("clear");
         let snapshot = queue.snapshot();
         assert!(snapshot.pending.is_empty());
         assert!(!snapshot.paused, "nothing left to protect");
@@ -1540,7 +1612,7 @@ mod tests {
         let (mut queue, _dir) = queue_with_pending();
         queue.start("m-b", 1).expect("start");
         queue.pause(true).expect("pause");
-        queue.clear_pending().expect("clear");
+        queue.clear_pending_for_rewind().expect("clear");
         let snapshot = queue.snapshot();
         assert!(snapshot.pending.is_empty(), "only the waiting items go");
         assert_eq!(snapshot.active_message_id.as_deref(), Some("m-b"));

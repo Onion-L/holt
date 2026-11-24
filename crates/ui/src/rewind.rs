@@ -51,6 +51,16 @@ pub(crate) async fn rewind_call(
         .map_err(|_| t!("conversation_transcript.rewind.malformed").into_owned())
 }
 
+/// Confirm params carry the exact staged identity. Replies from older
+/// engines have no plan id; omitting the field keeps their old contract.
+pub(crate) fn confirm_rewind_params(chat_id: &str, plan_id: &str) -> serde_json::Value {
+    let mut params = serde_json::json!({ "chatId": chat_id });
+    if !plan_id.is_empty() {
+        params["planId"] = serde_json::json!(plan_id);
+    }
+    params
+}
+
 /// Apply the staged plan with `ConfirmRewind`. A reply that did not apply
 /// carries the conflicts that refused it — nothing was written; `Err`
 /// carries the engine's raw refusal phrasing (the caller maps the stable
@@ -58,8 +68,9 @@ pub(crate) async fn rewind_call(
 pub(crate) async fn confirm_rewind_call(
     engine: crate::state::EngineHandle,
     chat_id: String,
+    plan_id: String,
 ) -> Result<RewindReply, String> {
-    let params = serde_json::json!({ "chatId": chat_id });
+    let params = confirm_rewind_params(&chat_id, &plan_id);
     let value = engine
         .client()
         .call(holt_rpc::methods::CONFIRM_REWIND, params)
@@ -393,6 +404,7 @@ mod tests {
 
     fn plan(files: Vec<RewindFile>, conflicts: Vec<RewindConflict>) -> RewindReply {
         RewindReply {
+            plan_id: String::new(),
             turns: 1,
             steps: 0,
             will_stop_turn: false,
@@ -406,9 +418,22 @@ mod tests {
     }
 
     #[test]
+    fn confirm_sends_the_staged_plan_id_and_omits_a_legacy_empty_one() {
+        assert_eq!(
+            confirm_rewind_params("chat-1", "plan-9"),
+            serde_json::json!({"chatId": "chat-1", "planId": "plan-9"})
+        );
+        assert_eq!(
+            confirm_rewind_params("chat-1", ""),
+            serde_json::json!({"chatId": "chat-1"})
+        );
+    }
+
+    #[test]
     fn the_dialog_sizes_the_cut_from_the_reply() {
         let _locale = crate::i18n::tests::locale_lock();
         let (title, body, can) = rewind_question(&RewindReply {
+            plan_id: String::new(),
             turns: 3,
             steps: 2,
             will_stop_turn: true,

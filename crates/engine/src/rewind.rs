@@ -96,6 +96,27 @@ pub(crate) fn transcript_cut(
     Ok((kept, cut_turns))
 }
 
+/// Tool calls owned by the Turns the target cuts. Unlike History, the
+/// transcript retains these chips across compaction, so background work is
+/// still attributed to the Turn that launched it.
+pub(crate) fn cut_tool_calls(
+    transcript: &[SessionMessageEntry],
+    message_id: &str,
+) -> Result<HashSet<String>, String> {
+    let index = transcript
+        .iter()
+        .position(|entry| entry.id == message_id)
+        .ok_or("that message is no longer in the conversation (compacted or rewound)")?;
+    Ok(transcript[index..]
+        .iter()
+        .flat_map(|entry| &entry.parts)
+        .filter_map(|part| match part {
+            MessagePart::Tool { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
 /// One path across the undone steps: where it goes back to, and what the
 /// disk must still hold.
 struct NetChange {
@@ -193,6 +214,7 @@ pub(crate) fn plan(workdir: &Path, store: &Path, undone: &[Step]) -> (RewindRepl
     }
     (
         RewindReply {
+            plan_id: String::new(),
             // The caller sizes the cut (it derives the Turns) and fills the
             // confirm's summary fields; plan only walks the files.
             turns: 0,
@@ -207,6 +229,14 @@ pub(crate) fn plan(workdir: &Path, store: &Path, undone: &[Step]) -> (RewindRepl
         },
         writes,
     )
+}
+
+/// An in-memory staged plan. Confirm carries this opaque identity so a
+/// replaced plan can never authorize a different message's cut.
+#[derive(Clone, Debug)]
+pub(crate) struct StagedRewind {
+    pub plan_id: String,
+    pub pending: Pending,
 }
 
 /// A confirmed rewind, written down before any of it happens. It carries
@@ -308,6 +338,10 @@ fn pending_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     Some(crate::checkpoints::chat_dir(data_dir, chat_id)?.join("rewind.json"))
 }
 
+pub(crate) fn pending_exists(data_dir: &Path, chat_id: &str) -> bool {
+    pending_path(data_dir, chat_id).is_some_and(|path| path.exists())
+}
+
 /// Write the rewind down, synced, before carrying it out.
 pub(crate) fn begin(data_dir: &Path, chat_id: &str, pending: &Pending) -> std::io::Result<()> {
     let path =
@@ -320,6 +354,19 @@ pub(crate) fn begin(data_dir: &Path, chat_id: &str, pending: &Pending) -> std::i
     file.sync_all()?;
     std::fs::rename(&temp, &path)?;
     crate::store::sync_dir(dir)
+}
+
+fn clear_record(data_dir: &Path, chat_id: &str) -> Result<(), String> {
+    let Some(path) = pending_path(data_dir, chat_id) else {
+        return Ok(());
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("clear the rewind record: {error}")),
+    }
+    crate::store::sync_dir(path.parent().expect("chat dir"))
+        .map_err(|error| format!("sync the rewind record removal: {error}"))
 }
 
 /// The file writes and the step-log drop every written-down rewind
@@ -389,8 +436,11 @@ pub(crate) fn finish(
     )?;
     let cut = rewind_cut(history, pending.created_at);
     if history.len() > cut.history_len {
-        history.truncate(cut.history_len);
-        crate::history::rewrite(data_dir, chat_id, history).map_err(|error| error.to_string())?;
+        let mut kept = history.clone();
+        kept.truncate(cut.history_len);
+        crate::history::rewrite(data_dir, chat_id, &kept)
+            .map_err(|error| format!("rewrite History during rewind: {error}"))?;
+        *history = kept;
     }
     // The target entry is gone only on a replay that already cut it.
     if let Some(index) = transcript
@@ -409,9 +459,7 @@ pub(crate) fn finish(
     for message_id in &pending.cut_turns {
         crate::turn_change_store::delete(data_dir, chat_id, message_id);
     }
-    if let Some(path) = pending_path(data_dir, chat_id) {
-        let _ = std::fs::remove_file(path);
-    }
+    clear_record(data_dir, chat_id)?;
     Ok(pending.cut_turns.clone())
 }
 
@@ -439,9 +487,11 @@ fn finish_legacy(
     let mut cut_turns = Vec::new();
     if let Ok((history_len, group)) = legacy_rewind_cut(history, &pending.tool_call_id) {
         if history.len() > history_len {
-            history.truncate(history_len);
-            crate::history::rewrite(data_dir, chat_id, history)
-                .map_err(|error| error.to_string())?;
+            let mut kept = history.clone();
+            kept.truncate(history_len);
+            crate::history::rewrite(data_dir, chat_id, &kept)
+                .map_err(|error| format!("rewrite History during rewind: {error}"))?;
+            *history = kept;
         }
         if let Ok((entries, turns)) = legacy_transcript_cut(transcript, &group) {
             if entries != *transcript {
@@ -455,37 +505,43 @@ fn finish_legacy(
     for message_id in &cut_turns {
         crate::turn_change_store::delete(data_dir, chat_id, message_id);
     }
-    if let Some(path) = pending_path(data_dir, chat_id) {
-        let _ = std::fs::remove_file(path);
-    }
+    clear_record(data_dir, chat_id)?;
     Ok(cut_turns)
 }
 
 /// Finish a rewind a crash cut off; runs as the chat loads, before anything
-/// reads its conversation. A rewind that cannot finish stays written down
-/// for the next load — except a record no build can read, which is warned
-/// about and left in place rather than silently ignored.
+/// reads its conversation. A message-cut record also owns the queue sweep:
+/// the crash may have happened after the record landed but before the
+/// original confirm cleared the queue. Fail closed on any error so later
+/// work cannot be cut by a subsequent recovery attempt.
 pub(crate) fn finish_pending(
     data_dir: &Path,
     chat_id: &str,
     history: &mut Vec<AgentMessage>,
     transcript: &mut Vec<SessionMessageEntry>,
-) {
+    queue: &mut crate::queue::Queue,
+) -> Result<(), String> {
     let Some(path) = pending_path(data_dir, chat_id) else {
-        return;
+        return Ok(());
     };
-    let Some(bytes) = std::fs::read(&path).ok() else {
-        return;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read the rewind record: {error}")),
     };
-    let result = match serde_json::from_slice::<Pending>(&bytes) {
-        Ok(pending) => finish(data_dir, chat_id, &pending, history, transcript),
+    match serde_json::from_slice::<Pending>(&bytes) {
+        Ok(pending) => {
+            queue.recover_rewind().map_err(|error| error.to_string())?;
+            finish(data_dir, chat_id, &pending, history, transcript)?;
+            queue.finish_rewind_apply();
+            Ok(())
+        }
         Err(_) => match serde_json::from_slice::<LegacyPending>(&bytes) {
-            Ok(legacy) => finish_legacy(data_dir, chat_id, &legacy, history, transcript),
+            Ok(legacy) => {
+                finish_legacy(data_dir, chat_id, &legacy, history, transcript).map(|_| ())
+            }
             Err(error) => Err(format!("unreadable rewind record: {error}")),
         },
-    };
-    if let Err(error) = result {
-        tracing::warn!(target: "holt::checkpoints", %error, "could not finish an interrupted rewind");
     }
 }
 

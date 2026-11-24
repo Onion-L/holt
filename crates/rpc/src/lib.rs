@@ -230,17 +230,16 @@ pub mod methods {
     /// and stages nothing. A clean plan is staged in the engine for
     /// `ConfirmRewind`.
     pub const REWIND_TO_MESSAGE: &str = "RewindToMessage";
-    /// Apply the rewind `RewindToMessage` staged: params `{chatId}`;
-    /// replies `holt_proto::RewindReply` with `applied` true. Nothing
-    /// destructive happens before the re-derivation validates: a
-    /// still-running Turn is interrupted and its settle waited out (a
-    /// Turn that never settles refuses with the interrupt's park lifted
-    /// again), then the plan is re-derived against post-stop state — a
-    /// refusal or a new conflict changes nothing but that park and the
-    /// dialog re-opens. The apply then stops the workflows the cut Turns
-    /// launched, sweeps every queued item (the pause self-clears with
-    /// them), writes the fresh plan down whole, and carries it out. No
-    /// staged plan is a failure, not an apply.
+    /// Apply the exact plan `RewindToMessage` staged: params
+    /// `{chatId, planId}`; replies `holt_proto::RewindReply` with `applied`
+    /// true. A missing or replaced plan id refuses without applying another
+    /// target. Nothing destructive happens before the re-derivation
+    /// validates: a still-running or pre-admission Turn is interrupted and
+    /// its settle waited out. The independent admission hold then lifts
+    /// without rewriting the user's pause. The apply writes the fresh plan
+    /// down whole before stopping the cut Turns' workflows and sweeping the
+    /// queue. Once the record exists, queue mutations stay fenced until
+    /// recovery finishes conversation and files.
     pub const CONFIRM_REWIND: &str = "ConfirmRewind";
     /// Remove a pending ordinary message from the queue: params
     /// `{chatId, messageId}`; replies with the accepted `MessageQueue`

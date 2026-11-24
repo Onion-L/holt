@@ -682,6 +682,14 @@ impl Shell {
         text: String,
         cx: &mut Context<Self>,
     ) {
+        // A queued event from a transcript that is no longer selected is not
+        // a new interaction on the current chat.
+        if self.state.read(cx).selected_chat.as_deref() != Some(chat_id.as_str()) {
+            return;
+        }
+        self.rewind_epoch = self.rewind_epoch.wrapping_add(1);
+        self.rewind_confirm = None;
+        let epoch = self.rewind_epoch;
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.push_holt_notice(
                 HoltNoticeKind::Error,
@@ -692,29 +700,36 @@ impl Shell {
         };
         cx.spawn(async move |this, cx| {
             let planned = crate::rewind::rewind_call(engine, chat_id.clone(), message_id).await;
-            let _ = this.update(cx, |this, cx| match planned {
-                Ok(plan) => {
-                    this.rewind_confirm = Some(crate::rewind::RewindConfirm {
-                        chat_id,
-                        message_text: text,
-                        plan,
-                    });
-                    cx.notify();
+            let _ = this.update(cx, |this, cx| {
+                if this.rewind_epoch != epoch
+                    || this.state.read(cx).selected_chat.as_deref() != Some(chat_id.as_str())
+                {
+                    return;
                 }
-                Err(message) => {
-                    // The two stable refusals read as catalog copy; the
-                    // rest keep the engine's phrasing.
-                    let copy: SharedString = crate::rewind::rewind_refusal_copy(&message)
-                        .map(Into::into)
-                        .unwrap_or_else(|| {
-                            t!(
-                                "conversation_transcript.rewind.failed",
-                                error = message.as_str()
-                            )
-                            .into_owned()
-                            .into()
+                match planned {
+                    Ok(plan) => {
+                        this.rewind_confirm = Some(crate::rewind::RewindConfirm {
+                            chat_id,
+                            message_text: text,
+                            plan,
                         });
-                    this.push_holt_notice(HoltNoticeKind::Error, copy, cx);
+                        cx.notify();
+                    }
+                    Err(message) => {
+                        // The two stable refusals read as catalog copy; the
+                        // rest keep the engine's phrasing.
+                        let copy: SharedString = crate::rewind::rewind_refusal_copy(&message)
+                            .map(Into::into)
+                            .unwrap_or_else(|| {
+                                t!(
+                                    "conversation_transcript.rewind.failed",
+                                    error = message.as_str()
+                                )
+                                .into_owned()
+                                .into()
+                            });
+                        this.push_holt_notice(HoltNoticeKind::Error, copy, cx);
+                    }
                 }
             });
         })
@@ -762,13 +777,16 @@ impl Shell {
         &mut self,
         chat_id: String,
         message_text: String,
+        plan_id: String,
+        epoch: u64,
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let confirmed = crate::rewind::confirm_rewind_call(engine, chat_id.clone()).await;
+            let confirmed =
+                crate::rewind::confirm_rewind_call(engine, chat_id.clone(), plan_id).await;
             let _ = this.update(cx, |this, cx| match confirmed {
                 Ok(reply) if reply.applied => {
                     this.push_holt_notice(
@@ -780,8 +798,15 @@ impl Shell {
                         composer.refill_after_rewind(&chat_id, &message_text, cx)
                     });
                 }
-                // Something moved on since the plan: show why instead.
+                // Something moved on since the plan: show why instead. A
+                // conflict from an abandoned dialog must not follow the user
+                // to another chat (or replace a newer plan on this one).
                 Ok(plan) => {
+                    if this.rewind_epoch != epoch
+                        || this.state.read(cx).selected_chat.as_deref() != Some(chat_id.as_str())
+                    {
+                        return;
+                    }
                     this.rewind_confirm = Some(crate::rewind::RewindConfirm {
                         chat_id,
                         message_text,
@@ -790,6 +815,11 @@ impl Shell {
                     cx.notify();
                 }
                 Err(message) => {
+                    if this.rewind_epoch != epoch
+                        || this.state.read(cx).selected_chat.as_deref() != Some(chat_id.as_str())
+                    {
+                        return;
+                    }
                     // The same refusal mapping the plan's error path uses —
                     // a confirm-time refusal reads like every other.
                     let copy: SharedString = crate::rewind::rewind_refusal_copy(&message)
@@ -1864,6 +1894,254 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holt_proto::{RewindConflict, RewindConflictReason, RewindReply};
+    use holt_rpc::{RpcError, RpcReply, RpcService, memory_client};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
+
+    type RewindReceiver = oneshot::Receiver<RewindReply>;
+
+    struct RewindEngine {
+        plans: Mutex<VecDeque<RewindReceiver>>,
+        confirms: Mutex<VecDeque<RewindReceiver>>,
+        plan_calls: Mutex<Vec<serde_json::Value>>,
+        confirm_calls: Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl RewindEngine {
+        fn new(plans: Vec<RewindReceiver>, confirms: Vec<RewindReceiver>) -> Self {
+            Self {
+                plans: Mutex::new(plans.into()),
+                confirms: Mutex::new(confirms.into()),
+                plan_calls: Mutex::new(Vec::new()),
+                confirm_calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RpcService for RewindEngine {
+        async fn handle(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<RpcReply, RpcError> {
+            let receiver = match method {
+                holt_rpc::methods::REWIND_TO_MESSAGE => {
+                    self.plan_calls.lock().unwrap().push(params);
+                    self.plans.lock().unwrap().pop_front()
+                }
+                holt_rpc::methods::CONFIRM_REWIND => {
+                    self.confirm_calls.lock().unwrap().push(params);
+                    self.confirms.lock().unwrap().pop_front()
+                }
+                _ => return Err(RpcError::UnknownMethod(method.into())),
+            }
+            .expect("a scripted reply for every rewind call");
+            let reply = receiver.await.map_err(|_| RpcError::Closed)?;
+            RpcReply::value(&reply)
+        }
+    }
+
+    struct RewindHarness<'a> {
+        shell: Entity<Shell>,
+        state: Entity<AppState>,
+        visual: &'a mut gpui::VisualTestContext,
+        engine: Arc<RewindEngine>,
+        runtime: tokio::runtime::Runtime,
+    }
+
+    impl RewindHarness<'_> {
+        fn pump(&mut self) {
+            for _ in 0..12 {
+                self.runtime
+                    .block_on(async { tokio::task::yield_now().await });
+                self.visual.run_until_parked();
+            }
+        }
+
+        fn plan(&mut self, message_id: &str, text: &str) {
+            self.shell.update(&mut *self.visual, |shell, cx| {
+                shell.plan_rewind("chat-1".into(), message_id.into(), text.into(), cx)
+            });
+            self.pump();
+        }
+
+        fn select(&mut self, chat_id: &str) {
+            self.state.update(&mut *self.visual, |state, cx| {
+                state.select_chat(Some(chat_id.into()), cx)
+            });
+            self.pump();
+        }
+
+        fn click_confirm(&mut self) {
+            let bounds = self
+                .visual
+                .debug_bounds("rewind-confirm")
+                .expect("the clean plan renders its confirm button");
+            self.visual
+                .simulate_click(bounds.center(), Default::default());
+            self.pump();
+        }
+
+        fn dialog(&self) -> Option<(String, String, String)> {
+            self.visual.read(|cx| {
+                self.shell.read(cx).rewind_confirm.as_ref().map(|confirm| {
+                    (
+                        confirm.chat_id.clone(),
+                        confirm.plan.plan_id.clone(),
+                        confirm.message_text.clone(),
+                    )
+                })
+            })
+        }
+    }
+
+    fn rewind_harness<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        engine: Arc<RewindEngine>,
+    ) -> RewindHarness<'a> {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            for id in ["chat-1", "chat-2"] {
+                state.chats.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "deviceId": "test-device", "archived": false,
+                        "cwd": "/tmp", "createdAt": "2026-11-01T00:00:00Z"
+                    }))
+                    .unwrap(),
+                );
+            }
+            state.selected_chat = Some("chat-1".into());
+            state
+        });
+        let client = {
+            let _enter = runtime.enter();
+            memory_client(engine.clone())
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let (shell, visual) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell.route = Route::Chat;
+            shell.active_chat = "chat-1".into();
+            shell
+        });
+        let mut harness = RewindHarness {
+            shell,
+            state,
+            visual,
+            engine,
+            runtime,
+        };
+        harness.pump();
+        harness
+    }
+
+    fn clean_plan(plan_id: &str) -> RewindReply {
+        RewindReply {
+            plan_id: plan_id.into(),
+            turns: 1,
+            steps: 0,
+            will_stop_turn: false,
+            pending_count: 0,
+            workflows_to_stop: Vec::new(),
+            running_processes: 0,
+            files: Vec::new(),
+            conflicts: Vec::new(),
+            applied: false,
+        }
+    }
+
+    #[gpui::test]
+    fn rewind_plan_replies_only_open_the_latest_current_chat_interaction(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (old_tx, old_rx) = oneshot::channel();
+        let (new_tx, new_rx) = oneshot::channel();
+        let (cross_tx, cross_rx) = oneshot::channel();
+        let engine = Arc::new(RewindEngine::new(
+            vec![old_rx, new_rx, cross_rx],
+            Vec::new(),
+        ));
+        let mut harness = rewind_harness(cx, engine);
+
+        harness.plan("message-old", "old text");
+        harness.plan("message-new", "new text");
+        assert_eq!(harness.engine.plan_calls.lock().unwrap().len(), 2);
+
+        // The newer RPC settles first. The older reply arriving afterwards
+        // must not replace its dialog.
+        new_tx.send(clean_plan("plan-new")).unwrap();
+        harness.pump();
+        assert_eq!(
+            harness.dialog(),
+            Some(("chat-1".into(), "plan-new".into(), "new text".into()))
+        );
+        old_tx.send(clean_plan("plan-old")).unwrap();
+        harness.pump();
+        assert_eq!(
+            harness.dialog(),
+            Some(("chat-1".into(), "plan-new".into(), "new text".into()))
+        );
+
+        // A chat switch both closes the visible dialog and invalidates a plan
+        // still in flight. Its late reply cannot reopen over the destination.
+        harness.select("chat-2");
+        assert_eq!(harness.dialog(), None);
+        harness.select("chat-1");
+        harness.plan("message-cross", "cross text");
+        harness.select("chat-2");
+        cross_tx.send(clean_plan("plan-cross")).unwrap();
+        harness.pump();
+        assert_eq!(harness.dialog(), None);
+        assert!(harness.visual.debug_bounds("rewind-confirm").is_none());
+    }
+
+    #[gpui::test]
+    fn rewind_confirm_sends_its_plan_id_and_drops_a_cross_chat_conflict(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (plan_tx, plan_rx) = oneshot::channel();
+        let (confirm_tx, confirm_rx) = oneshot::channel();
+        let engine = Arc::new(RewindEngine::new(vec![plan_rx], vec![confirm_rx]));
+        let mut harness = rewind_harness(cx, engine);
+
+        harness.plan("message-1", "restore me");
+        plan_tx.send(clean_plan("the-current-plan")).unwrap();
+        harness.pump();
+        harness.click_confirm();
+        assert_eq!(
+            harness.engine.confirm_calls.lock().unwrap().as_slice(),
+            &[serde_json::json!({"chatId": "chat-1", "planId": "the-current-plan"})]
+        );
+
+        harness.select("chat-2");
+        confirm_tx
+            .send(RewindReply {
+                conflicts: vec![RewindConflict {
+                    path: "moved.txt".into(),
+                    reason: RewindConflictReason::Changed,
+                }],
+                ..clean_plan("the-current-plan")
+            })
+            .unwrap();
+        harness.pump();
+        assert_eq!(harness.dialog(), None);
+        assert!(harness.visual.debug_bounds("rewind-cancel").is_none());
+    }
 
     #[test]
     fn right_pane_ceiling_preserves_the_chat_floor() {

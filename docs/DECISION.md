@@ -30,7 +30,7 @@ in the same commit.
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
 | [modes](subsystems/modes.md) | [plan-mode-is-an-independent-approval-checkpoint](#plan-mode-is-an-independent-approval-checkpoint) · [model-setup-applies-stored-proposals](#model-setup-applies-stored-proposals) · [model-setup-scoped-chat-agent-never-applies](#model-setup-scoped-chat-agent-never-applies) · [api-keys-collected-through-key-requests](#api-keys-collected-through-key-requests) · [provider-mode-is-a-chat-mode](#provider-mode-is-a-chat-mode) |
 | [goals-routines](subsystems/goals-routines.md) | [routines-fire-in-process-and-coalesce-missed-fires](#routines-fire-in-process-and-coalesce-missed-fires) · [agent-schedules-routines-through-a-tool](#agent-schedules-routines-through-a-tool) · [goal-mode-verified-loop-at-turn-settle](#goal-mode-verified-loop-at-turn-settle) · [goal-card-drops-the-steps-checklist](#goal-card-drops-the-steps-checklist) |
-| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [rewind-to-a-message-is-all-or-nothing](#rewind-to-a-message-is-all-or-nothing) |
+| [conversation-policy](subsystems/conversation-policy.md) | [attended-sends-run-through-a-paused-queue](#attended-sends-run-through-a-paused-queue) · [steer-starts-a-new-turn](#steer-starts-a-new-turn) · [last-message-edit-restarts-a-turn](#last-message-edit-restarts-a-turn) · [compaction-is-not-a-turn](#compaction-is-not-a-turn) · [automatic-titles-run-outside-pi-hooks](#automatic-titles-run-outside-pi-hooks) · [ask-user-is-a-question-card](#ask-user-is-a-question-card) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [rewind-to-a-message-is-all-or-nothing](#rewind-to-a-message-is-all-or-nothing) · [rewind-confirmation-is-bound-and-recovery-is-fenced](#rewind-confirmation-is-bound-and-recovery-is-fenced) |
 | [terminals](subsystems/terminals.md) | [terminals-belong-to-chats-and-end-with-the-app](#terminals-belong-to-chats-and-end-with-the-app) |
 | [background-processes](subsystems/background-processes.md) | [background-processes-are-chat-owned](#background-processes-are-chat-owned) · [workflow-runs-ride-the-background-list](#workflow-runs-ride-the-background-list) |
 | [workspace-git](subsystems/workspace-git.md) | [git2-as-the-git-backend](#git2-as-the-git-backend) · [git-hangs-off-spaces-no-repo-registry](#git-hangs-off-spaces-no-repo-registry) · [branch-is-live-working-tree-state](#branch-is-live-working-tree-state) · [ui-driven-git-writes-agent-surface-stays-read-only](#ui-driven-git-writes-agent-surface-stays-read-only) · [turn-diff-net-change-baseline](#turn-diff-net-change-baseline) · [turn-change-sets-and-review](#turn-change-sets-and-review) · [turn-restore-from-change-records](#turn-restore-from-change-records) · [session-worktrees-are-chat-owned-isolation](#session-worktrees-are-chat-owned-isolation) · [session-worktree-branches-use-readable-stable-names](#session-worktree-branches-use-readable-stable-names) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) · [rewind-to-a-step-is-all-or-nothing](#rewind-to-a-step-is-all-or-nothing) · [rewind-to-a-message-is-all-or-nothing](#rewind-to-a-message-is-all-or-nothing) · [step-checkpoints-are-bounded-per-chat](#step-checkpoints-are-bounded-per-chat) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -675,6 +675,31 @@ separate conversation-only and files-only rewinds (two states that disagree);
 restoring what can be and skipping conflicts (a conversation that no longer
 describes the files); continuing the run from the step automatically (the user
 rewinds to change course, so the next word is theirs).
+
+## rewind-confirmation-is-bound-and-recovery-is-fenced
+
+Extends `rewind-to-a-message-is-all-or-nothing`. A clean plan carries an
+opaque `planId`, and planning/confirmation serialize per chat; `ConfirmRewind`
+applies only that identity, never whichever plan happens to be staged when an
+older dialog's confirm arrives. Its admission hold is independent of the
+user's persisted pause, so refusal cannot undo a pause chosen while confirm
+waits, and driver execution ownership rather than the admission checkpoint
+decides whether a pre-admission Turn must be cancelled. A resumable `started`
+record without a live driver refuses before the durable record lands and
+continues its ordinary resume instead of being swept or left unrecoverable.
+
+The durable `rewind.json` lands before workflow stops or the queue sweep.
+While it exists, ordinary queue mutations stay fenced; load replays the sweep
+and then the recorded conversation/files cut, and any unfinished recovery
+keeps new Turns out instead of letting a later replay cut newer work.
+Workflow ownership comes from the cut Turns' transcript calls, not compacted
+History, and a cut call rejects its report even after unregister.
+Rejected: a confirm keyed only by `chatId` (two plans can race); restoring an
+entry-time pause boolean (pause ownership is not a stack); sweeping before
+the durable record (a failed record loses prompts); logging recovery failure
+and reopening admission (new work can be cut later); History-only workflow
+attribution (compaction orphans a kept Turn's run); cancellation without a
+cut tombstone (settle/unregister/delivery races can re-enqueue a report).
 
 ## step-checkpoints-are-bounded-per-chat
 

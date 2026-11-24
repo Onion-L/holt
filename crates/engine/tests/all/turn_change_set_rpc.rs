@@ -332,6 +332,20 @@ async fn queue_run_with(
     prompt: &str,
     worktree: serde_json::Value,
 ) {
+    queue_run_result(engine, chat_id, cwd, message_id, prompt, worktree)
+        .await
+        .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn queue_run_result(
+    engine: &LocalEngine,
+    chat_id: &str,
+    cwd: &str,
+    message_id: &str,
+    prompt: &str,
+    worktree: serde_json::Value,
+) -> Result<RpcReply, RpcError> {
     engine
         .handle(
             methods::QUEUE_COMMAND,
@@ -354,7 +368,6 @@ async fn queue_run_with(
             }),
         )
         .await
-        .unwrap();
 }
 
 /// The queue's current state, off a fresh watch's opening frame.
@@ -1995,11 +2008,14 @@ async fn rewind_plan_result(
 }
 
 /// Confirm the staged rewind.
-async fn rewind_confirm(engine: &LocalEngine) -> Result<holt_proto::RewindReply, RpcError> {
+async fn rewind_confirm(
+    engine: &LocalEngine,
+    plan_id: &str,
+) -> Result<holt_proto::RewindReply, RpcError> {
     let reply = engine
         .handle(
             methods::CONFIRM_REWIND,
-            serde_json::json!({ "chatId": "chat-1" }),
+            serde_json::json!({ "chatId": "chat-1", "planId": plan_id }),
         )
         .await;
     match reply {
@@ -2075,7 +2091,7 @@ async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_before_the_messa
     assert!(plan.conflicts.is_empty() && !plan.applied);
     assert!(fixture.path("b.txt").exists(), "a plan writes nothing");
 
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
     // The Turn found a.txt and b.txt absent and README.md clean.
     assert!(!fixture.path("a.txt").exists());
@@ -2135,7 +2151,7 @@ async fn a_rewind_to_a_middle_message_keeps_the_earlier_turns() {
     assert_eq!(plan.files.len(), 1);
     assert_eq!(plan.files[0].path, "c.txt");
 
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
     assert!(!fixture.path("c.txt").exists());
     assert_eq!(
@@ -2198,7 +2214,7 @@ async fn a_file_that_moved_on_refuses_the_whole_rewind() {
     );
     // A plan a conflict refused is never staged, so it cannot be
     // confirmed.
-    let Err(RpcError::Failed(message)) = rewind_confirm(&engine).await else {
+    let Err(RpcError::Failed(message)) = rewind_confirm(&engine, &reply.plan_id).await else {
         panic!("expected the confirm to refuse")
     };
     assert_eq!(message, "no rewind is waiting to be confirmed");
@@ -2236,6 +2252,34 @@ async fn a_confirm_without_a_staged_plan_refuses() {
     assert_eq!(steps(&fixture).len(), 2);
 }
 
+#[tokio::test]
+async fn a_stale_plan_id_cannot_confirm_any_rewind() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(later_work_provider());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "later work").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let stale = rewind_plan(&engine, &common::message_id("three steps")).await;
+    let current = rewind_plan(&engine, &common::message_id("later work")).await;
+    assert_ne!(stale.plan_id, current.plan_id);
+
+    let Err(error) = rewind_confirm(&engine, &stale.plan_id).await else {
+        panic!("a replaced plan cannot be confirmed")
+    };
+    assert!(error.to_string().contains("plan was replaced"), "{error}");
+    assert!(fixture.path("a.txt").exists());
+    assert!(fixture.path("c.txt").exists());
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&transcript),
+        ["w-1", "b-1", "c-1"]
+    );
+}
+
 /// A confirm re-plans what moved on since the dialog opened and applies
 /// the fresh plan, anchored on the message the user confirmed: the later
 /// Turn's work joins the undo instead of refusing.
@@ -2258,7 +2302,7 @@ async fn a_confirm_replans_what_moved_on_and_applies_it() {
     settle_queue(&engine, "chat-1", true).await;
     assert!(fixture.path("c.txt").exists());
 
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
     assert!(!fixture.path("a.txt").exists());
     assert!(!fixture.path("b.txt").exists());
@@ -2294,7 +2338,7 @@ async fn a_conversation_only_rewind_cuts_without_touching_files() {
 
     let plan = rewind_plan(&engine, &common::message_id("no tools")).await;
     assert!(plan.files.is_empty() && plan.conflicts.is_empty() && !plan.applied);
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(snapshot["reset"].as_array().unwrap().is_empty());
@@ -2303,6 +2347,108 @@ async fn a_conversation_only_rewind_cuts_without_touching_files() {
         "the work tree is untouched"
     );
     assert_eq!(steps(&fixture), Vec::<serde_json::Value>::new());
+}
+
+#[tokio::test]
+async fn a_rewind_record_failure_keeps_the_queue_and_conversation() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("just words")]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "no tools").await;
+    settle_queue(&engine, "chat-1", true).await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    let plan = rewind_plan(&engine, &common::message_id("no tools")).await;
+
+    let checkpoint_dir = fixture.data_dir.path().join("checkpoints/chat-1");
+    if checkpoint_dir.is_dir() {
+        std::fs::remove_dir_all(&checkpoint_dir).unwrap();
+    }
+    std::fs::create_dir_all(checkpoint_dir.parent().unwrap()).unwrap();
+    std::fs::write(&checkpoint_dir, "not a directory").unwrap();
+    let Err(error) = rewind_confirm(&engine, &plan.plan_id).await else {
+        panic!("the unwritable record refuses the apply")
+    };
+    assert!(error.to_string().contains("record the rewind"), "{error}");
+
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        queue["pending"].as_array().map(Vec::len),
+        Some(2),
+        "{queue}"
+    );
+    assert!(queue["paused"].as_bool().unwrap());
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(!transcript["reset"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_rewind_apply_fences_new_work_until_recovery() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(Vec::new());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+
+    let history = fixture.data_dir.path().join("history/chat-1.jsonl");
+    let backup = fixture.data_dir.path().join("history/chat-1.backup");
+    std::fs::rename(&history, &backup).unwrap();
+    std::fs::create_dir(&history).unwrap();
+    let Err(error) = rewind_confirm(&engine, &plan.plan_id).await else {
+        panic!("the History rewrite failure interrupts the apply")
+    };
+    assert!(error.to_string().contains("rewind"), "{error}");
+    let requests = provider.requests().len();
+    let refused = queue_run_result(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "after-failure",
+        "must not run before recovery",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(refused.is_err(), "a pending rewind fences admission");
+    assert_eq!(provider.requests().len(), requests);
+
+    std::fs::remove_dir_all(&history).unwrap();
+    std::fs::rename(&backup, &history).unwrap();
+    drop(engine);
+    let engine = fixture.engine(&provider);
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(queue["pending"], serde_json::json!([]), "{queue}");
+    assert!(queue["error"].is_null(), "{queue}");
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(transcript["reset"].as_array().unwrap().is_empty());
+    assert!(!fixture.path("a.txt").exists());
+    assert!(!fixture.path("b.txt").exists());
+    assert_eq!(provider.requests().len(), requests);
 }
 
 #[tokio::test]
@@ -2316,6 +2462,29 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
     settle_queue(&engine, "chat-1", true).await;
     // Let the settled Turn release the chat before the "crash".
     rewind_plan(&engine, &common::message_id("three steps")).await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     let entry = snapshot["reset"]
         .as_array()
@@ -2363,6 +2532,9 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
     remove_after_settle_releases(fixture.path("a.txt")).await;
 
     let engine = fixture.engine(&provider);
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(queue["pending"], serde_json::json!([]), "{queue}");
+    assert!(!queue["paused"].as_bool().unwrap(), "{queue}");
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(
         snapshot["reset"].as_array().unwrap().is_empty(),
@@ -2469,7 +2641,7 @@ async fn a_rewind_while_a_turn_runs_interrupts_it_and_waits_out_the_settle() {
         observed.notified().await;
         finish.notify_one();
     });
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     release.await.unwrap();
     assert!(done.applied);
     assert!(
@@ -2625,7 +2797,7 @@ async fn a_confirm_sweeps_queued_items_and_lifts_the_pause() {
     );
     assert!(!plan.will_stop_turn, "nothing is running");
 
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
     // The queue comes back clean, not parked: empty, unpaused, nothing
     // active — asserted on the state itself, not just the watch going
@@ -2698,10 +2870,10 @@ async fn a_confirm_refused_by_new_conflicts_keeps_the_queue() {
     );
     assert_eq!(parked["paused"], serde_json::json!(true), "{parked}");
 
-    rewind_plan(&engine, &common::message_id("three steps")).await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
     std::fs::write(fixture.path("b.txt"), "moved on\n").unwrap();
 
-    let refused = rewind_confirm(&engine).await.unwrap();
+    let refused = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(!refused.applied, "the conflict refuses");
     assert!(!refused.conflicts.is_empty(), "the refusal carries its why");
     let snapshot = queue_snapshot(&engine, "chat-1").await;
@@ -2728,6 +2900,65 @@ async fn a_confirm_refused_by_new_conflicts_keeps_the_queue() {
         ["w-1", "b-1"],
         "the conversation is untouched"
     );
+}
+
+#[tokio::test]
+async fn a_refused_confirm_preserves_a_pause_chosen_while_it_waits() {
+    let fixture = Fixture::new();
+    let observed = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let provider = three_step_provider(vec![ScriptedReply::Cancelling {
+        observed: observed.clone(),
+        finish: finish.clone(),
+    }]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "second turn").await;
+    wait_for_requests(&provider, 4).await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+    std::fs::write(fixture.path("b.txt"), "moved on\n").unwrap();
+
+    let confirm = rewind_confirm(&engine, &plan.plan_id);
+    let pause_while_waiting = async {
+        observed.notified().await;
+        engine
+            .handle(
+                methods::QUEUE_COMMAND,
+                serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+            )
+            .await
+            .unwrap();
+        finish.notify_one();
+    };
+    let (refused, ()) = tokio::join!(confirm, pause_while_waiting);
+    let refused = refused.unwrap();
+    assert!(!refused.applied && !refused.conflicts.is_empty());
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        queue["pending"].as_array().map(Vec::len),
+        Some(2),
+        "{queue}"
+    );
+    assert!(queue["paused"].as_bool().unwrap(), "{queue}");
 }
 
 /// A message whose Turn never ran (a preparation failure wrote the
@@ -2765,7 +2996,7 @@ async fn a_never_ran_message_rewinds_conversation_only() {
     assert_eq!(plan.turns, 1, "the cut covers only the never-ran bubble");
     assert_eq!(plan.steps, 0, "nothing of it ever recorded a step");
 
-    let done = rewind_confirm(&engine).await.unwrap();
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
     assert_eq!(
         provider.requests().len(),
