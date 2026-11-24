@@ -221,6 +221,14 @@ async fn a_custom_provider_flows_from_definition_to_key_to_models() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "acme/acme-1");
     assert_eq!(rows[0]["contextWindow"], 321_000);
+    // A reasoning record lists with the ladder the pickers offer — the
+    // base four levels when it carries no `thinkingLevelMap`. That is what
+    // a fetched model needs to be configurable with a reasoning level.
+    assert_eq!(
+        rows[0]["reasoningLevels"],
+        serde_json::json!(["minimal", "low", "medium", "high"])
+    );
+    assert_eq!(rows[0]["defaultReasoning"], "high");
 }
 
 /// A record without `baseUrl` inherits the provider's default endpoint —
