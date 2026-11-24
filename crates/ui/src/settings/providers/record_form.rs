@@ -665,15 +665,10 @@ pub(super) fn fetch_models_dialog(
     card.into_any_element()
 }
 
-/// The fetch dialog's Reasoning prefill: on only when every catalog model
-/// the provider offers exposes a ladder. A vendor whose whole known
-/// catalog reasons (Z.ai, Claude, DeepSeek, Gemini) ships its new ids
-/// reasoning too; a mixed catalog (OpenAI, Mistral, aggregators) or none
-/// at all proves nothing. Unticked is the safe side — a wrongly ticked
-/// record picks a level by default and puts a thinking control on the wire
-/// that models without reasoning reject, while an unticked one only hides
-/// the picker. User-owned rows do not count: they are the user's calls,
-/// not evidence about the vendor.
+/// The fetch dialog's Reasoning prefill
+/// (ADR-fetched-models-carry-the-dialogs-reasoning-flag): on only when
+/// every catalog model the provider offers exposes a ladder. The user's
+/// own rows never count — they are the user's calls, not the vendor's.
 fn template_reasoning(known: &[Model]) -> bool {
     let mut catalog = known.iter().filter(|model| !model.custom).peekable();
     catalog.peek().is_some() && catalog.all(|model| !model.reasoning_levels.is_empty())
