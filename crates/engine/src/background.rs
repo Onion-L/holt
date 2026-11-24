@@ -102,39 +102,11 @@ impl Process {
     /// The last `max_lines` lines (at most `max_bytes`) of combined output —
     /// what `process_status` and the exit notices report.
     fn tail(&self, max_lines: usize, max_bytes: usize) -> String {
-        let chunks: Vec<String> = {
-            use base64::Engine as _;
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            // Walk events newest-first until the budgets are covered.
-            let mut chunks: Vec<String> = Vec::new();
-            let mut bytes = 0usize;
-            let mut lines = 0usize;
-            for event in state.log.events_iter().rev() {
-                let TerminalEvent::Data { data, .. } = event else {
-                    continue;
-                };
-                let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data) else {
-                    continue;
-                };
-                let chunk = String::from_utf8_lossy(&raw).into_owned();
-                bytes += chunk.len();
-                lines += chunk.matches('\n').count();
-                chunks.push(chunk);
-                if lines >= max_lines || bytes >= max_bytes {
-                    break;
-                }
-            }
-            chunks.reverse();
-            chunks
-        };
-        let joined: String = chunks.concat();
-        let lines: Vec<&str> = joined.lines().collect();
-        let tail = if lines.len() > max_lines {
-            lines[lines.len() - max_lines..].join("\n")
-        } else {
-            joined
-        };
-        tail.chars().take(max_bytes).collect()
+        tail_from(
+            &self.state.lock().unwrap_or_else(|e| e.into_inner()).log,
+            max_lines,
+            max_bytes,
+        )
     }
 
     /// Post `signal` to the whole group. Returns whether the group was
@@ -169,14 +141,14 @@ impl Process {
             .take();
     }
 
-    /// Finish the session exactly once: publish the exit event, disarm the
-    /// group, and return what the registry owes the chat (the notice and
-    /// the shell-groups record to forget).
-    fn finish(&self, code: i32) -> Option<(ExitNotice, Option<PathBuf>)> {
+    /// Publish the exit when no registry remains to owe the chat anything
+    /// (the engine is gone): mark the session finished and wake any
+    /// outstanding subscriber holding the process.
+    fn finish(&self, code: i32) {
         let seq = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.exited {
-                return None;
+                return;
             }
             state.exited = true;
             state.exit_code = Some(code);
@@ -192,20 +164,41 @@ impl Process {
             state.log.push_exit(code)
         };
         self.changed.send_replace(seq);
-        let tail = self.tail(8, 4096);
-        Some((
-            ExitNotice {
-                command: self.command.clone(),
-                exit_code: code,
-                tail,
-            },
-            self.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .record
-                .take(),
-        ))
     }
+}
+
+/// The tail computation over an already-locked log — the supervisor's
+/// exit path holds the state lock while it snapshots the notice.
+fn tail_from(log: &OutputLog, max_lines: usize, max_bytes: usize) -> String {
+    use base64::Engine as _;
+    // Walk events newest-first until the budgets are covered.
+    let mut chunks: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    let mut lines = 0usize;
+    for event in log.events_iter().rev() {
+        let TerminalEvent::Data { data, .. } = event else {
+            continue;
+        };
+        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data) else {
+            continue;
+        };
+        let chunk = String::from_utf8_lossy(&raw).into_owned();
+        bytes += chunk.len();
+        lines += chunk.matches('\n').count();
+        chunks.push(chunk);
+        if lines >= max_lines || bytes >= max_bytes {
+            break;
+        }
+    }
+    chunks.reverse();
+    let joined: String = chunks.concat();
+    let lines: Vec<&str> = joined.lines().collect();
+    let tail = if lines.len() > max_lines {
+        lines[lines.len() - max_lines..].join("\n")
+    } else {
+        joined
+    };
+    tail.chars().take(max_bytes).collect()
 }
 
 #[derive(Clone)]
@@ -409,42 +402,62 @@ impl BackgroundProcesses {
         });
     }
 
-    /// The supervisor's finish path: queue the chat's exit notice, publish
-    /// the exit, forget the shell-groups record, and wake watchers. The
-    /// notice queues BEFORE the exit becomes visible (`running` flips) —
-    /// a Turn starting against a just-exited row must not race past its
-    /// notice — and the tail fills in after `finish` computed it.
+    /// The supervisor's finish path: queue the chat's exit notice, then
+    /// make the exit visible, forget the shell-groups record, and wake
+    /// watchers. The notice is complete when it queues — the supervisor
+    /// awaited both output readers, so its tail snapshot is final — and it
+    /// queues BEFORE `running` flips: a Turn starting against a
+    /// just-exited row can neither race past its notice nor drain a
+    /// half-filled one.
     fn record_exit(self: &Arc<Self>, process: &Arc<Process>, code: i32) {
+        let (seq, notice) = {
+            let mut state = process.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.exited {
+                // A second observation of the same exit (kill racing the
+                // supervisor's poll) — the notice is already queued.
+                return;
+            }
+            let tail = tail_from(&state.log, 8, 4096);
+            let seq = state.log.push_exit(code);
+            (
+                seq,
+                ExitNotice {
+                    command: process.command.clone(),
+                    exit_code: code,
+                    tail,
+                },
+            )
+        };
         {
             let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
             if !registry.removed_chats.contains(&process.chat_id) {
                 let notices = registry.notices.entry(process.chat_id.clone()).or_default();
-                notices.push_back(ExitNotice {
-                    command: process.command.clone(),
-                    exit_code: code,
-                    tail: String::new(),
-                });
+                notices.push_back(notice);
                 while notices.len() > MAX_NOTICES_PER_CHAT {
                     notices.pop_front();
                 }
             }
         }
-        let Some((notice, record)) = process.finish(code) else {
-            // A second observation of the same exit (kill racing the
-            // supervisor's poll) — the notice is already queued.
-            return;
+        let record = {
+            let mut state = process.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.exited = true;
+            state.exit_code = Some(code);
+            state.exited_at = Some(now_ms());
+            #[cfg(unix)]
+            {
+                state.group = None;
+            }
+            #[cfg(windows)]
+            {
+                state.job = None;
+            }
+            state.record.take()
         };
+        process.changed.send_replace(seq);
         if let Some(record) = record {
             #[cfg(unix)]
             crate::shell_groups::forget(&record);
         }
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(notices) = registry.notices.get_mut(&process.chat_id)
-            && let Some(last) = notices.back_mut()
-        {
-            *last = notice;
-        }
-        drop(registry);
         self.bump();
     }
 
