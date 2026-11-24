@@ -985,13 +985,17 @@ model-facing surface.
 
 ## fetched-models-carry-the-dialogs-reasoning-flag
 
-`37bda2e`. A model added from a vendor listing takes its Reasoning and
-Image input flags from the fetch dialog — one shared flag row over the
-batch, the manual record form's own fields — and Reasoning prefills on
-only when every catalog model the provider offers exposes a reasoning
-ladder. A mixed catalog or a provider with no catalog rows leaves it
-unticked, and user-owned rows never count either way. The listing is
-where Holt meets a model it holds no metadata for, and the vendor's
+`37bda2e`, `9ba9859`. A model added from a vendor listing takes its
+Reasoning and Image input flags from the fetch dialog — one shared flag
+row over the batch, the manual record form's own fields — and Reasoning
+prefills on only when every catalog model the provider offers exposes a
+reasoning ladder and none is hidden: a row the listing leaves out cannot
+be checked. A mixed catalog or a provider with no catalog rows leaves it
+unticked, and user-owned rows never count either way. The rule reads
+Holt's catalog, not the vendor's listing — a gateway whose cataloged
+models all reason pre-ticks as well; the tick is on screen before
+anything is saved, and one click undoes it. The listing is where Holt
+meets a model it holds no metadata for, and the vendor's
 `GET {baseUrl}/models` answer is not one it can lean on. Rejected:
 writing every fetched record `reasoning: false` with no control (what
 shipped — the model listed without a ladder, so the chat could never
@@ -1005,4 +1009,6 @@ vendors publish one); per-row toggles (a third column for the rare
 mixed listing, which two fetch passes already cover — the dialog drops
 the ids the provider offers); counting user-owned rows toward the
 prefill (the user's own calls are not evidence about the vendor, and
-one bad earlier batch would switch the prefill off for good).
+one bad earlier batch would switch the prefill off for good); judging
+the listed catalog rows alone (hiding the one ladder-less model of a
+mixed catalog would pre-tick the next fetch).
