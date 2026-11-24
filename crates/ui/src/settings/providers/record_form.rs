@@ -453,7 +453,8 @@ pub(super) fn record_form_dialog(
 /// fields a servable record needs. The vendor listing carries no metadata,
 /// so context window and max tokens are shared fields — prefilled from the
 /// provider's first known model — and so are the Reasoning and Image input
-/// flags; every added row stays editable through the record form afterward.
+/// flags. A row is corrected afterwards the way any record is: the record
+/// form, saved under the same id, replaces it.
 pub(super) fn fetch_models_dialog(
     page: &mut ProvidersPage,
     theme: &Theme,
@@ -666,12 +667,18 @@ pub(super) fn fetch_models_dialog(
 }
 
 /// The fetch dialog's Reasoning prefill
-/// (ADR-fetched-models-carry-the-dialogs-reasoning-flag): on only when
-/// every catalog model the provider offers exposes a ladder. The user's
-/// own rows never count — they are the user's calls, not the vendor's.
-fn template_reasoning(known: &[Model]) -> bool {
+/// (ADR-fetched-models-carry-the-dialogs-reasoning-flag): on only when every
+/// catalog model the provider offers exposes a ladder. The user's own rows
+/// never count — they are the user's calls, not the vendor's — and neither
+/// does a catalog that is not fully in view: `hidden_rows` is the count
+/// `ListHiddenModels` answered (`None` before it has loaded), and any hidden
+/// row leaves the flag off, since a model the listing leaves out cannot be
+/// checked.
+fn template_reasoning(known: &[Model], hidden_rows: Option<usize>) -> bool {
     let mut catalog = known.iter().filter(|model| !model.custom).peekable();
-    catalog.peek().is_some() && catalog.all(|model| !model.reasoning_levels.is_empty())
+    hidden_rows == Some(0)
+        && catalog.peek().is_some()
+        && catalog.all(|model| !model.reasoning_levels.is_empty())
 }
 
 /// Builds the model record the engine expects from a dialog's texts — the
@@ -921,6 +928,10 @@ impl ProvidersPage {
                 )
             })
             .collect();
+        let hidden_rows = self
+            .hidden
+            .get(&provider)
+            .and_then(|hidden| hidden.ready().map(|rows| rows.len()));
         self.fetch_dialog = Some(FetchDialog {
             checked: ids.iter().cloned().collect(),
             ids,
@@ -928,7 +939,7 @@ impl ProvidersPage {
             dialect,
             inputs,
             names,
-            reasoning: template_reasoning(&known),
+            reasoning: template_reasoning(&known, hidden_rows),
             image: false,
             saving: false,
             error: None,
@@ -1616,6 +1627,53 @@ mod tests {
         assert_eq!(records[0]["record"]["reasoning"], true);
     }
 
+    /// Hiding the ladder-less model does not turn a mixed vendor into a
+    /// reasoning one: the listing leaves a hidden catalog row out, so it
+    /// cannot be checked, and the flag stays off.
+    #[gpui::test]
+    fn a_hidden_catalog_row_keeps_the_reasoning_prefill_off(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        reasoning_vendor(&mut harness);
+        // The panel loads its hidden rows when it expands, so the row is
+        // reported before the fetch dialog opens.
+        harness
+            .engine
+            .hidden_ids
+            .lock()
+            .unwrap()
+            .push("acme/acme-plain".to_string());
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let reasoning = harness.page.update(&mut *harness.visual, |page, _| {
+            page.fetch_dialog.as_ref().map(|dialog| dialog.reasoning)
+        });
+        assert_eq!(reasoning, Some(false));
+    }
+
+    /// An emptied name field falls back to the id on the fetch path, like
+    /// the manual record form's blank-name behavior.
+    #[gpui::test]
+    fn an_emptied_fetch_name_falls_back_to_the_id(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog");
+            dialog.names["acme-9"].update(cx, |input, cx| input.set_text("", cx));
+        });
+
+        harness.click("save-fetch");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
+        assert_eq!(records[0]["record"]["name"], "acme-9");
+    }
+
     /// Drive the tokio runtime while the window settles, until `ready`
     /// holds or the budget runs out: a real loopback round trip (the
     /// probe's HTTP call) does not finish on a fixed count of turns. An
@@ -1771,29 +1829,45 @@ mod tests {
         .unwrap()
     }
 
-    /// The Reasoning prefill fires only on a catalog that reasons whole.
+    /// The Reasoning prefill fires only on a catalog that reasons whole —
+    /// and that is wholly in view.
     #[test]
     fn the_reasoning_prefill_needs_a_catalog_that_reasons_whole() {
         let ladder = ["minimal", "low", "medium", "high"];
-        assert!(template_reasoning(&[listed("acme/acme-1", false, &ladder)]));
+        let in_view = Some(0);
+        assert!(template_reasoning(
+            &[listed("acme/acme-1", false, &ladder)],
+            in_view
+        ));
         // The user's own rows are not evidence about the vendor — with a
         // ladder or without.
-        assert!(template_reasoning(&[
-            listed("acme/acme-1", false, &ladder),
-            listed("acme/acme-mine", true, &[]),
-        ]));
+        assert!(template_reasoning(
+            &[
+                listed("acme/acme-1", false, &ladder),
+                listed("acme/acme-mine", true, &[]),
+            ],
+            in_view
+        ));
         // A catalog that ships both kinds proves nothing…
-        assert!(!template_reasoning(&[
-            listed("acme/acme-1", false, &ladder),
-            listed("acme/acme-plain", false, &[]),
-        ]));
+        assert!(!template_reasoning(
+            &[
+                listed("acme/acme-1", false, &ladder),
+                listed("acme/acme-plain", false, &[]),
+            ],
+            in_view
+        ));
         // …nor does a provider with no catalog rows at all.
-        assert!(!template_reasoning(&[]));
-        assert!(!template_reasoning(&[listed(
-            "acme/acme-mine",
-            true,
-            &ladder
-        )]));
+        assert!(!template_reasoning(&[], in_view));
+        assert!(!template_reasoning(
+            &[listed("acme/acme-mine", true, &ladder)],
+            in_view
+        ));
+        // A hidden row is a catalog model the listing leaves out — it may
+        // be the ladder-less one — and a hidden list still loading knows
+        // nothing: both leave the flag off.
+        let whole = [listed("acme/acme-1", false, &ladder)];
+        assert!(!template_reasoning(&whole, Some(1)));
+        assert!(!template_reasoning(&whole, None));
     }
 
     /// The key row's Test button: one ProbeProvider call, verdict rendered.
