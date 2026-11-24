@@ -33,10 +33,6 @@ use crate::{
 use holt_proto::ChatUsage;
 use holt_rpc::{RpcError, methods};
 
-#[cfg(test)]
-#[path = "../../engine/tests/all/common/mod.rs"]
-mod engine_fixture;
-
 /// Diameter of the ring, and of the square button that carries it — the
 /// composer footer's chips are 20px tall, so the trigger matches the row.
 const RING_DIAMETER: f32 = 14.0;
@@ -2958,7 +2954,7 @@ mod tests {
     #[gpui::test]
     fn scripted_engine_totals_reach_the_selected_ring(cx: &mut TestAppContext) {
         let _locale = crate::i18n::tests::locale_lock();
-        use super::engine_fixture::{self, Fixture, ScriptedProvider, ScriptedReply};
+        use crate::engine_fixture::{self, Fixture, ScriptedProvider, ScriptedReply};
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -63,6 +63,13 @@ mod watch_coordinator;
 mod workflow;
 mod workflow_graph;
 
+/// The engine's own test fixture, included once for the UI tests that
+/// drive a real engine end to end (the usage status line, the fetch
+/// dialog) instead of a fake behind the typed-RPC contract.
+#[cfg(test)]
+#[path = "../../engine/tests/all/common/mod.rs"]
+mod engine_fixture;
+
 use std::path::PathBuf;
 
 use futures::StreamExt as _;

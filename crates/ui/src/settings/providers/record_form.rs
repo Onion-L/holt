@@ -77,6 +77,43 @@ fn record_field_label(key: &str) -> Cow<'static, str> {
     }
 }
 
+/// One labelled checkbox row — the manual record form's and the fetch
+/// dialog's Reasoning / Image input flags. The whole row is the click
+/// target; `scope` keeps the two dialogs' element ids apart.
+fn flag_row(
+    theme: &Theme,
+    cx: &mut Context<ProvidersPage>,
+    scope: &'static str,
+    key: &'static str,
+    label: Cow<'static, str>,
+    on: bool,
+    toggle: impl Fn(&mut ProvidersPage, &mut Context<ProvidersPage>) + 'static,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("{scope}-flag-{key}")))
+        .debug_selector(move || format!("{scope}-flag-{key}"))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .on_click(cx.listener(move |page, _, _, cx| toggle(page, cx)))
+        .child(widgets::checkbox(
+            theme,
+            if on {
+                widgets::CheckboxState::Checked
+            } else {
+                widgets::CheckboxState::Unchecked
+            },
+        ))
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .child(label),
+        )
+        .into_any_element()
+}
+
 /// The mounted model-record form. One panel is expanded at a time, so one
 /// instance serves the whole page; it targets that panel's active variant.
 pub(super) struct RecordForm {
@@ -236,29 +273,6 @@ pub(super) fn record_form_dialog(
                     .into_any_element()
             }))
     };
-    let flag_row = |key: &'static str, label: Cow<'static, str>, on: bool| {
-        div()
-            .id(SharedString::from(format!("record-flag-{key}")))
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .on_click(cx.listener(move |page, _, _, cx| page.toggle_record_flag(key, cx)))
-            .child(widgets::checkbox(
-                theme,
-                if on {
-                    widgets::CheckboxState::Checked
-                } else {
-                    widgets::CheckboxState::Unchecked
-                },
-            ))
-            .child(
-                div()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted)
-                    .child(label),
-            )
-    };
     let mut card = popover::dialog_card(theme)
         // A mask click dismisses — unless the API dropdown is open, whose
         // rows float outside this card's bounds and must survive the same
@@ -353,14 +367,22 @@ pub(super) fn record_form_dialog(
                 .items_center()
                 .gap(px(20.0))
                 .child(flag_row(
+                    theme,
+                    cx,
+                    "record",
                     "reasoning",
                     t!("settings_providers_usage.providers.record_form.reasoning"),
                     form.reasoning,
+                    |page, cx| page.toggle_record_flag("reasoning", cx),
                 ))
                 .child(flag_row(
+                    theme,
+                    cx,
+                    "record",
                     "image",
                     t!("settings_providers_usage.providers.record_form.image_input"),
                     form.image,
+                    |page, cx| page.toggle_record_flag("image", cx),
                 )),
         )
         .child(
@@ -427,11 +449,11 @@ pub(super) fn record_form_dialog(
 }
 
 /// The fetch-from-vendor dialog: the probed listing as checkbox rows, each
-/// with its own display-name field (prefilled with the id), over the two
-/// numbers a servable record needs. The vendor listing carries no
-/// metadata, so context window and max tokens are shared fields — prefilled
-/// from the provider's first known model — and every added row stays
-/// editable through the record form afterward.
+/// with its own display-name field (prefilled with the id), over the
+/// fields a servable record needs. The vendor listing carries no metadata,
+/// so context window and max tokens are shared fields — prefilled from the
+/// provider's first known model — and so are the Reasoning and Image input
+/// flags; every added row stays editable through the record form afterward.
 pub(super) fn fetch_models_dialog(
     page: &mut ProvidersPage,
     theme: &Theme,
@@ -574,6 +596,30 @@ pub(super) fn fetch_models_dialog(
                     t!("settings_providers_usage.providers.record_form.field_max_tokens"),
                 )),
         )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(20.0))
+                .child(flag_row(
+                    theme,
+                    cx,
+                    "fetch",
+                    "reasoning",
+                    t!("settings_providers_usage.providers.record_form.reasoning"),
+                    dialog.reasoning,
+                    |page, cx| page.toggle_fetch_flag("reasoning", cx),
+                ))
+                .child(flag_row(
+                    theme,
+                    cx,
+                    "fetch",
+                    "image",
+                    t!("settings_providers_usage.providers.record_form.image_input"),
+                    dialog.image,
+                    |page, cx| page.toggle_fetch_flag("image", cx),
+                )),
+        )
         .children(dialog.error.clone().map(|message| {
             div()
                 .text_size(crate::typography::ui_rems(11.0))
@@ -619,33 +665,23 @@ pub(super) fn fetch_models_dialog(
     card.into_any_element()
 }
 
-/// The record one fetched id becomes: id + the dialog's display name (empty
-/// falls back to the id, like the manual form) + the probed dialect, the
-/// provider's default endpoint (baseUrl omitted — the engine fills it),
-/// zero costs, and the dialog's two numbers. The vendor listing carries no
-/// metadata, so the window and max tokens are the user's call, and every
-/// row stays editable through the record form afterward.
-pub(super) fn fetch_record(
-    provider: &str,
-    dialect: &str,
-    id: &str,
-    name: &str,
-    context_window: u64,
-    max_tokens: u64,
-) -> serde_json::Value {
-    let name = if name.is_empty() { id } else { name };
-    serde_json::json!({
-        "id": id,
-        "name": name,
-        "api": dialect,
-        "provider": provider,
-        "reasoning": false,
-        "input": ["text"],
-        "cost": { "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
-        "contextWindow": context_window,
-        "maxTokens": max_tokens,
-    })
+/// The fetch dialog's Reasoning prefill: on only when every catalog model
+/// the provider offers exposes a ladder. A vendor whose whole known
+/// catalog reasons (Z.ai, Claude, DeepSeek, Gemini) ships its new ids
+/// reasoning too; a mixed catalog (OpenAI, Mistral, aggregators) or none
+/// at all proves nothing. Unticked is the safe side — a wrongly ticked
+/// record picks a level by default and puts a thinking control on the wire
+/// that models without reasoning reject, while an unticked one only hides
+/// the picker. User-owned rows do not count: they are the user's calls,
+/// not evidence about the vendor.
+fn template_reasoning(known: &[Model]) -> bool {
+    let mut catalog = known.iter().filter(|model| !model.custom).peekable();
+    catalog.peek().is_some() && catalog.all(|model| !model.reasoning_levels.is_empty())
 }
+
+/// Builds the model record the engine expects from a dialog's texts — the
+/// manual record form's, and the fetch dialog's (once per fetched id, so
+/// the two paths can never disagree about what a record carries):
 /// numbers parse, costs default to zero, and the advanced JSON (when
 /// present) must be an object whose keys ride along — except the form's
 /// own fields, which the advanced object can never override. `baseUrl`
@@ -824,8 +860,10 @@ impl ProvidersPage {
     }
 
     /// Build the dialog from a probed listing: drop ids the provider
-    /// already offers, prefill the two numbers from its first known model.
-    /// A problem string means the dialog did not open.
+    /// already offers, prefill the two numbers from its first known model,
+    /// and pre-tick Reasoning only when the vendor's whole catalog reasons
+    /// ([`template_reasoning`]). A problem string means the dialog did not
+    /// open.
     fn open_fetch_dialog(
         &mut self,
         provider: String,
@@ -839,25 +877,19 @@ impl ProvidersPage {
                     .into_owned(),
             );
         };
-        let offered: HashSet<String> = self
+        let known: Vec<Model> = self
             .models
             .get(&provider)
             .and_then(|models| models.ready().cloned())
-            .unwrap_or_default()
-            .iter()
-            .map(|model| model.id.clone())
-            .collect();
+            .unwrap_or_default();
+        let offered: HashSet<String> = known.iter().map(|model| model.id.clone()).collect();
         ids.retain(|id| !offered.contains(id) && !offered.contains(&format!("{provider}/{id}")));
         if ids.is_empty() {
             return Some(
                 t!("settings_providers_usage.providers.record_form.error_nothing_new").into_owned(),
             );
         }
-        let template_window = self
-            .models
-            .get(&provider)
-            .and_then(|models| models.ready().cloned())
-            .unwrap_or_default()
+        let template_window = known
             .iter()
             .find_map(|model| model.context_window)
             .map(|window| window.to_string())
@@ -901,6 +933,8 @@ impl ProvidersPage {
             dialect,
             inputs,
             names,
+            reasoning: template_reasoning(&known),
+            image: false,
             saving: false,
             error: None,
         });
@@ -920,9 +954,27 @@ impl ProvidersPage {
         cx.notify();
     }
 
+    /// Flip one of the fetch dialog's shared flags — the whole batch's
+    /// Reasoning / Image input, as the manual form's flag rows do for one
+    /// record.
+    pub(super) fn toggle_fetch_flag(&mut self, flag: &str, cx: &mut Context<Self>) {
+        let Some(dialog) = self.fetch_dialog.as_mut() else {
+            return;
+        };
+        if dialog.saving {
+            return;
+        }
+        if flag == "reasoning" {
+            dialog.reasoning = !dialog.reasoning;
+        } else if flag == "image" {
+            dialog.image = !dialog.image;
+        }
+        cx.notify();
+    }
+
     /// One SaveModelRecord per checked id, in listing order; the first
-    /// failure stops the batch and shows in the dialog with the rest of
-    /// the selection intact.
+    /// failure stops the batch and shows in the dialog with the rest of the
+    /// selection intact.
     pub(super) fn save_fetch(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -981,6 +1033,7 @@ impl ProvidersPage {
         }
         let provider = dialog.provider.clone();
         let dialect = dialog.dialect.clone();
+        let (reasoning, image) = (dialog.reasoning, dialog.image);
         let names: HashMap<String, String> = dialog
             .names
             .iter()
@@ -993,8 +1046,25 @@ impl ProvidersPage {
         self.task = Some(cx.spawn(async move |this, cx| {
             let mut failure = None;
             for id in ids {
-                let name = names.get(&id).map(String::as_str).unwrap_or("");
-                let record = fetch_record(&provider, &dialect, &id, name, window, max_tokens);
+                // The manual form's builder, on the fields the batch shares
+                // — one definition of what a record carries.
+                let texts = HashMap::from([
+                    ("id".to_string(), id.clone()),
+                    (
+                        "name".to_string(),
+                        names.get(&id).cloned().unwrap_or_default(),
+                    ),
+                    ("api".to_string(), dialect.clone()),
+                    ("contextWindow".to_string(), window.to_string()),
+                    ("maxTokens".to_string(), max_tokens.to_string()),
+                ]);
+                let record = match build_record_json(&provider, &texts, reasoning, image) {
+                    Ok(record) => record,
+                    Err(problem) => {
+                        failure = Some(problem);
+                        break;
+                    }
+                };
                 let result = engine
                     .client()
                     .call(
@@ -1346,6 +1416,42 @@ mod tests {
         assert_eq!(records[0]["record"]["api"], "anthropic-messages");
     }
 
+    /// The manual form's Reasoning / Image input rows are click targets,
+    /// and what they hold is what the saved record carries — the flag row
+    /// the fetch dialog shares.
+    #[gpui::test]
+    fn the_record_forms_flag_rows_reach_the_saved_record(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("toggle-record-form");
+        harness.click("record-flag-reasoning");
+        harness.click("record-flag-image");
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let form = page.record_form.as_ref().expect("the record form");
+            for (key, value) in [
+                ("id", "acme-9"),
+                ("contextWindow", "200000"),
+                ("maxTokens", "8192"),
+            ] {
+                form.inputs[key].update(cx, |input, cx| input.set_text(value, cx));
+            }
+        });
+        harness.click("save-record");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord");
+        assert_eq!(records[0]["record"]["reasoning"], true);
+        assert_eq!(
+            records[0]["record"]["input"],
+            serde_json::json!(["text", "image"])
+        );
+    }
+
     /// The fetch flow: a fresh probe opens the dialog with the listing
     /// minus what the provider already offers, and the Add button saves one
     /// complete record per checked id — name from the row's field (empty
@@ -1404,16 +1510,295 @@ mod tests {
         // the conservative default and baseUrl stays with the engine.
         assert_eq!(records[0]["record"]["contextWindow"], 200_000);
         assert!(records[0]["record"].get("baseUrl").is_none());
+        // The harness catalog carries no ladder, which proves nothing
+        // about the vendor: both flags stay unticked.
+        assert_eq!(records[0]["record"]["reasoning"], false);
+        assert_eq!(records[0]["record"]["input"], serde_json::json!(["text"]));
     }
 
-    /// An emptied name field falls back to the id, matching the manual
-    /// record form's blank-name behavior.
+    /// Make acme the vendor whose whole catalog reasons, and settle the
+    /// panel's expand animation. The page loads a panel's models when it
+    /// expands, so the row is in place before the first click.
+    fn reasoning_vendor(harness: &mut ProvidersHarness) {
+        harness.engine.catalog.lock().unwrap()[0]["reasoningLevels"] =
+            serde_json::json!(["minimal", "low", "medium", "high"]);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+    }
+
+    /// The reported bug, on the surface it was reported from: a vendor
+    /// whose catalog models all reason (Z.ai's GLM ids) lists models the
+    /// catalog lacks, and every one the dialog added arrived with
+    /// `reasoning: false` — a ladder-less row, so the chat never offered a
+    /// reasoning level for it.
+    #[gpui::test]
+    fn fetched_models_of_a_reasoning_vendor_carry_a_ladder(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        reasoning_vendor(&mut harness);
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let (reasoning, image) = harness
+            .page
+            .update(&mut *harness.visual, |page, _| {
+                page.fetch_dialog
+                    .as_ref()
+                    .map(|dialog| (dialog.reasoning, dialog.image))
+            })
+            .expect("the fetch dialog opened");
+        // Reasoning comes pre-ticked, so the batch needs no touch; image
+        // input never prefills on.
+        assert!(reasoning);
+        assert!(!image);
+
+        harness.click("save-fetch");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
+        assert_eq!(
+            records[0]["record"]["reasoning"], true,
+            "a fetched model of a reasoning vendor saves reasoning-capable"
+        );
+        assert_eq!(records[0]["record"]["input"], serde_json::json!(["text"]));
+    }
+
+    /// The prefill is a starting point, not a verdict: the flag rows flip
+    /// before the batch saves, and every added record carries the result.
+    #[gpui::test]
+    fn the_fetch_dialogs_flags_are_the_users_call(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        reasoning_vendor(&mut harness);
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        harness.click("fetch-flag-reasoning");
+        harness.click("fetch-flag-image");
+        harness.click("save-fetch");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
+        assert_eq!(records[0]["record"]["reasoning"], false);
+        assert_eq!(
+            records[0]["record"]["input"],
+            serde_json::json!(["text", "image"])
+        );
+    }
+
+    /// A catalog that ships both kinds proves nothing: the dialog opens
+    /// unticked, and ticking it by hand is what makes the records
+    /// reasoning-capable.
+    #[gpui::test]
+    fn a_mixed_vendor_starts_unticked_and_is_ticked_by_hand(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        reasoning_vendor(&mut harness);
+        harness
+            .engine
+            .catalog
+            .lock()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": "acme/acme-plain",
+                "provider": "acme",
+                "label": "Acme plain",
+            }));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let reasoning = harness.page.update(&mut *harness.visual, |page, _| {
+            page.fetch_dialog.as_ref().map(|dialog| dialog.reasoning)
+        });
+        assert_eq!(reasoning, Some(false));
+
+        harness.click("fetch-flag-reasoning");
+        harness.click("save-fetch");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
+        assert_eq!(records[0]["record"]["reasoning"], true);
+    }
+
+    /// Drive the tokio runtime while the window settles, until `ready`
+    /// holds or the budget runs out: a real loopback round trip (the
+    /// probe's HTTP call) does not finish on a fixed count of turns. An
+    /// expired budget is never a hang — the assertion waiting on the
+    /// state is what reports it.
+    fn settle(
+        runtime: &tokio::runtime::Runtime,
+        visual: &mut gpui::VisualTestContext,
+        mut ready: impl FnMut(&mut gpui::VisualTestContext) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            runtime.block_on(async {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            });
+            visual.run_until_parked();
+            if ready(visual) || std::time::Instant::now() >= deadline {
+                return;
+            }
+        }
+    }
+
+    fn click(
+        runtime: &tokio::runtime::Runtime,
+        visual: &mut gpui::VisualTestContext,
+        selector: &'static str,
+    ) {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} renders"));
+        visual.simulate_click(bounds.center(), Default::default());
+        settle(runtime, visual, |_| true);
+    }
+
+    /// The reported bug end to end on a real engine — no fake behind the
+    /// dialog: the probe reaches a loopback vendor, a ticked Reasoning flag
+    /// rides both SaveModelRecord calls, and the records list with the
+    /// ladder the chat's picker needs to offer a reasoning level.
+    #[gpui::test]
+    fn a_fetched_batch_lists_with_a_ladder_through_the_real_engine(cx: &mut gpui::TestAppContext) {
+        use crate::engine_fixture::{self, Fixture, ScriptedProvider};
+        use holt_rpc::RpcService;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let fixture = Fixture::new();
+        let (vendor, _heads) = runtime.block_on(engine_fixture::serve_loopback_with_capture(
+            "application/json",
+            br#"{"data":[{"id":"glm-9"},{"id":"glm-9-air"}]}"#,
+        ));
+        let engine = Arc::new(fixture.engine(&ScriptedProvider::new(vec![])));
+        runtime.block_on(async {
+            engine
+                .handle(
+                    methods::SAVE_CUSTOM_PROVIDER,
+                    serde_json::json!({
+                        "id": "glm-gateway",
+                        "name": "GLM Gateway",
+                        "baseUrl": vendor.base,
+                        "defaultApi": "openai-completions",
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+        let client = {
+            let _enter = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let (page, visual) =
+            cx.add_window_view(|_window, cx| ProvidersPage::new(state.clone(), cx));
+        // A window tall enough to hold the whole provider list: a click
+        // needs its target's hitbox inside the viewport.
+        visual.simulate_resize(gpui::size(px(1280.0), px(4000.0)));
+        visual.update(|_window, cx| cx.set_reduce_motion(true));
+        // Open the custom provider's panel the way "Open in Settings" does;
+        // the focus applies once the list has loaded.
+        page.update(&mut *visual, |page, cx| {
+            page.focus_provider("glm-gateway".into(), cx)
+        });
+        settle(&runtime, visual, |visual| {
+            page.update(&mut *visual, |page, _| {
+                page.expanded.as_deref() == Some("glm-gateway")
+            })
+        });
+        click(&runtime, visual, "fetch-vendor");
+        settle(&runtime, visual, |visual| {
+            page.update(&mut *visual, |page, _| page.fetch_dialog.is_some())
+        });
+        let opened = page.update(&mut *visual, |page, _| {
+            page.fetch_dialog
+                .as_ref()
+                .map(|dialog| (dialog.ids.clone(), dialog.reasoning))
+        });
+        // A custom provider has no catalog to infer from: unticked.
+        assert_eq!(
+            opened,
+            Some((vec!["glm-9".to_string(), "glm-9-air".to_string()], false))
+        );
+        click(&runtime, visual, "fetch-flag-reasoning");
+        click(&runtime, visual, "save-fetch");
+        settle(&runtime, visual, |visual| {
+            page.update(&mut *visual, |page, _| page.fetch_dialog.is_none())
+        });
+
+        let listed = match runtime
+            .block_on(async {
+                engine
+                    .handle(
+                        methods::LIST_MODELS,
+                        serde_json::json!({ "providerId": "glm-gateway" }),
+                    )
+                    .await
+            })
+            .unwrap()
+        {
+            holt_rpc::RpcReply::Value(rows) => rows,
+            _ => panic!("ListModels did not return a value"),
+        };
+        let rows = listed.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "both fetched ids list");
+        for (row, id) in rows
+            .iter()
+            .zip(["glm-gateway/glm-9", "glm-gateway/glm-9-air"])
+        {
+            assert_eq!(row["id"], id);
+            assert_eq!(row["custom"], true);
+            assert_eq!(
+                row["reasoningLevels"],
+                serde_json::json!(["minimal", "low", "medium", "high"])
+            );
+            assert_eq!(row["defaultReasoning"], "high");
+        }
+    }
+
+    /// A `ListModels` row as the page sees it: ladder-less unless given.
+    fn listed(id: &str, custom: bool, ladder: &[&str]) -> Model {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "provider": "acme",
+            "label": id,
+            "custom": custom,
+            "reasoningLevels": ladder,
+        }))
+        .unwrap()
+    }
+
+    /// The Reasoning prefill fires only on a catalog that reasons whole.
     #[test]
-    fn a_fetched_record_without_a_name_falls_back_to_the_id() {
-        let record = fetch_record("acme", "openai-completions", "acme-9", "", 200_000, 8192);
-        assert_eq!(record["name"], "acme-9");
-        let named = fetch_record("acme", "openai-completions", "acme-9", "Acme 9", 1, 1);
-        assert_eq!(named["name"], "Acme 9");
+    fn the_reasoning_prefill_needs_a_catalog_that_reasons_whole() {
+        let ladder = ["minimal", "low", "medium", "high"];
+        assert!(template_reasoning(&[listed("acme/acme-1", false, &ladder)]));
+        // The user's own rows are not evidence about the vendor — with a
+        // ladder or without.
+        assert!(template_reasoning(&[
+            listed("acme/acme-1", false, &ladder),
+            listed("acme/acme-mine", true, &[]),
+        ]));
+        // A catalog that ships both kinds proves nothing…
+        assert!(!template_reasoning(&[
+            listed("acme/acme-1", false, &ladder),
+            listed("acme/acme-plain", false, &[]),
+        ]));
+        // …nor does a provider with no catalog rows at all.
+        assert!(!template_reasoning(&[]));
+        assert!(!template_reasoning(&[listed(
+            "acme/acme-mine",
+            true,
+            &ladder
+        )]));
     }
 
     /// The key row's Test button: one ProbeProvider call, verdict rendered.
