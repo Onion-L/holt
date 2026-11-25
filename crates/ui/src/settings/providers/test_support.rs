@@ -19,6 +19,8 @@ pub(super) struct FakeProvidersEngine {
     pub(super) probes: std::sync::Mutex<Vec<serde_json::Value>>,
     /// The canned ProbeProvider listing (bare ids, one already offered).
     pub(super) probe_ids: Vec<String>,
+    /// The provider-qualified ids `ListHiddenModels` reports.
+    pub(super) hidden_ids: std::sync::Mutex<Vec<String>>,
     /// SetProviderLogo / RemoveProviderLogo calls: (method, params).
     pub(super) logo_calls: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
     /// RemoveCustomProvider params, in call order.
@@ -90,7 +92,16 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
                 self.records.lock().unwrap().push(params.clone());
                 RpcReply::value(&serde_json::json!({}))
             }
-            methods::LIST_HIDDEN_MODELS => RpcReply::value(&serde_json::Value::Array(Vec::new())),
+            methods::LIST_HIDDEN_MODELS => {
+                let rows: Vec<serde_json::Value> = self
+                    .hidden_ids
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|id| serde_json::json!({ "id": id, "label": id }))
+                    .collect();
+                RpcReply::value(&serde_json::Value::Array(rows))
+            }
             methods::SAVE_CUSTOM_PROVIDER => {
                 self.custom_saves.lock().unwrap().push(params.clone());
                 RpcReply::value(&serde_json::json!({}))
@@ -196,6 +207,7 @@ pub(super) fn providers_harness<'a>(cx: &'a mut gpui::TestAppContext) -> Provide
         saved_keys: std::sync::Mutex::new(Vec::new()),
         probes: std::sync::Mutex::new(Vec::new()),
         probe_ids: vec!["acme-9".to_string(), "acme-1".to_string()],
+        hidden_ids: std::sync::Mutex::new(Vec::new()),
         keys: std::sync::Mutex::new(Default::default()),
         logo_calls: std::sync::Mutex::new(Vec::new()),
         removed: std::sync::Mutex::new(Vec::new()),

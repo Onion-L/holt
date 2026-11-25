@@ -77,8 +77,9 @@ pub(super) enum ProbeState {
 
 /// The fetch-from-vendor dialog: a ProbeProvider listing minus the ids the
 /// provider already offers, checkboxes over what to add, a per-row
-/// display-name field, and the two numbers a servable record needs (the
-/// vendor listing carries none).
+/// display-name field, and the fields a servable record needs that the
+/// vendor listing carries none of — the two numbers, and the Reasoning /
+/// Image input flags every added record shares.
 pub(super) struct FetchDialog {
     provider: String,
     dialect: String,
@@ -88,6 +89,12 @@ pub(super) struct FetchDialog {
     /// Per-id display-name inputs, prefilled with the id; empty falls back
     /// to the id, like the manual record form.
     names: HashMap<String, Entity<ComposerInput>>,
+    /// Shared by every record the dialog adds, like the manual form's
+    /// flags. Reasoning prefills from the provider's catalog (see
+    /// `record_form`'s `template_reasoning`); image input never prefills
+    /// on — a wrongly ticked record sends images to a text-only model.
+    reasoning: bool,
+    image: bool,
     saving: bool,
     error: Option<String>,
 }

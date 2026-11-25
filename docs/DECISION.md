@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -982,3 +982,33 @@ The merge is surface-only: the agent's own `spawn_background` /
 `process_status` / `kill_background_process` tools still see processes
 alone, so a run's `callId` never becomes a killable pid on the
 model-facing surface.
+
+## fetched-models-carry-the-dialogs-reasoning-flag
+
+`37bda2e`, `9ba9859`. A model added from a vendor listing takes its
+Reasoning and Image input flags from the fetch dialog — one shared flag
+row over the batch, the manual record form's own fields — and Reasoning
+prefills on only when every catalog model the provider offers exposes a
+reasoning ladder and none is hidden: a row the listing leaves out cannot
+be checked. A mixed catalog or a provider with no catalog rows leaves it
+unticked, and user-owned rows never count either way. The rule reads
+Holt's catalog, not the vendor's listing — a gateway whose cataloged
+models all reason pre-ticks as well; the tick is on screen before
+anything is saved, and one click undoes it. The listing is where Holt
+meets a model it holds no metadata for, and the vendor's
+`GET {baseUrl}/models` answer is not one it can lean on. Rejected:
+writing every fetched record `reasoning: false` with no control (what
+shipped — the model listed without a ladder, so the chat could never
+pick a reasoning level for it); defaulting the flag on (a record so
+marked picks a level by default and puts a thinking control on the wire
+that a model without reasoning rejects, while an unticked one only
+hides the picker); inferring the flag from the id or from a same-id
+entry elsewhere in the catalog (a guess about a model the vendor may
+serve differently); reading a capability out of the listing (only some
+vendors publish one); per-row toggles (a third column for the rare
+mixed listing, which two fetch passes already cover — the dialog drops
+the ids the provider offers); counting user-owned rows toward the
+prefill (the user's own calls are not evidence about the vendor, and
+one bad earlier batch would switch the prefill off for good); judging
+the listed catalog rows alone (hiding the one ladder-less model of a
+mixed catalog would pre-tick the next fetch).
