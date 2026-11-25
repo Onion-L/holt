@@ -155,11 +155,13 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
         ("tools/list", Some(id)) => {
             if let Ok(path) = std::env::var("FIXTURE_LIST_LOG") {
                 let server = std::env::var("FIXTURE_SERVER_ID").unwrap_or_default();
+                // One write syscall per marker (O_APPEND): a reader between
+                // two fragments of `writeln!` would see a torn line.
                 let _ = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(path)
-                    .and_then(|mut file| writeln!(file, "{server}:start"));
+                    .and_then(|mut file| file.write_all(format!("{server}:start\n").as_bytes()));
             }
             if let Ok(slow) = std::env::var("FIXTURE_STALL_LIST_MS") {
                 let ms: u64 = slow.parse().unwrap_or(0);
@@ -213,7 +215,7 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
                     .create(true)
                     .append(true)
                     .open(path)
-                    .and_then(|mut file| writeln!(file, "{server}:end"));
+                    .and_then(|mut file| file.write_all(format!("{server}:end\n").as_bytes()));
             }
             if let Ok(after) = std::env::var("FIXTURE_LIST_CHANGED_AFTER")
                 && count >= after.parse::<usize>().unwrap_or(0)

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
-use holt_core::ai::types::Message;
+use holt_core::ai::types::{Message, Usage};
 use holt_rpc::{RpcReply, RpcService, methods};
 use serde_json::{Value, json};
 
@@ -594,4 +594,150 @@ async fn a_script_that_leaves_its_plan_fails_the_run() {
         part(&snapshot, "wf-1#item-1").is_none(),
         "the refused agent never got a chip"
     );
+}
+
+/// A rewind that cuts the Turn which launched a run stops the run
+/// (ADR-rewind-to-a-message-is-all-or-nothing): its continuation would
+/// report into a conversation that no longer contains its Turn, so the
+/// cut's stops land exactly where `StopWorkflow`'s do — cancelled, no
+/// report, the row off the background list.
+#[tokio::test]
+async fn a_rewind_stops_the_runs_its_cut_turns_launched() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        launch(
+            "wf-1",
+            "slow",
+            single(),
+            "return await agent('Take forever', { step: 's' });",
+            Value::Null,
+        ),
+        ScriptedReply::text("Waiting."),
+    ])
+    .with_chat_script("Take forever", vec![ScriptedReply::Silent]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Go slow").await;
+    common::wait_for_requests(&provider, 3).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let RpcReply::Value(plan) = engine
+        .handle(
+            methods::REWIND_TO_MESSAGE,
+            json!({
+                "chatId": "chat-1",
+                "messageId": common::message_id("Go slow"),
+            }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("value reply")
+    };
+    assert_eq!(plan["conflicts"], json!([]), "{plan}");
+    let RpcReply::Value(done) = engine
+        .handle(
+            methods::CONFIRM_REWIND,
+            json!({"chatId": "chat-1", "planId": plan["planId"]}),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("value reply")
+    };
+    assert_eq!(done["applied"], true, "{done}");
+
+    // The run settles cancelled and leaves the background list.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if background_rows(&engine).await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the cut run never left the background list");
+    // No report Turn ever reaches the model.
+    wait_for_requests_exact(&provider, 3).await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        snapshot["reset"].as_array().unwrap().is_empty(),
+        "the launching Turn is cut: {snapshot}"
+    );
+}
+
+#[tokio::test]
+async fn a_rewind_after_compaction_keeps_a_retained_turns_workflow() {
+    let fixture = Fixture::new();
+    let overflowing = Usage {
+        input: 260_000,
+        output: 500,
+        total_tokens: 260_500,
+        ..common::fixed_usage()
+    };
+    let provider = ScriptedProvider::new(vec![
+        launch(
+            "wf-1",
+            "keep me",
+            single(),
+            "return await agent('Take forever', { step: 's' });",
+            Value::Null,
+        ),
+        ScriptedReply::text_with_usage("Waiting.", overflowing),
+        ScriptedReply::text("summary of the launcher"),
+        ScriptedReply::text("later work done"),
+    ])
+    .with_chat_script("Take forever", vec![ScriptedReply::Silent]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Launch and wait").await;
+    common::wait_for_requests(&provider, 3).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // The next Turn first compacts the launcher out of replayed History.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "Later work").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        snapshot.to_string().contains("compactionDivider"),
+        "{snapshot}"
+    );
+    assert!(
+        part(&snapshot, "wf-1").is_some(),
+        "the transcript retains the launcher"
+    );
+
+    let RpcReply::Value(plan) = engine
+        .handle(
+            methods::REWIND_TO_MESSAGE,
+            json!({"chatId": "chat-1", "messageId": common::message_id("Later work")}),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("value reply")
+    };
+    assert_eq!(plan["workflowsToStop"], json!([]), "{plan}");
+    let RpcReply::Value(done) = engine
+        .handle(
+            methods::CONFIRM_REWIND,
+            json!({"chatId": "chat-1", "planId": plan["planId"]}),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("value reply")
+    };
+    assert_eq!(done["applied"], true, "{done}");
+
+    assert_eq!(background_rows(&engine).await.len(), 1);
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        part(&snapshot, "wf-1").is_some(),
+        "the kept Turn keeps its run"
+    );
+    assert!(!snapshot.to_string().contains("Later work"));
 }

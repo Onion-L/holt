@@ -16,7 +16,7 @@ pub(crate) mod plan;
 pub(crate) mod script;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
@@ -52,6 +52,7 @@ const ERROR_CHARS: usize = 4000;
 /// A finished run's report, on its way to the chat's queue.
 pub(crate) struct Delivery {
     pub(crate) chat_id: String,
+    pub(crate) call_id: String,
     pub(crate) name: String,
     pub(crate) failed: bool,
     pub(crate) prompt: String,
@@ -72,6 +73,9 @@ struct RunEntry {
 /// run's handle in the transcript and on `StopWorkflow`.
 pub(crate) struct Workflows {
     runs: Mutex<HashMap<(String, String), Arc<RunEntry>>>,
+    /// Rewind-cut calls stay rejected after their run unregisters, closing
+    /// the settle/unregister/delivery race.
+    cut: Mutex<HashSet<(String, String)>>,
     deliveries: OnceLock<mpsc::UnboundedSender<Delivery>>,
     /// Bumped on every run-list change (launch, progress, settle) — the
     /// background-process watch re-snapshots on it.
@@ -83,6 +87,7 @@ impl Default for Workflows {
         let (version, _) = watch::channel(0);
         Self {
             runs: Mutex::new(HashMap::new()),
+            cut: Mutex::new(HashSet::new()),
             deliveries: OnceLock::new(),
             version,
         }
@@ -191,6 +196,40 @@ impl Workflows {
                 entry.cancel.cancel();
             }
         }
+    }
+
+    /// The live runs a rewind would cut: the transcript identifies the
+    /// launching Turn even after compaction removed its call from History.
+    pub(crate) fn cut_live(&self, chat_id: &str, cut_call_ids: &HashSet<String>) -> Vec<String> {
+        self.runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((chat, call_id), _)| chat == chat_id && cut_call_ids.contains(call_id))
+            .map(|(_, entry)| entry.name.clone())
+            .collect()
+    }
+
+    /// Stop the runs a rewind cuts and reject their reports even when the
+    /// cancellation lands after the run's stopped snapshot or unregister.
+    pub(crate) fn stop_cut(&self, chat_id: &str, cut_call_ids: &HashSet<String>) {
+        self.cut.lock().unwrap_or_else(|e| e.into_inner()).extend(
+            cut_call_ids
+                .iter()
+                .map(|call_id| (chat_id.into(), call_id.clone())),
+        );
+        for ((chat, call_id), entry) in self.runs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if chat == chat_id && cut_call_ids.contains(call_id) {
+                entry.cancel.cancel();
+            }
+        }
+    }
+
+    fn was_cut(&self, chat_id: &str, call_id: &str) -> bool {
+        self.cut
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&(chat_id.into(), call_id.into()))
     }
 
     pub(crate) fn stop_all(&self) {
@@ -625,6 +664,7 @@ async fn drive(d: Delegation, run: Run) {
     };
     d.runtime.workflows.deliver(Delivery {
         chat_id: d.parent.chat_id.clone(),
+        call_id: run.container.clone(),
         name: run.name,
         failed,
         prompt,
@@ -798,6 +838,13 @@ impl crate::EngineService {
             if chat.is_removed() {
                 return Err(RpcError::Failed("chat was deleted".into()));
             }
+            if self
+                .runtime
+                .workflows
+                .was_cut(&delivery.chat_id, &delivery.call_id)
+            {
+                return Ok(());
+            }
             queue.enqueue_workflow_result(
                 request,
                 uuid::Uuid::new_v4().to_string(),
@@ -883,6 +930,7 @@ mod delivery_tests {
     fn delivery(chat_id: &str) -> Delivery {
         Delivery {
             chat_id: chat_id.into(),
+            call_id: "wf-1".into(),
             name: "run".into(),
             failed: false,
             prompt: "report".into(),
@@ -943,5 +991,28 @@ mod delivery_tests {
         assert_eq!(record["pending"].as_array().unwrap().len(), 1);
         assert_eq!(record["pending"][0]["workflowResult"]["name"], "run");
         assert!(record["paused"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_rewind_cut_rejects_a_delivery_after_the_run_unregistered() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = assembled(dir.path());
+        let runtime = engine.service.runtime.clone();
+        runtime
+            .chats
+            .write()
+            .unwrap()
+            .push(chat_row("chat-1", "/tmp"));
+        runtime.workflows.stop_cut(
+            "chat-1",
+            &std::collections::HashSet::from(["wf-1".to_string()]),
+        );
+
+        engine.service.deliver_workflow(delivery("chat-1")).unwrap();
+
+        let chat = runtime.chat("chat-1");
+        let queue = chat.queue.lock().unwrap();
+        assert!(queue.snapshot().pending.is_empty());
+        assert!(!dir.path().join("queues/chat-1.json").exists());
     }
 }

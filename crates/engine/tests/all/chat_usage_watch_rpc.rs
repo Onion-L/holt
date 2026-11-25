@@ -37,6 +37,23 @@ where
     }
 }
 
+/// A fixture's list log as its final bytes: the fixture writes its `:end`
+/// marker from its own process, a moment after the reply the engine keys
+/// on, so a one-shot read races the write. Poll until the log settles on
+/// the expected content.
+async fn wait_for_list_log(path: &std::path::Path, expected: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if std::fs::read_to_string(path).is_ok_and(|contents| contents == expected) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the list log never reached {expected:?}"));
+}
+
 async fn usage_watch(engine: &holt_engine::LocalEngine) -> impl StreamExt<Item = Value> + Unpin {
     let RpcReply::Stream(stream) = engine
         .handle(methods::WATCH_CHAT_USAGE, json!({"chatId": "chat-1"}))
@@ -356,14 +373,8 @@ async fn preview_publishes_basic_context_before_parallel_mcp_servers_finish() {
     assert_eq!(full["context"]["entries"][0], base["context"]["entries"][0]);
     preview_call.await.unwrap().unwrap();
 
-    assert_eq!(
-        std::fs::read_to_string(log.with_file_name("slow-log")).unwrap(),
-        "slow:start\nslow:end\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(log.with_file_name("fast-log")).unwrap(),
-        "fast:start\nfast:end\n"
-    );
+    wait_for_list_log(&log.with_file_name("slow-log"), "slow:start\nslow:end\n").await;
+    wait_for_list_log(&log.with_file_name("fast-log"), "fast:start\nfast:end\n").await;
     assert_eq!(
         std::fs::metadata(barrier).unwrap().len(),
         2,

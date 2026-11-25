@@ -204,6 +204,11 @@ pub(crate) struct ChatRuntime {
     /// calls through, so a call left without a result is told apart as
     /// "may have partly run" from "never ran".
     pub(crate) tool_intents: Mutex<std::collections::HashSet<String>>,
+    /// The staged rewind waiting for `ConfirmRewind` (ADR-rewind-to-a-message-is-all-or-nothing):
+    /// in-memory only — a restart forgets it. Its async lock serializes a
+    /// newer plan with an in-flight confirm; the reply's plan id binds the
+    /// exact target the user confirmed.
+    pub(crate) rewind: tokio::sync::Mutex<Option<crate::rewind::StagedRewind>>,
     /// Set on load when a restart cut the started Turn off and it resumes
     /// rather than recovering as interrupted; consumed by the queue driver.
     pub(crate) resume: std::sync::atomic::AtomicBool,
@@ -264,6 +269,7 @@ impl ChatRuntime {
             usage_pending: Mutex::new(Vec::new()),
             usage_totals: Mutex::new(Default::default()),
             tool_intents: Mutex::new(Default::default()),
+            rewind: tokio::sync::Mutex::new(None),
             resume: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -280,6 +286,7 @@ impl ChatRuntime {
     /// Transcript.
     pub(crate) fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
         let persistence = Arc::new(Mutex::new(()));
+        let mut queue = crate::queue::Queue::load(data_dir, chat_id);
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
         // A call still unanswered on load was cut off by a restart; what it
         // changed is measured first, so the repair can say.
@@ -328,9 +335,21 @@ impl ChatRuntime {
             );
         }
         // A rewind a crash cut off finishes before anything reads the
-        // conversation (ADR-rewind-to-a-step-is-all-or-nothing).
+        // conversation or recovers queued work. A damaged History cannot
+        // safely replay its cut either, so keep the queue fenced.
         if notice.is_none() {
-            crate::rewind::finish_pending(data_dir, chat_id, &mut history, &mut transcript);
+            if let Err(error) = crate::rewind::finish_pending(
+                data_dir,
+                chat_id,
+                &mut history,
+                &mut transcript,
+                &mut queue,
+            ) {
+                tracing::warn!(target: "holt::checkpoints", %error, "could not finish an interrupted rewind");
+                queue.block_rewind_recovery(error);
+            }
+        } else if crate::rewind::pending_exists(data_dir, chat_id) {
+            queue.block_rewind_recovery("the conversation record is unreadable".into());
         }
         // A damaged or missing record cannot carry a Turn forward.
         let history_readable = notice.is_none();
@@ -366,7 +385,6 @@ impl ChatRuntime {
             }
         }
         let mut resume = false;
-        let mut queue = crate::queue::Queue::load(data_dir, chat_id);
         if let Some(started) = queue.recover_started() {
             let mut recovery_error = None;
             match started.message.kind {
@@ -557,6 +575,7 @@ impl ChatRuntime {
             // file is set aside inside and the count continues from zero.
             usage_totals: Mutex::new(crate::usage::warm_totals(data_dir, chat_id)),
             tool_intents: Mutex::new(intents),
+            rewind: tokio::sync::Mutex::new(None),
             resume: std::sync::atomic::AtomicBool::new(resume),
         }
     }

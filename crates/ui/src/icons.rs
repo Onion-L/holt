@@ -232,6 +232,7 @@ icon_assets![
     (ARCHIVE_UP_MINIMALISTIC, "archive-up-minimalistic"),
     (DOWNLOAD_MINIMALISTIC, "download-minimalistic"),
     (REFRESH, "refresh"),
+    (UNDO_LEFT_ROUND, "undo-left-round"),
     (RESTART, "restart"),
     (ADD_CIRCLE, "add-circle"),
     (TUNING, "tuning"),

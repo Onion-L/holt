@@ -749,6 +749,35 @@ impl Transcript {
         };
         let edit_entry_id = row.entry_id.clone();
         let edit_chat_id = self.chat_id.clone().unwrap_or_default();
+        // A user row's rewind affordance
+        // (ADR-rewind-to-a-message-is-all-or-nothing): the main chat's
+        // settled rows only — never a subagent tab, never a pending echo
+        // (not in the transcript yet). While a Turn runs the rewind is an
+        // interrupt: the engine stops it and waits out its settle.
+        let rewind_chat = if is_user_row && self.doc_override.is_none() {
+            self.chat_id.clone()
+        } else {
+            None
+        };
+        let rewind_text = rewind_chat.as_deref().and_then(|_| {
+            self.state
+                .read(cx)
+                .transcript
+                .iter()
+                .find(|entry| entry.id == row.entry_id.as_ref())
+                .map(|entry| {
+                    entry
+                        .parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            MessagePart::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                })
+        });
+        let rewind_entry_id = row.entry_id.clone();
         // While this entry is being edited inline its hover strip is
         // replaced by the editor's own Cancel/Send affordance — no
         // timestamp, edit, or copy affordances underneath it.
@@ -769,14 +798,17 @@ impl Transcript {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(Theme::SPACE_SM));
+                    // The tight code-chip rhythm (markdown/render.rs): the
+                    // buttons' invisible padding already separates the
+                    // glyphs, so a wider gap reads as floating icons.
+                    .gap(px(4.0));
                 let edit = edit_text.map(|text| {
                     let entry_id = edit_entry_id.clone();
                     let chat_id = edit_chat_id.clone();
                     let fade_key = format!("edit-message-hover-{entry_id}");
                     div()
                         .id(SharedString::from(format!("edit-message-{entry_id}")))
-                        .size(px(Theme::SPACE_MD * 2.0))
+                        .size(px(20.0))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -801,9 +833,32 @@ impl Transcript {
                                 .text_color(theme.text_muted),
                         )
                 });
-                let metadata = metadata.child(timestamp).children(edit).children(copy);
+                let rewind = rewind_text.map(|text| {
+                    let entry_id = rewind_entry_id.clone();
+                    let chat_id = rewind_chat.clone().unwrap_or_default();
+                    crate::rewind::rewind_button(
+                        SharedString::from(format!("rewind-message-{entry_id}")),
+                        &theme,
+                        cx.listener(move |_, _, _, cx| {
+                            cx.emit(TranscriptEvent::RewindToMessage {
+                                chat_id: chat_id.clone(),
+                                message_id: entry_id.to_string(),
+                                text: text.clone(),
+                            });
+                        }),
+                    )
+                });
+                let metadata = metadata
+                    .child(timestamp)
+                    .children(edit)
+                    .children(copy)
+                    .children(rewind);
+                // The reserved lane is the test surface for the strip's
+                // hover-revealed affordances (its bounds survive the reveal).
+                let lane_id = row.id.clone();
                 div()
-                    .h(px(Theme::SPACE_SM + Theme::SPACE_MD * 2.0))
+                    .debug_selector(move || format!("meta-strip-{lane_id}"))
+                    .h(px(Theme::SPACE_SM + 20.0))
                     .pt(px(Theme::SPACE_SM))
                     .w_full()
                     .flex()
@@ -1984,7 +2039,7 @@ impl Transcript {
         let fade_key = format!("copy-message-hover-{entry_id}");
         div()
             .id(SharedString::from(format!("copy-message-{entry_id}")))
-            .size(px(Theme::SPACE_MD * 2.0))
+            .size(px(20.0))
             .flex()
             .items_center()
             .justify_center()

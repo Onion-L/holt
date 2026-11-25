@@ -1,16 +1,18 @@
-//! Rewinding a chat to a tool step
-//! (ADR-rewind-to-a-step-is-all-or-nothing): the plan, and the durable
-//! apply. Every path the undone steps changed goes back to its bytes before
-//! the first of them, by plain file I/O over the checkpoint blobs. All or
-//! nothing — a path whose disk no longer holds what the last undone step
-//! left, or whose content was never stored, refuses the whole rewind before
-//! anything is written (the never-merge stance of
-//! ADR-turn-restore-from-change-records).
+//! Rewinding a chat to just before a user message
+//! (ADR-rewind-to-a-message-is-all-or-nothing): the plan, the staged
+//! confirm, and the durable apply. Every path the undone Turns changed
+//! goes back to its bytes before the first of them, by plain file I/O
+//! over the checkpoint blobs. All or nothing — a path whose disk no
+//! longer holds what the last undone step left, or whose content was
+//! never stored, refuses the whole rewind before anything is written
+//! (the never-merge stance of ADR-turn-restore-from-change-records).
 //!
 //! A confirmed rewind is first written down whole (`rewind.json` in the
-//! chat's checkpoint directory, synced), then carried out: files, step log,
-//! History, transcript, change sets. Every part is idempotent, so a crash
-//! anywhere in between is finished by the chat's next load.
+//! chat's checkpoint directory, synced), then carried out: files, step
+//! log, History, transcript, change sets. Every part is idempotent, so a
+//! crash anywhere in between is finished by the chat's next load — as is
+//! a record the retired step-cut build wrote, under that build's own cut
+//! derivation.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -23,21 +25,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::checkpoints::Step;
 use crate::git::CheckpointSide;
-
-/// Where a rewind cuts the History.
-pub(crate) struct RewindCut {
-    /// Messages kept: through the last result of the step's assistant
-    /// message.
-    pub history_len: usize,
-    /// The calls of that assistant message — parallel siblings stay with it.
-    pub group: HashSet<String>,
-    /// Every call the kept History holds.
-    pub retained: HashSet<String>,
-    /// The kept tail's newest timestamp: a step recorded later, by a call
-    /// the kept History does not hold, is undone. Subagent steps carry the
-    /// child's call ids, so only the clock places them.
-    pub boundary: i64,
-}
 
 fn tool_calls(message: &AgentMessage) -> Vec<String> {
     use holt_core::ai::types::AssistantContent;
@@ -54,66 +41,80 @@ fn tool_calls(message: &AgentMessage) -> Vec<String> {
     }
 }
 
-pub(crate) fn rewind_cut(history: &[AgentMessage], call_id: &str) -> Result<RewindCut, String> {
-    let start = history
-        .iter()
-        .position(|message| tool_calls(message).iter().any(|id| id == call_id))
-        .ok_or("that step is no longer in the conversation (compacted or rewound)")?;
-    let group: HashSet<String> = tool_calls(&history[start]).into_iter().collect();
-    let mut end = start + 1;
-    while let Some(AgentMessage::ToolResult(result)) = history.get(end)
-        && group.contains(&result.tool_call_id)
-    {
-        end += 1;
-    }
-    let boundary = history[start..end]
-        .iter()
-        .filter_map(AgentMessage::as_llm_message)
-        .map(|message| message.timestamp())
-        .max()
-        .unwrap_or_default();
-    Ok(RewindCut {
-        history_len: end,
-        retained: history[..end].iter().flat_map(tool_calls).collect(),
-        group,
-        boundary,
-    })
+/// Where a rewind cuts the History: everything from the target user
+/// message on — its Turn and every later one — goes. A message that never
+/// ran (and nothing after it) leaves the History as it is.
+pub(crate) struct RewindCut {
+    /// Messages kept: through just before the first user message of the
+    /// cut Turns.
+    pub history_len: usize,
+    /// The target user message's timestamp — the clock bound the undone
+    /// steps are read against.
+    pub boundary: i64,
+    /// Every call the kept History holds.
+    pub retained: HashSet<String>,
 }
 
-/// The transcript a rewind keeps — through the step group's last tool chip —
-/// and the message ids of the Turns it cuts into or drops.
+/// The History cut for a user message stamped `created_at`: user
+/// timestamps rise strictly with admission, so the first user message at
+/// or after the stamp is the rewind target's own (a message that never
+/// ran leaves the next Turn's, which is later still).
+pub(crate) fn rewind_cut(history: &[AgentMessage], created_at: i64) -> RewindCut {
+    let history_len = history
+        .iter()
+        .position(
+            |message| matches!(message, AgentMessage::User(user) if user.timestamp >= created_at),
+        )
+        .unwrap_or(history.len());
+    RewindCut {
+        history_len,
+        boundary: created_at,
+        retained: history[..history_len].iter().flat_map(tool_calls).collect(),
+    }
+}
+
+/// The transcript a rewind keeps — everything before the target user
+/// entry — and the message ids of the Turns it cuts: the target's own and
+/// every user entry after it.
 pub(crate) fn transcript_cut(
     transcript: &[SessionMessageEntry],
-    group: &HashSet<String>,
+    message_id: &str,
 ) -> Result<(Vec<SessionMessageEntry>, Vec<String>), String> {
-    let is_step =
-        |part: &MessagePart| matches!(part, MessagePart::Tool { id, .. } if group.contains(id));
-    let (index, last_part) = transcript
+    let index = transcript
         .iter()
-        .enumerate()
-        .find_map(|(index, entry)| {
-            entry
-                .parts
-                .iter()
-                .rposition(is_step)
-                .map(|part| (index, part))
-        })
-        .ok_or("that step is not in the transcript")?;
-    let mut kept = transcript[..=index].to_vec();
-    kept[index].parts.truncate(last_part + 1);
-    let cut_turns = transcript[..index]
+        .position(|entry| entry.id == message_id)
+        .ok_or("that message is no longer in the conversation (compacted or rewound)")?;
+    if transcript[index].role != MessageRole::User {
+        return Err("only a user message can be rewound to".into());
+    }
+    let kept = transcript[..index].to_vec();
+    let cut_turns = transcript[index..]
         .iter()
-        .rev()
-        .find(|entry| entry.role == MessageRole::User)
-        .into_iter()
-        .chain(
-            transcript[index + 1..]
-                .iter()
-                .filter(|entry| entry.role == MessageRole::User),
-        )
+        .filter(|entry| entry.role == MessageRole::User)
         .map(|entry| entry.id.clone())
         .collect();
     Ok((kept, cut_turns))
+}
+
+/// Tool calls owned by the Turns the target cuts. Unlike History, the
+/// transcript retains these chips across compaction, so background work is
+/// still attributed to the Turn that launched it.
+pub(crate) fn cut_tool_calls(
+    transcript: &[SessionMessageEntry],
+    message_id: &str,
+) -> Result<HashSet<String>, String> {
+    let index = transcript
+        .iter()
+        .position(|entry| entry.id == message_id)
+        .ok_or("that message is no longer in the conversation (compacted or rewound)")?;
+    Ok(transcript[index..]
+        .iter()
+        .flat_map(|entry| &entry.parts)
+        .filter_map(|part| match part {
+            MessagePart::Tool { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect())
 }
 
 /// One path across the undone steps: where it goes back to, and what the
@@ -158,7 +159,7 @@ fn side_bytes(store: &Path, side: &CheckpointSide) -> Result<Option<Vec<u8>>, ()
 
 /// One file write of a confirmed rewind: the repo-relative path and the
 /// side it goes back to.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Write {
     path: String,
     target: CheckpointSide,
@@ -213,6 +214,15 @@ pub(crate) fn plan(workdir: &Path, store: &Path, undone: &[Step]) -> (RewindRepl
     }
     (
         RewindReply {
+            plan_id: String::new(),
+            // The caller sizes the cut (it derives the Turns) and fills the
+            // confirm's summary fields; plan only walks the files.
+            turns: 0,
+            steps: 0,
+            will_stop_turn: false,
+            pending_count: 0,
+            workflows_to_stop: Vec::new(),
+            running_processes: 0,
             files,
             conflicts,
             applied: false,
@@ -221,11 +231,27 @@ pub(crate) fn plan(workdir: &Path, store: &Path, undone: &[Step]) -> (RewindRepl
     )
 }
 
-/// A confirmed rewind, written down before any of it happens.
-#[derive(Debug, Serialize, Deserialize)]
+/// An in-memory staged plan. Confirm carries this opaque identity so a
+/// replaced plan can never authorize a different message's cut.
+#[derive(Clone, Debug)]
+pub(crate) struct StagedRewind {
+    pub plan_id: String,
+    pub pending: Pending,
+}
+
+/// A confirmed rewind, written down before any of it happens. It carries
+/// everything the apply needs — the confirm checked the world still held
+/// this plan, so a replay after a crash lands the same state without
+/// re-deriving anything from a conversation the rewind may have already
+/// cut.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Pending {
-    pub tool_call_id: String,
+    pub message_id: String,
+    /// The target user message's timestamp — where the History cuts.
+    pub created_at: i64,
+    /// The cut Turns' message ids: their change sets die with them.
+    pub cut_turns: Vec<String>,
     /// `None` when no file changes.
     pub workdir: Option<PathBuf>,
     pub writes: Vec<Write>,
@@ -233,8 +259,87 @@ pub(crate) struct Pending {
     pub undone: Vec<String>,
 }
 
+/// A rewind written down by the retired step-cut build: the same
+/// write-down contract, keyed by a tool call instead of a user message.
+/// A chat that crashed between that build's `begin` and its finish loads
+/// with this record on disk, so finishing it needs the step-cut
+/// derivation the message cut replaced — kept here, for this record only.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyPending {
+    tool_call_id: String,
+    /// `None` when no file changes.
+    workdir: Option<PathBuf>,
+    writes: Vec<Write>,
+    /// The undone steps' call ids, dropped from the step log.
+    undone: Vec<String>,
+}
+
+/// Where the retired step cut cut the History: through the results of the
+/// assistant message that made the call — parallel siblings stay, so no
+/// call is left without its result. Returns the kept length and the
+/// call's sibling group (the transcript cut keys on it).
+fn legacy_rewind_cut(
+    history: &[AgentMessage],
+    call_id: &str,
+) -> Result<(usize, HashSet<String>), String> {
+    let start = history
+        .iter()
+        .position(|message| tool_calls(message).iter().any(|id| id == call_id))
+        .ok_or("that step is no longer in the conversation (compacted or rewound)")?;
+    let group: HashSet<String> = tool_calls(&history[start]).into_iter().collect();
+    let mut end = start + 1;
+    while let Some(AgentMessage::ToolResult(result)) = history.get(end)
+        && group.contains(&result.tool_call_id)
+    {
+        end += 1;
+    }
+    Ok((end, group))
+}
+
+/// The transcript the step cut kept — through the group's last tool chip —
+/// and the message ids of the Turns it cut into or dropped (a Turn cut
+/// into mid-flight loses its change set with the files it already made).
+fn legacy_transcript_cut(
+    transcript: &[SessionMessageEntry],
+    group: &HashSet<String>,
+) -> Result<(Vec<SessionMessageEntry>, Vec<String>), String> {
+    let is_step =
+        |part: &MessagePart| matches!(part, MessagePart::Tool { id, .. } if group.contains(id));
+    let (index, last_part) = transcript
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry)| {
+            entry
+                .parts
+                .iter()
+                .rposition(is_step)
+                .map(|part| (index, part))
+        })
+        .ok_or("that step is not in the transcript")?;
+    let mut kept = transcript[..=index].to_vec();
+    kept[index].parts.truncate(last_part + 1);
+    let cut_turns = transcript[..index]
+        .iter()
+        .rev()
+        .find(|entry| entry.role == MessageRole::User)
+        .into_iter()
+        .chain(
+            transcript[index + 1..]
+                .iter()
+                .filter(|entry| entry.role == MessageRole::User),
+        )
+        .map(|entry| entry.id.clone())
+        .collect();
+    Ok((kept, cut_turns))
+}
+
 fn pending_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     Some(crate::checkpoints::chat_dir(data_dir, chat_id)?.join("rewind.json"))
+}
+
+pub(crate) fn pending_exists(data_dir: &Path, chat_id: &str) -> bool {
+    pending_path(data_dir, chat_id).is_some_and(|path| path.exists())
 }
 
 /// Write the rewind down, synced, before carrying it out.
@@ -251,19 +356,31 @@ pub(crate) fn begin(data_dir: &Path, chat_id: &str, pending: &Pending) -> std::i
     crate::store::sync_dir(dir)
 }
 
-/// Carry out a written-down rewind against the chat's conversation, on disk
-/// and in `history`/`transcript`; returns the Turns whose change sets it
-/// retracted. Idempotent: run again after a crash, it lands the same state.
-pub(crate) fn finish(
+fn clear_record(data_dir: &Path, chat_id: &str) -> Result<(), String> {
+    let Some(path) = pending_path(data_dir, chat_id) else {
+        return Ok(());
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("clear the rewind record: {error}")),
+    }
+    crate::store::sync_dir(path.parent().expect("chat dir"))
+        .map_err(|error| format!("sync the rewind record removal: {error}"))
+}
+
+/// The file writes and the step-log drop every written-down rewind
+/// shares, whatever build wrote it down.
+fn apply_files_and_log(
     data_dir: &Path,
     chat_id: &str,
-    pending: &Pending,
-    history: &mut Vec<AgentMessage>,
-    transcript: &mut Vec<SessionMessageEntry>,
-) -> Result<Vec<String>, String> {
-    if let Some(workdir) = &pending.workdir {
+    workdir: Option<&Path>,
+    writes: &[Write],
+    undone: &[String],
+) -> Result<(), String> {
+    if let Some(workdir) = workdir {
         let store = crate::checkpoints::store_dir(data_dir, chat_id).ok_or("unsafe chat id")?;
-        for write in &pending.writes {
+        for write in writes {
             let path = crate::turn_restore::safe_target(workdir, &write.path)
                 .ok_or_else(|| format!("rewind {}: path left the work tree", write.path))?;
             let bytes = side_bytes(&store, &write.target)
@@ -281,7 +398,7 @@ pub(crate) fn finish(
             written.map_err(|error| format!("rewind {}: {error}", write.path))?;
         }
     }
-    let undone: HashSet<&str> = pending.undone.iter().map(String::as_str).collect();
+    let undone: HashSet<&str> = undone.iter().map(String::as_str).collect();
     let steps = crate::checkpoints::load(data_dir, chat_id);
     if steps
         .iter()
@@ -295,45 +412,136 @@ pub(crate) fn finish(
         crate::checkpoints::rewrite(data_dir, chat_id, &kept)
             .map_err(|error| format!("rewrite the step log: {error}"))?;
     }
-    let cut = rewind_cut(history, &pending.tool_call_id)?;
-    let (entries, cut_turns) = transcript_cut(transcript, &cut.group)?;
+    Ok(())
+}
+
+/// Carry out a written-down rewind against the chat's conversation, on disk
+/// and in `history`/`transcript`; returns the Turns whose change sets it
+/// retracted. Idempotent: run again after a crash, it lands the same state
+/// — every cut reads the pending's own record, never a conversation the
+/// rewind may already have cut.
+pub(crate) fn finish(
+    data_dir: &Path,
+    chat_id: &str,
+    pending: &Pending,
+    history: &mut Vec<AgentMessage>,
+    transcript: &mut Vec<SessionMessageEntry>,
+) -> Result<Vec<String>, String> {
+    apply_files_and_log(
+        data_dir,
+        chat_id,
+        pending.workdir.as_deref(),
+        &pending.writes,
+        &pending.undone,
+    )?;
+    let cut = rewind_cut(history, pending.created_at);
     if history.len() > cut.history_len {
-        history.truncate(cut.history_len);
-        crate::history::rewrite(data_dir, chat_id, history).map_err(|error| error.to_string())?;
+        let mut kept = history.clone();
+        kept.truncate(cut.history_len);
+        crate::history::rewrite(data_dir, chat_id, &kept)
+            .map_err(|error| format!("rewrite History during rewind: {error}"))?;
+        *history = kept;
     }
-    if entries != *transcript {
-        crate::store::rewrite_transcript(data_dir, chat_id, &entries)
-            .map_err(|error| error.to_string())?;
-        *transcript = entries;
+    // The target entry is gone only on a replay that already cut it.
+    if let Some(index) = transcript
+        .iter()
+        .position(|entry| entry.id == pending.message_id)
+    {
+        let entries = transcript[..index].to_vec();
+        if entries != *transcript {
+            crate::store::rewrite_transcript(data_dir, chat_id, &entries)
+                .map_err(|error| error.to_string())?;
+            *transcript = entries;
+        }
     }
     // The cut Turns' change sets describe a working tree that no longer
     // exists — retracted like an edit-last prune's.
+    for message_id in &pending.cut_turns {
+        crate::turn_change_store::delete(data_dir, chat_id, message_id);
+    }
+    clear_record(data_dir, chat_id)?;
+    Ok(pending.cut_turns.clone())
+}
+
+/// Carry out a written-down rewind the retired step-cut build recorded.
+/// The writes and the step log follow the record as the message cut's do;
+/// the conversation cuts re-derive from the call the record names. A call
+/// the History no longer holds is a replay that already cut it — nothing
+/// left to derive, only the record to clear (the old build errored there
+/// and left the record stuck; the cut Turn's change set on such a replay
+/// is unknowable and stays, stale but inert).
+fn finish_legacy(
+    data_dir: &Path,
+    chat_id: &str,
+    pending: &LegacyPending,
+    history: &mut Vec<AgentMessage>,
+    transcript: &mut Vec<SessionMessageEntry>,
+) -> Result<Vec<String>, String> {
+    apply_files_and_log(
+        data_dir,
+        chat_id,
+        pending.workdir.as_deref(),
+        &pending.writes,
+        &pending.undone,
+    )?;
+    let mut cut_turns = Vec::new();
+    if let Ok((history_len, group)) = legacy_rewind_cut(history, &pending.tool_call_id) {
+        if history.len() > history_len {
+            let mut kept = history.clone();
+            kept.truncate(history_len);
+            crate::history::rewrite(data_dir, chat_id, &kept)
+                .map_err(|error| format!("rewrite History during rewind: {error}"))?;
+            *history = kept;
+        }
+        if let Ok((entries, turns)) = legacy_transcript_cut(transcript, &group) {
+            if entries != *transcript {
+                crate::store::rewrite_transcript(data_dir, chat_id, &entries)
+                    .map_err(|error| error.to_string())?;
+                *transcript = entries;
+            }
+            cut_turns = turns;
+        }
+    }
     for message_id in &cut_turns {
         crate::turn_change_store::delete(data_dir, chat_id, message_id);
     }
-    if let Some(path) = pending_path(data_dir, chat_id) {
-        let _ = std::fs::remove_file(path);
-    }
+    clear_record(data_dir, chat_id)?;
     Ok(cut_turns)
 }
 
 /// Finish a rewind a crash cut off; runs as the chat loads, before anything
-/// reads its conversation. A rewind that cannot finish stays written down
-/// for the next load.
+/// reads its conversation. A message-cut record also owns the queue sweep:
+/// the crash may have happened after the record landed but before the
+/// original confirm cleared the queue. Fail closed on any error so later
+/// work cannot be cut by a subsequent recovery attempt.
 pub(crate) fn finish_pending(
     data_dir: &Path,
     chat_id: &str,
     history: &mut Vec<AgentMessage>,
     transcript: &mut Vec<SessionMessageEntry>,
-) {
-    let Some(pending) = pending_path(data_dir, chat_id)
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<Pending>(&bytes).ok())
-    else {
-        return;
+    queue: &mut crate::queue::Queue,
+) -> Result<(), String> {
+    let Some(path) = pending_path(data_dir, chat_id) else {
+        return Ok(());
     };
-    if let Err(error) = finish(data_dir, chat_id, &pending, history, transcript) {
-        tracing::warn!(target: "holt::checkpoints", %error, "could not finish an interrupted rewind");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read the rewind record: {error}")),
+    };
+    match serde_json::from_slice::<Pending>(&bytes) {
+        Ok(pending) => {
+            queue.recover_rewind().map_err(|error| error.to_string())?;
+            finish(data_dir, chat_id, &pending, history, transcript)?;
+            queue.finish_rewind_apply();
+            Ok(())
+        }
+        Err(_) => match serde_json::from_slice::<LegacyPending>(&bytes) {
+            Ok(legacy) => {
+                finish_legacy(data_dir, chat_id, &legacy, history, transcript).map(|_| ())
+            }
+            Err(error) => Err(format!("unreadable rewind record: {error}")),
+        },
     }
 }
 

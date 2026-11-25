@@ -498,6 +498,82 @@ impl Composer {
     pub fn is_sending(&self) -> bool {
         self.sending
     }
+
+    /// Return a rewound message's text to its per-chat composer draft after
+    /// the rewind applied: the body lands in the input (or its inactive-chat
+    /// stash) and either attachment trailer returns as staged chips. Never
+    /// overwrite text or chips the user added while the confirm was in flight.
+    pub fn refill_after_rewind(&mut self, chat_id: &str, text: &str, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        let on_chat = self.current_key == chat_id;
+        let has_draft = if on_chat {
+            !self.input.read(cx).text().is_empty()
+        } else {
+            self.drafts
+                .get(chat_id)
+                .is_some_and(|draft| !draft.is_empty())
+        };
+        let has_refs = self
+            .path_refs
+            .get(chat_id)
+            .is_some_and(|references| !references.is_empty());
+        if has_draft || has_refs {
+            return;
+        }
+
+        // Current sends use the quoted Referenced paths trailer. Older
+        // transcripts used unquoted Attached images; both restore to the same
+        // structured PathRefs so a resend uses the current transport.
+        let (body, references) = {
+            let (body, lifted) = crate::path_refs::split_sent_references(text);
+            let parsed = crate::attachments::parse_user_message_images(&body);
+            let references = parsed
+                .attachments
+                .into_iter()
+                .map(|attachment| (attachment.path, false))
+                .chain(
+                    lifted
+                        .into_iter()
+                        .map(|reference| (reference.path, reference.is_dir)),
+                )
+                .collect::<Vec<_>>();
+            (parsed.text, references)
+        };
+        if !references.is_empty() {
+            let staged = self.path_refs.entry(chat_id.to_string()).or_default();
+            for (path, is_dir) in references {
+                let path = std::path::PathBuf::from(path);
+                // A managed name is a uuid stem (the engine's staged images);
+                // everything else is picker-bound and not reclaimable as an
+                // image. Restored paths are not re-bound: rewind must preserve
+                // the exact target even if it no longer exists on disk.
+                let managed = !is_dir
+                    && path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok());
+                crate::path_refs::push_unique(
+                    staged,
+                    crate::path_refs::PathRef {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        path,
+                        is_dir,
+                        managed,
+                    },
+                );
+            }
+        }
+        if on_chat {
+            self.input.update(cx, |input, cx| input.set_text(body, cx));
+        } else if body.is_empty() {
+            self.drafts.remove(chat_id);
+        } else {
+            self.drafts.insert(chat_id.to_string(), body);
+        }
+        cx.notify();
+    }
     fn render_input_with_completion(&self) -> gpui::Div {
         div().relative().child(self.input.clone())
     }
@@ -1597,6 +1673,217 @@ mod tests {
                     !c.pickers.read(cx).provider_mode_draft,
                     "deleting the directive disarms the draft"
                 );
+            });
+        });
+    }
+
+    /// A rewind's composer refill (ADR-rewind-to-a-message-is-all-or-nothing):
+    /// the rewound message's text lands in an empty draft on its own chat,
+    /// never over text the user started meanwhile. An inactive chat's refill
+    /// waits in that chat's stash rather than touching the visible input.
+    #[gpui::test]
+    fn a_rewind_refill_fills_only_an_empty_draft_on_the_rewound_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.composer.clone())
+            }
+        }
+
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            cx.notify();
+        });
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+            TestView { composer }
+        });
+        visual.run_until_parked();
+
+        // An empty draft takes the rewound text.
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                c.refill_after_rewind("chat-1", "fix the parser", cx);
+                assert_eq!(c.input.read(cx).text(), "fix the parser");
+                assert!(c.staged_refs().is_empty());
+                // A draft the user started meanwhile is never clobbered.
+                c.input
+                    .update(cx, |input, cx| input.set_text("meanwhile…", cx));
+                c.refill_after_rewind("chat-1", "fix the parser", cx);
+                assert_eq!(c.input.read(cx).text(), "meanwhile…");
+                // Another chat's rewind leaves the visible draft alone and
+                // fills only that chat's inactive stash.
+                c.refill_after_rewind("chat-other", "other chat's rewind", cx);
+                assert_eq!(c.input.read(cx).text(), "meanwhile…");
+                assert_eq!(
+                    c.drafts.get("chat-other").map(String::as_str),
+                    Some("other chat's rewind")
+                );
+                // An existing inactive draft is just as protected.
+                c.refill_after_rewind("chat-other", "replacement", cx);
+                assert_eq!(
+                    c.drafts.get("chat-other").map(String::as_str),
+                    Some("other chat's rewind")
+                );
+
+                // Existing inactive chips also veto the whole refill, so a
+                // body cannot be paired with a different message's stage.
+                c.path_refs.insert(
+                    "chat-chips".into(),
+                    vec![crate::path_refs::PathRef {
+                        id: "existing".into(),
+                        path: "/tmp/existing.txt".into(),
+                        is_dir: false,
+                        managed: false,
+                    }],
+                );
+                c.refill_after_rewind("chat-chips", "must not replace the chips", cx);
+                assert!(!c.drafts.contains_key("chat-chips"));
+                assert_eq!(c.path_refs["chat-chips"][0].id, "existing");
+                // Prepare an empty destination for the navigation case below.
+                c.input.update(cx, |input, cx| input.set_text("", cx));
+                c.drafts.remove("chat-other");
+            });
+        });
+
+        state.update(&mut *visual, |state, cx| {
+            state.select_chat(Some("chat-other".into()), cx)
+        });
+        visual.run_until_parked();
+        let managed = crate::path_refs::PathRef {
+            id: "late".into(),
+            path: format!("/tmp/{}.png", uuid::Uuid::new_v4()).into(),
+            is_dir: false,
+            managed: true,
+        };
+        let late = crate::path_refs::append_references("late rewind", &[managed]);
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                assert_eq!(c.current_key, "chat-other");
+                c.refill_after_rewind("chat-1", &late, cx);
+                assert_eq!(c.input.read(cx).text(), "");
+                assert!(c.staged_refs().is_empty());
+                assert_eq!(
+                    c.drafts.get("chat-1").map(String::as_str),
+                    Some("late rewind")
+                );
+                assert_eq!(c.path_refs["chat-1"].len(), 1);
+                assert!(c.path_refs["chat-1"][0].managed);
+            });
+        });
+
+        // Returning to the rewound chat swaps both parts of its stash into
+        // the visible composer.
+        state.update(&mut *visual, |state, cx| {
+            state.select_chat(Some("chat-1".into()), cx)
+        });
+        visual.run_until_parked();
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                assert_eq!(c.current_key, "chat-1");
+                assert_eq!(c.input.read(cx).text(), "late rewind");
+                assert_eq!(c.staged_refs().len(), 1);
+            });
+        });
+    }
+
+    /// Both trailer generations restore losslessly: Referenced paths keeps
+    /// directories and escapes and round-trips through the real appender;
+    /// legacy Attached images restore to the same chip representation. A uuid
+    /// stem marks an engine-managed image, a plain name a picker-bound file.
+    #[gpui::test]
+    fn a_rewind_refill_returns_both_trailers_as_staged_chips(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.composer.clone())
+            }
+        }
+
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |s, cx| {
+                s.selected_chat = Some("chat-1".into());
+                cx.notify();
+            });
+            let composer = cx.new(|cx| Composer::new(state, cx));
+            TestView { composer }
+        });
+        visual.run_until_parked();
+
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let escaped = "/tmp/say \"hi\"\\slash\nline.rs";
+        let original_refs = vec![
+            crate::path_refs::PathRef {
+                id: "managed".into(),
+                path: format!("/tmp/{uuid}.png").into(),
+                is_dir: false,
+                managed: true,
+            },
+            crate::path_refs::PathRef {
+                id: "directory".into(),
+                path: "/tmp/a dir".into(),
+                is_dir: true,
+                managed: false,
+            },
+            crate::path_refs::PathRef {
+                id: "escaped".into(),
+                path: escaped.into(),
+                is_dir: false,
+                managed: false,
+            },
+        ];
+        // Build the transport with the production appender, not a test-owned
+        // imitation of its trailer grammar.
+        let raw = crate::path_refs::append_references("look at these", &original_refs);
+        view.update_in(&mut *visual, |view, _, cx| {
+            view.composer.update(cx, |c, cx| {
+                c.refill_after_rewind("chat-1", &raw, cx);
+                assert_eq!(c.input.read(cx).text(), "look at these");
+                let refs = c.staged_refs();
+                assert_eq!(refs.len(), 3, "the trailer returns as chips: {refs:?}");
+                assert!(refs[0].managed, "a uuid stem is an engine-managed image");
+                assert!(refs[1].is_dir);
+                assert_eq!(refs[1].full_path(), "/tmp/a dir/");
+                assert!(!refs[1].managed);
+                assert_eq!(refs[2].path.to_string_lossy(), escaped);
+                assert_eq!(
+                    crate::path_refs::append_references(c.input.read(cx).text(), refs),
+                    raw,
+                    "a resend preserves the body, directory, escapes, and managed image"
+                );
+
+                // The older unquoted image trailer remains readable. Clear
+                // the draft first: a refill must never merge two stages.
+                c.input.update(cx, |input, cx| input.set_text("", cx));
+                c.path_refs.remove("chat-1");
+                let legacy = format!(
+                    "legacy body\n\nAttached images (local files, referenced below):\n- /tmp/{uuid}.png\n- /tmp/notes.txt"
+                );
+                c.refill_after_rewind("chat-1", &legacy, cx);
+                assert_eq!(c.input.read(cx).text(), "legacy body");
+                let refs = c.staged_refs();
+                assert_eq!(refs.len(), 2, "legacy trailer returns as chips: {refs:?}");
+                let image = refs
+                    .iter()
+                    .find(|r| r.path.extension().is_some_and(|e| e == "png"))
+                    .unwrap();
+                assert!(image.managed);
+                let text = refs.iter().find(|r| r.path.ends_with("notes.txt")).unwrap();
+                assert!(!text.managed, "a picker-bound file is not managed");
             });
         });
     }

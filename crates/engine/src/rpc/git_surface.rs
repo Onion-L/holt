@@ -389,7 +389,10 @@ struct RestoreTurnChangesRequest {
 
 /// The explicit non-Git answer `GetTurnChangeSet`/`WatchTurnChangeSet`
 /// share (ADR-turn-change-sets-and-review): an empty change set must never stand in for it.
-const NON_GIT_CHANGE_SET_REASON: &str = "the chat's working directory is not a Git work tree";
+/// The rewind path answers with the same phrase when steps exist but the
+/// work tree can no longer be discovered.
+pub(crate) const NON_GIT_CHANGE_SET_REASON: &str =
+    "the chat's working directory is not a Git work tree";
 
 /// The turn-diff scopes' failure for a chat whose current Turn has no
 /// recorded baseline (never ran, engine restarted): a coded error, so the

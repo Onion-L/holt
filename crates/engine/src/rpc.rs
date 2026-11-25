@@ -205,7 +205,8 @@ impl RpcService for EngineService {
             methods::CONTINUE_MESSAGE_QUEUE => self.continue_message_queue(params),
             methods::EDIT_QUEUED_MESSAGE => self.edit_queued_message(params),
             methods::EDIT_LAST_MESSAGE => self.edit_last_message(params).await,
-            methods::REWIND_TO_STEP => self.rewind_to_step(params).await,
+            methods::REWIND_TO_MESSAGE => self.rewind_to_message(params).await,
+            methods::CONFIRM_REWIND => self.confirm_rewind(params).await,
             methods::DELETE_QUEUED_MESSAGE => self.delete_queued_message(params),
             methods::UPDATE_STATUS => Ok(Self::watch_value(self.updater.subscribe())),
             methods::CHECK_UPDATE => {

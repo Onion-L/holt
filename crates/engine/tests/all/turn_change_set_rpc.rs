@@ -311,6 +311,41 @@ async fn setup(fixture: &Fixture, engine: &LocalEngine) {
 /// Queue a `run` command with an explicit message id — the identity the
 /// persisted change-set record and the terminal event are keyed by.
 async fn queue_run(engine: &LocalEngine, chat_id: &str, cwd: &str, message_id: &str, prompt: &str) {
+    queue_run_with(
+        engine,
+        chat_id,
+        cwd,
+        message_id,
+        prompt,
+        serde_json::Value::Null,
+    )
+    .await;
+}
+
+/// `queue_run` with a worktree spec riding the request.
+#[allow(clippy::too_many_arguments)]
+async fn queue_run_with(
+    engine: &LocalEngine,
+    chat_id: &str,
+    cwd: &str,
+    message_id: &str,
+    prompt: &str,
+    worktree: serde_json::Value,
+) {
+    queue_run_result(engine, chat_id, cwd, message_id, prompt, worktree)
+        .await
+        .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn queue_run_result(
+    engine: &LocalEngine,
+    chat_id: &str,
+    cwd: &str,
+    message_id: &str,
+    prompt: &str,
+    worktree: serde_json::Value,
+) -> Result<RpcReply, RpcError> {
     engine
         .handle(
             methods::QUEUE_COMMAND,
@@ -326,13 +361,28 @@ async fn queue_run(engine: &LocalEngine, chat_id: &str, cwd: &str, message_id: &
                         "reasoning": null,
                         "modelOptions": {},
                         "cwd": cwd,
-                        "sandbox": "workspace-write"
+                        "sandbox": "workspace-write",
+                        "worktree": worktree
                     }
                 }
             }),
         )
         .await
-        .unwrap();
+}
+
+/// The queue's current state, off a fresh watch's opening frame.
+async fn queue_snapshot(engine: &LocalEngine, chat_id: &str) -> serde_json::Value {
+    let RpcReply::Stream(mut watch) = engine
+        .handle(
+            methods::WATCH_MESSAGE_QUEUE,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("queue watch")
+    };
+    next_frame(&mut watch).await
 }
 
 /// The change set of one specific Turn by message id.
@@ -1834,6 +1884,29 @@ async fn wait_for_file(path: &std::path::Path) {
     }
 }
 
+/// Remove a worktree file a just-dropped engine was reading. The queue
+/// driver's settle captures the final change set past the queue-idle
+/// frame this suite waits on, and Windows reports a lingering sharing
+/// violation (OS error 32) for a moment after those handles close — so a
+/// removal right after `drop(engine)` races the release there and only
+/// there. The wait is bounded: a holder that never lets go is a finding,
+/// not something to wait out.
+async fn remove_after_settle_releases(path: impl AsRef<std::path::Path>) {
+    let path = path.as_ref();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return,
+            Err(error)
+                if error.raw_os_error() == Some(32) && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("removing {path:?}: {error}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_call_a_crash_cut_off_tells_the_resumed_model_what_it_changed() {
     let fixture = Fixture::new();
@@ -1903,31 +1976,52 @@ async fn a_call_a_crash_cut_off_tells_the_resumed_model_what_it_changed() {
 }
 
 // ---------------------------------------------------------------------------
-// Rewind to a step (RewindToStep)
+// ---------------------------------------------------------------------------
+// Rewind to a message (RewindToMessage / ConfirmRewind)
 // ---------------------------------------------------------------------------
 
-/// Rewind once the settled Turn has let go of the chat: the queue reads
-/// idle a moment before the Turn's settle releases execution.
-async fn rewind(engine: &LocalEngine, call: &str, dry_run: bool) -> holt_proto::RewindReply {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let reply = engine
-            .handle(
-                methods::REWIND_TO_STEP,
-                serde_json::json!({ "chatId": "chat-1", "toolCallId": call, "dryRun": dry_run }),
-            )
-            .await;
-        match reply {
-            Ok(RpcReply::Value(value)) => return serde_json::from_value(value).unwrap(),
-            Err(RpcError::Failed(message))
-                if message.contains("a Turn is running")
-                    && std::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(error) => panic!("rewind failed: {error:?}"),
-            Ok(_) => panic!("unary reply"),
-        }
+/// Plan a rewind of the chat to `message_id`: the engine itself
+/// interrupts a Turn that is still running and waits out its settle, so
+/// one call is the whole orchestration.
+async fn rewind_plan(engine: &LocalEngine, message_id: &str) -> holt_proto::RewindReply {
+    rewind_plan_result(engine, message_id)
+        .await
+        .expect("the plan succeeds")
+}
+
+/// Plan a rewind, keeping the refusal.
+async fn rewind_plan_result(
+    engine: &LocalEngine,
+    message_id: &str,
+) -> Result<holt_proto::RewindReply, RpcError> {
+    let reply = engine
+        .handle(
+            methods::REWIND_TO_MESSAGE,
+            serde_json::json!({ "chatId": "chat-1", "messageId": message_id }),
+        )
+        .await;
+    match reply {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Err(error) => Err(error),
+        Ok(_) => panic!("unary reply"),
+    }
+}
+
+/// Confirm the staged rewind.
+async fn rewind_confirm(
+    engine: &LocalEngine,
+    plan_id: &str,
+) -> Result<holt_proto::RewindReply, RpcError> {
+    let reply = engine
+        .handle(
+            methods::CONFIRM_REWIND,
+            serde_json::json!({ "chatId": "chat-1", "planId": plan_id }),
+        )
+        .await;
+    match reply {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Err(error) => Err(error),
+        Ok(_) => panic!("unary reply"),
     }
 }
 
@@ -1950,8 +2044,20 @@ fn three_step_provider(after: Vec<ScriptedReply>) -> ScriptedProvider {
     ScriptedProvider::new(replies)
 }
 
+/// A second Turn's script: one write of c.txt, then a closing text.
+fn later_work_provider() -> Vec<ScriptedReply> {
+    vec![
+        ScriptedReply::tool_call(
+            "c-1",
+            "write",
+            serde_json::json!({ "path": "c.txt", "content": "see\n" }),
+        ),
+        ScriptedReply::text("done more"),
+    ]
+}
+
 #[tokio::test]
-async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_after_the_step() {
+async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_before_the_message() {
     use holt_proto::{RewindAction, RewindFile};
     let fixture = Fixture::new();
     let provider = three_step_provider(vec![ScriptedReply::text("after the rewind")]);
@@ -1962,7 +2068,7 @@ async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_after_the_step()
     settle_queue(&engine, "chat-1", true).await;
     assert!(fixture.path("b.txt").exists());
 
-    let plan = rewind(&engine, "w-1", true).await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
     let mut files = plan.files.clone();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     assert_eq!(
@@ -1974,7 +2080,7 @@ async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_after_the_step()
             },
             RewindFile {
                 path: "a.txt".into(),
-                action: RewindAction::Restore
+                action: RewindAction::Delete
             },
             RewindFile {
                 path: "b.txt".into(),
@@ -1983,43 +2089,106 @@ async fn a_rewind_puts_the_files_back_and_cuts_the_conversation_after_the_step()
         ]
     );
     assert!(plan.conflicts.is_empty() && !plan.applied);
-    assert!(fixture.path("b.txt").exists(), "a dry run writes nothing");
+    assert!(fixture.path("b.txt").exists(), "a plan writes nothing");
 
-    let done = rewind(&engine, "w-1", false).await;
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
     assert!(done.applied);
-    assert_eq!(
-        std::fs::read_to_string(fixture.path("a.txt")).unwrap(),
-        "one\n"
-    );
+    // The Turn found a.txt and b.txt absent and README.md clean.
+    assert!(!fixture.path("a.txt").exists());
     assert_eq!(
         std::fs::read_to_string(fixture.path("README.md")).unwrap(),
         "hello\n"
     );
     assert!(!fixture.path("b.txt").exists());
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    let shown = common::transcript_tool_ids(&snapshot);
-    assert_eq!(shown, ["w-1"], "the undone step leaves the conversation");
-    let calls: Vec<String> = steps(&fixture)
-        .iter()
-        .map(|step| step["toolCallId"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(calls, ["w-1"], "the undone steps leave the log");
+    assert!(
+        snapshot["reset"].as_array().unwrap().is_empty(),
+        "the message and its Turn leave the conversation"
+    );
+    assert_eq!(
+        common::transcript_tool_ids(&snapshot),
+        Vec::<String>::new(),
+        "the undone steps leave the conversation"
+    );
+    assert_eq!(
+        steps(&fixture),
+        Vec::<serde_json::Value>::new(),
+        "the undone steps leave the log"
+    );
     let records = std::fs::read_dir(fixture.data_dir.path().join("turn-changes/chat-1"))
         .map(|dir| dir.count())
         .unwrap_or(0);
     assert_eq!(records, 0, "the cut Turn's change set is retracted");
 
-    // The next Turn's model sees the conversation up to the step.
+    // The next Turn's model starts over: nothing of the rewound Turn
+    // remains in the request.
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "go another way").await;
     settle_queue(&engine, "chat-1", true).await;
     let requests = provider.requests();
-    let tail: Vec<String> = common::summarize(&requests.last().unwrap().messages)
-        .into_iter()
-        .rev()
-        .take(2)
+    assert_eq!(
+        common::summarize(&requests.last().unwrap().messages),
+        ["user:go another way"],
+    );
+}
+
+#[tokio::test]
+async fn a_rewind_to_a_middle_message_keeps_the_earlier_turns() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(later_work_provider());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "later work").await;
+    settle_queue(&engine, "chat-1", true).await;
+    assert!(fixture.path("c.txt").exists());
+
+    // The first Turn's file state is not the rewind's business: only the
+    // second Turn's changes go back.
+    let plan = rewind_plan(&engine, &common::message_id("later work")).await;
+    assert!(plan.conflicts.is_empty() && !plan.applied);
+    assert_eq!(plan.files.len(), 1);
+    assert_eq!(plan.files[0].path, "c.txt");
+
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    assert!(done.applied);
+    assert!(!fixture.path("c.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("a.txt")).unwrap(),
+        "two\n"
+    );
+    assert!(
+        !fixture.path("README.md").exists(),
+        "the kept Turn keeps its work"
+    );
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&snapshot),
+        ["w-1", "b-1"],
+        "the kept Turn stays in the conversation"
+    );
+    let calls: Vec<String> = steps(&fixture)
+        .iter()
+        .map(|step| step["toolCallId"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(tail[0], "user:go another way");
-    assert!(tail[1].starts_with("toolresult:w-1:"), "{tail:?}");
+    assert_eq!(calls, ["w-1", "b-1"], "the kept Turn keeps its steps");
+    let records = std::fs::read_dir(fixture.data_dir.path().join("turn-changes/chat-1"))
+        .map(|dir| dir.count())
+        .unwrap_or(0);
+    assert_eq!(records, 1, "only the cut Turn's change set is retracted");
+
+    // The next Turn's model sees the conversation through the kept Turn.
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "go another way").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let requests = provider.requests();
+    let shown = common::summarize(&requests.last().unwrap().messages);
+    assert_eq!(shown.last().unwrap(), "user:go another way");
+    assert_eq!(shown[shown.len() - 2], "assistant:text:done", "{shown:?}");
+    assert!(
+        shown.iter().any(|line| line.starts_with("toolresult:b-1:")),
+        "{shown:?}"
+    );
 }
 
 #[tokio::test]
@@ -2034,7 +2203,7 @@ async fn a_file_that_moved_on_refuses_the_whole_rewind() {
     // The user edits a file the rewind would put back.
     std::fs::write(fixture.path("a.txt"), "mine\n").unwrap();
 
-    let reply = rewind(&engine, "w-1", false).await;
+    let reply = rewind_plan(&engine, &common::message_id("three steps")).await;
     assert!(!reply.applied);
     assert_eq!(
         reply.conflicts,
@@ -2043,6 +2212,12 @@ async fn a_file_that_moved_on_refuses_the_whole_rewind() {
             reason: RewindConflictReason::Changed
         }]
     );
+    // A plan a conflict refused is never staged, so it cannot be
+    // confirmed.
+    let Err(RpcError::Failed(message)) = rewind_confirm(&engine, &reply.plan_id).await else {
+        panic!("expected the confirm to refuse")
+    };
+    assert_eq!(message, "no rewind is waiting to be confirmed");
     assert!(fixture.path("b.txt").exists(), "nothing was written");
     assert!(!fixture.path("README.md").exists());
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
@@ -2055,6 +2230,228 @@ async fn a_file_that_moved_on_refuses_the_whole_rewind() {
 }
 
 #[tokio::test]
+async fn a_confirm_without_a_staged_plan_refuses() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&three_step_provider(Vec::new()));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    let refused = engine
+        .handle(
+            methods::CONFIRM_REWIND,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await;
+    let Err(RpcError::Failed(message)) = refused else {
+        panic!("expected a refusal")
+    };
+    assert_eq!(message, "no rewind is waiting to be confirmed");
+    assert!(fixture.path("b.txt").exists(), "nothing was written");
+    assert_eq!(steps(&fixture).len(), 2);
+}
+
+#[tokio::test]
+async fn a_stale_plan_id_cannot_confirm_any_rewind() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(later_work_provider());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "later work").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let stale = rewind_plan(&engine, &common::message_id("three steps")).await;
+    let current = rewind_plan(&engine, &common::message_id("later work")).await;
+    assert_ne!(stale.plan_id, current.plan_id);
+
+    let Err(error) = rewind_confirm(&engine, &stale.plan_id).await else {
+        panic!("a replaced plan cannot be confirmed")
+    };
+    assert!(error.to_string().contains("plan was replaced"), "{error}");
+    assert!(fixture.path("a.txt").exists());
+    assert!(fixture.path("c.txt").exists());
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&transcript),
+        ["w-1", "b-1", "c-1"]
+    );
+}
+
+/// A confirm re-plans what moved on since the dialog opened and applies
+/// the fresh plan, anchored on the message the user confirmed: the later
+/// Turn's work joins the undo instead of refusing.
+#[tokio::test]
+async fn a_confirm_replans_what_moved_on_and_applies_it() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(later_work_provider());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+    assert!(plan.conflicts.is_empty() && !plan.applied);
+    assert_eq!(plan.pending_count, 0, "nothing is queued at plan time");
+    assert!(!plan.will_stop_turn);
+
+    // The chat moves on after the plan: a second Turn changes c.txt.
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "later work").await;
+    settle_queue(&engine, "chat-1", true).await;
+    assert!(fixture.path("c.txt").exists());
+
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    assert!(done.applied);
+    assert!(!fixture.path("a.txt").exists());
+    assert!(!fixture.path("b.txt").exists());
+    assert!(
+        !fixture.path("c.txt").exists(),
+        "the later Turn joins the undo"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        steps(&fixture),
+        Vec::<serde_json::Value>::new(),
+        "every undone step leaves the log"
+    );
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        snapshot["reset"].as_array().unwrap().is_empty(),
+        "both Turns leave the conversation"
+    );
+}
+
+#[tokio::test]
+async fn a_conversation_only_rewind_cuts_without_touching_files() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("just words")]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "no tools").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    let plan = rewind_plan(&engine, &common::message_id("no tools")).await;
+    assert!(plan.files.is_empty() && plan.conflicts.is_empty() && !plan.applied);
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    assert!(done.applied);
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(snapshot["reset"].as_array().unwrap().is_empty());
+    assert!(
+        fixture.path("README.md").exists(),
+        "the work tree is untouched"
+    );
+    assert_eq!(steps(&fixture), Vec::<serde_json::Value>::new());
+}
+
+#[tokio::test]
+async fn a_rewind_record_failure_keeps_the_queue_and_conversation() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("just words")]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "no tools").await;
+    settle_queue(&engine, "chat-1", true).await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    let plan = rewind_plan(&engine, &common::message_id("no tools")).await;
+
+    let checkpoint_dir = fixture.data_dir.path().join("checkpoints/chat-1");
+    if checkpoint_dir.is_dir() {
+        std::fs::remove_dir_all(&checkpoint_dir).unwrap();
+    }
+    std::fs::create_dir_all(checkpoint_dir.parent().unwrap()).unwrap();
+    std::fs::write(&checkpoint_dir, "not a directory").unwrap();
+    let Err(error) = rewind_confirm(&engine, &plan.plan_id).await else {
+        panic!("the unwritable record refuses the apply")
+    };
+    assert!(error.to_string().contains("record the rewind"), "{error}");
+
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        queue["pending"].as_array().map(Vec::len),
+        Some(2),
+        "{queue}"
+    );
+    assert!(queue["paused"].as_bool().unwrap());
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(!transcript["reset"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_rewind_apply_fences_new_work_until_recovery() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(Vec::new());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+
+    let history = fixture.data_dir.path().join("history/chat-1.jsonl");
+    let backup = fixture.data_dir.path().join("history/chat-1.backup");
+    std::fs::rename(&history, &backup).unwrap();
+    std::fs::create_dir(&history).unwrap();
+    let Err(error) = rewind_confirm(&engine, &plan.plan_id).await else {
+        panic!("the History rewrite failure interrupts the apply")
+    };
+    assert!(error.to_string().contains("rewind"), "{error}");
+    let requests = provider.requests().len();
+    let refused = queue_run_result(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "after-failure",
+        "must not run before recovery",
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(refused.is_err(), "a pending rewind fences admission");
+    assert_eq!(provider.requests().len(), requests);
+
+    std::fs::remove_dir_all(&history).unwrap();
+    std::fs::rename(&backup, &history).unwrap();
+    drop(engine);
+    let engine = fixture.engine(&provider);
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(queue["pending"], serde_json::json!([]), "{queue}");
+    assert!(queue["error"].is_null(), "{queue}");
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(transcript["reset"].as_array().unwrap().is_empty());
+    assert!(!fixture.path("a.txt").exists());
+    assert!(!fixture.path("b.txt").exists());
+    assert_eq!(provider.requests().len(), requests);
+}
+
+#[tokio::test]
 async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
     let fixture = Fixture::new();
     let provider = three_step_provider(Vec::new());
@@ -2064,14 +2461,218 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
     settle_queue(&engine, "chat-1", true).await;
     // Let the settled Turn release the chat before the "crash".
-    rewind(&engine, "w-1", true).await;
+    rewind_plan(&engine, &common::message_id("three steps")).await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let entry = snapshot["reset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["role"] == "user")
+        .unwrap();
+    let message_id = entry["id"].as_str().unwrap().to_string();
+    let created_at = entry["createdAt"].as_i64().unwrap();
     drop(engine);
 
     // The rewind was written down, then the process died before any of it
-    // ran — except one file write that landed.
-    let steps = steps(&fixture);
-    let bash = steps
-        .iter()
+    // ran — except one file write that landed. The writes are the two
+    // steps' net change: each path back to its first before side.
+    let mut writes: Vec<serde_json::Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for step in steps(&fixture) {
+        for file in step["files"].as_array().unwrap() {
+            let path = file["path"].as_str().unwrap().to_string();
+            if seen.insert(path.clone()) {
+                writes.push(serde_json::json!({
+                    "path": path,
+                    "target": file["before"],
+                }));
+            }
+        }
+    }
+    let workdir = std::fs::canonicalize(fixture.repo_dir.path()).unwrap();
+    std::fs::write(
+        fixture
+            .data_dir
+            .path()
+            .join("checkpoints/chat-1/rewind.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "messageId": message_id,
+            "createdAt": created_at,
+            "cutTurns": [message_id],
+            "workdir": workdir,
+            "writes": writes,
+            "undone": ["w-1", "b-1"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    remove_after_settle_releases(fixture.path("a.txt")).await;
+
+    let engine = fixture.engine(&provider);
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(queue["pending"], serde_json::json!([]), "{queue}");
+    assert!(!queue["paused"].as_bool().unwrap(), "{queue}");
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        snapshot["reset"].as_array().unwrap().is_empty(),
+        "the rewind cut the conversation before the message"
+    );
+    assert!(!fixture.path("a.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert!(!fixture.path("b.txt").exists());
+    assert_eq!(self::steps(&fixture).len(), 0);
+    assert!(
+        !fixture
+            .data_dir
+            .path()
+            .join("checkpoints/chat-1/rewind.json")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn a_message_older_than_the_kept_checkpoints_cannot_be_rewound_to() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&three_step_provider(Vec::new()));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    rewind_plan(&engine, &common::message_id("three steps")).await;
+    // The limits dropped steps newer than the rewind point.
+    std::fs::write(
+        fixture
+            .data_dir
+            .path()
+            .join("checkpoints/chat-1/dropped.json"),
+        serde_json::to_vec(&serde_json::json!({ "until": i64::MAX })).unwrap(),
+    )
+    .unwrap();
+
+    let refused = engine
+        .handle(
+            methods::REWIND_TO_MESSAGE,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "messageId": common::message_id("three steps"),
+            }),
+        )
+        .await;
+    let Err(RpcError::Failed(message)) = refused else {
+        panic!("expected a refusal")
+    };
+    assert!(message.contains("older than the checkpoints"), "{message}");
+    assert!(fixture.path("b.txt").exists());
+}
+
+/// A rewind asked while a Turn is still running interrupts it and waits
+/// out its settle instead of refusing: the plan lands on the chat the
+/// interrupted Turn leaves behind, and the apply puts its partial work
+/// back with the rest of the cut.
+#[tokio::test]
+async fn a_rewind_while_a_turn_runs_interrupts_it_and_waits_out_the_settle() {
+    let fixture = Fixture::new();
+    let observed = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        tool_write("a.txt", "one\n"),
+        ScriptedReply::Cancelling {
+            observed: observed.clone(),
+            finish: finish.clone(),
+        },
+    ]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "work then stop").await;
+    wait_for_requests(&provider, 2).await;
+    assert!(fixture.path("a.txt").exists());
+
+    // A file the running Turn already wrote moves underneath the plan:
+    // the verdict is provisional while the run holds the file, and the
+    // confirm stops the run and re-derives — the plan must not dead-end
+    // on a race the stop resolves.
+    std::fs::write(fixture.path("a.txt"), "external\n").unwrap();
+    // The plan is read-only: the Turn keeps running while the dialog is
+    // open — canceling the dialog must leave the run untouched — and the
+    // plan says the confirm will stop it instead of stopping it here.
+    let plan = rewind_plan(&engine, &common::message_id("work then stop")).await;
+    assert!(plan.will_stop_turn, "the plan reports the live run");
+    assert_eq!(plan.turns, 1, "the interrupted Turn is the cut");
+    assert_eq!(plan.steps, 1);
+    assert!(
+        plan.conflicts.is_empty(),
+        "a live Turn's in-flight writes are not a verdict: {plan:?}"
+    );
+    // Back to the step's recorded after side, so the post-stop
+    // re-derivation finds the honest state.
+    std::fs::write(fixture.path("a.txt"), "one\n").unwrap();
+
+    // The confirm is the stop: its interrupt reaches the transport; the
+    // test releases its terminal event so the Turn settles while the
+    // confirm is waiting.
+    let release = tokio::spawn(async move {
+        observed.notified().await;
+        finish.notify_one();
+    });
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    release.await.unwrap();
+    assert!(done.applied);
+    assert!(
+        !fixture.path("a.txt").exists(),
+        "the partial write goes back"
+    );
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        snapshot["reset"].as_array().unwrap().is_empty(),
+        "the interrupted Turn leaves the conversation"
+    );
+    assert_eq!(steps(&fixture), Vec::<serde_json::Value>::new());
+}
+
+/// A record the retired step-cut build wrote (keyed by `toolCallId`) is
+/// finished by the chat's next load under that build's own cut.
+#[tokio::test]
+async fn an_old_format_rewind_record_is_finished_by_the_next_load() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(Vec::new());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    drop(engine);
+
+    // The step-cut build's record: cut after the results of the assistant
+    // message that made `w-1`, undo `b-1`'s files.
+    let bash = steps(&fixture)
+        .into_iter()
         .find(|step| step["toolCallId"] == "b-1")
         .unwrap();
     let writes: Vec<serde_json::Value> = bash["files"]
@@ -2095,63 +2696,395 @@ async fn a_rewind_a_crash_cut_off_is_finished_by_the_next_load() {
         .unwrap(),
     )
     .unwrap();
-    std::fs::write(fixture.path("a.txt"), "one\n").unwrap();
 
     let engine = fixture.engine(&provider);
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    let shown = common::transcript_tool_ids(&snapshot);
     assert_eq!(
-        shown,
+        common::transcript_tool_ids(&snapshot),
         ["w-1"],
-        "the rewind cut the conversation after the kept step"
+        "the old record's own cut is honored"
     );
-    assert_eq!(
-        std::fs::read_to_string(fixture.path("a.txt")).unwrap(),
-        "one\n"
-    );
+    assert!(!fixture.path("b.txt").exists());
     assert_eq!(
         std::fs::read_to_string(fixture.path("README.md")).unwrap(),
         "hello\n"
     );
-    assert!(!fixture.path("b.txt").exists());
-    assert_eq!(self::steps(&fixture).len(), 1);
+    assert_eq!(steps(&fixture).len(), 1);
     assert!(
         !fixture
             .data_dir
             .path()
             .join("checkpoints/chat-1/rewind.json")
-            .exists()
+            .exists(),
+        "the finished record is cleaned up"
     );
 }
 
+/// Steps exist but the work tree can no longer be discovered: the refusal
+/// carries the house-stable non-Git phrase, not git2's raw message.
 #[tokio::test]
-async fn a_step_older_than_the_kept_checkpoints_cannot_be_rewound_to() {
+async fn a_rewind_in_a_working_tree_that_disappeared_refuses_with_the_stable_reason() {
     let fixture = Fixture::new();
     let engine = fixture.engine(&three_step_provider(Vec::new()));
     setup(&fixture, &engine).await;
     grant_full_access(&engine, "chat-1").await;
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
     settle_queue(&engine, "chat-1", true).await;
-    rewind(&engine, "w-1", true).await;
-    // The limits dropped steps newer than the rewind point.
-    std::fs::write(
-        fixture
-            .data_dir
-            .path()
-            .join("checkpoints/chat-1/dropped.json"),
-        serde_json::to_vec(&serde_json::json!({ "until": i64::MAX })).unwrap(),
-    )
-    .unwrap();
+    std::fs::remove_dir_all(fixture.repo_dir.path().join(".git")).unwrap();
 
     let refused = engine
         .handle(
-            methods::REWIND_TO_STEP,
-            serde_json::json!({ "chatId": "chat-1", "toolCallId": "w-1", "dryRun": true }),
+            methods::REWIND_TO_MESSAGE,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "messageId": common::message_id("three steps"),
+            }),
         )
         .await;
     let Err(RpcError::Failed(message)) = refused else {
         panic!("expected a refusal")
     };
-    assert!(message.contains("older than the checkpoints"), "{message}");
-    assert!(fixture.path("b.txt").exists());
+    assert_eq!(
+        message, "the chat's working directory is not a Git work tree",
+        "the refusal is the house-stable phrase, not git2's raw message"
+    );
+    assert!(fixture.path("b.txt").exists(), "nothing was written");
+}
+
+/// Queued prompts point at a conversation the cut is about to remove: the
+/// confirm sweeps them with it, and the pause the interrupt parked lifts
+/// with the last deletion — the queue comes back clean, not parked.
+#[tokio::test]
+async fn a_confirm_sweeps_queued_items_and_lifts_the_pause() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&three_step_provider(later_work_provider()));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    // Pause the queue the way an interrupt does, so two later sends stay
+    // pending — never admitted.
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+    assert!(plan.conflicts.is_empty() && !plan.applied);
+    assert_eq!(
+        plan.pending_count, 2,
+        "the plan reports what the sweep deletes"
+    );
+    assert!(!plan.will_stop_turn, "nothing is running");
+
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    assert!(done.applied);
+    // The queue comes back clean, not parked: empty, unpaused, nothing
+    // active — asserted on the state itself, not just the watch going
+    // quiet.
+    settle_queue(&engine, "chat-1", true).await;
+    let snapshot = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(snapshot["pending"], serde_json::json!([]), "{snapshot}");
+    assert_eq!(snapshot["paused"], serde_json::json!(false), "{snapshot}");
+    assert!(snapshot["activeMessageId"].is_null(), "{snapshot}");
+    let plan_after = rewind_plan_result(&engine, &common::message_id("three steps")).await;
+    let Err(RpcError::Failed(message)) = plan_after else {
+        panic!("the rewound message is gone from the conversation")
+    };
+    assert_eq!(
+        message,
+        "that message is no longer in the conversation (compacted or rewound)"
+    );
+    assert!(!fixture.path("a.txt").exists(), "the rewind itself applied");
+}
+
+/// A confirm the re-derivation refuses must not eat the queue: the sweep
+/// dies with the apply, never with a refusal. The user's own pause stands
+/// (parked the way a Stop during a run leaves it — items queued behind a
+/// running Turn, so no attended-send grant can lift it).
+#[tokio::test]
+async fn a_confirm_refused_by_new_conflicts_keeps_the_queue() {
+    let fixture = Fixture::new();
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = three_step_provider(vec![ScriptedReply::gated(gate.clone(), "later")]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    // A second Turn runs, two sends queue behind it, and the user stops
+    // the run: the queue parks with the two still pending.
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "second turn").await;
+    common::wait_for_requests(&provider, 4).await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+        )
+        .await
+        .unwrap();
+    gate.notify_one();
+    common::wait_for_chat_status(&engine, "chat-1", "idle").await;
+    let parked = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        parked["pending"].as_array().map(Vec::len),
+        Some(2),
+        "{parked}"
+    );
+    assert_eq!(parked["paused"], serde_json::json!(true), "{parked}");
+
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+    std::fs::write(fixture.path("b.txt"), "moved on\n").unwrap();
+
+    let refused = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    assert!(!refused.applied, "the conflict refuses");
+    assert!(!refused.conflicts.is_empty(), "the refusal carries its why");
+    let snapshot = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        snapshot["pending"].as_array().map(Vec::len),
+        Some(2),
+        "the queued prompts survive the refusal: {snapshot}"
+    );
+    assert_eq!(
+        snapshot["paused"],
+        serde_json::json!(true),
+        "the user's own pause stands: {snapshot}"
+    );
+    assert!(snapshot["activeMessageId"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(fixture.path("b.txt")).unwrap(),
+        "moved on\n",
+        "nothing was written"
+    );
+    assert!(fixture.path("a.txt").exists());
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&transcript),
+        ["w-1", "b-1"],
+        "the conversation is untouched"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_confirm_preserves_a_pause_chosen_while_it_waits() {
+    let fixture = Fixture::new();
+    let observed = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let provider = three_step_provider(vec![ScriptedReply::Cancelling {
+        observed: observed.clone(),
+        finish: finish.clone(),
+    }]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "second turn").await;
+    wait_for_requests(&provider, 4).await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-1",
+        "parked work",
+    )
+    .await;
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "parked-2",
+        "more parked work",
+    )
+    .await;
+    let plan = rewind_plan(&engine, &common::message_id("three steps")).await;
+    std::fs::write(fixture.path("b.txt"), "moved on\n").unwrap();
+
+    let confirm = rewind_confirm(&engine, &plan.plan_id);
+    let pause_while_waiting = async {
+        observed.notified().await;
+        engine
+            .handle(
+                methods::QUEUE_COMMAND,
+                serde_json::json!({"chatId": "chat-1", "command": {"kind": "interrupt"}}),
+            )
+            .await
+            .unwrap();
+        finish.notify_one();
+    };
+    let (refused, ()) = tokio::join!(confirm, pause_while_waiting);
+    let refused = refused.unwrap();
+    assert!(!refused.applied && !refused.conflicts.is_empty());
+    let queue = queue_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        queue["pending"].as_array().map(Vec::len),
+        Some(2),
+        "{queue}"
+    );
+    assert!(queue["paused"].as_bool().unwrap(), "{queue}");
+}
+
+/// A message whose Turn never ran (a preparation failure wrote the
+/// transcript entry and nothing else — no History entry, no steps) still
+/// rewinds: the History keeps its prefix exactly, and the cut removes the
+/// bubble and its error row from the conversation.
+#[tokio::test]
+async fn a_never_ran_message_rewinds_conversation_only() {
+    let fixture = Fixture::new();
+    let provider = three_step_provider(Vec::new());
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "three steps").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    // A session-worktree run on a base that does not exist fails loudly in
+    // preparation: the transcript holds the user bubble and a system error,
+    // the History holds nothing, and the provider is never called.
+    let repo_path = fixture.repo_path();
+    queue_run_with(
+        &engine,
+        "chat-1",
+        &repo_path,
+        "m-nowt",
+        "never runs",
+        serde_json::json!({ "repoPath": repo_path, "base": "no-such-base" }),
+    )
+    .await;
+    common::wait_for_transcript(&engine, "chat-1", "Session worktree could not be prepared").await;
+    let requests_before = provider.requests().len();
+
+    let plan = rewind_plan(&engine, "m-nowt").await;
+    assert!(plan.conflicts.is_empty() && !plan.applied);
+    assert_eq!(plan.turns, 1, "the cut covers only the never-ran bubble");
+    assert_eq!(plan.steps, 0, "nothing of it ever recorded a step");
+
+    let done = rewind_confirm(&engine, &plan.plan_id).await.unwrap();
+    assert!(done.applied);
+    assert_eq!(
+        provider.requests().len(),
+        requests_before,
+        "the never-ran message never reached the provider"
+    );
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        common::transcript_tool_ids(&transcript),
+        ["w-1", "b-1"],
+        "the earlier Turn stays in the conversation"
+    );
+    assert!(!transcript.to_string().contains("could not be prepared"));
+    assert!(
+        fixture.path("a.txt").exists(),
+        "the earlier Turn's files stay"
+    );
+    assert_eq!(steps(&fixture).len(), 2, "its steps stay in the log");
+}
+
+/// A message a compaction summarized away still renders in the transcript,
+/// but the replayed History no longer holds it verbatim — the rewind
+/// refuses with its own reason instead of cutting blind.
+#[tokio::test]
+async fn a_compacted_message_refuses_with_its_own_reason() {
+    let fixture = Fixture::new();
+    let mut long = String::new();
+    while long.len() < 120_000 {
+        long.push_str("manual compaction conversation body ");
+    }
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text(long),
+        ScriptedReply::text("the manual summary"),
+    ]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    run_prompt(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "a long conversation",
+    )
+    .await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "command": {
+                    "kind": "compact",
+                    "messageId": "compact-1",
+                    "request": {
+                        "prompt": "",
+                        "provider": "openai",
+                        "model": "openai/gpt-5.4",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": fixture.repo_path(),
+                        "sandbox": "workspace-write"
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    settle_queue(&engine, "chat-1", true).await;
+
+    // The transcript still shows the bubble; the History answers with the
+    // summary instead. The refusal lands at PLAN time even while another
+    // Turn is live — a running Turn must not buy a confirmable dialog that
+    // only errors at the confirm.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(snapshot.to_string().contains("a long conversation"));
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    provider.push(ScriptedReply::gated(gate.clone(), "a later turn"));
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "still running").await;
+    common::wait_for_requests(&provider, 3).await;
+    let refused = rewind_plan_result(&engine, &common::message_id("a long conversation")).await;
+    let Err(RpcError::Failed(message)) = refused else {
+        panic!("expected the compacted target to refuse")
+    };
+    assert_eq!(
+        message,
+        "that message was compacted away — the summary no longer holds it verbatim"
+    );
+    gate.notify_one();
+    settle_queue(&engine, "chat-1", true).await;
 }

@@ -217,15 +217,30 @@ pub mod methods {
     /// user entry when submitted; the old Turn is cancelled and its later
     /// conversation is removed before the replacement runs.
     pub const EDIT_LAST_MESSAGE: &str = "EditLastMessage";
-    /// Rewind a chat to just after one tool step
-    /// (ADR-step-checkpoints-in-a-chat-owned-object-store): params `{chatId,
-    /// toolCallId, dryRun?}`; replies `holt_proto::RewindReply`. The
-    /// conversation is cut after the results of the assistant message that
-    /// made the call, and every file a later step changed goes back to its
-    /// bytes at that point. All or nothing: any conflict (a file that moved
-    /// on, or content never stored) refuses the whole rewind and writes
-    /// nothing. Refused while a Turn runs.
-    pub const REWIND_TO_STEP: &str = "RewindToStep";
+    /// Rewind a chat to just before one user message
+    /// (ADR-rewind-to-a-message-is-all-or-nothing): params `{chatId,
+    /// messageId}`; replies `holt_proto::RewindReply`. That message, its
+    /// Turn, and everything after leave the conversation, and every file
+    /// those Turns changed goes back to its bytes before the first of
+    /// them. The plan is read-only — a Turn still running keeps running
+    /// (the reply's summary fields say the confirm will stop it, delete
+    /// the queued items, stop the cut Turns' workflows, and which
+    /// background processes stay). All or nothing: any conflict (a file
+    /// that moved on, or content never stored) refuses, writes nothing,
+    /// and stages nothing. A clean plan is staged in the engine for
+    /// `ConfirmRewind`.
+    pub const REWIND_TO_MESSAGE: &str = "RewindToMessage";
+    /// Apply the exact plan `RewindToMessage` staged: params
+    /// `{chatId, planId}`; replies `holt_proto::RewindReply` with `applied`
+    /// true. A missing or replaced plan id refuses without applying another
+    /// target. Nothing destructive happens before the re-derivation
+    /// validates: a still-running or pre-admission Turn is interrupted and
+    /// its settle waited out. The independent admission hold then lifts
+    /// without rewriting the user's pause. The apply writes the fresh plan
+    /// down whole before stopping the cut Turns' workflows and sweeping the
+    /// queue. Once the record exists, queue mutations stay fenced until
+    /// recovery finishes conversation and files.
+    pub const CONFIRM_REWIND: &str = "ConfirmRewind";
     /// Remove a pending ordinary message from the queue: params
     /// `{chatId, messageId}`; replies with the accepted `MessageQueue`
     /// snapshot. Remaining items keep their order; a started item fails
