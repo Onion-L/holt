@@ -123,11 +123,46 @@ import ChangelogController from '../components/ChangelogController';
 <div class="wrap">
   <ol class="vers">
 
+    <li class="ver" id="v0.9.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.9.0">0.9.0</a>
+        <span class="vdate mono">Nov 26, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Rewind is per message — hover any of your messages to plan a rewind and confirm it: that message, its turn, and everything after it leave the conversation, and every file those turns changed goes back with them, all or nothing. The cut message returns to the composer as an editable draft, queued prompts are swept with the cut, and workflows the cut turns launched stop</li>
+            <li>The composer's usage ring opens a <code>Context Usage</code> report of what the model actually received — the full system prompt, tool definitions, user and project rules, skills, MCP tools, and the conversation turn by turn, each with its estimated tokens</li>
+            <li>With no captured request — a chat that just restarted — the report shows a marked <code>Next request preview</code>, assembled the way a real request is for the model and folder the queue runs next</li>
+            <li>The usage popover spans the whole pill, and each of its rows opens that section of the report</li>
+            <li>A running workflow rides the <code>Background processes</code> popover with its agents and token progress, and stopping one asks twice — the first click arms the button, a second within 2.5 s stops</li>
+            <li>The skill listing's budget scales with the model's context window (2% of it) instead of a fixed 8 KiB, so small-window models get a listing that fits and large-window models see fuller descriptions</li>
+            <li>Models added through <code>Fetch models</code> can be reasoning models: the dialog carries <code>Reasoning</code> and <code>Image input</code> flags, with Reasoning pre-ticked when every catalog model the provider offers exposes a reasoning ladder</li>
+            <li>Session rows reveal their quick actions on hover, and the identity card follows after a delay, anchored to the row's right edge</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>A background process's exit notice carries its complete output tail — the notice is queued before the exit becomes visible, so a turn starting against a just-exited process can no longer pick up a half-filled one</li>
+            <li>One MCP server spawns one subprocess: parallel turns on different chats, or a context preview against a running turn, no longer race a second connect that left an orphaned process</li>
+            <li>A stopped workflow settles as cancelled instead of failed — the agents it cut off too, with its unstarted steps drawn skipped</li>
+            <li><code>/compact</code> says why there is nothing to compact — no history yet, the turns since the last compaction still fit the verbatim tail, or the whole history does — instead of a bare refusal</li>
+            <li>The usage popover closes itself when its chat's usage is gone — a chat switch, an engine reconnect, a delete — instead of reappearing over the next chat's first frame</li>
+            <li>The context report no longer folds MCP bootstrap messages into turn 1, and a turn that ran with the report closed retires the capture it superseded rather than leaving it stale</li>
+            <li>The skill listing stays inside its budget after XML escaping — descriptions are measured as rendered, so an escape-heavy catalog no longer overshoots</li>
+            <li>Inline code sits on a neutral wash instead of an accent-tinted one</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.8.0">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.8.0">0.8.0</a>
         <span class="vdate mono">Nov 10, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
