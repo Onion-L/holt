@@ -160,7 +160,9 @@ async fn an_override_rides_the_model_handed_to_the_stream_seam() {
             }
         }
     });
-    common::setup_chat(&engine, "chat-1").await;
+    // The overlay entry must be the top layer for the test model: a live
+    // record would replace it outright.
+    common::setup_chat_unpinned(&engine, "chat-1").await;
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;

@@ -217,17 +217,17 @@ fn registers_glm_5_2_as_the_default_openai_compatible_reasoning_model() {
         Some(level_map(&[
             (ModelThinkingLevel::Off, Some("none")),
             (ModelThinkingLevel::Minimal, None),
-            (ModelThinkingLevel::Low, None),
+            (ModelThinkingLevel::Low, Some("low")),
             (ModelThinkingLevel::Medium, None),
             (ModelThinkingLevel::High, Some("high")),
             (ModelThinkingLevel::Xhigh, None),
             (ModelThinkingLevel::Max, Some("max")),
         ]))
     );
-    assert_eq!(model.input, vec![ModelInput::Text]);
+    assert_eq!(model.input, vec![ModelInput::Text, ModelInput::Image]);
     assert_eq!(model.context_window, 1_048_576);
     assert_eq!(model.max_tokens, 262_144);
-    assert_eq!(model.cost, cost(1.4, 4.4, 0.3, 0.0));
+    assert_eq!(model.cost, cost(1.4, 4.4, 0.14, 0.0));
 
     // The TS `toMatchObject` checks this compat subset.
     let compat = model.compat.expect("baseten GLM-5.2 compat");
@@ -825,13 +825,55 @@ fn embedded_catalog_models_match_their_group() {
     }
 }
 
+#[test]
+fn embedded_catalog_excludes_realtime_models() {
+    for (provider, model_id) in [
+        ("google", "gemini-3.1-flash-live-preview"),
+        ("vercel-ai-gateway", "google/gemini-3.8-live"),
+        (
+            "vercel-ai-gateway",
+            "google/gemini-3.8-live-extended-thinking",
+        ),
+        ("vercel-ai-gateway", "openai/gpt-realtime-1.5"),
+        ("vercel-ai-gateway", "openai/gpt-realtime-2"),
+        ("vercel-ai-gateway", "openai/gpt-realtime-2.1"),
+        ("vercel-ai-gateway", "openai/gpt-realtime-mini"),
+        // Realtime on another provider's source row; their own lists nothing.
+        ("azure-openai-responses", "gpt-realtime-2.1"),
+        ("openai", "gpt-realtime-2.1"),
+    ] {
+        assert!(
+            !get_models(provider)
+                .iter()
+                .any(|model| model.id == model_id),
+            "realtime model {provider}/{model_id} must not use a chat transport"
+        );
+    }
+}
+
+#[test]
+fn embedded_catalog_prices_explicitly_free_variants_as_zero() {
+    for (provider, model_id) in [
+        ("opencode", "deepseek-v4.1-flash-free"),
+        ("opencode-go", "hy4-flash-free"),
+        ("openrouter", "baidu/ernie-5.5-flash-preview:free"),
+        ("openrouter", "recursive/flint-v1.0:free"),
+        ("openrouter", "particle-ai/particle-1:free"),
+        ("vercel-ai-gateway", "nvidia/nemotron-3.5-lightning-free"),
+    ] {
+        assert_eq!(
+            get_model(provider, model_id).cost,
+            cost(0.0, 0.0, 0.0, 0.0),
+            "{provider}/{model_id}"
+        );
+    }
+}
+
 /// Port of the exact generated allowlist assertions (`assertExactModelIds`):
-/// the pinned id sets the generator enforces for representative providers.
+/// the pinned id sets for representative providers, updated with every
+/// `scripts/update-model-catalog.py` run so an id-set change is explicit.
 #[test]
 fn embedded_catalog_matches_exact_generated_allowlists() {
-    // qwen-token-plan-individual is pinned by QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS
-    // in scripts/generate-models.ts (asserted via assertExactModelIds in
-    // strict mode); xiaomi and zai-coding-cn pin the suites above.
     let allowlists = [
         (
             "qwen-token-plan-individual",
@@ -849,7 +891,14 @@ fn embedded_catalog_matches_exact_generated_allowlists() {
         ),
         (
             "xiaomi",
-            vec!["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed"],
+            vec![
+                "mimo-v2.5",
+                "mimo-v2.5-pro",
+                "mimo-v2.5-pro-ultraspeed",
+                "mimo-v2.6-flash",
+                "mimo-v2.6-pro",
+                "mimo-v2.6-pro-ultraspeed",
+            ],
         ),
         (
             "zai-coding-cn",
@@ -863,6 +912,7 @@ fn embedded_catalog_matches_exact_generated_allowlists() {
                 "glm-5.3",
                 "glm-5.3-flash",
                 "glm-5.3-highspeed",
+                "glm-5.4",
                 "glm-5v-turbo",
             ],
         ),

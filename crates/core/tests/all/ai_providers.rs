@@ -377,14 +377,21 @@ fn stores_native_constrained_sampling_capabilities_in_model_metadata() {
 }
 
 #[test]
-fn uses_official_kimi_k3_pricing_for_moonshot_providers() {
+fn prices_kimi_k3_from_models_dev_for_moonshot_providers() {
     let models = holt_core::ai::providers::builtin::builtin_models(Default::default());
-    for provider in ["moonshotai", "moonshotai-cn"] {
+    // Catalog prices follow models.dev; the CN listing is the converted one.
+    for (provider, input, output, cache_read, cache_write) in [
+        ("moonshotai", 3.0, 15.0, 0.3, 3.0),
+        ("moonshotai-cn", 2.9879, 14.9395, 0.2988, 2.9879),
+    ] {
         let cost = models.get_model(provider, "kimi-k3").unwrap().cost;
-        assert_eq!(cost.rates.input.0, 3.0, "{provider} input");
-        assert_eq!(cost.rates.output.0, 15.0, "{provider} output");
-        assert_eq!(cost.rates.cache_read.0, 0.3, "{provider} cacheRead");
-        assert_eq!(cost.rates.cache_write.0, 0.0, "{provider} cacheWrite");
+        assert_eq!(cost.rates.input.0, input, "{provider} input");
+        assert_eq!(cost.rates.output.0, output, "{provider} output");
+        assert_eq!(cost.rates.cache_read.0, cache_read, "{provider} cacheRead");
+        assert_eq!(
+            cost.rates.cache_write.0, cache_write,
+            "{provider} cacheWrite"
+        );
     }
 }
 

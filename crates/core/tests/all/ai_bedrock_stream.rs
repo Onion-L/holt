@@ -163,6 +163,35 @@ async fn maps_xhigh_reasoning_to_effort_xhigh_for_claude_fable_5() {
 }
 
 #[tokio::test]
+async fn uses_adaptive_thinking_and_native_levels_for_claude_haiku_55() {
+    for model_id in [
+        "anthropic.claude-haiku-5-5",
+        "global.anthropic.claude-haiku-5-5",
+        "us.anthropic.claude-haiku-5-5",
+    ] {
+        let model = base_model(model_id);
+        for (level, effort) in [
+            (ThinkingLevel::High, "high"),
+            (ThinkingLevel::Xhigh, "xhigh"),
+            (ThinkingLevel::Max, "max"),
+        ] {
+            let fields = additional_fields(&model, reasoning_options(level)).await;
+            assert_eq!(
+                fields["thinking"],
+                json!({ "type": "adaptive", "display": "summarized" }),
+                "{model_id} {level:?}"
+            );
+            assert_eq!(
+                fields["output_config"],
+                json!({ "effort": effort }),
+                "{model_id} {level:?}"
+            );
+            assert!(fields.get("anthropic_beta").is_none(), "{model_id}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn omits_display_for_govcloud_model_ids_on_non_adaptive_claude_thinking() {
     let mut model = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
     model.id = "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string();

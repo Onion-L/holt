@@ -225,6 +225,8 @@ fn marks_builtin_anthropic_messages_models_that_use_adaptive_thinking() {
         "kimi-coding/kimi-for-coding",
         "kimi-coding/k3",
         "kimi-coding/kimi-for-coding-highspeed",
+        "kimi-coding/k3.1-pro",
+        "kimi-coding/k3.1-pro-highspeed",
         "opencode/claude-opus-4-8",
         "opencode/claude-opus-5",
         "vercel-ai-gateway/anthropic/claude-opus-4.8",
@@ -256,7 +258,7 @@ fn marks_builtin_anthropic_messages_models_that_use_adaptive_thinking() {
     }
 
     let adaptive_families = regex::Regex::new(
-        r"(opus[-.](4[-.][678]|5)|sonnet[-.]4[-.]6|sonnet[-.]5|fable[-.]5|kimi-coding/)",
+        r"(opus[-.](4[-.][678]|5)|sonnet[-.]4[-.]6|sonnet[-.]5|haiku[-.]5[-.]5|fable[-.]5|kimi-coding/)",
     )
     .unwrap();
     for model_id in &flagged_models {
@@ -385,6 +387,30 @@ async fn uses_adaptive_thinking_effort_without_a_token_budget_for_kimi_coding_ki
         json!({ "type": "adaptive", "display": "summarized" })
     );
     assert_eq!(payload["output_config"], json!({ "effort": "medium" }));
+}
+
+#[tokio::test]
+async fn uses_adaptive_thinking_effort_without_a_token_budget_for_kimi_coding_k3_1_pro() {
+    for model_id in ["k3.1-pro", "k3.1-pro-highspeed"] {
+        for (reasoning, effort) in [
+            (ThinkingLevel::Low, "low"),
+            (ThinkingLevel::High, "high"),
+            (ThinkingLevel::Max, "max"),
+        ] {
+            let payload = kimi_coding_payload(model_id, reasoning).await;
+
+            assert_eq!(
+                payload["thinking"],
+                json!({ "type": "adaptive", "display": "summarized" }),
+                "{model_id}"
+            );
+            assert_eq!(
+                payload["output_config"],
+                json!({ "effort": effort }),
+                "{model_id}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

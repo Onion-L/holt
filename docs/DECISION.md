@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -1126,3 +1126,37 @@ the composer's own shape — a uuid stem marks what the engine may
 reclaim); and rebuilding a compacted target from the raw History JSONL
 (possible, but a first version has no business re-materializing a prefix
 the replay rule deliberately dropped).
+
+## compiled-model-catalog-refreshes-from-models-dev
+
+The compiled catalog (`crates/core/src/ai/data/models.generated.json`) is
+refreshed from models.dev by `scripts/update-model-catalog.py`, run by hand
+and committed: the pi generator behind the embedded snapshot was never
+ported, and the snapshot (2026-09-05, 1,353 models, 509 reasoning models
+without a ladder) had not moved since the merge. The source owns the facts
+— `reasoning`, the ladder while it names effort levels, windows, modalities,
+prices, names — and the catalog keeps what the source does not know: the
+transport shape (`api`, `baseUrl`, `compat`, `headers`), a level mapped to
+another value (`minimal` → `low` on Copilot Claude), the `off` entry, tiered
+prices, and any non-zero price the source zeroes unless the id explicitly
+names a free variant (a subscription is not a measured zero; the usage
+display reads the catalog's reference price). Explicitly free variants keep
+the source's zero price and drop paid tiers. A new model inherits its
+transport from the same-prefix model it most resembles, or from the family
+under a version bump in that prefix (`k3.1-pro` after `k3`); a prefix the
+catalog splits across transports is skipped and noted, never guessed,
+because a wrong transport is a model that cannot be repaired from the UI.
+Models missing from the source are not removed — models.dev is incomplete about
+regional and plan-specific variants, and hiding is the user's call — but an
+entry marked realtime is removed because no compiled chat transport can serve
+it: by its own provider's row, or by any provider's when its own no longer
+lists it. Providers match by baseUrl first (Holt's `zai` is the coding
+endpoint, models.dev's the general one) and id second. Rejected:
+fetching models.dev at runtime on Fetch models
+(a 6.8 MB third-party request on every user's machine, no transport shape to
+show for it, and it does nothing for the compiled catalog users never open
+that dialog for — a lookup for user-defined providers stays a separate
+decision); porting pi's generator (its per-model gateway routing lives
+nowhere but the snapshot, so the script reads the routing back out of the
+snapshot instead); hand-editing the JSON (the port's own instruction —
+three months of nothing moved).

@@ -252,6 +252,7 @@ fn supports_adaptive_thinking(model_id: &str, model_name: Option<&str>) -> bool 
                 || s.contains("sonnet-4-6")
                 || s.contains("sonnet-5")
                 || s.contains("fable-5")
+                || s.contains("haiku-5-5")
         })
 }
 
@@ -275,6 +276,7 @@ fn supports_native_xhigh_effort(model: &Model) -> bool {
                 || s.contains("opus-5")
                 || s.contains("sonnet-5")
                 || s.contains("fable-5")
+                || s.contains("haiku-5-5")
         })
 }
 
