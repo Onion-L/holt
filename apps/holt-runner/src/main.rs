@@ -25,9 +25,10 @@ const CHAT_ID: &str = "run";
 const MESSAGE_ID: &str = "run-prompt";
 const COMMIT: &str = env!("HOLT_RUNNER_COMMIT");
 
-/// Files copied from the source data dir: the provider catalog and keys.
-/// Web search, MCP, and title settings stay out so a run mounts no network
-/// tools and spends tokens only on the Turn itself.
+/// Files copied from the source data dir: the provider overrides (the
+/// compiled catalog ships in the binary) and keys. Web search, MCP, and
+/// title settings stay out so a run mounts no network tools and spends
+/// tokens only on the Turn itself.
 const SEEDED: &[&str] = &[
     "provider-store.json",
     "provider-settings.json",

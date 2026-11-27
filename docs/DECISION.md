@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) · [provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -343,6 +343,9 @@ argument carried over — catalog tools mount only where catalog setup runs;
 normal chats' catalog-write capability is nil.
 
 ## three-layer-provider-catalog
+
+Partially superseded for the overlay's content by
+[provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot).
 
 `81dbb27`. Compiled under the hand-edited overlay under the live layer;
 programmatic writes touch only the live layer. Rejected: the tool writing
@@ -1185,3 +1188,28 @@ The cost is accepted: a chat configured on a retired model stops
 resolving after the upgrade and asks for a model again, and a test that
 used a retired entry moves to a current model of the same provider, or
 builds one from it with the property under test overridden.
+
+## provider-overlay-carries-overrides-not-a-snapshot
+
+Partially supersedes `three-layer-provider-catalog`: the overlay's content,
+not its layering. Boot used to write the whole compiled catalog into
+`provider-store.json` as a hand-editable starting point, and from then on
+that copy stood in front of the catalog — a model the catalog retired
+stayed listed, a fact it refreshed never landed — so the 2026-11 models.dev
+refresh reached no install that had booted once (found by the user's eye on
+the OpenAI picker, GPT-4 beside GPT-6). Boot now writes an empty template:
+everything in the file is the user's, and the compiled catalog is the
+baseline. A parsed file exactly matching the snapshot this build would have
+written has no overrides: the next boot keeps it as
+`provider-store.json.bak` and replaces it with the template. An older or
+different file cannot be proven untouched — timestamps cannot prove it — so
+it stays and applies as written, with a warning that counts what it still
+shadows. Delete or reset it explicitly to finish that migration. An existing
+backup is never overwritten; a matching backup is reused when an earlier
+attempt failed before the template rename.
+Rejected: a three-way merge against the catalog the copy came from (it
+would have to ship every earlier catalog generation to tell an edited
+entry from a stale one, for copies that stop existing once they are
+migrated); asking in the UI whether to reset the file (a modal for a file
+almost nobody edits); keeping the snapshot and refreshing it in place (the
+next hand edit would freeze it again).

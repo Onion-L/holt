@@ -93,6 +93,14 @@ intuition — three strikes is the only gate.
   value (its opening frame), not only its next change
   (`crates/engine/tests/all/common/mod.rs`, `wait_for_chat_status`).
   Seen 1× (2026-10-23).
+- A refresh of shipped data is verified on an install that booted before,
+  never only on an empty data dir. Boot wrote its own copy of the catalog
+  into `provider-store.json`, and that copy stood in front of every later
+  catalog — yet every fixture starts empty, so the copy was the catalog and
+  no test could see the shadow: the 2026-11 models.dev refresh passed three
+  reviews while the OpenAI picker still listed GPT-4 beside GPT-6 (user
+  report; ADR-provider-overlay-carries-overrides-not-a-snapshot).
+  Seen 1× (2026-11-27).
 
 ## Moved
 

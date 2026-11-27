@@ -1,22 +1,33 @@
 //! The provider store: `<data_dir>/provider-store.json`, the catalog Holt
-//! owns. Boot writes the compiled `holt-core` catalog there when the file
-//! is missing and otherwise reads it, overlaying it on the compiled
-//! baseline: providers match by id (a non-built-in id is dropped), models
-//! match by id within their provider (a file entry replaces the compiled
-//! record outright — the file stores complete records, so per-field merging
-//! is not expressible — and file-only ids are appended), and a provider
-//! entry overrides only `baseUrl` and `headers`; `name`, `organizationId`,
-//! and `auth` always stay with the compiled catalog. The merged [`Catalog`]
-//! is what provider listing, model listing, model resolution, context
-//! windows, and eligibility answer from, so an override reaches the request
-//! path; it is built once per boot, so a file edit needs a restart.
+//! owns. Boot writes an empty override template there when the file is
+//! missing and otherwise reads it, overlaying it on the compiled baseline:
+//! providers match by id (a non-built-in id is dropped), models match by id
+//! within their provider (a file entry replaces the compiled record outright
+//! — the file stores complete records, so per-field merging is not
+//! expressible — and file-only ids are appended), and a provider entry
+//! overrides only `baseUrl` and `headers`; `name`, `organizationId`, and
+//! `auth` always stay with the compiled catalog. The merged [`Catalog`] is
+//! what provider listing, model listing, model resolution, context windows,
+//! and eligibility answer from, so an override reaches the request path; it
+//! is built once per boot, so a file edit needs a restart.
 //!
-//! The file is user-owned and hand-editable, so it is never rewritten once
-//! it exists, and validation is per entry: an entry that fails a check (or
-//! deserialization) is dropped with a log line while the rest of the file
-//! still applies, and an unparsable file, an unsupported `version`, or an
-//! unreadable path falls back to the compiled catalog — none of that fails
-//! boot.
+//! The template copies nothing of the catalog
+//! (ADR-provider-overlay-carries-overrides-not-a-snapshot): everything in
+//! the file is the user's, and a catalog refresh reaches every install. Only
+//! a parsed file that is exactly the snapshot this build would have written
+//! is provably free of overrides: it is kept as `provider-store.json.bak`
+//! and replaced with the template. An older or different file stays and
+//! applies as written, with a warning: its contents cannot distinguish the
+//! user's entries from an earlier catalog's leftovers, and timestamps prove
+//! nothing. An existing backup is never overwritten; a matching one may be
+//! reused after a failed migration.
+//!
+//! Apart from that one replacement the file is user-owned and hand-editable,
+//! so it is never rewritten once it exists, and validation is per entry: an
+//! entry that fails a check (or deserialization) is dropped with a log line
+//! while the rest of the file still applies, and an unparsable file, an
+//! unsupported `version`, or an unreadable path falls back to the compiled
+//! catalog — none of that fails boot.
 //!
 //! The baseline source is `builtin_providers()` plus each provider's own
 //! `get_models()` — never `ProviderAdapter`, whose `Models` instance
@@ -30,7 +41,11 @@
 //! so the write path pins the mode and a broader existing mode is tightened
 //! on load (a failed tightening is logged, not fatal).
 
-use std::{collections::HashMap, io::Write, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+    path::Path,
+};
 
 use holt_core::ai::{
     compat,
@@ -42,6 +57,9 @@ use serde::{Deserialize, Serialize};
 use crate::EngineError;
 
 const FILE_NAME: &str = "provider-store.json";
+
+/// Where replacing a matching boot snapshot keeps that snapshot.
+const BACKUP_NAME: &str = "provider-store.json.bak";
 
 /// Envelope version. A later shape change bumps it so readers can detect the
 /// difference instead of guessing.
@@ -161,17 +179,154 @@ pub(crate) fn load(data_dir: &Path) -> Catalog {
         );
         return compiled_catalog();
     }
-    merge(envelope.providers)
+    merge(overrides_of(data_dir, &path, envelope))
 }
 
-/// Serializes the current built-in catalog and replaces
+/// The provider entries of a file that parsed at a supported version
+/// (ADR-provider-overlay-carries-overrides-not-a-snapshot). A file is
+/// replaced only when its parsed contents are exactly the snapshot this
+/// build would have written. Anything older or different may contain a
+/// user's edit, so it stays and applies as written with a warning.
+fn overrides_of(data_dir: &Path, path: &Path, envelope: FileEnvelope) -> Vec<serde_json::Value> {
+    if envelope.source_generated_at.is_none() {
+        return envelope.providers;
+    }
+    if !is_current_boot_snapshot(&envelope) {
+        warn_about_unverified_copy(&envelope);
+        return envelope.providers;
+    }
+    let backup = data_dir.join(BACKUP_NAME);
+    match ensure_backup(path, &backup)
+        .map_err(EngineError::Io)
+        .and_then(|_| write(data_dir))
+    {
+        Ok(()) => {
+            tracing::info!(
+                target: "holt::engine",
+                "replaced the provider store's matching boot snapshot with the empty template; \
+                 the snapshot is kept as {BACKUP_NAME}"
+            );
+            Vec::new()
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "holt::engine",
+                %error,
+                "could not replace the provider store's boot snapshot; applying it as written"
+            );
+            envelope.providers
+        }
+    }
+}
+
+/// A parsed file is safe to replace only when it is exactly the snapshot this
+/// build would have written. Anything older or different may contain a user's
+/// edit, and timestamps cannot prove otherwise.
+fn is_current_boot_snapshot(envelope: &FileEnvelope) -> bool {
+    if envelope.source_generated_at != get_builtin_model_data_generated_at() {
+        return false;
+    }
+    let expected = serde_json::to_value(compiled_catalog().providers);
+    let actual = serde_json::to_value(&envelope.providers);
+    matches!((expected, actual), (Ok(expected), Ok(actual)) if expected == actual)
+}
+
+/// Creates the migration backup without ever replacing an existing file. A
+/// matching backup may be reused when an earlier attempt failed before the
+/// atomic template rename.
+fn ensure_backup(path: &Path, backup: &Path) -> std::io::Result<()> {
+    match std::fs::read(backup) {
+        Ok(existing) => {
+            return if existing == std::fs::read(path)? {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "provider store backup already exists with different content",
+                ))
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let mut source = std::fs::File::open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut destination = options.open(backup)?;
+    let result = (|| {
+        std::io::copy(&mut source, &mut destination)?;
+        destination.sync_all()
+    })();
+    if result.is_err() {
+        drop(destination);
+        let _ = std::fs::remove_file(backup);
+    }
+    result
+}
+
+/// How much of an unverified catalog copy still applies: its model entries,
+/// and how many of them the compiled catalog no longer carries.
+fn warn_about_unverified_copy(envelope: &FileEnvelope) {
+    let compiled = compiled_catalog();
+    let (mut entries, mut not_compiled) = (0, 0);
+    for entry in &envelope.providers {
+        let Some(id) = entry.get("id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        let Some(models) = entry.get("models").and_then(|models| models.as_array()) else {
+            continue;
+        };
+        let known: HashSet<&str> = compiled
+            .get(id)
+            .map(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .map(|model| model.id.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries += models.len();
+        not_compiled += models
+            .iter()
+            .filter(|model| {
+                model
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .is_none_or(|id| !known.contains(&id))
+            })
+            .count();
+    }
+    tracing::warn!(
+        target: "holt::engine",
+        entries,
+        not_compiled,
+        "provider-store.json is a catalog copy whose overrides cannot be verified; it stays and \
+         applies as written: {entries} model entries in it override the compiled catalog and \
+         {not_compiled} of their ids are not in the compiled catalog (possibly retired \
+         models). Drop the entries that were not meant as overrides, or start from the \
+         template."
+    );
+}
+
+/// Serializes the empty override template and replaces
 /// `<data_dir>/provider-store.json` atomically: a temp file in the data dir,
 /// then `std::fs::rename` (which replaces an existing destination on Unix and
-/// Windows alike). Only `load` calls this, and only when the file is
-/// missing — an existing file is the user's and is never rewritten.
+/// Windows alike). Only `load` calls this: when the file is missing, and when
+/// it replaces a matching boot snapshot. Any other existing file is the
+/// user's and is never rewritten.
 pub(crate) fn write(data_dir: &Path) -> Result<(), EngineError> {
-    let bytes = serde_json::to_vec_pretty(&snapshot())
-        .map_err(|error| EngineError::Other(error.to_string()))?;
+    let bytes = serde_json::to_vec_pretty(&ProviderStore {
+        version: VERSION,
+        providers: Vec::new(),
+    })
+    .map_err(|error| EngineError::Other(error.to_string()))?;
     let path = data_dir.join(FILE_NAME);
     let temp = data_dir.join(format!(".{FILE_NAME}.{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> std::io::Result<()> {
@@ -221,23 +376,11 @@ fn ensure_private_permissions(path: &Path, metadata: &std::fs::Metadata) {
 #[cfg(not(unix))]
 fn ensure_private_permissions(_path: &Path, _metadata: &std::fs::Metadata) {}
 
-fn snapshot() -> ProviderStore {
-    ProviderStore {
-        version: VERSION,
-        source_generated_at: get_builtin_model_data_generated_at(),
-        written_at: chrono::Utc::now().timestamp_millis(),
-        providers: compiled_catalog().providers,
-    }
-}
-
+/// The file as boot writes it: the envelope around no overrides at all.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderStore {
     version: u32,
-    /// The compiled catalog's own generation stamp, or `null` when
-    /// `holt-core` reports none.
-    source_generated_at: Option<i64>,
-    written_at: i64,
     providers: Vec<CatalogProvider>,
 }
 
@@ -268,6 +411,10 @@ fn compiled_catalog() -> Catalog {
 #[serde(rename_all = "camelCase")]
 struct FileEnvelope {
     version: u32,
+    /// The catalog generation recorded by the legacy whole-catalog snapshot
+    /// format. It identifies that format, not whether the file was edited.
+    #[serde(default)]
+    source_generated_at: Option<i64>,
     #[serde(default)]
     providers: Vec<serde_json::Value>,
 }
@@ -503,10 +650,6 @@ mod tests {
         serde_json::from_slice(&std::fs::read(data_dir.join(FILE_NAME)).unwrap()).unwrap()
     }
 
-    fn optional(value: Option<&str>) -> serde_json::Value {
-        value.map_or(serde_json::Value::Null, serde_json::Value::from)
-    }
-
     /// Serves a hand-edited store: `providers` becomes the file's provider
     /// array, at version 1.
     fn serve(data_dir: &Path, providers: serde_json::Value) {
@@ -523,18 +666,16 @@ mod tests {
         .unwrap();
     }
 
-    /// The snapshot entry of one built-in provider — the fixture every merge
+    /// The compiled entry of one built-in provider — the fixture every merge
     /// test mutates, so records stay complete and in sync with the real
     /// catalog without hand-writing a full `Model`.
-    fn snapshot_entry(data_dir: &Path, id: &str) -> serde_json::Value {
-        let value = document(data_dir);
-        value["providers"]
-            .as_array()
+    fn compiled_entry(id: &str) -> serde_json::Value {
+        compiled_catalog()
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .map(|provider| serde_json::to_value(provider).unwrap())
             .unwrap()
-            .iter()
-            .find(|provider| provider["id"] == id)
-            .unwrap()
-            .clone()
     }
 
     /// A complete `Model` record derived from a compiled one, re-id'd.
@@ -553,37 +694,20 @@ mod tests {
     }
 
     #[test]
-    fn envelope_carries_version_and_millisecond_stamps() {
-        let before = chrono::Utc::now().timestamp_millis();
-        let store = snapshot();
-        let after = chrono::Utc::now().timestamp_millis();
-
-        assert_eq!(store.version, VERSION);
-        assert_eq!(
-            store.source_generated_at,
-            get_builtin_model_data_generated_at()
-        );
-        assert!(store.written_at >= before && store.written_at <= after);
-    }
-
-    #[test]
-    fn every_builtin_provider_is_written_in_catalog_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let value = document(dir.path());
-        let written: Vec<&str> = value["providers"]
-            .as_array()
-            .unwrap()
+    fn every_builtin_provider_is_the_baseline_in_catalog_order() {
+        let catalog = compiled_catalog();
+        let baseline: Vec<&str> = catalog
             .iter()
-            .map(|provider| provider["id"].as_str().unwrap())
+            .map(|provider| provider.id.as_str())
             .collect();
         let expected: Vec<String> = builtin_providers()
             .iter()
             .map(|provider| provider.id().to_string())
             .collect();
-        assert_eq!(written, expected);
+        assert_eq!(baseline, expected);
 
-        // The snapshot is provider data, not Holt's availability policy: the
-        // providers `eligible_providers()` excludes are all present.
+        // The baseline is provider data, not Holt's availability policy:
+        // the providers `eligible_providers()` excludes are all present.
         for id in [
             "amazon-bedrock",
             "azure-openai-responses",
@@ -591,58 +715,30 @@ mod tests {
             "google-vertex",
             "radius",
         ] {
-            assert!(written.contains(&id), "missing provider {id}");
+            assert!(baseline.contains(&id), "missing provider {id}");
         }
     }
 
     #[test]
-    fn entries_mirror_the_provider_trait() {
-        let dir = tempfile::tempdir().unwrap();
-        let value = document(dir.path());
-        for (entry, provider) in value["providers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(builtin_providers())
-        {
-            assert_eq!(entry["name"], provider.name());
-            assert_eq!(
-                entry["organizationId"],
-                optional(provider.organization_id())
-            );
-            assert_eq!(entry["baseUrl"], optional(provider.base_url()));
-            assert_eq!(
-                entry["headers"],
-                serde_json::to_value(provider.headers()).unwrap()
-            );
-            assert_eq!(
-                entry["auth"]["apiKey"].as_bool(),
-                Some(provider.auth().api_key.is_some())
-            );
-            assert_eq!(
-                entry["auth"]["oauth"].as_bool(),
-                Some(provider.auth().oauth.is_some())
-            );
+    fn baseline_entries_mirror_the_provider_trait() {
+        let baseline = compiled_catalog();
+        for (entry, provider) in baseline.providers.iter().zip(builtin_providers()) {
+            assert_eq!(entry.name, provider.name());
+            assert_eq!(entry.organization_id.as_deref(), provider.organization_id());
+            assert_eq!(entry.base_url.as_deref(), provider.base_url());
+            assert_eq!(entry.headers, provider.headers().cloned());
+            assert_eq!(entry.auth.api_key, provider.auth().api_key.is_some());
+            assert_eq!(entry.auth.oauth, provider.auth().oauth.is_some());
         }
     }
 
     #[test]
     fn models_round_trip_through_serde_in_catalog_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let value = document(dir.path());
-        for (entry, provider) in value["providers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(builtin_providers())
-        {
-            let source = provider.get_models();
-            let models = entry["models"].as_array().unwrap();
-            assert_eq!(models.len(), source.len());
-            let round_tripped: Vec<CoreModel> =
-                serde_json::from_value(entry["models"].clone()).unwrap();
-            assert_eq!(round_tripped, source);
-            for model in models {
+        for entry in &compiled_catalog().providers {
+            let models = serde_json::to_value(&entry.models).unwrap();
+            let round_tripped: Vec<CoreModel> = serde_json::from_value(models.clone()).unwrap();
+            assert_eq!(round_tripped, entry.models);
+            for model in models.as_array().unwrap() {
                 assert!(model["baseUrl"].is_string());
                 assert!(model["api"].is_string());
             }
@@ -653,27 +749,26 @@ mod tests {
     fn auth_shape_is_a_boolean_requirement_not_material() {
         let dir = tempfile::tempdir().unwrap();
         // A key stored for the same data dir must not reach the file: the
-        // snapshot never consults the credential store.
+        // template never consults the credential store.
         std::fs::write(
             dir.path().join("provider-credentials.json"),
             br#"{"openai":"sk-sentinel-credential-value"}"#,
         )
         .unwrap();
-        let value = document(dir.path());
+        let _template = document(dir.path());
         assert!(
             !String::from_utf8(std::fs::read(dir.path().join(FILE_NAME)).unwrap())
                 .unwrap()
                 .contains("sk-sentinel-credential-value")
         );
 
-        for provider in value["providers"].as_array().unwrap() {
-            for flags in ["apiKey", "oauth"] {
-                assert!(
-                    provider["auth"][flags].is_boolean(),
-                    "{} auth.{flags} is not a boolean",
-                    provider["id"]
-                );
-            }
+        // The auth shape is a pair of booleans.
+        let baseline = compiled_entry("openai");
+        for flags in ["apiKey", "oauth"] {
+            assert!(
+                baseline["auth"][flags].is_boolean(),
+                "auth.{flags} is not a boolean"
+            );
         }
     }
 
@@ -712,7 +807,7 @@ mod tests {
         std::fs::write(&path, b"{broken").unwrap();
         let value = document(dir.path());
         assert_eq!(value["version"], VERSION);
-        assert!(!value["providers"].as_array().unwrap().is_empty());
+        assert!(value["providers"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -755,7 +850,7 @@ mod tests {
     #[test]
     fn an_existing_file_is_read_never_rewritten() {
         let dir = tempfile::tempdir().unwrap();
-        let mut entry = snapshot_entry(dir.path(), "openai");
+        let mut entry = compiled_entry("openai");
         entry["baseUrl"] = "https://proxy.example/v1".into();
         serve(dir.path(), serde_json::json!([entry]));
         let before = std::fs::read(dir.path().join(FILE_NAME)).unwrap();
@@ -771,7 +866,7 @@ mod tests {
     #[test]
     fn a_provider_override_swaps_transport_fields_but_identity_stays_compiled() {
         let dir = tempfile::tempdir().unwrap();
-        let mut entry = snapshot_entry(dir.path(), "openai");
+        let mut entry = compiled_entry("openai");
         entry["baseUrl"] = "https://proxy.example/v1".into();
         entry["headers"] = serde_json::json!({ "x-proxy-token": "static-value" });
         entry["name"] = "Renamed".into();
@@ -802,7 +897,7 @@ mod tests {
     #[test]
     fn null_file_fields_override_the_compiled_ones() {
         let dir = tempfile::tempdir().unwrap();
-        let mut entry = snapshot_entry(dir.path(), "openai");
+        let mut entry = compiled_entry("openai");
         // The entry replaces the compiled record outright: the file's nulls
         // are values, not "keep the compiled field".
         entry["baseUrl"] = serde_json::Value::Null;
@@ -818,7 +913,7 @@ mod tests {
     #[test]
     fn a_model_entry_replaces_in_place_and_file_only_ids_are_appended() {
         let dir = tempfile::tempdir().unwrap();
-        let entry = snapshot_entry(dir.path(), "openai");
+        let entry = compiled_entry("openai");
         let compiled_models = entry["models"].as_array().unwrap().clone();
         let first_id = compiled_models[0]["id"].as_str().unwrap().to_string();
         let mut replacement = compiled_models[0].clone();
@@ -851,7 +946,7 @@ mod tests {
     #[test]
     fn a_non_builtin_provider_id_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
-        let mut entry = snapshot_entry(dir.path(), "openai");
+        let mut entry = compiled_entry("openai");
         entry["id"] = "acme-gateway".into();
         serve(dir.path(), serde_json::json!([entry]));
 
@@ -904,7 +999,7 @@ mod tests {
     #[test]
     fn an_invalid_provider_base_url_drops_the_whole_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let mut entry = snapshot_entry(dir.path(), "openai");
+        let mut entry = compiled_entry("openai");
         entry["baseUrl"] = "ftp://proxy.example/v1".into();
         serve(dir.path(), serde_json::json!([entry]));
 
@@ -919,7 +1014,7 @@ mod tests {
     #[test]
     fn each_bad_model_field_drops_only_that_model() {
         let dir = tempfile::tempdir().unwrap();
-        let entry = snapshot_entry(dir.path(), "openai");
+        let entry = compiled_entry("openai");
         let compiled_models = entry["models"].as_array().unwrap().clone();
         let first = compiled_models[0].clone();
         let first_id = first["id"].as_str().unwrap().to_string();
@@ -1000,5 +1095,126 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    /// The OpenAI models an earlier boot copied into the store: a record the
+    /// catalog still carries, grown stale, and one the catalog has retired.
+    fn stale_models() -> serde_json::Value {
+        let compiled = compiled_openai().get_models();
+        let mut stale = serde_json::to_value(&compiled[0]).unwrap();
+        stale["contextWindow"] = 123_456.into();
+        let mut retired = serde_json::to_value(&compiled[0]).unwrap();
+        retired["id"] = "gpt-retired".into();
+        retired["name"] = "gpt-retired".into();
+        serde_json::json!([stale, retired])
+    }
+
+    /// A catalog copy that differs from the compiled baseline. Its recent
+    /// `writtenAt` must not make it safe to replace: the difference may be the
+    /// user's edit, and an older catalog cannot prove otherwise.
+    fn differing_copy(data_dir: &Path) -> Vec<u8> {
+        let file = serde_json::json!({
+            "version": 1,
+            "sourceGeneratedAt": 1_787_987_550_149i64,
+            "writtenAt": chrono::Utc::now().timestamp_millis(),
+            "providers": [{ "id": "openai", "models": stale_models() }],
+        });
+        let bytes = serde_json::to_vec_pretty(&file).unwrap();
+        std::fs::write(data_dir.join(FILE_NAME), &bytes).unwrap();
+        bytes
+    }
+
+    /// A copy that is equivalent, after JSON parsing, to the snapshot this
+    /// build would have written.
+    fn current_snapshot(data_dir: &Path) -> Vec<u8> {
+        let file = serde_json::json!({
+            "version": 1,
+            "sourceGeneratedAt": get_builtin_model_data_generated_at(),
+            "writtenAt": chrono::Utc::now().timestamp_millis(),
+            "providers": serde_json::to_value(compiled_catalog().providers).unwrap(),
+        });
+        let bytes = serde_json::to_vec_pretty(&file).unwrap();
+        std::fs::write(data_dir.join(FILE_NAME), &bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn a_missing_file_gets_an_empty_override_template() {
+        let dir = tempfile::tempdir().unwrap();
+        load(dir.path());
+
+        let template: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(
+            template,
+            serde_json::json!({ "version": VERSION, "providers": [] })
+        );
+    }
+
+    #[test]
+    fn a_matching_boot_snapshot_is_replaced_and_shadows_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = current_snapshot(dir.path());
+
+        let catalog = load(dir.path());
+
+        assert_eq!(
+            catalog.get("openai").unwrap().models,
+            compiled_openai().get_models()
+        );
+        let template: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(
+            template,
+            serde_json::json!({ "version": VERSION, "providers": [] })
+        );
+        assert_eq!(std::fs::read(dir.path().join(BACKUP_NAME)).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_copy_that_differs_from_the_current_snapshot_stays_and_applies_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = differing_copy(dir.path());
+
+        let catalog = load(dir.path());
+
+        let models = &catalog.get("openai").unwrap().models;
+        assert_eq!(models[0].context_window, 123_456);
+        assert_eq!(models.last().unwrap().id, "gpt-retired");
+        assert_eq!(std::fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+        assert!(!dir.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn an_existing_backup_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = current_snapshot(dir.path());
+        let backup = dir.path().join(BACKUP_NAME);
+        std::fs::write(&backup, b"user-owned backup sentinel").unwrap();
+
+        load(dir.path());
+
+        assert_eq!(std::fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(backup).unwrap(),
+            b"user-owned backup sentinel"
+        );
+    }
+
+    #[test]
+    fn a_backup_from_a_failed_migration_can_be_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = current_snapshot(dir.path());
+        std::fs::write(dir.path().join(BACKUP_NAME), &bytes).unwrap();
+
+        load(dir.path());
+
+        let template: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(
+            template,
+            serde_json::json!({ "version": VERSION, "providers": [] })
+        );
+        assert_eq!(std::fs::read(dir.path().join(BACKUP_NAME)).unwrap(), bytes);
     }
 }
