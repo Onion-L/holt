@@ -82,10 +82,11 @@ pub mod methods {
     /// `{providerId, modelIds}`; the reply carries one row per id, in
     /// listing order — `name`, `contextWindow`, `maxTokens`,
     /// `reasoningLevels`, `canTurnOff`, `input`, `cost`, and where the row
-    /// stands: `source` (the catalog's `provider/model` an adopted id
-    /// takes), `startsFrom` (the sibling a new id starts from),
-    /// `levelsEstimated` with `estimatedFrom`. Saves nothing: the fetch
-    /// dialog shows each row its facts first.
+    /// stands: `offered` (the provider already offers the id, by the test
+    /// `SaveFetchedModels` refuses on), `source` (the catalog's
+    /// `provider/model` an adopted id takes), `startsFrom` (the sibling a
+    /// new id starts from), `levelsEstimated` with `estimatedFrom`. Saves
+    /// nothing: the fetch dialog shows each row its facts first.
     pub const PREVIEW_FETCHED_MODELS: &str = "PreviewFetchedModels";
     /// Files those rows under the provider: params
     /// `{providerId, models: [{id, name?, thinkingLevels?, canTurnOff?,

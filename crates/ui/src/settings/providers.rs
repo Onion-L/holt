@@ -83,6 +83,10 @@ pub(super) enum ProbeState {
 #[serde(rename_all = "camelCase")]
 pub(super) struct FetchedFacts {
     pub(super) id: String,
+    /// The provider already offers this id, by the test `SaveFetchedModels`
+    /// refuses on — whatever the panel's listing hides of it.
+    #[serde(default)]
+    pub(super) offered: bool,
     pub(super) name: String,
     /// The catalog's `provider/model` an adopted id takes.
     #[serde(default)]

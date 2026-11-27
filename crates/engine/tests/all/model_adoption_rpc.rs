@@ -374,6 +374,88 @@ async fn a_fetched_row_never_replaces_a_model_the_provider_already_offers() {
     assert_eq!(listed(&engine, "gw").await.len(), 1);
 }
 
+/// The preview's `offered` is the refusal's own test, so the dialog dims
+/// what the save would refuse — a row the panel's listing hides included,
+/// which used to open as a selectable one and fail the whole batch on Add.
+#[tokio::test]
+async fn the_preview_marks_an_id_the_provider_already_offers_however_it_is_listed() {
+    let (_fixture, engine) = gateway().await;
+    save(&engine, "gw", serde_json::json!([{ "id": "gpt-5.4" }]))
+        .await
+        .unwrap();
+
+    let rows = preview(&engine, "gw", &["gpt-5.4", "acme-1", "glm-5.3"]).await;
+    // The row just filed under the gateway is offered, with its facts still
+    // answered; a new id and an id the catalog carries elsewhere are not —
+    // the latter is adopted, never refused.
+    assert_eq!(row(&rows, "gpt-5.4")["offered"], true);
+    assert_eq!(row(&rows, "gpt-5.4")["source"], "openai/gpt-5.4");
+    assert_eq!(row(&rows, "acme-1")["offered"], false);
+    assert_eq!(row(&rows, "glm-5.3")["offered"], false);
+
+    // Hidden from `ListModels`, and still the provider's own row: the
+    // dialog cannot learn it from the panel's list.
+    engine
+        .handle(
+            methods::SET_HIDDEN_MODELS,
+            serde_json::json!({ "providerId": "gw", "modelIds": ["gpt-5.4"] }),
+        )
+        .await
+        .unwrap();
+    assert!(listed(&engine, "gw").await.is_empty());
+    let rows = preview(&engine, "gw", &["gpt-5.4", "acme-1"]).await;
+    assert_eq!(row(&rows, "gpt-5.4")["offered"], true);
+    assert_eq!(row(&rows, "acme-1")["offered"], false);
+
+    // The refusal the flag speaks for.
+    let error = save(
+        &engine,
+        "gw",
+        serde_json::json!([{ "id": "gpt-5.4" }, { "id": "acme-1" }]),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("already offered"), "{error}");
+}
+
+/// The record form saves what `GetModelRecord` served it, minus the fields
+/// it edits: a cost's tiers, which the form has no field for, come back
+/// whole under the rates.
+#[tokio::test]
+async fn a_record_keeps_its_cost_tiers_through_the_record_form_s_round_trip() {
+    let (_fixture, engine) = gateway().await;
+    save(&engine, "gw", serde_json::json!([{ "id": "gpt-5.4" }]))
+        .await
+        .unwrap();
+    let tiers = serde_json::json!([{
+        "input": 10.0,
+        "output": 30.0,
+        "cacheRead": 1.0,
+        "cacheWrite": 0.5,
+        "inputTokensAbove": 272_000,
+    }]);
+    let mut served = record(&engine, "gw", "gpt-5.4").await;
+    served["cost"]["tiers"] = tiers.clone();
+    value(
+        &engine,
+        methods::SAVE_MODEL_RECORD,
+        serde_json::json!({ "providerId": "gw", "record": served }),
+    )
+    .await;
+
+    let served = record(&engine, "gw", "gpt-5.4").await;
+    // A rate comes back as the engine writes it — whole numbers without
+    // the fraction — so each is read as a number, not as JSON.
+    assert_eq!(served["cost"]["tiers"].as_array().map(Vec::len), Some(1));
+    let tier = &served["cost"]["tiers"][0];
+    assert_eq!(tier["input"].as_f64(), Some(10.0));
+    assert_eq!(tier["output"].as_f64(), Some(30.0));
+    assert_eq!(tier["cacheRead"].as_f64(), Some(1.0));
+    assert_eq!(tier["cacheWrite"].as_f64(), Some(0.5));
+    assert_eq!(tier["inputTokensAbove"], 272_000);
+    assert_eq!(served["cost"]["input"].as_f64(), Some(2.5));
+}
+
 #[tokio::test]
 async fn a_batch_that_cannot_be_filed_whole_writes_nothing() {
     let (_fixture, engine) = gateway().await;

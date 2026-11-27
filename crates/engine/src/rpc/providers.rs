@@ -611,6 +611,9 @@ impl EngineService {
                     "startsFrom": row.starts_from,
                     "levelsEstimated": row.levels_estimated,
                     "estimatedFrom": row.estimated_from,
+                    // The provider already offers the id, by the test
+                    // `SaveFetchedModels` refuses on.
+                    "offered": row.offered,
                     // The picker's ladder, as `ListModels` projects it: `off`
                     // has no tier of its own.
                     "canTurnOff": get_supported_thinking_levels(&model)

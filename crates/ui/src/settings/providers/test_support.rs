@@ -123,6 +123,7 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
                                     "startsFrom": null,
                                     "levelsEstimated": false,
                                     "estimatedFrom": null,
+                                    "offered": false,
                                     "canTurnOff": true,
                                     "contextWindow": 200000,
                                     "maxTokens": 8192,

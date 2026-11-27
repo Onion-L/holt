@@ -254,6 +254,10 @@ pub struct FetchedRow {
     /// The `provider/model` the estimate came from; `None` when no sibling
     /// names levels and the usual four stand in.
     pub estimated_from: Option<String>,
+    /// The provider already offers this id, by the test
+    /// `ProviderAdapter::save_fetched` refuses on — whatever the listings
+    /// hide of it — so the dialog shows the row and never offers it.
+    pub offered: bool,
     pub model: CoreModel,
 }
 

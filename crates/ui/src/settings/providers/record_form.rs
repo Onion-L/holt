@@ -115,7 +115,8 @@ fn flag_row(
 }
 
 /// The record fields the form owns. The advanced JSON carries everything
-/// else a record may hold, and can never override these.
+/// else a record may hold, and can never override these — save for a cost's
+/// `tiers`, which the form has no field for and puts back under its rates.
 const FORM_OWNED_KEYS: [&str; 9] = [
     "id",
     "name",
@@ -1430,10 +1431,18 @@ pub(super) fn build_record_json(
             for (key, value) in object {
                 // The form's fields are authoritative — the advanced object
                 // carries only what the form does not own (baseUrl included:
-                // omitting it is the default-endpoint case).
-                if !FORM_OWNED_KEYS.contains(&key.as_str()) {
-                    target.insert(key.clone(), value.clone());
+                // omitting it is the default-endpoint case). A cost is the
+                // form's but for its tiers, which it has no field for.
+                if FORM_OWNED_KEYS.contains(&key.as_str()) {
+                    if key == "cost"
+                        && let Some(tiers) = value.get("tiers").filter(|tiers| !tiers.is_null())
+                        && let Some(cost) = target.get_mut("cost")
+                    {
+                        cost["tiers"] = tiers.clone();
+                    }
+                    continue;
                 }
+                target.insert(key.clone(), value.clone());
             }
         }
     }
@@ -1443,11 +1452,13 @@ pub(super) fn build_record_json(
 impl ProvidersPage {
     /// The Models header's "Fetch models": a fresh ProbeProvider call; the
     /// dialog opens only on `ok` — the status line carries the failure
-    /// verdict. The panel's model list is asked for first, so the dialog can
-    /// tell an id the provider already offers from a new one, and again when
-    /// that list lands ([`Self::fetch_models_loaded`]): a listing opened
-    /// before the list did used to offer the provider's own models back, and
-    /// Add filed blank records over the catalog's.
+    /// verdict. The engine's preview comes back on the same call and says
+    /// which ids the provider already offers; the panel's model list is
+    /// asked for as well — the fallback for a row the engine did not answer
+    /// for — and again when that list lands
+    /// ([`Self::fetch_models_loaded`]): a listing opened before the list
+    /// did used to offer the provider's own models back, and Add filed blank
+    /// records over the catalog's.
     pub(super) fn open_fetch(&mut self, provider: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -1527,6 +1538,7 @@ impl ProvidersPage {
     /// order. An id the engine answered for opens with those facts; one it
     /// did not opens on the plain defaults, as every row used to. An id the
     /// provider already offers stays in view, dimmed and never selected —
+    /// the engine's `offered` says so, where the panel's list hides the row —
     /// and when that is all the listing holds, the dialog does not open. A
     /// problem string means the dialog did not open.
     fn open_fetch_dialog(
@@ -1555,10 +1567,14 @@ impl ProvidersPage {
         };
         let mut rows = Vec::with_capacity(ids.len());
         for id in &ids {
-            let added = listed
-                .iter()
-                .any(|model| model.id == *id || model.id == format!("{provider}/{id}"));
             let facts = by_id.get(id.as_str()).copied();
+            // The engine's word first — it refuses the save on the same
+            // test — and the panel's list for a row it did not answer for:
+            // that list hides rows the provider still offers.
+            let added = facts.is_some_and(|facts| facts.offered)
+                || listed
+                    .iter()
+                    .any(|model| model.id == *id || model.id == format!("{provider}/{id}"));
             let new = added || facts.is_none_or(|facts| facts.source.is_none());
             let (name, numbers, levels, estimated, estimated_from, starts_from, source) =
                 match facts {
@@ -2018,7 +2034,7 @@ impl ProvidersPage {
         }
         // Everything the form does not own rides along verbatim: the
         // ladder, `compat`, the endpoint, an adoption's markers.
-        let advanced: serde_json::Map<String, serde_json::Value> = existing
+        let mut advanced: serde_json::Map<String, serde_json::Value> = existing
             .as_object()
             .map(|record| {
                 record
@@ -2028,6 +2044,14 @@ impl ProvidersPage {
                     .collect()
             })
             .unwrap_or_default();
+        // A cost's rates are the form's; its tiers it has no field for, so
+        // they ride here and go back under the rates on save.
+        if let Some(tiers) = existing["cost"]
+            .get("tiers")
+            .filter(|tiers| !tiers.is_null())
+        {
+            advanced.insert("cost".to_string(), serde_json::json!({ "tiers": tiers }));
+        }
         inputs.insert(
             "advanced".to_string(),
             cx.new(|cx| {
@@ -2316,6 +2340,34 @@ mod tests {
         let smuggled = good(&[("advanced", "{\"provider\": \"evil\", \"id\": \"evil-1\"}")]);
         let record = build_record_json("acme", &smuggled, false, false).unwrap();
         assert_eq!(record["provider"], "acme");
+    }
+
+    /// A cost's tiers have no field: they ride in the advanced JSON, and a
+    /// save puts them back under the form's rates — which the same object
+    /// still cannot override.
+    #[test]
+    fn a_cost_s_tiers_ride_in_the_advanced_json_under_the_form_s_rates() {
+        let texts = record_texts(&[
+            ("id", "acme-1"),
+            ("api", "openai-completions"),
+            ("contextWindow", "1000"),
+            ("maxTokens", "100"),
+            ("inputCost", "2.5"),
+            (
+                "advanced",
+                r#"{"cost": {"input": 99, "tiers": [{"input": 10, "inputTokensAbove": 272000}]}}"#,
+            ),
+        ]);
+        let record = build_record_json("acme", &texts, false, false).unwrap();
+        assert_eq!(
+            record["cost"]["input"].as_f64(),
+            Some(2.5),
+            "the rate is the form's"
+        );
+        assert_eq!(
+            record["cost"]["tiers"],
+            serde_json::json!([{ "input": 10, "inputTokensAbove": 272000 }])
+        );
     }
 
     /// The record form's API dialect is a dropdown over the engine's
@@ -2764,6 +2816,69 @@ mod tests {
         assert_eq!(saves[0]["models"][0]["id"], "acme-9");
     }
 
+    /// The panel's list hides rows the provider still offers — a hidden
+    /// model, a dated snapshot — and `SaveFetchedModels` refuses them all
+    /// the same. The engine's `offered` is that refusal: such an id is
+    /// dimmed and out of the batch though the list never names it.
+    #[gpui::test]
+    fn an_id_only_the_engine_knows_is_offered_stays_out_of_the_batch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut harness = providers_harness(cx);
+        let mut hidden = preview_row("acme-hidden");
+        hidden["offered"] = serde_json::json!(true);
+        harness.engine.preview_rows.lock().unwrap().push(hidden);
+        *harness.engine.probe_ids.lock().unwrap() = vec!["acme-hidden".into(), "acme-9".into()];
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let (ids, added, checked) = harness.page.update(&mut *harness.visual, |page, _| {
+            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog opened");
+            (
+                dialog
+                    .rows
+                    .iter()
+                    .map(|row| row.id.clone())
+                    .collect::<Vec<_>>(),
+                dialog.rows.iter().map(|row| row.added).collect::<Vec<_>>(),
+                dialog.checked.clone(),
+            )
+        });
+        assert_eq!(ids, vec!["acme-hidden".to_string(), "acme-9".to_string()]);
+        assert_eq!(added, vec![true, false]);
+        assert_eq!(checked, HashSet::from(["acme-9".to_string()]));
+
+        harness.click("save-fetch");
+        harness.pump();
+
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(saves[0]["models"].as_array().unwrap().len(), 1);
+        assert_eq!(saves[0]["models"][0]["id"], "acme-9");
+    }
+
+    /// A listing of nothing but such ids opens no dialog, as one of rows the
+    /// panel does list.
+    #[gpui::test]
+    fn a_listing_wholly_offered_in_the_engine_s_eyes_opens_nothing(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        let mut hidden = preview_row("acme-hidden");
+        hidden["offered"] = serde_json::json!(true);
+        harness.engine.preview_rows.lock().unwrap().push(hidden);
+        *harness.engine.probe_ids.lock().unwrap() = vec!["acme-hidden".into()];
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+        harness.pump();
+
+        assert!(
+            harness
+                .page
+                .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_none())
+        );
+    }
+
     /// When the listing holds nothing the provider does not already offer,
     /// there is nothing to add and the dialog does not open.
     #[gpui::test]
@@ -3161,10 +3276,16 @@ mod tests {
     /// The form opened on an existing row carries everything the row does:
     /// its numbers, its flags, and — in the advanced JSON — the ladder the
     /// form has no field for, so a corrected price saved under the same id
-    /// does not drop it.
+    /// does not drop it. The cost's tiers ride there too: twenty-two catalog
+    /// rows price a long context by them, and a save that rebuilt the cost
+    /// from the four rate fields filed them away tier-less.
     #[gpui::test]
     fn the_record_form_opens_on_a_row_with_everything_it_carries(cx: &mut gpui::TestAppContext) {
         let harness = providers_harness(cx);
+        let tiers = serde_json::json!([{
+            "input": 10, "output": 30, "cacheRead": 1, "cacheWrite": 0,
+            "inputTokensAbove": 272000
+        }]);
         harness
             .engine
             .records_served
@@ -3182,7 +3303,10 @@ mod tests {
                     "high": "high", "xhigh": "xhigh", "max": null
                 },
                 "input": ["text", "image"],
-                "cost": { "input": 2.5, "output": 15, "cacheRead": 0.25, "cacheWrite": 0 },
+                "cost": {
+                    "input": 2.5, "output": 15, "cacheRead": 0.25, "cacheWrite": 0,
+                    "tiers": tiers
+                },
                 "contextWindow": 1050000,
                 "maxTokens": 128000,
             }));
@@ -3223,9 +3347,10 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(advanced["baseUrl"], "https://acme.example/v1");
-        assert!(
-            advanced.get("cost").is_none(),
-            "the form's own fields stay out"
+        assert_eq!(
+            advanced["cost"],
+            serde_json::json!({ "tiers": tiers }),
+            "the rates stay out of the advanced JSON; the tiers ride in it"
         );
 
         harness.page.update(&mut *harness.visual, |page, cx| {
@@ -3240,6 +3365,10 @@ mod tests {
         let record = &records[0]["record"];
         assert_eq!(record["cost"]["input"].as_f64(), Some(1.25));
         assert_eq!(record["cost"]["output"].as_f64(), Some(15.0));
+        assert_eq!(
+            record["cost"]["tiers"], tiers,
+            "the tiers go back under the rates"
+        );
         assert_eq!(record["thinkingLevelMap"]["xhigh"], "xhigh");
         assert_eq!(record["input"], serde_json::json!(["text", "image"]));
         assert_eq!(record["contextWindow"], 1_050_000);

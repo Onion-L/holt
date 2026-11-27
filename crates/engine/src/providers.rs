@@ -197,7 +197,9 @@ impl ProviderAdapter {
     /// saved. An id the catalog carries takes its record; any other starts
     /// from the nearest sibling in sight — a row already on the provider, or
     /// one this very listing adopts — and, with none, from the plain
-    /// defaults.
+    /// defaults. Each row says whether the provider already offers its id,
+    /// by the test [`Self::save_fetched`] refuses on: the panel's listing
+    /// hides some of those rows, and the dialog cannot read the refusal.
     pub fn preview_fetched(
         &self,
         provider_id: &str,
@@ -209,6 +211,7 @@ impl ProviderAdapter {
         let existing = self.core_models_for(provider_id);
         let mut rows: Vec<FetchedRow> = Vec::new();
         for id in model_ids {
+            let offered = existing.iter().any(|model| model.id == *id);
             rows.push(match self.adoptable.source(id) {
                 Some(source) => {
                     let model = adopt(
@@ -227,6 +230,7 @@ impl ProviderAdapter {
                         starts_from: None,
                         levels_estimated: estimated,
                         estimated_from: estimate.map(|(_, from)| from),
+                        offered,
                         model,
                     }
                 }
@@ -258,6 +262,7 @@ impl ProviderAdapter {
                             .map(|sibling| format!("{}/{}", sibling.provider, sibling.id)),
                         levels_estimated: sibling.is_some(),
                         estimated_from: None,
+                        offered,
                         model,
                     }
                 }
