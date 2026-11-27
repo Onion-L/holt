@@ -686,12 +686,13 @@ impl Transcript {
                 state,
             } => question_card::render_question_card(questions, answers, *state, &theme),
             RowKind::KeyRequest {
+                provider_id,
                 provider_name,
                 destination,
                 state,
             } => self.render_key_request_card(
                 &row.id,
-                provider_name,
+                (provider_id, provider_name),
                 destination,
                 *state,
                 &theme,

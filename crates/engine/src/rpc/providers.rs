@@ -265,6 +265,8 @@ impl EngineService {
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
+        let provider_id = required_string(&params, "providerId")?;
+        let destination = required_string(&params, "destination")?;
         if !crate::store::id_is_path_safe(chat_id) {
             return Err(RpcError::BadParams("invalid chatId".into()));
         }
@@ -275,18 +277,30 @@ impl EngineService {
         // Take (not clone) the request: a second concurrent settle
         // finds none, and any failure below puts it back so the
         // card stays and a retry is idempotent.
-        let pending = chat
-            .key_request
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        let Some(pending) = pending else {
-            // A card left Pending past its request (a newer one
-            // replaced it) must not keep offering Save.
-            crate::provider_mode::stamp_key_cards(&chat, holt_doc::parts::KeyCardState::Superseded);
-            return Err(RpcError::Failed(
-                "no pending key request on this chat".into(),
-            ));
+        let pending = {
+            let mut key_request = chat.key_request.lock().unwrap_or_else(|e| e.into_inner());
+            let pending = key_request.take();
+            let Some(pending) = pending else {
+                drop(key_request);
+                // A card left Pending past its request (a newer one
+                // replaced it) must not keep offering Save.
+                crate::provider_mode::stamp_key_cards(
+                    &chat,
+                    holt_doc::parts::KeyCardState::Superseded,
+                );
+                return Err(RpcError::Failed(
+                    "no pending key request on this chat".into(),
+                ));
+            };
+            // The click approves the card the user saw, never a request that
+            // replaced it while the click was in flight.
+            if pending.provider_id != provider_id || pending.destination != destination {
+                *key_request = Some(pending);
+                return Err(RpcError::Failed(
+                    "this key request was replaced; use the latest card".into(),
+                ));
+            }
+            pending
         };
         let restore = || {
             *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending.clone());

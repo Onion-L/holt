@@ -513,18 +513,60 @@ async fn a_key_request_lands_as_a_card_and_the_settle_stamps_it() {
             .starts_with("https://")
     );
 
-    engine
-        .handle(
-            methods::SETTLE_PROVIDER_KEY_REQUEST,
-            serde_json::json!({ "chatId": "chat-1", "key": "sk-card-secret" }),
-        )
-        .await
-        .unwrap();
+    settle(&engine, Some("sk-card-secret")).await;
     wait_for_requests(&provider, 4).await;
     let found = cards(&engine, "chat-1", "keyRequest").await;
     assert_eq!(found[1]["state"], "saved");
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(!snapshot.to_string().contains("sk-card-secret"));
+}
+
+#[tokio::test]
+async fn a_stale_key_card_cannot_settle_the_request_that_replaced_it() {
+    let fixture = Fixture::new();
+    let (engine, provider) = mode_turn(
+        &fixture,
+        vec![
+            key_call("call-a", "zai-coding-cn"),
+            key_call("call-b", "openai"),
+            ScriptedReply::text("asked"),
+            ScriptedReply::text("re-probed"),
+        ],
+    )
+    .await;
+    let found = cards(&engine, "chat-1", "keyRequest").await;
+    assert_eq!(found[0]["state"], "superseded");
+    assert_eq!(found[1]["state"], "pending");
+
+    let error = settle_card(
+        &engine,
+        found[0]["providerId"].as_str().unwrap(),
+        found[0]["destination"].as_str().unwrap(),
+        Some("sk-stale-card-secret"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("key request was replaced"),
+        "{error}"
+    );
+    assert_eq!(reveal_key(&engine, "zai-coding-cn").await, None);
+    assert_eq!(
+        reveal_key(&engine, "openai").await.as_deref(),
+        Some("not-a-real-key"),
+        "the stale save must not overwrite the replacement provider's key"
+    );
+
+    // The refused stale click leaves the replacement pending and usable.
+    let found = cards(&engine, "chat-1", "keyRequest").await;
+    assert_eq!(found[1]["state"], "pending");
+    let settled = settle(&engine, Some("sk-current-card-secret")).await;
+    assert_eq!(settled["providerId"], "openai");
+    assert_eq!(
+        reveal_key(&engine, "openai").await.as_deref(),
+        Some("sk-current-card-secret")
+    );
+    wait_for_requests(&provider, 4).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -580,13 +622,7 @@ async fn a_draft_key_request_saves_under_the_draft_and_never_leaks_the_key() {
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(snapshot.to_string().contains("is not a public address"));
 
-    engine
-        .handle(
-            methods::SETTLE_PROVIDER_KEY_REQUEST,
-            serde_json::json!({ "chatId": "chat-1", "key": "sk-draft-secret" }),
-        )
-        .await
-        .unwrap();
+    settle(&engine, Some("sk-draft-secret")).await;
     wait_for_requests(&provider, 4).await;
     let RpcReply::Value(revealed) = engine
         .handle(
@@ -722,19 +758,43 @@ async fn reveal_key(engine: &holt_engine::LocalEngine, provider: &str) -> Option
     reply["key"].as_str().map(str::to_string)
 }
 
-async fn settle(engine: &holt_engine::LocalEngine, key: Option<&str>) -> serde_json::Value {
-    let mut params = serde_json::json!({ "chatId": "chat-1" });
+async fn settle_card(
+    engine: &holt_engine::LocalEngine,
+    provider_id: &str,
+    destination: &str,
+    key: Option<&str>,
+) -> Result<serde_json::Value, holt_rpc::RpcError> {
+    let mut params = serde_json::json!({
+        "chatId": "chat-1",
+        "providerId": provider_id,
+        "destination": destination,
+    });
     if let Some(key) = key {
         params["key"] = key.into();
     }
-    let RpcReply::Value(settled) = engine
+    let reply = engine
         .handle(methods::SETTLE_PROVIDER_KEY_REQUEST, params)
-        .await
-        .unwrap()
-    else {
+        .await?;
+    let RpcReply::Value(settled) = reply else {
         panic!("SettleProviderKeyRequest did not return a value");
     };
-    settled
+    Ok(settled)
+}
+
+async fn settle(engine: &holt_engine::LocalEngine, key: Option<&str>) -> serde_json::Value {
+    let found = cards(engine, "chat-1", "keyRequest").await;
+    let pending = found
+        .iter()
+        .find(|card| card["state"] == "pending")
+        .expect("one pending key card");
+    settle_card(
+        engine,
+        pending["providerId"].as_str().unwrap(),
+        pending["destination"].as_str().unwrap(),
+        key,
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -906,7 +966,11 @@ async fn a_settled_key_is_saved_and_the_chat_is_told() {
         engine
             .handle(
                 methods::SETTLE_PROVIDER_KEY_REQUEST,
-                serde_json::json!({ "chatId": "chat-1" }),
+                serde_json::json!({
+                    "chatId": "chat-1",
+                    "providerId": settled["providerId"],
+                    "destination": settled["destination"],
+                }),
             )
             .await
             .is_err()
@@ -1074,7 +1138,11 @@ async fn settling_without_a_pending_request_fails() {
             engine
                 .handle(
                     methods::SETTLE_PROVIDER_KEY_REQUEST,
-                    serde_json::json!({ "chatId": chat_id }),
+                    serde_json::json!({
+                        "chatId": chat_id,
+                        "providerId": "unknown",
+                        "destination": "https://example.invalid/v1",
+                    }),
                 )
                 .await
                 .is_err()
