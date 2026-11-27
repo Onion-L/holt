@@ -77,9 +77,9 @@ fn record_field_label(key: &str) -> Cow<'static, str> {
     }
 }
 
-/// One labelled checkbox row — the manual record form's and the fetch
-/// dialog's Reasoning / Image input flags. The whole row is the click
-/// target; `scope` keeps the two dialogs' element ids apart.
+/// One labelled checkbox row — the manual record form's Reasoning / Image
+/// input flags. The whole row is the click target; `scope` keeps a
+/// caller's element ids apart from another caller's.
 fn flag_row(
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
@@ -1318,14 +1318,12 @@ fn flip_level(levels: &mut Vec<String>, level: &str) {
     }
 }
 
-/// Builds the model record the engine expects from a dialog's texts — the
-/// manual record form's, and the fetch dialog's (once per fetched id, so
-/// the two paths can never disagree about what a record carries):
-/// numbers parse, costs default to zero, and the advanced JSON (when
-/// present) must be an object whose keys ride along — except the form's
-/// own fields, which the advanced object can never override. `baseUrl`
-/// is not a form field: empty means omitted, and the engine fills the
-/// provider's default endpoint (Advanced JSON may still set it).
+/// Builds the model record the engine expects from the manual record
+/// form's texts: numbers parse, costs default to zero, and the advanced
+/// JSON (when present) must be an object whose keys ride along — except
+/// the form's own fields, which the advanced object can never override.
+/// `baseUrl` is not a form field: empty means omitted, and the engine
+/// fills the provider's default endpoint (Advanced JSON may still set it).
 pub(super) fn build_record_json(
     provider: &str,
     texts: &HashMap<String, String>,
@@ -2418,8 +2416,7 @@ mod tests {
     }
 
     /// The manual form's Reasoning / Image input rows are click targets,
-    /// and what they hold is what the saved record carries — the flag row
-    /// the fetch dialog shares.
+    /// and what they hold is what the saved record carries.
     #[gpui::test]
     fn the_record_forms_flag_rows_reach_the_saved_record(cx: &mut gpui::TestAppContext) {
         let mut harness = providers_harness(cx);
