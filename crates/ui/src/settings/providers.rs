@@ -262,16 +262,69 @@ pub struct ProvidersPage {
     focus: Option<String>,
 }
 
+fn configured_first(providers: &mut [Provider]) -> usize {
+    providers.sort_by_key(|provider| !provider.configured);
+    providers
+        .iter()
+        .take_while(|provider| provider.configured)
+        .count()
+}
+
+fn provider_section(
+    theme: &Theme,
+    configured: bool,
+    separated: bool,
+    rows: Vec<AnyElement>,
+) -> AnyElement {
+    if rows.is_empty() {
+        return div().into_any_element();
+    }
+    let count = rows.len();
+    let (label, selector) = if configured {
+        (
+            t!("settings_providers_usage.providers.status_configured"),
+            "providers-configured",
+        )
+    } else {
+        (
+            t!("settings_providers_usage.providers.status_not_configured"),
+            "providers-not-configured",
+        )
+    };
+    div()
+        .debug_selector(move || selector.into())
+        .mt(px(if separated { 24.0 } else { 18.0 }))
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .child(widgets::section_label(theme, label))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_faint)
+                        .child(count.to_string()),
+                )
+                .child(div().flex_1().h(px(1.0)).bg(theme.border.opacity(0.6))),
+        )
+        .child(div().flex().flex_col().gap(px(2.0)).children(rows))
+        .into_any_element()
+}
+
 impl Render for ProvidersPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let rows = self
-            .providers
-            .ready()
-            .cloned()
-            .unwrap_or_default()
+        let mut providers = self.providers.ready().cloned().unwrap_or_default();
+        let configured_count = configured_first(&mut providers);
+        let rows = providers
             .into_iter()
             .enumerate()
+            // Element ids follow the grouped display order.
             .map(|(index, provider)| {
                 let id = provider.id.to_string();
                 let brand_mark = match crate::pickers::provider_brand_icon(&provider.id) {
@@ -643,14 +696,18 @@ impl Render for ProvidersPage {
             Loadable::Ready(_) => {
                 // Materialized first: the row builder borrows `cx` lazily,
                 // and the action row needs it mutably next.
-                let rows: Vec<AnyElement> = rows.collect();
+                let mut rows: Vec<AnyElement> = rows.collect();
+                let unconfigured = rows.split_off(configured_count.min(rows.len()));
+                let configured = rows;
+                let separated = !configured.is_empty();
                 div()
                     .mt(px(18.0))
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
                     .child(top_action_row(&theme, cx))
-                    .children(rows)
+                    .child(provider_section(&theme, true, false, configured))
+                    .child(provider_section(&theme, false, separated, unconfigured))
                     .into_any_element()
             }
         };
@@ -880,5 +937,64 @@ impl ProvidersPage {
     fn fail(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         cx.emit(ProvidersPageEvent::Error(message.into()));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::providers::test_support::*;
+
+    fn provider(id: &str, configured: bool) -> Provider {
+        Provider {
+            id: id.into(),
+            name: id.into(),
+            abbreviation: id[..2].to_ascii_uppercase(),
+            configured,
+            variants: Vec::new(),
+            custom: false,
+            logo: None,
+        }
+    }
+
+    #[test]
+    fn configured_first_preserves_the_order_within_each_group() {
+        let mut rows = vec![
+            provider("plain-a", false),
+            provider("ready-a", true),
+            provider("plain-b", false),
+            provider("ready-b", true),
+        ];
+        assert_eq!(configured_first(&mut rows), 2);
+        let ids: Vec<_> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, ["ready-a", "ready-b", "plain-a", "plain-b"]);
+    }
+
+    #[gpui::test]
+    fn configured_and_unconfigured_providers_have_separate_sections(cx: &mut gpui::TestAppContext) {
+        let harness = providers_harness(cx);
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.providers = Loadable::Ready(vec![
+                provider("plain-a", false),
+                provider("ready-a", true),
+                provider("plain-b", false),
+                provider("ready-b", true),
+            ]);
+            cx.notify();
+        });
+        harness.pump();
+
+        let configured = harness.visual.debug_bounds("providers-configured").unwrap();
+        let first = harness.visual.debug_bounds("provider-row-0").unwrap();
+        let second = harness.visual.debug_bounds("provider-row-1").unwrap();
+        let unconfigured = harness
+            .visual
+            .debug_bounds("providers-not-configured")
+            .unwrap();
+        let third = harness.visual.debug_bounds("provider-row-2").unwrap();
+        assert!(configured.top() < first.top());
+        assert!(first.bottom() <= second.top());
+        assert!(second.bottom() <= unconfigured.top());
+        assert!(unconfigured.top() < third.top());
     }
 }

@@ -480,9 +480,9 @@ pub(super) fn record_form_dialog(
 /// The fetch dialog's width and its columns: the checkbox, the model, and
 /// one column per number a row carries. They add up to the card's inner
 /// width, with a gap between each and the rows' own padding.
-const FETCH_WIDTH: f32 = 880.0;
-const FETCH_GAP: f32 = 8.0;
-const FETCH_COLUMNS: [f32; 7] = [22.0, 172.0, 82.0, 82.0, 256.0, 90.0, 68.0];
+const FETCH_WIDTH: f32 = 960.0;
+const FETCH_GAP: f32 = 12.0;
+const FETCH_COLUMNS: [f32; 7] = [22.0, 196.0, 82.0, 82.0, 280.0, 90.0, 68.0];
 
 /// The fetch dialog: a vendor listing as a table
 /// (ADR-fetched-models-adopt-the-catalogs-record). One row per id — its
@@ -601,7 +601,7 @@ pub(super) fn fetch_models_dialog(
             }
         }))
         .w(px(FETCH_WIDTH))
-        .gap(px(12.0))
+        .gap(px(16.0))
         .child(
             div()
                 .flex()
@@ -728,8 +728,8 @@ fn fetch_table_header(theme: &Theme) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(FETCH_GAP))
-        .px(px(8.0))
-        .pb(px(6.0))
+        .px(px(12.0))
+        .pb(px(8.0))
         .border_b_1()
         .border_color(theme.border)
         .child(fetch_column(FETCH_COLUMNS[0]))
@@ -919,6 +919,14 @@ fn fetch_dash(theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+fn fetch_checkbox_state(added: bool, selected: bool) -> widgets::CheckboxState {
+    if added || selected {
+        widgets::CheckboxState::Checked
+    } else {
+        widgets::CheckboxState::Unchecked
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static FETCH_ROW_RENDERS: std::cell::RefCell<Vec<usize>> = const {
@@ -954,7 +962,10 @@ fn fetch_table_row(
         div()
             .flex_none()
             .ml(px(3.0))
-            .child(widgets::checkbox(theme, widgets::CheckboxState::Unchecked))
+            .child(widgets::checkbox(
+                theme,
+                fetch_checkbox_state(row.added, checked),
+            ))
             .opacity(0.35)
             .into_any_element()
     } else {
@@ -972,11 +983,7 @@ fn fetch_table_row(
             }))
             .child(widgets::checkbox(
                 theme,
-                if checked {
-                    widgets::CheckboxState::Checked
-                } else {
-                    widgets::CheckboxState::Unchecked
-                },
+                fetch_checkbox_state(row.added, checked),
             ))
             .into_any_element()
     };
@@ -1147,8 +1154,8 @@ fn fetch_table_row(
         .flex()
         .items_center()
         .gap(px(FETCH_GAP))
-        .px(px(8.0))
-        .py(px(6.0))
+        .px(px(12.0))
+        .py(px(10.0))
         .rounded(px(8.0))
         .border_b_1()
         .border_color(theme.border.opacity(0.5))
@@ -1185,7 +1192,7 @@ fn fetch_table_row(
                         .flex()
                         .flex_wrap()
                         .items_center()
-                        .gap(px(3.0))
+                        .gap(px(4.0))
                         .children(chips)
                         .into_any_element()
                 })
@@ -2418,7 +2425,7 @@ mod tests {
         let next = harness.visual.debug_bounds("fetch-row-4").unwrap();
         assert_eq!(
             target.size.height,
-            gpui::px(60.0),
+            gpui::px(68.0),
             "editable rows keep their natural height"
         );
         assert!(target.bottom() <= adjacent.top());
@@ -2725,10 +2732,18 @@ mod tests {
         );
     }
 
-    /// An id the provider already offers is in view but out of the batch:
-    /// its checkbox is gone, a toggle does nothing, and Add leaves it alone.
+    /// An id the provider already offers is checked but out of the batch:
+    /// a toggle does nothing, and Add leaves it alone.
     #[gpui::test]
     fn an_id_the_provider_already_offers_is_never_added_again(cx: &mut gpui::TestAppContext) {
+        assert_eq!(
+            fetch_checkbox_state(true, false),
+            widgets::CheckboxState::Checked
+        );
+        assert_eq!(
+            fetch_checkbox_state(false, false),
+            widgets::CheckboxState::Unchecked
+        );
         let mut harness = providers_harness(cx);
         harness
             .visual
