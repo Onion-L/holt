@@ -13,14 +13,16 @@
 //!
 //! The template copies nothing of the catalog
 //! (ADR-provider-overlay-carries-overrides-not-a-snapshot): everything in
-//! the file is the user's, and a catalog refresh reaches every install. Only
-//! a parsed file that is exactly the snapshot this build would have written
-//! is provably free of overrides: it is kept as `provider-store.json.bak`
-//! and replaced with the template. An older or different file stays and
-//! applies as written, with a warning: its contents cannot distinguish the
-//! user's entries from an earlier catalog's leftovers, and timestamps prove
-//! nothing. An existing backup is never overwritten; a matching one may be
-//! reused after a failed migration.
+//! the file is the user's, and a catalog refresh reaches every install. A
+//! parsed file that is exactly a snapshot boot wrote is provably free of
+//! overrides — this build's own, or a release's, which
+//! [`RELEASED_BOOT_SNAPSHOTS`] pins by content digest
+//! (ADR-released-boot-snapshots-are-pinned-by-content): it is kept as
+//! `provider-store.json.bak` and replaced with the template. Any other file
+//! stays and applies as written, with a warning: its contents cannot
+//! distinguish the user's entries from an earlier catalog's leftovers, and
+//! timestamps prove nothing. An existing backup is never overwritten; a
+//! matching one may be reused after a failed migration.
 //!
 //! Apart from that one replacement the file is user-owned and hand-editable,
 //! so it is never rewritten once it exists, and validation is per entry: an
@@ -43,6 +45,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     io::Write,
     path::Path,
 };
@@ -53,6 +56,7 @@ use holt_core::ai::{
     types::{Model as CoreModel, ModelCost, ModelCostRates, ProviderHeaders},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::EngineError;
 
@@ -60,6 +64,38 @@ const FILE_NAME: &str = "provider-store.json";
 
 /// Where replacing a matching boot snapshot keeps that snapshot.
 const BACKUP_NAME: &str = "provider-store.json.bak";
+
+/// Every boot snapshot a release wrote
+/// (ADR-released-boot-snapshots-are-pinned-by-content). From v0.1.0 to
+/// v0.9.0 boot copied its whole compiled catalog into the store on first
+/// run, and that copy is the one thing that can stand in front of a later
+/// catalog, so an upgrade has to recognize it. Content is the only proof
+/// that a file is that copy rather than a user's edit, and this build no
+/// longer carries the catalogs those releases compiled, so each snapshot is
+/// pinned by [`content_digest`] over the entries it wrote. The table is
+/// closed: no build after v0.9.0 writes a snapshot. Each line was produced
+/// by building the release's tag with a test that called this module's
+/// `write` and hashing what it wrote; an unrecognized release is added the
+/// same way.
+const RELEASED_BOOT_SNAPSHOTS: [ReleasedBootSnapshot; 1] = [
+    // Every release from v0.1.0 to v0.9.0: one catalog generation
+    // (2026-09-05T09:02:19.155Z), serialized one way. Rebuilt from the tags
+    // v0.1.0, v0.1.2, v0.1.4, v0.3.0, v0.4.0, v0.4.1, v0.5.2, v0.5.4,
+    // v0.6.0, v0.6.3 and v0.9.0 — one per distinct state of the code that
+    // shapes a snapshot, the other releases repeating one of them — and
+    // each wrote these same forty provider entries.
+    ReleasedBootSnapshot {
+        source_generated_at: 1_788_598_939_155,
+        entries_digest: "9e91f5b80809dd08ca6876b88eca2f6b1c6c7508fb5866028333552f39a4334c",
+    },
+];
+
+/// One release's boot snapshot: the catalog generation it copied, and the
+/// SHA-256 of the entries it wrote as [`content_digest`] computes it.
+struct ReleasedBootSnapshot {
+    source_generated_at: i64,
+    entries_digest: &'static str,
+}
 
 /// Envelope version. A later shape change bumps it so readers can detect the
 /// difference instead of guessing.
@@ -128,6 +164,10 @@ pub(crate) struct AuthShape {
 /// the compiled catalog. Never fails: every fallback is the compiled catalog
 /// plus a log line.
 pub(crate) fn load(data_dir: &Path) -> Catalog {
+    load_with(data_dir, &RELEASED_BOOT_SNAPSHOTS)
+}
+
+fn load_with(data_dir: &Path, released: &[ReleasedBootSnapshot]) -> Catalog {
     let path = data_dir.join(FILE_NAME);
     match std::fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => ensure_private_permissions(&path, &metadata),
@@ -179,19 +219,24 @@ pub(crate) fn load(data_dir: &Path) -> Catalog {
         );
         return compiled_catalog();
     }
-    merge(overrides_of(data_dir, &path, envelope))
+    merge(overrides_of(data_dir, &path, envelope, released))
 }
 
 /// The provider entries of a file that parsed at a supported version
 /// (ADR-provider-overlay-carries-overrides-not-a-snapshot). A file is
-/// replaced only when its parsed contents are exactly the snapshot this
-/// build would have written. Anything older or different may contain a
+/// replaced only when it is exactly a snapshot boot wrote: this build's, or
+/// a release's that the pinned table recognizes. Anything else may contain a
 /// user's edit, so it stays and applies as written with a warning.
-fn overrides_of(data_dir: &Path, path: &Path, envelope: FileEnvelope) -> Vec<serde_json::Value> {
+fn overrides_of(
+    data_dir: &Path,
+    path: &Path,
+    envelope: FileEnvelope,
+    released: &[ReleasedBootSnapshot],
+) -> Vec<serde_json::Value> {
     if envelope.source_generated_at.is_none() {
         return envelope.providers;
     }
-    if !is_current_boot_snapshot(&envelope) {
+    if !is_boot_snapshot(&envelope, released) {
         warn_about_unverified_copy(&envelope);
         return envelope.providers;
     }
@@ -203,7 +248,7 @@ fn overrides_of(data_dir: &Path, path: &Path, envelope: FileEnvelope) -> Vec<ser
         Ok(()) => {
             tracing::info!(
                 target: "holt::engine",
-                "replaced the provider store's matching boot snapshot with the empty template; \
+                "replaced the provider store's boot snapshot with the empty template; \
                  the snapshot is kept as {BACKUP_NAME}"
             );
             Vec::new()
@@ -219,9 +264,15 @@ fn overrides_of(data_dir: &Path, path: &Path, envelope: FileEnvelope) -> Vec<ser
     }
 }
 
-/// A parsed file is safe to replace only when it is exactly the snapshot this
-/// build would have written. Anything older or different may contain a user's
-/// edit, and timestamps cannot prove otherwise.
+/// A parsed file is safe to replace only when it is exactly a snapshot boot
+/// wrote, so that it cannot hold an override. Anything else may contain a
+/// user's edit, and timestamps cannot prove otherwise.
+fn is_boot_snapshot(envelope: &FileEnvelope, released: &[ReleasedBootSnapshot]) -> bool {
+    is_current_boot_snapshot(envelope) || is_released_boot_snapshot(envelope, released)
+}
+
+/// The snapshot this build would have written: the same generation, and the
+/// same entries.
 fn is_current_boot_snapshot(envelope: &FileEnvelope) -> bool {
     if envelope.source_generated_at != get_builtin_model_data_generated_at() {
         return false;
@@ -229,6 +280,59 @@ fn is_current_boot_snapshot(envelope: &FileEnvelope) -> bool {
     let expected = serde_json::to_value(compiled_catalog().providers);
     let actual = serde_json::to_value(&envelope.providers);
     matches!((expected, actual), (Ok(expected), Ok(actual)) if expected == actual)
+}
+
+/// A release's snapshot: the generation it copied is pinned, and so is the
+/// digest of the entries it wrote. The stamp only selects the lines worth
+/// hashing; the digest is what proves the match.
+fn is_released_boot_snapshot(envelope: &FileEnvelope, released: &[ReleasedBootSnapshot]) -> bool {
+    let Some(generation) = envelope.source_generated_at else {
+        return false;
+    };
+    if !released
+        .iter()
+        .any(|snapshot| snapshot.source_generated_at == generation)
+    {
+        return false;
+    }
+    let digest = content_digest(&envelope.providers);
+    released.iter().any(|snapshot| {
+        snapshot.source_generated_at == generation && snapshot.entries_digest == digest
+    })
+}
+
+/// The digest input of a set of entries: the parsed JSON with every object's
+/// keys sorted, so a file's formatting and key order never decide a match —
+/// only what it says.
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), canonical_json(&map[key])))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonical_json).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Lowercase hex SHA-256 of the entries' canonical JSON.
+fn content_digest(providers: &[serde_json::Value]) -> String {
+    let canonical = serde_json::to_string(&canonical_json(&serde_json::Value::Array(
+        providers.to_vec(),
+    )))
+    .expect("a JSON value serializes");
+    let mut hex = String::with_capacity(64);
+    for byte in Sha256::digest(canonical.as_bytes()) {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 /// Creates the migration backup without ever replacing an existing file. A
@@ -1216,5 +1320,193 @@ mod tests {
             serde_json::json!({ "version": VERSION, "providers": [] })
         );
         assert_eq!(std::fs::read(dir.path().join(BACKUP_NAME)).unwrap(), bytes);
+    }
+
+    /// The catalog generation a release copied: any stamp but this build's.
+    const RELEASED_GENERATION: i64 = 1_788_598_939_155;
+
+    /// This build's entries under a release's stamp, with `edit` applied:
+    /// the stand-in for a snapshot a release wrote, since this build no
+    /// longer carries what any release compiled.
+    fn released_copy(
+        data_dir: &Path,
+        generation: i64,
+        edit: impl FnOnce(&mut serde_json::Value),
+    ) -> Vec<u8> {
+        let mut providers = serde_json::to_value(compiled_catalog().providers).unwrap();
+        edit(&mut providers);
+        let file = serde_json::json!({
+            "version": 1,
+            "sourceGeneratedAt": generation,
+            "writtenAt": chrono::Utc::now().timestamp_millis(),
+            "providers": providers,
+        });
+        let bytes = serde_json::to_vec_pretty(&file).unwrap();
+        std::fs::write(data_dir.join(FILE_NAME), &bytes).unwrap();
+        bytes
+    }
+
+    /// The pinned line for a snapshot: its generation, and the digest of the
+    /// entries it wrote.
+    fn pinned(generation: i64, providers: &[serde_json::Value]) -> ReleasedBootSnapshot {
+        ReleasedBootSnapshot {
+            source_generated_at: generation,
+            entries_digest: Box::leak(content_digest(providers).into_boxed_str()),
+        }
+    }
+
+    fn compiled_providers() -> Vec<serde_json::Value> {
+        serde_json::from_value(serde_json::to_value(compiled_catalog().providers).unwrap()).unwrap()
+    }
+
+    /// Puts every object's last key first, all the way down.
+    fn reverse_keys(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut reversed: Vec<(String, serde_json::Value)> =
+                    std::mem::take(map).into_iter().rev().collect();
+                for (_, slot) in reversed.iter_mut() {
+                    reverse_keys(slot);
+                }
+                *map = reversed.into_iter().collect();
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(reverse_keys),
+            _ => {}
+        }
+    }
+
+    fn template_on_disk(data_dir: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(data_dir.join(FILE_NAME)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_released_boot_snapshot_leaves_on_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = released_copy(dir.path(), RELEASED_GENERATION, |_| {});
+        let table = [pinned(RELEASED_GENERATION, &compiled_providers())];
+
+        let catalog = load_with(dir.path(), &table);
+
+        assert_eq!(
+            catalog.get("openai").unwrap().models,
+            compiled_openai().get_models()
+        );
+        assert_eq!(
+            template_on_disk(dir.path()),
+            serde_json::json!({ "version": VERSION, "providers": [] })
+        );
+        assert_eq!(std::fs::read(dir.path().join(BACKUP_NAME)).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_released_snapshot_matches_by_content_not_by_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        released_copy(dir.path(), RELEASED_GENERATION, |_| {});
+        // The same entries as a JSON editor would leave them: compact, with
+        // every object's keys in the opposite order.
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        reverse_keys(&mut file);
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_string(&file).unwrap(),
+        )
+        .unwrap();
+        let table = [pinned(RELEASED_GENERATION, &compiled_providers())];
+
+        load_with(dir.path(), &table);
+
+        assert_eq!(
+            template_on_disk(dir.path()),
+            serde_json::json!({ "version": VERSION, "providers": [] })
+        );
+    }
+
+    #[test]
+    fn a_released_snapshot_with_an_edited_entry_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = released_copy(dir.path(), RELEASED_GENERATION, |providers| {
+            let openai = providers
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|provider| provider["id"] == "openai")
+                .unwrap();
+            openai["models"][0]["contextWindow"] = 123_456.into();
+        });
+        // Pinned on what the release wrote, which this differs from by one
+        // window: the generation stamp alone proves nothing.
+        let table = [pinned(RELEASED_GENERATION, &compiled_providers())];
+
+        let catalog = load_with(dir.path(), &table);
+
+        assert_eq!(
+            catalog.get("openai").unwrap().models[0].context_window,
+            123_456
+        );
+        assert_eq!(std::fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+        assert!(!dir.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn a_snapshot_of_a_generation_no_release_pinned_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = released_copy(dir.path(), RELEASED_GENERATION - 1, |_| {});
+        let table = [pinned(RELEASED_GENERATION, &compiled_providers())];
+
+        load_with(dir.path(), &table);
+
+        assert_eq!(std::fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+        assert!(!dir.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn the_content_digest_reads_entries_not_their_formatting() {
+        let left = serde_json::json!([
+            { "id": "openai", "models": [{ "id": "gpt-x", "contextWindow": 1 }] }
+        ]);
+        let mut right = left.clone();
+        right[0]["models"][0] = serde_json::json!({ "contextWindow": 1, "id": "gpt-x" });
+
+        assert_eq!(
+            content_digest(left.as_array().unwrap()),
+            content_digest(right.as_array().unwrap())
+        );
+
+        right[0]["models"][0]["contextWindow"] = 2.into();
+        assert_ne!(
+            content_digest(left.as_array().unwrap()),
+            content_digest(right.as_array().unwrap())
+        );
+    }
+
+    #[test]
+    fn the_pinned_released_snapshots_are_well_formed() {
+        let current =
+            get_builtin_model_data_generated_at().expect("the catalog carries a generation");
+        let lines: Vec<(i64, &str)> = RELEASED_BOOT_SNAPSHOTS
+            .iter()
+            .map(|snapshot| (snapshot.source_generated_at, snapshot.entries_digest))
+            .collect();
+        for (generation, digest) in &lines {
+            assert!(
+                *generation < current,
+                "a released snapshot cannot carry this build's catalog generation"
+            );
+            assert_eq!(digest.len(), 64);
+            assert!(
+                digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "{digest} is not lowercase hex"
+            );
+        }
+        let mut sorted = lines.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            lines, sorted,
+            "the table is sorted and carries no duplicate"
+        );
     }
 }

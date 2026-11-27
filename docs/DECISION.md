@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) · [provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) · [provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot) · [released-boot-snapshots-are-pinned-by-content](#released-boot-snapshots-are-pinned-by-content) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -1191,6 +1191,9 @@ builds one from it with the property under test overridden.
 
 ## provider-overlay-carries-overrides-not-a-snapshot
 
+Partially superseded for the files an upgrade replaces by
+[released-boot-snapshots-are-pinned-by-content](#released-boot-snapshots-are-pinned-by-content).
+
 Partially supersedes `three-layer-provider-catalog`: the overlay's content,
 not its layering. Boot used to write the whole compiled catalog into
 `provider-store.json` as a hand-editable starting point, and from then on
@@ -1213,3 +1216,31 @@ entry from a stale one, for copies that stop existing once they are
 migrated); asking in the UI whether to reset the file (a modal for a file
 almost nobody edits); keeping the snapshot and refreshing it in place (the
 next hand edit would freeze it again).
+
+## released-boot-snapshots-are-pinned-by-content
+
+Partially supersedes
+[provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot):
+which files an upgrade replaces. Recognizing only the snapshot this build
+would have written left every released copy where it was: each release from
+v0.1.0 to v0.9.0 wrote one on first boot and none equals the next build's,
+so the refresh still reached no install that had booted once, and each
+needed a hand deletion of a file its user had never opened. An upgrade now
+also replaces a file that is exactly a snapshot a release wrote. The table
+in `provider_store.rs` pins each distinct snapshot by its catalog
+generation and the SHA-256 of its parsed entries with object keys sorted,
+so formatting and key order never decide a match. The standard did not
+move: content stays the only proof, and a file that differs by one field is
+still the user's and stays. The table is closed: no build after v0.9.0
+writes a snapshot, and every release from v0.1.0 to v0.9.0 wrote the same
+forty provider entries — one catalog generation (2026-09-05), serialized
+one way — so it is a single line. That line was derived by building each
+distinct release state from its tag with a test that called the old `write`
+and hashing what it wrote; all eleven states gave one digest. A copy no
+line recognizes, such as one an unreleased build wrote, stays with the
+warning. Rejected: timestamps (what the first attempt used — a sync tool or a
+a restore resets them, and they never were content); shipping every earlier
+catalog to compare against (about a megabyte per shape, to carry a fact a
+64-character digest holds); leaving released copies in place with a warning
+(it lands in a log the user never reads, and the manual step is what the
+overlay entry set out to remove).
