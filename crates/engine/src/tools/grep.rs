@@ -589,8 +589,11 @@ mod tests {
         write(&root, "a.rs", "fn one()\nfn two()\n");
         write(&root, "b.txt", "fn two()\n");
         let outcome = search(&root, "fn two");
+        // Files arrive in the walk order, which the file system picks.
+        let mut lines = outcome.lines.clone();
+        lines.sort();
         assert_eq!(
-            outcome.lines,
+            lines,
             vec![
                 "a.rs:2:fn two()".to_string(),
                 "b.txt:1:fn two()".to_string()
