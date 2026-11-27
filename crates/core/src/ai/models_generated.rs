@@ -27,6 +27,7 @@ struct CatalogData {
     models: ProviderModels,
     image_models: ProviderImagesModels,
     generated_at: Option<String>,
+    model_vendors: BTreeMap<String, Vec<String>>,
 }
 
 fn catalog_data() -> &'static CatalogData {
@@ -40,14 +41,26 @@ fn catalog_data() -> &'static CatalogData {
             image_models: ProviderImagesModels,
             #[serde(rename = "generatedAt", default)]
             generated_at: Option<String>,
+            #[serde(rename = "modelVendors", default)]
+            model_vendors: BTreeMap<String, Vec<String>>,
         }
         let payload: Payload = serde_json::from_str(raw).expect("generated model catalog parses");
         CatalogData {
             models: payload.models,
             image_models: payload.image_models,
             generated_at: payload.generated_at,
+            model_vendors: payload.model_vendors,
         }
     })
+}
+
+/// The providers whose listing is where a model lives (`modelVendors`, which
+/// the generator writes): each with the lowercase id prefixes of the models
+/// that are its own — empty when its whole listing is. When a listing under
+/// another provider offers an id the catalog carries, the first of these
+/// that carries it is the record to adopt.
+pub fn model_vendors() -> &'static BTreeMap<String, Vec<String>> {
+    &catalog_data().model_vendors
 }
 
 /// The manifest generation timestamp shared by all built-in catalogs, as
@@ -211,6 +224,24 @@ mod tests {
             parse_rfc3339_millis("2026-08-29T07:12:30Z"),
             Some(1_787_987_550_000)
         );
+    }
+
+    #[test]
+    fn every_vendor_is_a_provider_with_lowercase_prefixes() {
+        // The generator's `modelVendors`: each key names a provider the
+        // catalog carries (or an adopted record would look for its facts
+        // where there are none), and a family prefix is a lowercase id head.
+        assert!(!model_vendors().is_empty());
+        for (vendor, prefixes) in model_vendors() {
+            assert!(
+                models().contains_key(vendor),
+                "vendor {vendor} is not a provider"
+            );
+            for prefix in prefixes {
+                assert!(!prefix.is_empty());
+                assert_eq!(prefix.as_str(), prefix.to_lowercase(), "{vendor}: {prefix}");
+            }
+        }
     }
 
     #[test]

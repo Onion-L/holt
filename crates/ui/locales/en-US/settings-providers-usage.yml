@@ -305,7 +305,7 @@ settings_providers_usage:
       save_record:
         en-US: Save record
       fetch_title:
-        en-US: "Fetch models from %{provider}"
+        en-US: "Add models from %{provider}"
       add_one:
         en-US: "Add %{count} model"
       add_other:
@@ -328,6 +328,58 @@ settings_providers_usage:
         en-US: the probe did not resolve a transport
       error_nothing_new:
         en-US: the vendor's listing has nothing this provider doesn't already offer
+      edit_title:
+        en-US: "Edit model record"
+      fetch_col_model:
+        en-US: "Model"
+      fetch_col_context:
+        en-US: "Context"
+      fetch_col_max_output:
+        en-US: "Max output"
+      fetch_col_levels:
+        en-US: "Thinking levels"
+      fetch_col_price:
+        en-US: "$ / 1M in · out"
+      fetch_col_source:
+        en-US: "From"
+      fetch_tag_catalog:
+        en-US: "catalog"
+      fetch_tag_estimated:
+        en-US: "catalog · est."
+      fetch_tag_new:
+        en-US: "new"
+      fetch_tag_added:
+        en-US: "added"
+      fetch_count_catalog:
+        en-US: "In the catalog: %{count}"
+      fetch_count_new:
+        en-US: "New: %{count}"
+      fetch_count_added:
+        en-US: "Already added: %{count}"
+      fetch_foot_none:
+        en-US: "Nothing selected"
+      fetch_foot_catalog:
+        en-US: "Catalog's numbers: %{count}"
+      fetch_foot_new:
+        en-US: "New, from %{from}: %{count}"
+      fetch_from_sibling:
+        en-US: "a sibling"
+      fetch_from_defaults:
+        en-US: "the defaults"
+      fetch_no_thinking:
+        en-US: "no thinking"
+      fetch_estimated_from:
+        en-US: "estimated from %{source}"
+      fetch_estimated_default:
+        en-US: "estimated: the usual four"
+      fetch_starts_from:
+        en-US: "from %{source}"
+      fetch_image_short:
+        en-US: "image"
+      fetch_bulk_title:
+        en-US: "New rows start from"
+      fetch_apply_all:
+        en-US: "Apply to %{count} new rows"
   skills:
     page_title:
       en-US: Skills

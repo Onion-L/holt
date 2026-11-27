@@ -8,6 +8,11 @@ use holt_proto::{
 
 use crate::{
     credentials::HoltCredentialStore,
+    model_adoption::{
+        ADOPTED_DIGEST, ADOPTED_FROM, AdoptionIndex, FetchedRow, FetchedSave, adopt,
+        default_levels, estimated_levels, following_catalog, names_levels, nearest_sibling,
+        plain_row, set_levels, start_from,
+    },
     provider_settings::ProviderSettingsStore,
     provider_store::{Catalog, CatalogProvider},
 };
@@ -20,6 +25,9 @@ pub struct ProviderAdapter {
     /// never `builtin_providers()` ad hoc. Built in
     /// `LocalEngine::assemble`; a file edit needs a restart.
     catalog: Catalog,
+    /// What a listing's id can adopt from that merge
+    /// (`model_adoption`): built with it, so it stands as long.
+    adoptable: AdoptionIndex,
 }
 
 impl ProviderAdapter {
@@ -31,6 +39,7 @@ impl ProviderAdapter {
         Self {
             credentials,
             settings,
+            adoptable: AdoptionIndex::build(&catalog),
             catalog,
         }
     }
@@ -171,6 +180,216 @@ impl ProviderAdapter {
             .or_else(|| provider.models.first().map(|model| model.base_url.clone()))
     }
 
+    /// Where the provider is spoken and how: a custom definition's endpoint
+    /// and default dialect, else its first model's. The probe's target, and
+    /// what an adopted record is retargeted to.
+    pub(crate) fn transport_target(&self, provider_id: &str) -> Option<(String, String)> {
+        if let Some(provider) = self.custom_provider(provider_id) {
+            return Some((provider.base_url, provider.default_api));
+        }
+        let first = self.models_for(provider_id).first()?.clone();
+        let model = self.resolve_model(provider_id, &first.id).ok()?;
+        Some((model.base_url, model.api))
+    }
+
+    /// What a listing's ids become under the provider
+    /// (`model_adoption`): one row per id, in listing order, and nothing
+    /// saved. An id the catalog carries takes its record; any other starts
+    /// from the nearest sibling in sight — a row already on the provider, or
+    /// one this very listing adopts — and, with none, from the plain
+    /// defaults.
+    pub fn preview_fetched(
+        &self,
+        provider_id: &str,
+        model_ids: &[String],
+    ) -> Result<Vec<FetchedRow>, String> {
+        let (base_url, dialect) = self.transport_target(provider_id).ok_or_else(|| {
+            format!("provider {provider_id} has no transport to file models under")
+        })?;
+        let existing = self.core_models_for(provider_id);
+        let mut rows: Vec<FetchedRow> = Vec::new();
+        for id in model_ids {
+            rows.push(match self.adoptable.source(id) {
+                Some(source) => {
+                    let model = adopt(
+                        &self.adoptable,
+                        source,
+                        provider_id,
+                        id,
+                        &dialect,
+                        &base_url,
+                    );
+                    let estimated = source.reasoning && !names_levels(source);
+                    let estimate = estimated_levels(&self.adoptable, source);
+                    FetchedRow {
+                        id: id.clone(),
+                        source: Some(format!("{}/{}", source.provider, source.id)),
+                        starts_from: None,
+                        levels_estimated: estimated,
+                        estimated_from: estimate.map(|(_, from)| from),
+                        model,
+                    }
+                }
+                None => {
+                    let adopted = rows
+                        .iter()
+                        .filter(|row| row.source.is_some())
+                        .map(|row| &row.model);
+                    let sibling = nearest_sibling(id, existing.iter().chain(adopted)).cloned();
+                    let model = match &sibling {
+                        Some(sibling) => start_from(sibling, provider_id, id, &dialect, &base_url),
+                        None => {
+                            let mut plain = plain_row(provider_id, id, &dialect, &base_url);
+                            // The rule that pre-ticked the old dialog's one
+                            // Reasoning flag: a vendor whose whole catalog
+                            // reasons gets the usual four.
+                            if self.vendor_reasons_whole(provider_id) {
+                                set_levels(&mut plain, &default_levels(), true)
+                                    .expect("the usual four are levels");
+                            }
+                            plain
+                        }
+                    };
+                    FetchedRow {
+                        id: id.clone(),
+                        source: None,
+                        starts_from: sibling
+                            .as_ref()
+                            .map(|sibling| format!("{}/{}", sibling.provider, sibling.id)),
+                        levels_estimated: sibling.is_some(),
+                        estimated_from: None,
+                        model,
+                    }
+                }
+            });
+        }
+        Ok(rows)
+    }
+
+    /// Whether every model the provider lists exposes a ladder — a vendor
+    /// that reasons whole, which is the last resort for a new id with no
+    /// sibling to start from.
+    fn vendor_reasons_whole(&self, provider_id: &str) -> bool {
+        let mut listed = self.models_for(provider_id).into_iter().peekable();
+        listed.peek().is_some() && listed.all(|model| !model.reasoning_levels.is_empty())
+    }
+
+    /// Files a listing's rows under the provider in one commit. An id the
+    /// catalog carries is adopted, with the name and — when the dialog let
+    /// the user choose them — the levels it was given; levels chosen by hand
+    /// make the row the user's, so it stops following the catalog. Any other
+    /// id takes the values it was given, speaking as the row it starts from
+    /// when that row is the provider's own. Fails whole when the provider has
+    /// no transport, an id is already offered, a new row lacks its numbers,
+    /// or a record would not be servable.
+    pub fn save_fetched(&self, provider_id: &str, rows: &[FetchedSave]) -> Result<(), String> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let (base_url, dialect) = self.transport_target(provider_id).ok_or_else(|| {
+            format!("provider {provider_id} has no transport to file models under")
+        })?;
+        let existing = self.core_models_for(provider_id);
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            if existing.iter().any(|model| model.id == row.id) {
+                return Err(format!(
+                    "{} is already offered by {provider_id}: open its row to change it",
+                    row.id
+                ));
+            }
+            let mut record = match self.adoptable.source(&row.id) {
+                Some(source) => {
+                    let mut record = adopt(
+                        &self.adoptable,
+                        source,
+                        provider_id,
+                        &row.id,
+                        &dialect,
+                        &base_url,
+                    );
+                    if let Some(chosen) = &row.levels {
+                        set_levels(&mut record, chosen, row.can_turn_off)?;
+                        record.extra.remove(ADOPTED_FROM);
+                        record.extra.remove(ADOPTED_DIGEST);
+                    }
+                    record
+                }
+                None => {
+                    let (Some(context_window), Some(max_tokens)) =
+                        (row.context_window, row.max_tokens)
+                    else {
+                        return Err(format!(
+                            "{} needs a context window and a max output",
+                            row.id
+                        ));
+                    };
+                    let sibling = row.starts_from.as_deref().and_then(|from| {
+                        let model = from.strip_prefix(&format!("{provider_id}/"))?;
+                        match existing.iter().find(|record| record.id == model) {
+                            Some(record) => Some(record.clone()),
+                            None => self.adoptable.source(model).map(|source| {
+                                adopt(
+                                    &self.adoptable,
+                                    source,
+                                    provider_id,
+                                    model,
+                                    &dialect,
+                                    &base_url,
+                                )
+                            }),
+                        }
+                    });
+                    let mut record = match &sibling {
+                        Some(sibling) => {
+                            start_from(sibling, provider_id, &row.id, &dialect, &base_url)
+                        }
+                        None => plain_row(provider_id, &row.id, &dialect, &base_url),
+                    };
+                    set_levels(
+                        &mut record,
+                        row.levels.as_deref().unwrap_or(&[]),
+                        row.can_turn_off,
+                    )?;
+                    record.context_window = context_window;
+                    record.max_tokens = max_tokens;
+                    record
+                }
+            };
+            if !row.name.trim().is_empty() {
+                record.name = row.name.trim().to_string();
+            }
+            if let Some(cost) = row.cost.clone() {
+                record.cost = cost;
+            }
+            match row.image {
+                Some(true) => {
+                    if !record.input.contains(&ModelInput::Image) {
+                        record.input.push(ModelInput::Image);
+                    }
+                }
+                Some(false) => record.input.retain(|input| *input != ModelInput::Image),
+                None => {}
+            }
+            self.validate_model_record(provider_id, &record)?;
+            records.push(record);
+        }
+        self.settings
+            .upsert_model_records(provider_id, records)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The record the engine serves for `provider/model` — whole, ladder
+    /// and `compat` included, as a form needs it to replace a row without
+    /// dropping what it does not show.
+    pub fn model_record(&self, provider_id: &str, model_id: &str) -> Option<CoreModel> {
+        let prefix = format!("{provider_id}/");
+        let model = model_id.strip_prefix(&prefix).unwrap_or(model_id);
+        self.core_models_for(provider_id)
+            .into_iter()
+            .find(|record| record.id == model)
+    }
+
     /// Is `model_id` already in the provider's model list — the merged
     /// catalog, a live record, or a user-added custom id? Additions must be
     /// new ids.
@@ -307,8 +526,11 @@ impl ProviderAdapter {
         let mut models = self.catalog.models(provider_id).to_vec();
         // The top catalog layer (ADR-three-layer-provider-catalog): a record replaces the same-id
         // entry outright — complete records, so per-field merging is not
-        // expressible — and a new id appends.
-        for record in self.settings.model_records_for(provider_id) {
+        // expressible — and a new id appends. An adopted record that nobody
+        // edited is served as the catalog stands now
+        // (ADR-fetched-models-adopt-the-catalogs-record).
+        for stored in self.settings.model_records_for(provider_id) {
+            let record = following_catalog(&self.adoptable, provider_id, &stored).unwrap_or(stored);
             match models.iter_mut().find(|model| model.id == record.id) {
                 Some(slot) => *slot = record,
                 None => models.push(record),

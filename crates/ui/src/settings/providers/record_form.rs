@@ -114,6 +114,29 @@ fn flag_row(
         .into_any_element()
 }
 
+/// The record fields the form owns. The advanced JSON carries everything
+/// else a record may hold, and can never override these.
+const FORM_OWNED_KEYS: [&str; 9] = [
+    "id",
+    "name",
+    "api",
+    "provider",
+    "reasoning",
+    "input",
+    "cost",
+    "contextWindow",
+    "maxTokens",
+];
+
+/// A stored cost as the form's text — the catalog's `2.5`, or the field's
+/// placeholder when the record carries no number.
+fn cost_text(value: &serde_json::Value, placeholder: &str) -> String {
+    value
+        .as_f64()
+        .map(|value| format!("{value}"))
+        .unwrap_or_else(|| placeholder.to_string())
+}
+
 /// The mounted model-record form. One panel is expanded at a time, so one
 /// instance serves the whole page; it targets that panel's active variant.
 pub(super) struct RecordForm {
@@ -124,6 +147,8 @@ pub(super) struct RecordForm {
     api: String,
     reasoning: bool,
     image: bool,
+    /// Opened on a row that already exists: the title says so.
+    editing: bool,
     error: Option<String>,
 }
 
@@ -291,7 +316,11 @@ pub(super) fn record_form_dialog(
                 .items_center()
                 .child(popover::dialog_title(
                     theme,
-                    &t!("settings_providers_usage.providers.record_form.title"),
+                    &if form.editing {
+                        t!("settings_providers_usage.providers.record_form.edit_title")
+                    } else {
+                        t!("settings_providers_usage.providers.record_form.title")
+                    },
                 ))
                 .child(div().flex_1())
                 .child(
@@ -448,13 +477,22 @@ pub(super) fn record_form_dialog(
     card.into_any_element()
 }
 
-/// The fetch-from-vendor dialog: the probed listing as checkbox rows, each
-/// with its own display-name field (prefilled with the id), over the
-/// fields a servable record needs. The vendor listing carries no metadata,
-/// so context window and max tokens are shared fields — prefilled from the
-/// provider's first known model — and so are the Reasoning and Image input
-/// flags. A row is corrected afterwards the way any record is: the record
-/// form, saved under the same id, replaces it.
+/// The fetch dialog's width and its columns: the checkbox, the model, and
+/// one column per number a row carries. They add up to the card's inner
+/// width, with a gap between each and the rows' own padding.
+const FETCH_WIDTH: f32 = 880.0;
+const FETCH_GAP: f32 = 8.0;
+const FETCH_COLUMNS: [f32; 7] = [22.0, 172.0, 82.0, 82.0, 256.0, 90.0, 68.0];
+
+/// The fetch dialog: a vendor listing as a table
+/// (ADR-fetched-models-adopt-the-catalogs-record). One row per id — its
+/// name over its id, context window, max output, thinking levels, and
+/// price, and where its numbers come from. An id the catalog carries shows
+/// the catalog's own; a new one opens with a sibling's or the plain
+/// defaults and is edited in place, its level chips as switches; one the
+/// provider already offers is shown dimmed and never added again. A row is
+/// corrected afterwards the way any record is: the record form, opened on
+/// the row, replaces it.
 pub(super) fn fetch_models_dialog(
     page: &mut ProvidersPage,
     theme: &Theme,
@@ -463,24 +501,95 @@ pub(super) fn fetch_models_dialog(
     let Some(dialog) = page.fetch_dialog.as_ref() else {
         return div().into_any_element();
     };
-    let field_input = |key: &str| dialog.inputs.get(key).cloned();
-    let number_field = |key: &'static str, label: Cow<'static, str>| {
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(widgets::field_label(theme, label))
-            .children(
-                field_input(key)
-                    .map(|input| bordered_input(theme, input).w_full().into_any_element()),
+    let catalog = dialog
+        .rows
+        .iter()
+        .filter(|row| row.source.is_some() && !row.added)
+        .count();
+    let fresh = dialog
+        .rows
+        .iter()
+        .filter(|row| row.source.is_none() && !row.added)
+        .count();
+    let added = dialog.rows.iter().filter(|row| row.added).count();
+    let mut summary = Vec::new();
+    for (count, text) in [
+        (
+            catalog,
+            t!(
+                "settings_providers_usage.providers.record_form.fetch_count_catalog",
+                count = catalog
+            ),
+        ),
+        (
+            fresh,
+            t!(
+                "settings_providers_usage.providers.record_form.fetch_count_new",
+                count = fresh
+            ),
+        ),
+        (
+            added,
+            t!(
+                "settings_providers_usage.providers.record_form.fetch_count_added",
+                count = added
+            ),
+        ),
+    ] {
+        if count > 0 {
+            summary.push(text.into_owned());
+        }
+    }
+    let rows: Vec<AnyElement> = dialog
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| fetch_table_row(theme, dialog, index, row, cx))
+        .collect();
+    let selected = dialog
+        .rows
+        .iter()
+        .filter(|row| dialog.checked.contains(&row.id))
+        .collect::<Vec<_>>();
+    let mut foot = Vec::new();
+    let adopted = selected.iter().filter(|row| row.source.is_some()).count();
+    let starting = selected.len() - adopted;
+    if adopted > 0 {
+        foot.push(
+            t!(
+                "settings_providers_usage.providers.record_form.fetch_foot_catalog",
+                count = adopted
             )
-    };
-    let count = dialog.checked.len();
-    let ids = dialog.ids.clone();
-    let checked = dialog.checked.clone();
+            .into_owned(),
+        );
+    }
+    if starting > 0 {
+        let from = if selected
+            .iter()
+            .any(|row| row.source.is_none() && row.starts_from.is_some())
+        {
+            t!("settings_providers_usage.providers.record_form.fetch_from_sibling")
+        } else {
+            t!("settings_providers_usage.providers.record_form.fetch_from_defaults")
+        };
+        foot.push(
+            t!(
+                "settings_providers_usage.providers.record_form.fetch_foot_new",
+                count = starting,
+                from = from.as_ref()
+            )
+            .into_owned(),
+        );
+    }
+    if foot.is_empty() {
+        foot.push(
+            t!("settings_providers_usage.providers.record_form.fetch_foot_none").into_owned(),
+        );
+    }
+    let count = selected.len();
+    let hover_theme = theme.clone();
     let mut card = popover::dialog_card(theme)
+        // A mask click dismisses, unless a save is under way.
         .on_mouse_down_out(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
             if !page
                 .fetch_dialog
@@ -491,24 +600,36 @@ pub(super) fn fetch_models_dialog(
                 cx.notify();
             }
         }))
-        .w(px(560.0))
-        .gap(px(14.0))
+        .w(px(FETCH_WIDTH))
+        .gap(px(12.0))
         .child(
             div()
                 .flex()
-                .items_center()
-                .child(popover::dialog_title(
-                    theme,
-                    &t!(
-                        "settings_providers_usage.providers.record_form.fetch_title",
-                        provider = dialog.provider.as_str()
-                    ),
-                ))
+                .items_start()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .child(popover::dialog_title(
+                            theme,
+                            &t!(
+                                "settings_providers_usage.providers.record_form.fetch_title",
+                                provider = dialog.provider.as_str()
+                            ),
+                        ))
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(summary.join(" · "))),
+                        ),
+                )
                 .child(div().flex_1())
                 .child(
                     widgets::ghost_action(theme)
                         .id("fetch-dialog-close")
-                        .hover(move |style| widgets::ghost_hover(theme, style))
+                        .hover(move |style| widgets::ghost_hover(&hover_theme, style))
                         .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
                             page.fetch_dialog = None;
                             cx.notify();
@@ -519,108 +640,23 @@ pub(super) fn fetch_models_dialog(
                                 .text_color(theme.text_muted),
                         ),
                 ),
-        );
-    let rows: Vec<AnyElement> = ids
-        .iter()
-        .enumerate()
-        .map(|(row, id)| {
-            let ticked = checked.contains(id);
-            let toggle_id = id.clone();
-            // The name field sits beside the toggle area, not inside it: a
-            // click to edit must not flip the checkbox.
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .child(
-                    div()
-                        .id(("fetch-id", row))
-                        .cursor_pointer()
-                        .h(px(36.0))
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
-                            page.toggle_fetch_id(toggle_id.clone(), cx);
-                        }))
-                        .child(widgets::checkbox(
-                            theme,
-                            if ticked {
-                                widgets::CheckboxState::Checked
-                            } else {
-                                widgets::CheckboxState::Unchecked
-                            },
-                        ))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .font_family(theme.font_mono.clone())
-                                .text_size(crate::typography::ui_rems(12.0))
-                                .text_color(theme.text)
-                                .child(SharedString::from(id.clone())),
-                        ),
-                )
-                .children(dialog.names.get(id).map(|input| {
-                    bordered_input(theme, input.clone())
-                        .w(px(200.0))
-                        .flex_none()
-                        .into_any_element()
-                }))
-                .into_any_element()
-        })
-        .collect();
-    card = card
+        )
         .child(
             div()
-                .id("fetch-id-list")
-                .debug_selector(|| "fetch-id-list".into())
-                .max_h(px(240.0))
+                .id("fetch-table")
+                .debug_selector(|| "fetch-table".into())
+                .max_h(px(420.0))
                 .overflow_y_scroll()
                 .occlude()
                 .flex()
                 .flex_col()
+                .child(fetch_table_header(theme))
                 .children(rows),
-        )
-        .child(
-            div()
-                .flex()
-                .gap(px(8.0))
-                .child(number_field(
-                    "contextWindow",
-                    t!("settings_providers_usage.providers.record_form.field_context_window"),
-                ))
-                .child(number_field(
-                    "maxTokens",
-                    t!("settings_providers_usage.providers.record_form.field_max_tokens"),
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(20.0))
-                .child(flag_row(
-                    theme,
-                    cx,
-                    "fetch",
-                    "reasoning",
-                    t!("settings_providers_usage.providers.record_form.reasoning"),
-                    dialog.reasoning,
-                    |page, cx| page.toggle_fetch_flag("reasoning", cx),
-                ))
-                .child(flag_row(
-                    theme,
-                    cx,
-                    "fetch",
-                    "image",
-                    t!("settings_providers_usage.providers.record_form.image_input"),
-                    dialog.image,
-                    |page, cx| page.toggle_fetch_flag("image", cx),
-                )),
-        )
+        );
+    if dialog.bulk.is_some() && fresh >= 2 {
+        card = card.child(fetch_bulk_bar(theme, dialog, cx));
+    }
+    card = card
         .children(dialog.error.clone().map(|message| {
             div()
                 .text_size(crate::typography::ui_rems(11.0))
@@ -632,6 +668,14 @@ pub(super) fn fetch_models_dialog(
                 .flex()
                 .items_center()
                 .gap(px(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(foot.join(" · "))),
+                )
                 .child(
                     action_button(theme)
                         .id("save-fetch")
@@ -666,19 +710,604 @@ pub(super) fn fetch_models_dialog(
     card.into_any_element()
 }
 
-/// The fetch dialog's Reasoning prefill
-/// (ADR-fetched-models-carry-the-dialogs-reasoning-flag): on only when every
-/// catalog model the provider offers exposes a ladder. The user's own rows
-/// never count — they are the user's calls, not the vendor's — and neither
-/// does a catalog that is not fully in view: `hidden_rows` is the count
-/// `ListHiddenModels` answered (`None` before it has loaded), and any hidden
-/// row leaves the flag off, since a model the listing leaves out cannot be
-/// checked.
-fn template_reasoning(known: &[Model], hidden_rows: Option<usize>) -> bool {
-    let mut catalog = known.iter().filter(|model| !model.custom).peekable();
-    hidden_rows == Some(0)
-        && catalog.peek().is_some()
-        && catalog.all(|model| !model.reasoning_levels.is_empty())
+fn fetch_column(width: f32) -> gpui::Div {
+    div().w(px(width)).flex_none().min_w_0()
+}
+
+fn fetch_heading(theme: &Theme, text: Cow<'static, str>) -> gpui::Div {
+    div()
+        .text_size(crate::typography::ui_rems(10.5))
+        .text_color(theme.text_faint)
+        .child(SharedString::from(text))
+}
+
+/// The column titles, laid out on the rows' own grid so each lines up over
+/// its numbers.
+fn fetch_table_header(theme: &Theme) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(FETCH_GAP))
+        .px(px(8.0))
+        .pb(px(6.0))
+        .border_b_1()
+        .border_color(theme.border)
+        .child(fetch_column(FETCH_COLUMNS[0]))
+        .child(fetch_column(FETCH_COLUMNS[1]).child(fetch_heading(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_col_model"),
+        )))
+        .child(fetch_column(FETCH_COLUMNS[2]).child(fetch_heading(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_col_context"),
+        )))
+        .child(fetch_column(FETCH_COLUMNS[3]).child(fetch_heading(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_col_max_output"),
+        )))
+        .child(fetch_column(FETCH_COLUMNS[4]).child(fetch_heading(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_col_levels"),
+        )))
+        .child(fetch_column(FETCH_COLUMNS[5]).child(fetch_heading(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_col_price"),
+        )))
+        .child(fetch_column(FETCH_COLUMNS[6]).child(fetch_heading(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_col_source"),
+        )))
+        .into_any_element()
+}
+
+/// A small borderless-looking input for a table cell: the numbers in a new
+/// row, edited where they are shown.
+fn cell_input(theme: &Theme, input: Entity<ComposerInput>) -> gpui::Div {
+    div()
+        .h(px(26.0))
+        .min_w_0()
+        .px(px(6.0))
+        .flex()
+        .items_center()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.input_glass_bg())
+        .child(input)
+}
+
+/// One thinking level as a chip. A row that can be edited shows all six,
+/// on or off; a read-only row shows only the levels it has. An estimate is
+/// dashed and amber, so a guess never reads as the catalog's word.
+#[allow(clippy::too_many_arguments)]
+fn level_chip(
+    theme: &Theme,
+    label: &str,
+    on: bool,
+    estimated: bool,
+    key: Option<(usize, usize)>,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let mut chip = div()
+        .flex_none()
+        .h(px(17.0))
+        .px(px(4.0))
+        .flex()
+        .items_center()
+        .rounded(px(5.0))
+        .border_1()
+        .text_size(crate::typography::ui_rems(10.0))
+        .child(SharedString::from(label.to_string()));
+    if on && estimated {
+        chip = chip
+            .border_dashed()
+            .border_color(theme.warning.opacity(0.6))
+            .bg(theme.warning.opacity(0.08))
+            .text_color(theme.warning);
+    } else if on {
+        chip = chip
+            .border_color(theme.accent.opacity(0.55))
+            .bg(theme.accent_wash)
+            .text_color(theme.accent);
+    } else {
+        chip = chip
+            .border_color(theme.border_strong)
+            .text_color(theme.text_muted);
+    }
+    match key {
+        None => chip.into_any_element(),
+        Some((row, level)) => {
+            let name: &'static str = THINKING_LEVELS[level];
+            let hover = theme.text;
+            chip.id((
+                "fetch-level",
+                row.wrapping_mul(THINKING_LEVELS.len()).wrapping_add(level),
+            ))
+            .debug_selector(move || {
+                if row == usize::MAX {
+                    format!("fetch-bulk-level-{name}")
+                } else {
+                    format!("fetch-level-{row}-{name}")
+                }
+            })
+            .cursor_pointer()
+            .hover(move |style| {
+                if on {
+                    style
+                } else {
+                    style.border_color(hover).text_color(hover)
+                }
+            })
+            .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
+                page.toggle_fetch_level(row, level, cx);
+            }))
+            .into_any_element()
+        }
+    }
+}
+
+/// Where a row's numbers come from, as a tag at the row's end.
+fn fetch_tag(theme: &Theme, text: Cow<'static, str>, kind: FetchTag) -> AnyElement {
+    let mut tag = div()
+        .flex_none()
+        .h(px(17.0))
+        .px(px(5.0))
+        .flex()
+        .items_center()
+        .rounded(px(5.0))
+        .border_1()
+        .text_size(crate::typography::ui_rems(10.0))
+        .child(SharedString::from(text));
+    tag = match kind {
+        FetchTag::Catalog => tag
+            .border_color(theme.accent.opacity(0.45))
+            .text_color(theme.accent),
+        FetchTag::Estimate => tag
+            .border_dashed()
+            .border_color(theme.warning.opacity(0.6))
+            .text_color(theme.warning),
+        FetchTag::Plain => tag
+            .border_color(theme.border_strong)
+            .text_color(theme.text_muted),
+    };
+    tag.into_any_element()
+}
+
+enum FetchTag {
+    Catalog,
+    Estimate,
+    Plain,
+}
+
+/// The model half of a `provider/model`: what a row's note names its
+/// sibling by.
+fn model_half(origin: &str) -> &str {
+    origin.rsplit('/').next().unwrap_or(origin)
+}
+
+/// `1050000` as `1,050,000`, for a number a person reads.
+fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// A price as the catalog states it: `2.5`, not `2.50` nor `2.5000001`.
+fn price_text(value: f64) -> String {
+    format!("{value}")
+}
+
+fn fetch_number(theme: &Theme, text: String) -> AnyElement {
+    div()
+        .text_size(crate::typography::ui_rems(12.0))
+        .text_color(theme.text)
+        .child(SharedString::from(text))
+        .into_any_element()
+}
+
+fn fetch_dash(theme: &Theme) -> AnyElement {
+    div()
+        .text_size(crate::typography::ui_rems(12.0))
+        .text_color(theme.text_faint)
+        .child("—")
+        .into_any_element()
+}
+
+#[cfg(test)]
+thread_local! {
+    static FETCH_ROW_RENDERS: std::cell::RefCell<Vec<usize>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+/// One listing row. The id line doubles as the new row's image-input
+/// switch, which is why an adopted row's id gets the line to itself.
+fn fetch_table_row(
+    theme: &Theme,
+    dialog: &FetchDialog,
+    index: usize,
+    row: &FetchRow,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    #[cfg(test)]
+    FETCH_ROW_RENDERS.with(|renders| {
+        let mut renders = renders.borrow_mut();
+        if renders.len() <= index {
+            renders.resize(index + 1, 0);
+        }
+        renders[index] += 1;
+    });
+    let checked = dialog.checked.contains(&row.id);
+    let numbers = row.numbers.unwrap_or(FetchNumbers {
+        context_window: 0,
+        max_tokens: 0,
+        input_cost: 0.0,
+        output_cost: 0.0,
+    });
+    let check = if row.added {
+        div()
+            .flex_none()
+            .ml(px(3.0))
+            .child(widgets::checkbox(theme, widgets::CheckboxState::Unchecked))
+            .opacity(0.35)
+            .into_any_element()
+    } else {
+        div()
+            .id(("fetch-check", index))
+            .debug_selector(move || format!("fetch-check-{index}"))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(22.0))
+            .h(px(22.0))
+            .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
+                page.toggle_fetch_row(index, cx);
+            }))
+            .child(widgets::checkbox(
+                theme,
+                if checked {
+                    widgets::CheckboxState::Checked
+                } else {
+                    widgets::CheckboxState::Unchecked
+                },
+            ))
+            .into_any_element()
+    };
+    let shown_name = if row.added {
+        div()
+            .text_size(crate::typography::ui_rems(13.0))
+            .text_color(theme.text)
+            .truncate()
+            .child(SharedString::from(row.name.read(cx).text().to_string()))
+            .into_any_element()
+    } else {
+        cell_input(theme, row.name.clone()).into_any_element()
+    };
+    let mut id_line = div().flex().items_center().gap(px(6.0)).min_w_0().child(
+        div()
+            .min_w_0()
+            .truncate()
+            .font_family(theme.font_mono.clone())
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text_muted)
+            .child(SharedString::from(row.id.clone())),
+    );
+    if row.inputs.is_some() {
+        id_line = id_line.child(
+            div()
+                .id(("fetch-image", index))
+                .debug_selector(move || format!("fetch-image-{index}"))
+                .cursor_pointer()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
+                    page.toggle_fetch_image(index, cx);
+                }))
+                .child(widgets::checkbox(
+                    theme,
+                    if row.image {
+                        widgets::CheckboxState::Checked
+                    } else {
+                        widgets::CheckboxState::Unchecked
+                    },
+                ))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_muted)
+                        .child(t!(
+                            "settings_providers_usage.providers.record_form.fetch_image_short"
+                        )),
+                ),
+        );
+    }
+    let (context, max_output, price) = match &row.inputs {
+        Some(inputs) => (
+            cell_input(theme, inputs.context_window.clone()).into_any_element(),
+            cell_input(theme, inputs.max_tokens.clone()).into_any_element(),
+            div()
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .child(cell_input(theme, inputs.input_cost.clone()).w(px(34.0)))
+                .child(div().text_color(theme.text_faint).child("·"))
+                .child(cell_input(theme, inputs.output_cost.clone()).w(px(42.0)))
+                .into_any_element(),
+        ),
+        None if row.added && numbers.context_window == 0 => {
+            (fetch_dash(theme), fetch_dash(theme), fetch_dash(theme))
+        }
+        None if row.added => (
+            fetch_number(theme, thousands(numbers.context_window)),
+            fetch_dash(theme),
+            fetch_dash(theme),
+        ),
+        None => (
+            fetch_number(theme, thousands(numbers.context_window)),
+            fetch_number(theme, thousands(numbers.max_tokens)),
+            fetch_number(
+                theme,
+                format!(
+                    "${} · ${}",
+                    price_text(numbers.input_cost),
+                    price_text(numbers.output_cost)
+                ),
+            ),
+        ),
+    };
+    let chips: Vec<AnyElement> = if row.opening_levels.is_some() {
+        THINKING_LEVELS
+            .iter()
+            .enumerate()
+            .map(|(level, name)| {
+                level_chip(
+                    theme,
+                    name,
+                    row.levels.iter().any(|chosen| chosen == name),
+                    row.estimated,
+                    Some((index, level)),
+                    cx,
+                )
+            })
+            .collect()
+    } else {
+        row.levels
+            .iter()
+            .filter_map(|chosen| {
+                THINKING_LEVELS
+                    .iter()
+                    .find(|name| **name == chosen.as_str())
+            })
+            .map(|name| level_chip(theme, name, true, row.estimated, None, cx))
+            .collect()
+    };
+    let note: Option<(gpui::Hsla, Cow<'static, str>)> =
+        if let Some(from) = row.estimated_from.as_ref().filter(|_| row.estimated) {
+            Some((
+                theme.warning,
+                t!(
+                    "settings_providers_usage.providers.record_form.fetch_estimated_from",
+                    source = model_half(from)
+                ),
+            ))
+        } else if row.estimated {
+            Some((
+                theme.warning,
+                t!("settings_providers_usage.providers.record_form.fetch_estimated_default"),
+            ))
+        } else {
+            row.starts_from.as_ref().map(|from| {
+                (
+                    theme.text_muted,
+                    t!(
+                        "settings_providers_usage.providers.record_form.fetch_starts_from",
+                        source = model_half(from)
+                    ),
+                )
+            })
+        };
+    let tag = if row.added {
+        fetch_tag(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_tag_added"),
+            FetchTag::Plain,
+        )
+    } else if row.source.is_some() && row.estimated {
+        fetch_tag(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_tag_estimated"),
+            FetchTag::Estimate,
+        )
+    } else if row.source.is_some() {
+        fetch_tag(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_tag_catalog"),
+            FetchTag::Catalog,
+        )
+    } else {
+        fetch_tag(
+            theme,
+            t!("settings_providers_usage.providers.record_form.fetch_tag_new"),
+            FetchTag::Plain,
+        )
+    };
+    let hover = theme.element_hover;
+    div()
+        .id(("fetch-row", index))
+        .debug_selector(move || format!("fetch-row-{index}"))
+        .flex()
+        .items_center()
+        .gap(px(FETCH_GAP))
+        .px(px(8.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .border_b_1()
+        .border_color(theme.border.opacity(0.5))
+        .when(!row.added, |row_el| {
+            row_el.hover(move |style| style.bg(hover))
+        })
+        .when(row.added, |row_el| row_el.opacity(0.45))
+        .child(fetch_column(FETCH_COLUMNS[0]).child(check))
+        .child(
+            fetch_column(FETCH_COLUMNS[1])
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .child(shown_name)
+                .child(id_line),
+        )
+        .child(fetch_column(FETCH_COLUMNS[2]).child(context))
+        .child(fetch_column(FETCH_COLUMNS[3]).child(max_output))
+        .child(
+            fetch_column(FETCH_COLUMNS[4])
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(if chips.is_empty() {
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_faint)
+                        .child(t!(
+                            "settings_providers_usage.providers.record_form.fetch_no_thinking"
+                        ))
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(3.0))
+                        .children(chips)
+                        .into_any_element()
+                })
+                .children(note.map(|(color, text)| {
+                    div()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(color)
+                        .child(SharedString::from(text))
+                })),
+        )
+        .child(fetch_column(FETCH_COLUMNS[5]).child(price))
+        .child(fetch_column(FETCH_COLUMNS[6]).child(tag))
+        .into_any_element()
+}
+
+/// One set of numbers for every new row, for a listing that brought
+/// several: the rows start uniform, and "Apply" writes this set into each.
+fn fetch_bulk_bar(
+    theme: &Theme,
+    dialog: &FetchDialog,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let Some(bulk) = dialog.bulk.as_ref() else {
+        return div().into_any_element();
+    };
+    let fresh = dialog
+        .rows
+        .iter()
+        .filter(|row| row.source.is_none() && !row.added)
+        .count();
+    let bulk_key = usize::MAX;
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .flex_wrap()
+        .px(px(10.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_dashed()
+        .border_color(theme.border_strong)
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(11.5))
+                .text_color(theme.text_muted)
+                .child(t!(
+                    "settings_providers_usage.providers.record_form.fetch_bulk_title"
+                )),
+        )
+        .child(cell_input(theme, bulk.context_window.clone()).w(px(92.0)))
+        .child(cell_input(theme, bulk.max_tokens.clone()).w(px(92.0)))
+        .child(div().flex().items_center().gap(px(3.0)).children(
+            THINKING_LEVELS.iter().enumerate().map(|(level, name)| {
+                level_chip(
+                    theme,
+                    name,
+                    bulk.levels.iter().any(|chosen| chosen == name),
+                    false,
+                    Some((bulk_key, level)),
+                    cx,
+                )
+            }),
+        ))
+        .child(
+            div()
+                .id("fetch-bulk-image")
+                .debug_selector(|| "fetch-bulk-image".into())
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                    page.toggle_fetch_bulk_image(cx);
+                }))
+                .child(widgets::checkbox(
+                    theme,
+                    if bulk.image {
+                        widgets::CheckboxState::Checked
+                    } else {
+                        widgets::CheckboxState::Unchecked
+                    },
+                ))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_muted)
+                        .child(t!(
+                            "settings_providers_usage.providers.record_form.fetch_image_short"
+                        )),
+                ),
+        )
+        .child(div().flex_1())
+        .child(
+            action_button(theme)
+                .id("fetch-apply-all")
+                .debug_selector(|| "fetch-apply-all".into())
+                .hover(|style| style.bg(crate::theme::ink(0.04)))
+                .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                    page.apply_fetch_bulk(cx);
+                }))
+                .child(t!(
+                    "settings_providers_usage.providers.record_form.fetch_apply_all",
+                    count = fresh
+                )),
+        )
+        .into_any_element()
+}
+
+/// Offer or withdraw one level, keeping the ladder's order.
+fn flip_level(levels: &mut Vec<String>, level: &str) {
+    if let Some(at) = levels.iter().position(|chosen| chosen == level) {
+        levels.remove(at);
+    } else {
+        levels.push(level.to_string());
+        levels.sort_by_key(|chosen| {
+            THINKING_LEVELS
+                .iter()
+                .position(|name| name == chosen)
+                .unwrap_or(THINKING_LEVELS.len())
+        });
+    }
 }
 
 /// Builds the model record the engine expects from a dialog's texts — the
@@ -795,19 +1424,7 @@ pub(super) fn build_record_json(
                 // The form's fields are authoritative — the advanced object
                 // carries only what the form does not own (baseUrl included:
                 // omitting it is the default-endpoint case).
-                if ![
-                    "id",
-                    "name",
-                    "api",
-                    "provider",
-                    "reasoning",
-                    "input",
-                    "cost",
-                    "contextWindow",
-                    "maxTokens",
-                ]
-                .contains(&key.as_str())
-                {
+                if !FORM_OWNED_KEYS.contains(&key.as_str()) {
                     target.insert(key.clone(), value.clone());
                 }
             }
@@ -817,35 +1434,73 @@ pub(super) fn build_record_json(
 }
 
 impl ProvidersPage {
-    /// The Models header's "Fetch models": a fresh ProbeProvider
-    /// call; the dialog opens only on `ok` — the status line carries the
-    /// failure verdict.
+    /// The Models header's "Fetch models": a fresh ProbeProvider call; the
+    /// dialog opens only on `ok` — the status line carries the failure
+    /// verdict. The panel's model list is asked for first, so the dialog can
+    /// tell an id the provider already offers from a new one, and again when
+    /// that list lands ([`Self::fetch_models_loaded`]): a listing opened
+    /// before the list did used to offer the provider's own models back, and
+    /// Add filed blank records over the catalog's.
     pub(super) fn open_fetch(&mut self, provider: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
+        self.load_models(&provider, false, cx);
         self.probes.insert(provider.clone(), ProbeState::Running);
         self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
+            let probed = engine
                 .client()
                 .call(
                     methods::PROBE_PROVIDER,
                     serde_json::json!({ "providerId": provider }),
                 )
-                .await;
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|value| {
+                    serde_json::from_value::<ProbeOutcome>(value)
+                        .map_err(|error| error.to_string())
+                });
+            // What the engine would file for the listing rides the same
+            // task: the dialog opens with both or neither. An engine that
+            // cannot answer leaves every row on the plain defaults.
+            let facts: Vec<FetchedFacts> = match &probed {
+                Ok(outcome) if outcome.ok && outcome.dialect.is_some() => {
+                    match engine
+                        .client()
+                        .call(
+                            methods::PREVIEW_FETCHED_MODELS,
+                            serde_json::json!({
+                                "providerId": provider,
+                                "modelIds": outcome.model_ids,
+                            }),
+                        )
+                        .await
+                    {
+                        Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    }
+                }
+                _ => Vec::new(),
+            };
             this.update(cx, |page, cx| {
-                match result.map_err(|error| error.to_string()).and_then(|value| {
-                    serde_json::from_value::<ProbeOutcome>(value).map_err(|error| error.to_string())
-                }) {
+                match probed {
                     Ok(outcome) => {
                         let ok = outcome.ok;
-                        let dialect = outcome.dialect.clone();
+                        let has_transport = outcome.dialect.is_some();
                         let ids = outcome.model_ids.clone();
                         page.probes
                             .insert(provider.clone(), ProbeState::Done(outcome));
-                        if ok
+                        if ok && !has_transport {
+                            // Nothing to file the rows under: the engine
+                            // resolved no dialect for the provider.
+                            page.fail(
+                                t!("settings_providers_usage.providers.record_form.error_no_transport")
+                                    .into_owned(),
+                                cx,
+                            );
+                        } else if ok
                             && let Some(problem) =
-                                page.open_fetch_dialog(provider, dialect, ids, cx)
+                                page.open_fetch_dialog(provider, ids, facts, cx)
                         {
                             page.fail(problem, cx);
                         }
@@ -861,126 +1516,317 @@ impl ProvidersPage {
         }));
     }
 
-    /// Build the dialog from a probed listing: drop ids the provider
-    /// already offers, prefill the two numbers from its first known model,
-    /// and pre-tick Reasoning only when the vendor's whole catalog reasons
-    /// ([`template_reasoning`]). A problem string means the dialog did not
-    /// open.
+    /// Build the dialog from a probed listing: one row per id, in listing
+    /// order. An id the engine answered for opens with those facts; one it
+    /// did not opens on the plain defaults, as every row used to. An id the
+    /// provider already offers stays in view, dimmed and never selected —
+    /// and when that is all the listing holds, the dialog does not open. A
+    /// problem string means the dialog did not open.
     fn open_fetch_dialog(
         &mut self,
         provider: String,
-        dialect: Option<String>,
-        mut ids: Vec<String>,
+        ids: Vec<String>,
+        facts: Vec<FetchedFacts>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        let Some(dialect) = dialect else {
-            return Some(
-                t!("settings_providers_usage.providers.record_form.error_no_transport")
-                    .into_owned(),
-            );
-        };
-        let known: Vec<Model> = self
+        let listed = self
             .models
             .get(&provider)
-            .and_then(|models| models.ready().cloned())
+            .and_then(|models| models.ready())
+            .cloned()
             .unwrap_or_default();
-        let offered: HashSet<String> = known.iter().map(|model| model.id.clone()).collect();
-        ids.retain(|id| !offered.contains(id) && !offered.contains(&format!("{provider}/{id}")));
-        if ids.is_empty() {
+        let by_id: HashMap<&str, &FetchedFacts> = facts
+            .iter()
+            .map(|facts| (facts.id.as_str(), facts))
+            .collect();
+        let input = |text: &str, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let mut input = ComposerInput::new(text, cx);
+                input.set_text(text.to_string(), cx);
+                input
+            })
+        };
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let added = listed
+                .iter()
+                .any(|model| model.id == *id || model.id == format!("{provider}/{id}"));
+            let facts = by_id.get(id.as_str()).copied();
+            let new = added || facts.is_none_or(|facts| facts.source.is_none());
+            let (name, numbers, levels, estimated, estimated_from, starts_from, source) =
+                match facts {
+                    Some(facts) => (
+                        facts.name.clone(),
+                        Some(FetchNumbers {
+                            context_window: facts.context_window,
+                            max_tokens: facts.max_tokens,
+                            input_cost: facts.cost.input,
+                            output_cost: facts.cost.output,
+                        }),
+                        facts.reasoning_levels.clone(),
+                        facts.levels_estimated,
+                        facts.estimated_from.clone(),
+                        facts.starts_from.clone(),
+                        facts.source.clone(),
+                    ),
+                    // Already on the provider, and the engine said nothing
+                    // about it: nothing to show, and nothing to add.
+                    None if added => (id.clone(), None, Vec::new(), false, None, None, None),
+                    None => (
+                        id.clone(),
+                        Some(FetchNumbers {
+                            context_window: 200_000,
+                            max_tokens: 8_192,
+                            input_cost: 0.0,
+                            output_cost: 0.0,
+                        }),
+                        Vec::new(),
+                        false,
+                        None,
+                        None,
+                        None,
+                    ),
+                };
+            let (can_turn_off, image) = facts
+                .map(|facts| {
+                    (
+                        facts.can_turn_off,
+                        facts.input.iter().any(|input| input == "image"),
+                    )
+                })
+                .unwrap_or((true, false));
+            let opening = numbers.unwrap_or(FetchNumbers {
+                context_window: 0,
+                max_tokens: 0,
+                input_cost: 0.0,
+                output_cost: 0.0,
+            });
+            let inputs = (new && !added).then(|| FetchInputs {
+                context_window: input(&opening.context_window.to_string(), cx),
+                max_tokens: input(&opening.max_tokens.to_string(), cx),
+                input_cost: input(&price_text(opening.input_cost), cx),
+                output_cost: input(&price_text(opening.output_cost), cx),
+            });
+            rows.push(FetchRow {
+                id: id.clone(),
+                source,
+                starts_from,
+                added,
+                name: cx.new(|cx| {
+                    let mut input = ComposerInput::new(name.as_str(), cx);
+                    input.set_text(name.clone(), cx);
+                    input
+                }),
+                numbers,
+                inputs,
+                levels: levels.clone(),
+                // An adopted row whose levels are an estimate can be
+                // corrected here, and nowhere else in this dialog.
+                // A new row's levels are its switches; an adopted row's only
+                // when they are an estimate.
+                opening_levels: (!added && (new || estimated)).then_some(levels),
+                estimated,
+                estimated_from,
+                can_turn_off,
+                image,
+            });
+        }
+        if rows.iter().all(|row| row.added) {
             return Some(
                 t!("settings_providers_usage.providers.record_form.error_nothing_new").into_owned(),
             );
         }
-        let template_window = known
+        let mut fresh = rows.iter().filter(|row| row.source.is_none() && !row.added);
+        let first = fresh.next();
+        // One set of numbers for several new rows at once; with a single
+        // one there is nothing to apply it to.
+        let bulk = first
+            .filter(|_| fresh.next().is_some())
+            .map(|row| FetchBulk {
+                context_window: input(
+                    &row.numbers.map_or_else(
+                        || "0".to_string(),
+                        |numbers| numbers.context_window.to_string(),
+                    ),
+                    cx,
+                ),
+                max_tokens: input(
+                    &row.numbers
+                        .map_or_else(|| "0".to_string(), |numbers| numbers.max_tokens.to_string()),
+                    cx,
+                ),
+                levels: row.levels.clone(),
+                image: row.image,
+            });
+        let checked = rows
             .iter()
-            .find_map(|model| model.context_window)
-            .map(|window| window.to_string())
-            .unwrap_or_else(|| "200000".into());
-        let mut inputs = HashMap::new();
-        inputs.insert(
-            "contextWindow".to_string(),
-            cx.new(|cx| {
-                let mut input = ComposerInput::new("200000", cx);
-                input.set_text(template_window.clone(), cx);
-                input
-            }),
-        );
-        inputs.insert(
-            "maxTokens".to_string(),
-            cx.new(|cx| {
-                let mut input = ComposerInput::new("8192", cx);
-                input.set_text("8192", cx);
-                input
-            }),
-        );
-        // One display-name field per listing row, prefilled with the id —
-        // the default the record would carry anyway, now editable.
-        let names = ids
-            .iter()
-            .map(|id| {
-                (
-                    id.clone(),
-                    cx.new(|cx| {
-                        let mut input = ComposerInput::new(id.as_str(), cx);
-                        input.set_text(id.clone(), cx);
-                        input
-                    }),
-                )
-            })
+            .filter(|row| !row.added)
+            .map(|row| row.id.clone())
             .collect();
-        let hidden_rows = self
-            .hidden
-            .get(&provider)
-            .and_then(|hidden| hidden.ready().map(|rows| rows.len()));
         self.fetch_dialog = Some(FetchDialog {
-            checked: ids.iter().cloned().collect(),
-            ids,
             provider,
-            dialect,
-            inputs,
-            names,
-            reasoning: template_reasoning(&known, hidden_rows),
-            image: false,
+            rows,
+            checked,
+            bulk,
             saving: false,
             error: None,
         });
         None
     }
 
-    pub(super) fn toggle_fetch_id(&mut self, id: String, cx: &mut Context<Self>) {
+    /// The panel's model list landed: from now on the dialog marks the ids
+    /// the provider already offers and drops them from the selection, so a
+    /// listing that opened before the list did cannot add them a second
+    /// time.
+    pub(super) fn fetch_models_loaded(&mut self, provider: &str, cx: &mut Context<Self>) {
+        if !self
+            .fetch_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.provider == provider)
+        {
+            return;
+        }
+        let Some(listed) = self
+            .models
+            .get(provider)
+            .and_then(|models| models.ready())
+            .map(|models| {
+                models
+                    .iter()
+                    .map(|model| model.id.clone())
+                    .collect::<Vec<_>>()
+            })
+        else {
+            return;
+        };
+        let Some(dialog) = self.fetch_dialog.as_mut() else {
+            return;
+        };
+        for row in &mut dialog.rows {
+            if listed
+                .iter()
+                .any(|id| id == &row.id || id == &format!("{provider}/{}", row.id))
+            {
+                row.added = true;
+                dialog.checked.remove(&row.id);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_fetch_row(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(dialog) = self.fetch_dialog.as_mut() else {
             return;
         };
         if dialog.saving {
             return;
         }
-        if !dialog.checked.remove(&id) {
-            dialog.checked.insert(id);
+        let Some(row) = dialog.rows.get(index).filter(|row| !row.added) else {
+            return;
+        };
+        if !dialog.checked.remove(&row.id) {
+            dialog.checked.insert(row.id.clone());
         }
         cx.notify();
     }
 
-    /// Flip one of the fetch dialog's shared flags — the whole batch's
-    /// Reasoning / Image input, as the manual form's flag rows do for one
-    /// record.
-    pub(super) fn toggle_fetch_flag(&mut self, flag: &str, cx: &mut Context<Self>) {
+    /// Flip one level of a row whose levels can be edited; `usize::MAX`
+    /// addresses the set shared by every new row.
+    pub(super) fn toggle_fetch_level(&mut self, row: usize, level: usize, cx: &mut Context<Self>) {
         let Some(dialog) = self.fetch_dialog.as_mut() else {
             return;
         };
         if dialog.saving {
             return;
         }
-        if flag == "reasoning" {
-            dialog.reasoning = !dialog.reasoning;
-        } else if flag == "image" {
-            dialog.image = !dialog.image;
+        let Some(level) = THINKING_LEVELS.get(level) else {
+            return;
+        };
+        let levels = if row == usize::MAX {
+            dialog.bulk.as_mut().map(|bulk| &mut bulk.levels)
+        } else {
+            dialog
+                .rows
+                .get_mut(row)
+                .filter(|row| row.opening_levels.is_some())
+                .map(|row| &mut row.levels)
+        };
+        if let Some(levels) = levels {
+            flip_level(levels, level);
         }
         cx.notify();
     }
 
-    /// One SaveModelRecord per checked id, in listing order; the first
-    /// failure stops the batch and shows in the dialog with the rest of the
-    /// selection intact.
+    pub(super) fn toggle_fetch_image(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(dialog) = self.fetch_dialog.as_mut() else {
+            return;
+        };
+        if dialog.saving {
+            return;
+        }
+        if let Some(row) = dialog
+            .rows
+            .get_mut(index)
+            .filter(|row| row.inputs.is_some())
+        {
+            row.image = !row.image;
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_fetch_bulk_image(&mut self, cx: &mut Context<Self>) {
+        if let Some(bulk) = self
+            .fetch_dialog
+            .as_mut()
+            .filter(|dialog| !dialog.saving)
+            .and_then(|dialog| dialog.bulk.as_mut())
+        {
+            bulk.image = !bulk.image;
+        }
+        cx.notify();
+    }
+
+    /// Writes the shared set into every new row's inputs, levels, and image
+    /// flag — a row edited before keeps nothing of its own numbers.
+    pub(super) fn apply_fetch_bulk(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.fetch_dialog.as_ref().filter(|dialog| !dialog.saving) else {
+            return;
+        };
+        let Some(bulk) = dialog.bulk.as_ref() else {
+            return;
+        };
+        let context_window = bulk.context_window.read(cx).text().to_string();
+        let max_tokens = bulk.max_tokens.read(cx).text().to_string();
+        let (levels, image) = (bulk.levels.clone(), bulk.image);
+        let inputs = dialog
+            .rows
+            .iter()
+            .filter(|row| row.inputs.is_some())
+            .filter_map(|row| row.inputs.clone())
+            .collect::<Vec<_>>();
+        for inputs in &inputs {
+            inputs
+                .context_window
+                .update(cx, |input, cx| input.set_text(context_window.clone(), cx));
+            inputs
+                .max_tokens
+                .update(cx, |input, cx| input.set_text(max_tokens.clone(), cx));
+        }
+        let Some(dialog) = self.fetch_dialog.as_mut() else {
+            return;
+        };
+        for row in dialog.rows.iter_mut().filter(|row| row.inputs.is_some()) {
+            row.levels = levels.clone();
+            row.image = image;
+        }
+        cx.notify();
+    }
+
+    /// One `SaveFetchedModels` for every checked row, in listing order, in
+    /// one commit. An adopted row sends its name, and the levels only where
+    /// it corrected an estimate; a new row sends everything it shows. The
+    /// first problem a row has stops the batch and shows in the dialog with
+    /// the selection intact.
     pub(super) fn save_fetch(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -991,111 +1837,129 @@ impl ProvidersPage {
         if dialog.saving {
             return;
         }
-        let number = |key: &str| -> Result<u64, String> {
-            dialog
-                .inputs
-                .get(key)
-                .map(|input| input.read(cx).text().trim().to_string())
-                .unwrap_or_default()
-                .parse::<u64>()
-                .map_err(|_| {
-                    t!(
-                        "settings_providers_usage.providers.record_form.error_whole_number",
-                        field = record_field_label(key)
-                    )
-                    .into_owned()
-                })
-        };
-        let (window, max_tokens) = match (number("contextWindow"), number("maxTokens")) {
-            (Ok(window), Ok(max_tokens)) => (window, max_tokens),
-            (Err(problem), _) | (_, Err(problem)) => {
-                if let Some(dialog) = self.fetch_dialog.as_mut() {
-                    dialog.error = Some(problem);
+        let mut models = Vec::new();
+        let mut problem = None;
+        for row in dialog
+            .rows
+            .iter()
+            .filter(|row| dialog.checked.contains(&row.id))
+        {
+            let name = row.name.read(cx).text().trim().to_string();
+            let mut model = serde_json::json!({ "id": row.id, "name": name });
+            match row.source.as_ref() {
+                Some(_) => {
+                    if let Some(opening) = &row.opening_levels
+                        && opening != &row.levels
+                    {
+                        model["thinkingLevels"] = serde_json::json!(row.levels);
+                        model["canTurnOff"] = serde_json::json!(row.can_turn_off);
+                    }
                 }
-                cx.notify();
-                return;
+                None => {
+                    let Some(inputs) = &row.inputs else {
+                        continue;
+                    };
+                    let number = |input: &Entity<ComposerInput>, key: &'static str| {
+                        input.read(cx).text().trim().parse::<u64>().map_err(|_| {
+                            t!(
+                                "settings_providers_usage.providers.record_form.error_whole_number",
+                                field = record_field_label(key)
+                            )
+                            .into_owned()
+                        })
+                    };
+                    let cost =
+                        |input: &Entity<ComposerInput>, key: &'static str| {
+                            let raw = input.read(cx).text().trim().to_string();
+                            if raw.is_empty() {
+                                Ok(0.0)
+                            } else {
+                                raw.parse::<f64>().map_err(|_| {
+                                t!("settings_providers_usage.providers.record_form.error_number",
+                                    field = record_field_label(key))
+                                .into_owned()
+                            })
+                            }
+                        };
+                    let parsed = match (
+                        number(&inputs.context_window, "contextWindow"),
+                        number(&inputs.max_tokens, "maxTokens"),
+                        cost(&inputs.input_cost, "inputCost"),
+                        cost(&inputs.output_cost, "outputCost"),
+                    ) {
+                        (Ok(context), Ok(max), Ok(input), Ok(output)) => {
+                            Ok((context, max, input, output))
+                        }
+                        (Err(problem), _, _, _)
+                        | (_, Err(problem), _, _)
+                        | (_, _, Err(problem), _)
+                        | (_, _, _, Err(problem)) => Err(problem),
+                    };
+                    match parsed {
+                        Ok((0, ..)) => problem = Some(
+                            t!("settings_providers_usage.providers.record_form.error_window_zero")
+                                .into_owned(),
+                        ),
+                        Ok((context, max, input, output)) => {
+                            model["contextWindow"] = serde_json::json!(context);
+                            model["maxTokens"] = serde_json::json!(max);
+                            model["cost"] = serde_json::json!({
+                                "input": input, "output": output, "cacheRead": 0.0, "cacheWrite": 0.0,
+                            });
+                            model["thinkingLevels"] = serde_json::json!(row.levels);
+                            model["canTurnOff"] = serde_json::json!(row.can_turn_off);
+                            model["image"] = serde_json::json!(row.image);
+                            if let Some(from) = &row.starts_from {
+                                model["startsFrom"] = serde_json::json!(from);
+                            }
+                        }
+                        Err(found) => problem = Some(found),
+                    }
+                }
             }
-        };
-        if window == 0 {
+            if problem.is_some() {
+                break;
+            }
+            models.push(model);
+        }
+        if let Some(problem) = problem {
             if let Some(dialog) = self.fetch_dialog.as_mut() {
-                dialog.error = Some(
-                    t!("settings_providers_usage.providers.record_form.error_window_zero")
-                        .into_owned(),
-                );
+                dialog.error = Some(problem);
             }
             cx.notify();
             return;
         }
-        let ids: Vec<String> = dialog
-            .ids
-            .iter()
-            .filter(|id| dialog.checked.contains(*id))
-            .cloned()
-            .collect();
-        if ids.is_empty() {
+        if models.is_empty() {
             self.fetch_dialog = None;
             cx.notify();
             return;
         }
         let provider = dialog.provider.clone();
-        let dialect = dialog.dialect.clone();
-        let (reasoning, image) = (dialog.reasoning, dialog.image);
-        let names: HashMap<String, String> = dialog
-            .names
-            .iter()
-            .map(|(id, input)| (id.clone(), input.read(cx).text().trim().to_string()))
-            .collect();
         if let Some(dialog) = self.fetch_dialog.as_mut() {
             dialog.saving = true;
             dialog.error = None;
         }
         self.task = Some(cx.spawn(async move |this, cx| {
-            let mut failure = None;
-            for id in ids {
-                // The manual form's builder, on the fields the batch shares
-                // — one definition of what a record carries.
-                let texts = HashMap::from([
-                    ("id".to_string(), id.clone()),
-                    (
-                        "name".to_string(),
-                        names.get(&id).cloned().unwrap_or_default(),
-                    ),
-                    ("api".to_string(), dialect.clone()),
-                    ("contextWindow".to_string(), window.to_string()),
-                    ("maxTokens".to_string(), max_tokens.to_string()),
-                ]);
-                let record = match build_record_json(&provider, &texts, reasoning, image) {
-                    Ok(record) => record,
-                    Err(problem) => {
-                        failure = Some(problem);
-                        break;
-                    }
-                };
-                let result = engine
-                    .client()
-                    .call(
-                        methods::SAVE_MODEL_RECORD,
-                        serde_json::json!({ "providerId": provider, "record": record }),
-                    )
-                    .await;
-                if let Err(error) = result {
-                    failure = Some(error.to_string());
-                    break;
-                }
-            }
+            let result = engine
+                .client()
+                .call(
+                    methods::SAVE_FETCHED_MODELS,
+                    serde_json::json!({ "providerId": provider, "models": models }),
+                )
+                .await;
             this.update(cx, |page, cx| {
-                match failure {
-                    Some(error) => {
-                        if let Some(dialog) = page.fetch_dialog.as_mut() {
-                            dialog.saving = false;
-                            dialog.error = Some(error);
-                        }
-                    }
-                    None => {
+                match result {
+                    Ok(_) => {
                         page.fetch_dialog = None;
                         crate::pickers::bump_provider_catalog(cx);
                         page.load_models(&provider, true, cx);
                         page.load_hidden(&provider, true, cx);
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = page.fetch_dialog.as_mut() {
+                            dialog.saving = false;
+                            dialog.error = Some(error.to_string());
+                        }
                     }
                 }
                 cx.notify();
@@ -1104,37 +1968,109 @@ impl ProvidersPage {
         }));
     }
 
-    pub(super) fn open_record_form(&mut self, provider: String, cx: &mut Context<Self>) {
+    /// The record form over a row that already exists — its fields, its
+    /// dialect, and everything else it carries in the advanced JSON — so a
+    /// correction saved under the same id replaces the row without dropping
+    /// what the form cannot show. `None` opens the form empty.
+    pub(super) fn open_record_form(
+        &mut self,
+        provider: String,
+        existing: Option<serde_json::Value>,
+        cx: &mut Context<Self>,
+    ) {
+        let editing = existing.is_some();
+        let existing = existing.unwrap_or_else(|| serde_json::json!({}));
+        let text = |key: &str, fallback: &str| -> String {
+            match &existing[key] {
+                serde_json::Value::Null => fallback.to_string(),
+                serde_json::Value::String(value) => value.clone(),
+                value => value.to_string(),
+            }
+        };
         let mut inputs = HashMap::new();
         for (key, _, placeholder) in record_fields() {
+            let prefill = match key {
+                "id" | "name" => text(key, ""),
+                "contextWindow" | "maxTokens" => text(key, placeholder),
+                "inputCost" => cost_text(&existing["cost"]["input"], placeholder),
+                "outputCost" => cost_text(&existing["cost"]["output"], placeholder),
+                "cacheReadCost" => cost_text(&existing["cost"]["cacheRead"], placeholder),
+                "cacheWriteCost" => cost_text(&existing["cost"]["cacheWrite"], placeholder),
+                _ => unreachable!("record_fields names only these keys"),
+            };
             inputs.insert(
                 key.to_string(),
-                cx.new(|cx| ComposerInput::new(placeholder, cx)),
+                cx.new(|cx| {
+                    let mut input = ComposerInput::new(placeholder, cx);
+                    if !prefill.is_empty() {
+                        input.set_text(prefill, cx);
+                    }
+                    input
+                }),
             );
         }
-        // The advanced field's placeholder is a JSON code sample, not
-        // English copy — it stays literal (identical in every locale).
+        // Everything the form does not own rides along verbatim: the
+        // ladder, `compat`, the endpoint, an adoption's markers.
+        let advanced: serde_json::Map<String, serde_json::Value> = existing
+            .as_object()
+            .map(|record| {
+                record
+                    .iter()
+                    .filter(|(key, _)| !FORM_OWNED_KEYS.contains(&key.as_str()))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         inputs.insert(
             "advanced".to_string(),
             cx.new(|cx| {
-                ComposerInput::new(
+                let mut input = ComposerInput::new(
                     "{ \"thinkingLevelMap\": …, \"compat\": … } — optional JSON",
                     cx,
-                )
+                );
+                if !advanced.is_empty() {
+                    let text = serde_json::to_string_pretty(&advanced).unwrap_or_default();
+                    input.set_text(text, cx);
+                }
+                input
             }),
         );
         // A stale menu from a previous form must not carry over.
         self.record_api_menu = Popup::default();
         self.load_api_dialects(cx);
         self.record_form = Some(RecordForm {
+            editing,
             provider,
+            api: text("api", "openai-completions"),
+            reasoning: existing["reasoning"].as_bool().unwrap_or(false),
+            image: existing["input"]
+                .as_array()
+                .is_some_and(|input| input.contains(&serde_json::json!("image"))),
             inputs,
-            api: "openai-completions".into(),
-            reasoning: false,
-            image: false,
             error: None,
         });
         cx.notify();
+    }
+
+    /// The row's record as the engine serves it, for the form to open on.
+    pub(super) fn edit_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let record = engine
+                .client()
+                .call(
+                    methods::GET_MODEL_RECORD,
+                    serde_json::json!({ "providerId": provider, "modelId": model }),
+                )
+                .await;
+            this.update(cx, |page, cx| match record {
+                Ok(record) => page.open_record_form(provider, Some(record), cx),
+                Err(error) => page.fail(error.to_string(), cx),
+            })
+            .ok();
+        }));
     }
 
     /// The dialect dropdown's options: the engine's registered api
@@ -1458,13 +2394,117 @@ mod tests {
         );
     }
 
-    /// The fetch flow: a fresh probe opens the dialog with the listing
-    /// minus what the provider already offers, and the Add button saves one
-    /// complete record per checked id — name from the row's field (empty
-    /// falls back to the id), dialect from the probe, no baseUrl (the
-    /// engine fills the provider's default endpoint).
+    /// Every hover transition repaints; a stationary pointer does not.
     #[gpui::test]
-    fn fetch_from_vendor_saves_records_for_the_checked_ids(cx: &mut gpui::TestAppContext) {
+    fn hover_transitions_repaint_without_redundant_frames(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        let ids: Vec<String> = (0..13).map(|n| format!("glm-9-{n}")).collect();
+        *harness.engine.probe_ids.lock().unwrap() = ids.clone();
+        for id in &ids {
+            let mut row = preview_row(id);
+            row["levelsEstimated"] = serde_json::json!(true);
+            row["estimatedFrom"] = serde_json::json!("zai-coding-cn/glm-5.2");
+            harness.engine.preview_rows.lock().unwrap().push(row);
+        }
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+        harness.pump();
+
+        let target = harness.visual.debug_bounds("fetch-row-2").unwrap();
+        let adjacent = harness.visual.debug_bounds("fetch-row-3").unwrap();
+        let next = harness.visual.debug_bounds("fetch-row-4").unwrap();
+        assert_eq!(
+            target.size.height,
+            gpui::px(60.0),
+            "editable rows keep their natural height"
+        );
+        assert!(target.bottom() <= adjacent.top());
+        assert!(adjacent.bottom() <= next.top());
+        harness.visual.simulate_mouse_move(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        let renders = || FETCH_ROW_RENDERS.with(|renders| renders.borrow().clone());
+        let assert_repaint = || {
+            let counts = renders();
+            assert_eq!(counts.len(), ids.len());
+            assert!(
+                counts.iter().all(|count| *count > 0),
+                "every row repaints with the page: {counts:?}"
+            );
+        };
+
+        FETCH_ROW_RENDERS.with(|renders| renders.borrow_mut().clear());
+        harness
+            .visual
+            .simulate_mouse_move(target.center(), None, gpui::Modifiers::default());
+        assert_repaint();
+
+        let after_enter = renders();
+        harness
+            .visual
+            .simulate_mouse_move(target.center(), None, gpui::Modifiers::default());
+        assert_eq!(renders(), after_enter, "staying put does no more work");
+
+        FETCH_ROW_RENDERS.with(|renders| renders.borrow_mut().clear());
+        harness
+            .visual
+            .simulate_mouse_move(next.center(), None, gpui::Modifiers::default());
+        assert_repaint();
+
+        FETCH_ROW_RENDERS.with(|renders| renders.borrow_mut().clear());
+        harness.visual.simulate_mouse_move(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        assert_repaint();
+
+        FETCH_ROW_RENDERS.with(|renders| renders.borrow_mut().clear());
+        harness.click("fetch-check-2");
+        assert_repaint();
+    }
+
+    /// A canned preview row, as `PreviewFetchedModels` answers for an id the
+    /// catalog carries: its facts, and where they come from.
+    fn preview_row(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": "GPT-5.4",
+            "source": "openai/gpt-5.4",
+            "startsFrom": null,
+            "levelsEstimated": false,
+            "estimatedFrom": null,
+            "canTurnOff": true,
+            "contextWindow": 1050000,
+            "maxTokens": 128000,
+            "reasoningLevels": ["low", "medium", "high", "xhigh"],
+            "input": ["text", "image"],
+            "cost": { "input": 2.5, "output": 15.0, "cacheRead": 0.25, "cacheWrite": 0.0 }
+        })
+    }
+
+    fn text_of(harness: &mut ProvidersHarness, input: &Entity<ComposerInput>) -> String {
+        harness.page.update(&mut *harness.visual, |_, cx| {
+            input.read(cx).text().to_string()
+        })
+    }
+
+    fn set_text(harness: &mut ProvidersHarness, input: &Entity<ComposerInput>, text: &str) {
+        harness.page.update(&mut *harness.visual, |_, cx| {
+            input.update(cx, |input, cx| input.set_text(text, cx))
+        });
+    }
+
+    /// The dialog opens on a fresh probe: one row per listed id, in listing
+    /// order. `acme-1` is already offered, so it stays in view, dimmed and
+    /// unselected; `acme-9` is new, with the engine's facts in its row.
+    #[gpui::test]
+    fn fetch_opens_a_table_with_one_row_per_listed_id(cx: &mut gpui::TestAppContext) {
         let mut harness = providers_harness(cx);
         harness
             .visual
@@ -1472,206 +2512,379 @@ mod tests {
         harness.click("provider-row-0");
         harness.click("fetch-vendor");
 
-        let (ids, checked, dialect) = harness
-            .page
-            .update(&mut *harness.visual, |page, _| {
-                page.fetch_dialog.as_ref().map(|dialog| {
-                    (
-                        dialog.ids.clone(),
-                        dialog.checked.clone(),
-                        dialog.dialect.clone(),
-                    )
-                })
-            })
-            .expect("the fetch dialog opened");
-        // acme-1 is already offered; acme-9 is the only new id.
-        assert_eq!(ids, vec!["acme-9".to_string()]);
-        assert_eq!(checked, ids.iter().cloned().collect());
-        assert_eq!(dialect, "openai-completions");
+        let (ids, checked, added, fresh) = harness.page.update(&mut *harness.visual, |page, _| {
+            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog opened");
+            (
+                dialog
+                    .rows
+                    .iter()
+                    .map(|row| row.id.clone())
+                    .collect::<Vec<_>>(),
+                dialog.checked.clone(),
+                dialog.rows.iter().map(|row| row.added).collect::<Vec<_>>(),
+                dialog
+                    .rows
+                    .iter()
+                    .map(|row| row.inputs.is_some())
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(ids, vec!["acme-9".to_string(), "acme-1".to_string()]);
+        assert_eq!(added, vec![false, true]);
+        assert_eq!(fresh, vec![true, false]);
+        assert_eq!(checked, HashSet::from(["acme-9".to_string()]));
+        for selector in [
+            "fetch-table",
+            "fetch-check-0",
+            "fetch-level-0-low",
+            "fetch-image-0",
+            "save-fetch",
+        ] {
+            assert!(
+                harness.visual.debug_bounds(selector).is_some(),
+                "{selector} renders"
+            );
+        }
+        // Nothing to apply one set to, and nothing to select on an added row.
+        assert!(harness.visual.debug_bounds("fetch-apply-all").is_none());
+        assert!(harness.visual.debug_bounds("fetch-check-1").is_none());
+    }
 
-        // The row's display-name field: prefilled with the id, and what it
-        // holds is the saved name.
-        let prefilled = harness.page.update(&mut *harness.visual, |page, cx| {
-            page.fetch_dialog
-                .as_ref()
-                .and_then(|dialog| dialog.names.get("acme-9"))
-                .map(|input| input.read(cx).text().to_string())
+    /// A new row sends everything its row shows — name, numbers, levels,
+    /// image input — under the provider's own dialect, which the engine
+    /// resolves; nothing is typed by the dialog itself.
+    #[gpui::test]
+    fn a_fetched_new_row_is_saved_with_what_its_row_shows(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let (name, context, max) = harness.page.update(&mut *harness.visual, |page, _| {
+            let row = &page.fetch_dialog.as_ref().unwrap().rows[0];
+            let inputs = row.inputs.as_ref().unwrap();
+            (
+                row.name.clone(),
+                inputs.context_window.clone(),
+                inputs.max_tokens.clone(),
+            )
         });
-        assert_eq!(prefilled.as_deref(), Some("acme-9"));
-        harness.page.update(&mut *harness.visual, |page, cx| {
-            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog");
-            dialog.names["acme-9"].update(cx, |input, cx| input.set_text("DeepSeek Flash 9", cx));
-        });
+        assert_eq!(
+            text_of(&mut harness, &name),
+            "Acme-9",
+            "the name is derived from the id"
+        );
+        set_text(&mut harness, &name, "DeepSeek Flash 9");
+        set_text(&mut harness, &context, "321000");
+        set_text(&mut harness, &max, "16384");
+        // No level comes with the plain defaults; two are switched on.
+        harness.click("fetch-level-0-low");
+        harness.click("fetch-level-0-max");
+        harness.click("fetch-image-0");
+        harness.click("save-fetch");
+        harness.pump();
+
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(saves.len(), 1, "one SaveFetchedModels for the batch");
+        assert_eq!(saves[0]["providerId"], "acme");
+        assert_eq!(
+            saves[0]["models"],
+            serde_json::json!([{
+                "id": "acme-9",
+                "name": "DeepSeek Flash 9",
+                "contextWindow": 321_000,
+                "maxTokens": 16_384,
+                "cost": { "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+                "thinkingLevels": ["low", "max"],
+                "canTurnOff": true,
+                "image": true,
+            }])
+        );
+        assert!(
+            harness.engine.records.lock().unwrap().is_empty(),
+            "a fetched row never goes round SaveModelRecord"
+        );
+        assert!(
+            harness
+                .page
+                .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_none())
+        );
+    }
+
+    /// An id the catalog carries elsewhere
+    /// (ADR-fetched-models-adopt-the-catalogs-record): its row shows the
+    /// catalog's numbers read-only — no chips to switch, no numbers to type
+    /// — and Add sends its name alone.
+    #[gpui::test]
+    fn a_catalog_row_is_adopted_with_its_facts_and_needs_no_typing(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .engine
+            .preview_rows
+            .lock()
+            .unwrap()
+            .push(preview_row("acme-9"));
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let (name, source, inputs, levels) =
+            harness.page.update(&mut *harness.visual, |page, _| {
+                let row = &page.fetch_dialog.as_ref().unwrap().rows[0];
+                (
+                    row.name.clone(),
+                    row.source.clone(),
+                    row.inputs.is_some(),
+                    row.levels.clone(),
+                )
+            });
+        assert_eq!(source.as_deref(), Some("openai/gpt-5.4"));
+        assert!(!inputs, "an adopted row has nothing to type");
+        assert_eq!(text_of(&mut harness, &name), "GPT-5.4");
+        assert_eq!(levels, ["low", "medium", "high", "xhigh"]);
+        assert!(
+            harness.visual.debug_bounds("fetch-level-0-low").is_none(),
+            "the catalog's own levels are not switches"
+        );
+        assert!(harness.visual.debug_bounds("fetch-image-0").is_none());
 
         harness.click("save-fetch");
         harness.pump();
 
-        let records = harness.engine.records.lock().unwrap().clone();
-        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
-        assert_eq!(records[0]["providerId"], "acme");
-        assert_eq!(records[0]["record"]["id"], "acme-9");
-        assert_eq!(records[0]["record"]["name"], "DeepSeek Flash 9");
-        assert_eq!(records[0]["record"]["api"], "openai-completions");
-        // The fake listing carries no metadata, so the window prefills to
-        // the conservative default and baseUrl stays with the engine.
-        assert_eq!(records[0]["record"]["contextWindow"], 200_000);
-        assert!(records[0]["record"].get("baseUrl").is_none());
-        // The harness catalog carries no ladder, which proves nothing
-        // about the vendor: both flags stay unticked.
-        assert_eq!(records[0]["record"]["reasoning"], false);
-        assert_eq!(records[0]["record"]["input"], serde_json::json!(["text"]));
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(
+            saves[0]["models"],
+            serde_json::json!([{ "id": "acme-9", "name": "GPT-5.4" }])
+        );
     }
 
-    /// Make acme the vendor whose whole catalog reasons, and settle the
-    /// panel's expand animation. The page loads a panel's models when it
-    /// expands, so the row is in place before the first click.
-    fn reasoning_vendor(harness: &mut ProvidersHarness) {
-        harness.engine.catalog.lock().unwrap()[0]["reasoningLevels"] =
-            serde_json::json!(["minimal", "low", "medium", "high"]);
+    /// A ladder the catalog only estimated is shown as switches, and is
+    /// sent only once it was changed: unedited, the row stays the
+    /// catalog's to regenerate.
+    #[gpui::test]
+    fn an_estimated_ladder_is_switchable_and_sent_only_once_changed(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        let mut row = preview_row("acme-9");
+        row["source"] = serde_json::json!("zai-coding-cn/glm-5.1");
+        row["name"] = serde_json::json!("GLM-5.1");
+        row["levelsEstimated"] = serde_json::json!(true);
+        row["estimatedFrom"] = serde_json::json!("zai-coding-cn/glm-5.2");
+        row["canTurnOff"] = serde_json::json!(false);
+        row["reasoningLevels"] = serde_json::json!(["high", "max"]);
+        harness.engine.preview_rows.lock().unwrap().push(row);
         harness
             .visual
             .update(|_window, cx| cx.set_reduce_motion(true));
-    }
-
-    /// The reported bug, on the surface it was reported from: a vendor
-    /// whose catalog models all reason (Z.ai's GLM ids) lists models the
-    /// catalog lacks, and every one the dialog added arrived with
-    /// `reasoning: false` — a ladder-less row, so the chat never offered a
-    /// reasoning level for it.
-    #[gpui::test]
-    fn fetched_models_of_a_reasoning_vendor_carry_a_ladder(cx: &mut gpui::TestAppContext) {
-        let mut harness = providers_harness(cx);
-        reasoning_vendor(&mut harness);
         harness.click("provider-row-0");
         harness.click("fetch-vendor");
 
-        let (reasoning, image) = harness
-            .page
-            .update(&mut *harness.visual, |page, _| {
+        assert!(
+            harness.visual.debug_bounds("fetch-level-0-low").is_some(),
+            "an estimate is there to be corrected"
+        );
+
+        harness.click("fetch-level-0-low");
+        harness.click("save-fetch");
+        harness.pump();
+
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(
+            saves[0]["models"],
+            serde_json::json!([{
+                "id": "acme-9",
+                "name": "GLM-5.1",
+                "thinkingLevels": ["low", "high", "max"],
+                "canTurnOff": false,
+            }]),
+            "the corrected ladder is the user's, with the name; no numbers"
+        );
+    }
+
+    #[gpui::test]
+    fn an_unchanged_estimate_is_left_to_the_catalog(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        let mut row = preview_row("acme-9");
+        row["levelsEstimated"] = serde_json::json!(true);
+        harness.engine.preview_rows.lock().unwrap().push(row);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+        harness.click("save-fetch");
+        harness.pump();
+
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(
+            saves[0]["models"],
+            serde_json::json!([{ "id": "acme-9", "name": "GPT-5.4" }])
+        );
+    }
+
+    /// An id the provider already offers is in view but out of the batch:
+    /// its checkbox is gone, a toggle does nothing, and Add leaves it alone.
+    #[gpui::test]
+    fn an_id_the_provider_already_offers_is_never_added_again(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.toggle_fetch_row(1, cx);
+            let dialog = page.fetch_dialog.as_ref().unwrap();
+            assert!(!dialog.checked.contains("acme-1"));
+        });
+        harness.click("save-fetch");
+        harness.pump();
+
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(saves[0]["models"].as_array().unwrap().len(), 1);
+        assert_eq!(saves[0]["models"][0]["id"], "acme-9");
+    }
+
+    /// When the listing holds nothing the provider does not already offer,
+    /// there is nothing to add and the dialog does not open.
+    #[gpui::test]
+    fn a_listing_wholly_offered_opens_nothing(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        *harness.engine.probe_ids.lock().unwrap() = vec!["acme-1".into()];
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+        harness.pump();
+
+        assert!(
+            harness
+                .page
+                .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_none())
+        );
+    }
+
+    /// The reported bug: a dialog that opened before the panel's model list
+    /// landed offered the provider's own models back, and Add filed blank
+    /// records over the catalog's. Once the list lands, every id it carries
+    /// is marked and dropped from the selection.
+    #[gpui::test]
+    fn the_model_list_landing_late_takes_its_ids_out_of_the_batch(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        *harness.engine.probe_ids.lock().unwrap() =
+            vec!["acme-9".into(), "acme-custom".into(), "acme-1".into()];
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        // As the dialog would stand with the list still loading: both of
+        // the provider's own ids selectable.
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let dialog = page.fetch_dialog.as_mut().unwrap();
+            for row in &mut dialog.rows {
+                row.added = false;
+                dialog.checked.insert(row.id.clone());
+            }
+            page.fetch_models_loaded("acme", cx);
+            let dialog = page.fetch_dialog.as_ref().unwrap();
+            let added: Vec<bool> = dialog.rows.iter().map(|row| row.added).collect();
+            assert_eq!(added, vec![false, true, true]);
+            assert_eq!(dialog.checked, HashSet::from(["acme-9".to_string()]));
+        });
+    }
+
+    #[gpui::test]
+    fn a_bad_number_in_a_new_row_stops_the_batch_with_a_message(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let (context, max) = harness.page.update(&mut *harness.visual, |page, _| {
+            let inputs = page.fetch_dialog.as_ref().unwrap().rows[0]
+                .inputs
+                .as_ref()
+                .unwrap();
+            (inputs.context_window.clone(), inputs.max_tokens.clone())
+        });
+        for (input, text) in [(&context, "abc"), (&context, "0"), (&max, "-1")] {
+            set_text(&mut harness, input, text);
+            harness.click("save-fetch");
+            harness.pump();
+            let error = harness.page.update(&mut *harness.visual, |page, _| {
                 page.fetch_dialog
                     .as_ref()
-                    .map(|dialog| (dialog.reasoning, dialog.image))
-            })
-            .expect("the fetch dialog opened");
-        // Reasoning comes pre-ticked, so the batch needs no touch; image
-        // input never prefills on.
-        assert!(reasoning);
-        assert!(!image);
-
-        harness.click("save-fetch");
-        harness.pump();
-
-        let records = harness.engine.records.lock().unwrap().clone();
-        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
-        assert_eq!(
-            records[0]["record"]["reasoning"], true,
-            "a fetched model of a reasoning vendor saves reasoning-capable"
-        );
-        assert_eq!(records[0]["record"]["input"], serde_json::json!(["text"]));
+                    .and_then(|dialog| dialog.error.clone())
+            });
+            assert!(error.is_some(), "{text} is refused");
+            assert!(
+                harness.engine.fetched_saves.lock().unwrap().is_empty(),
+                "nothing is sent while a row does not parse"
+            );
+        }
     }
 
-    /// The prefill is a starting point, not a verdict: the flag rows flip
-    /// before the batch saves, and every added record carries the result.
+    /// Several new rows start uniform and are corrected together: the shared
+    /// set's numbers and levels land in each row at once.
     #[gpui::test]
-    fn the_fetch_dialogs_flags_are_the_users_call(cx: &mut gpui::TestAppContext) {
+    fn one_set_applies_to_every_new_row(cx: &mut gpui::TestAppContext) {
         let mut harness = providers_harness(cx);
-        reasoning_vendor(&mut harness);
-        harness.click("provider-row-0");
-        harness.click("fetch-vendor");
-
-        harness.click("fetch-flag-reasoning");
-        harness.click("fetch-flag-image");
-        harness.click("save-fetch");
-        harness.pump();
-
-        let records = harness.engine.records.lock().unwrap().clone();
-        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
-        assert_eq!(records[0]["record"]["reasoning"], false);
-        assert_eq!(
-            records[0]["record"]["input"],
-            serde_json::json!(["text", "image"])
-        );
-    }
-
-    /// A catalog that ships both kinds proves nothing: the dialog opens
-    /// unticked, and ticking it by hand is what makes the records
-    /// reasoning-capable.
-    #[gpui::test]
-    fn a_mixed_vendor_starts_unticked_and_is_ticked_by_hand(cx: &mut gpui::TestAppContext) {
-        let mut harness = providers_harness(cx);
-        reasoning_vendor(&mut harness);
+        *harness.engine.probe_ids.lock().unwrap() =
+            vec!["acme-9".into(), "acme-7".into(), "acme-1".into()];
         harness
-            .engine
-            .catalog
-            .lock()
-            .unwrap()
-            .push(serde_json::json!({
-                "id": "acme/acme-plain",
-                "provider": "acme",
-                "label": "Acme plain",
-            }));
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
         harness.click("provider-row-0");
         harness.click("fetch-vendor");
 
-        let reasoning = harness.page.update(&mut *harness.visual, |page, _| {
-            page.fetch_dialog.as_ref().map(|dialog| dialog.reasoning)
+        assert!(harness.visual.debug_bounds("fetch-apply-all").is_some());
+        let bulk = harness.page.update(&mut *harness.visual, |page, _| {
+            let bulk = page.fetch_dialog.as_ref().unwrap().bulk.as_ref().unwrap();
+            (bulk.context_window.clone(), bulk.max_tokens.clone())
         });
-        assert_eq!(reasoning, Some(false));
-
-        harness.click("fetch-flag-reasoning");
+        set_text(&mut harness, &bulk.0, "321000");
+        harness.click("fetch-bulk-level-low");
+        harness.click("fetch-apply-all");
         harness.click("save-fetch");
         harness.pump();
 
-        let records = harness.engine.records.lock().unwrap().clone();
-        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
-        assert_eq!(records[0]["record"]["reasoning"], true);
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        let models = saves[0]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2, "the offered id stays out");
+        for model in models {
+            assert_eq!(model["contextWindow"], 321_000);
+            assert_eq!(model["maxTokens"], 8_192);
+            assert_eq!(model["thinkingLevels"], serde_json::json!(["low"]));
+        }
     }
 
-    /// Hiding the ladder-less model does not turn a mixed vendor into a
-    /// reasoning one: the listing leaves a hidden catalog row out, so it
-    /// cannot be checked, and the flag stays off.
     #[gpui::test]
-    fn a_hidden_catalog_row_keeps_the_reasoning_prefill_off(cx: &mut gpui::TestAppContext) {
-        let mut harness = providers_harness(cx);
-        reasoning_vendor(&mut harness);
-        // The panel loads its hidden rows when it expands, so the row is
-        // reported before the fetch dialog opens.
-        harness
-            .engine
-            .hidden_ids
-            .lock()
-            .unwrap()
-            .push("acme/acme-plain".to_string());
-        harness.click("provider-row-0");
-        harness.click("fetch-vendor");
-
-        let reasoning = harness.page.update(&mut *harness.visual, |page, _| {
-            page.fetch_dialog.as_ref().map(|dialog| dialog.reasoning)
-        });
-        assert_eq!(reasoning, Some(false));
-    }
-
-    /// An emptied name field falls back to the id on the fetch path, like
-    /// the manual record form's blank-name behavior.
-    #[gpui::test]
-    fn an_emptied_fetch_name_falls_back_to_the_id(cx: &mut gpui::TestAppContext) {
+    fn an_emptied_name_is_left_to_the_engine(cx: &mut gpui::TestAppContext) {
         let mut harness = providers_harness(cx);
         harness
             .visual
             .update(|_window, cx| cx.set_reduce_motion(true));
         harness.click("provider-row-0");
         harness.click("fetch-vendor");
-        harness.page.update(&mut *harness.visual, |page, cx| {
-            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog");
-            dialog.names["acme-9"].update(cx, |input, cx| input.set_text("", cx));
-        });
 
+        let name = harness.page.update(&mut *harness.visual, |page, _| {
+            page.fetch_dialog.as_ref().unwrap().rows[0].name.clone()
+        });
+        set_text(&mut harness, &name, "");
         harness.click("save-fetch");
         harness.pump();
 
-        let records = harness.engine.records.lock().unwrap().clone();
-        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
-        assert_eq!(records[0]["record"]["name"], "acme-9");
+        let saves = harness.engine.fetched_saves.lock().unwrap().clone();
+        assert_eq!(saves[0]["models"][0]["name"], "");
     }
 
     /// Drive the tokio runtime while the window settles, until `ready`
@@ -1708,22 +2921,23 @@ mod tests {
         settle(runtime, visual, |_| true);
     }
 
-    /// The reported bug end to end on a real engine — no fake behind the
-    /// dialog: the probe reaches a loopback vendor, a ticked Reasoning flag
-    /// rides both SaveModelRecord calls, and the records list with the
-    /// ladder the chat's picker needs to offer a reasoning level.
-    #[gpui::test]
-    fn a_fetched_batch_lists_with_a_ladder_through_the_real_engine(cx: &mut gpui::TestAppContext) {
+    /// A gateway and its listing behind a real engine. The listing's
+    /// loopback server comes back too: it lives as long as the test, or
+    /// the probe finds nothing.
+    fn gateway_over(
+        runtime: &tokio::runtime::Runtime,
+        listing: &'static [u8],
+    ) -> (
+        crate::engine_fixture::Fixture,
+        Arc<holt_engine::LocalEngine>,
+        crate::engine_fixture::LoopbackServer,
+    ) {
         use crate::engine_fixture::{self, Fixture, ScriptedProvider};
         use holt_rpc::RpcService;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
         let fixture = Fixture::new();
         let (vendor, _heads) = runtime.block_on(engine_fixture::serve_loopback_with_capture(
             "application/json",
-            br#"{"data":[{"id":"glm-9"},{"id":"glm-9-air"}]}"#,
+            listing,
         ));
         let engine = Arc::new(fixture.engine(&ScriptedProvider::new(vec![])));
         runtime.block_on(async {
@@ -1731,8 +2945,8 @@ mod tests {
                 .handle(
                     methods::SAVE_CUSTOM_PROVIDER,
                     serde_json::json!({
-                        "id": "glm-gateway",
-                        "name": "GLM Gateway",
+                        "id": "gw",
+                        "name": "Company Gateway",
                         "baseUrl": vendor.base,
                         "defaultApi": "openai-completions",
                     }),
@@ -1740,9 +2954,20 @@ mod tests {
                 .await
                 .unwrap();
         });
+        (fixture, engine, vendor)
+    }
+
+    /// The page over that engine, the gateway's panel expanded, with
+    /// `body` driving the window.
+    fn over_gateway(
+        runtime: &tokio::runtime::Runtime,
+        cx: &mut gpui::TestAppContext,
+        engine: Arc<holt_engine::LocalEngine>,
+        body: impl FnOnce(&mut gpui::VisualTestContext, &Entity<ProvidersPage>),
+    ) {
         let client = {
             let _enter = runtime.enter();
-            holt_rpc::memory_client(engine.clone())
+            holt_rpc::memory_client(engine)
         };
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -1753,121 +2978,144 @@ mod tests {
         state.update(cx, |state, cx| state.attach_test_engine(client, cx));
         let (page, visual) =
             cx.add_window_view(|_window, cx| ProvidersPage::new(state.clone(), cx));
-        // A window tall enough to hold the whole provider list: a click
-        // needs its target's hitbox inside the viewport.
+        // A window tall enough to hold the whole provider list, with the
+        // gateway at its end: a click needs its target's hitbox inside
+        // the viewport.
         visual.simulate_resize(gpui::size(px(1280.0), px(4000.0)));
         visual.update(|_window, cx| cx.set_reduce_motion(true));
-        // Open the custom provider's panel the way "Open in Settings" does;
-        // the focus applies once the list has loaded.
-        page.update(&mut *visual, |page, cx| {
-            page.focus_provider("glm-gateway".into(), cx)
-        });
-        settle(&runtime, visual, |visual| {
+        page.update(visual, |page, cx| page.focus_provider("gw".into(), cx));
+        settle(runtime, visual, |visual| {
             page.update(&mut *visual, |page, _| {
-                page.expanded.as_deref() == Some("glm-gateway")
+                page.expanded.as_deref() == Some("gw")
             })
         });
-        click(&runtime, visual, "fetch-vendor");
-        settle(&runtime, visual, |visual| {
-            page.update(&mut *visual, |page, _| page.fetch_dialog.is_some())
-        });
-        let opened = page.update(&mut *visual, |page, _| {
-            page.fetch_dialog
-                .as_ref()
-                .map(|dialog| (dialog.ids.clone(), dialog.reasoning))
-        });
-        // A custom provider has no catalog to infer from: unticked.
-        assert_eq!(
-            opened,
-            Some((vec!["glm-9".to_string(), "glm-9-air".to_string()], false))
-        );
-        click(&runtime, visual, "fetch-flag-reasoning");
-        click(&runtime, visual, "save-fetch");
-        settle(&runtime, visual, |visual| {
-            page.update(&mut *visual, |page, _| page.fetch_dialog.is_none())
-        });
+        body(visual, &page);
+    }
 
-        let listed = match runtime
-            .block_on(async {
-                engine
-                    .handle(
-                        methods::LIST_MODELS,
-                        serde_json::json!({ "providerId": "glm-gateway" }),
-                    )
-                    .await
-            })
+    async fn listed_over(
+        engine: &holt_engine::LocalEngine,
+        provider: &str,
+    ) -> Vec<serde_json::Value> {
+        use holt_rpc::RpcService;
+        match engine
+            .handle(
+                methods::LIST_MODELS,
+                serde_json::json!({ "providerId": provider }),
+            )
+            .await
             .unwrap()
         {
-            holt_rpc::RpcReply::Value(rows) => rows,
+            holt_rpc::RpcReply::Value(rows) => rows.as_array().unwrap().clone(),
             _ => panic!("ListModels did not return a value"),
-        };
-        let rows = listed.as_array().unwrap();
-        assert_eq!(rows.len(), 2, "both fetched ids list");
-        for (row, id) in rows
-            .iter()
-            .zip(["glm-gateway/glm-9", "glm-gateway/glm-9-air"])
-        {
-            assert_eq!(row["id"], id);
-            assert_eq!(row["custom"], true);
-            assert_eq!(
-                row["reasoningLevels"],
-                serde_json::json!(["minimal", "low", "medium", "high"])
-            );
-            assert_eq!(row["defaultReasoning"], "high");
         }
     }
 
-    /// A `ListModels` row as the page sees it: ladder-less unless given.
-    fn listed(id: &str, custom: bool, ladder: &[&str]) -> Model {
-        serde_json::from_value(serde_json::json!({
-            "id": id,
-            "provider": "acme",
-            "label": id,
-            "custom": custom,
-            "reasoningLevels": ladder,
-        }))
-        .unwrap()
+    /// Open the dialog on the gateway's listing and bring back what each
+    /// row started as.
+    fn open_over(
+        runtime: &tokio::runtime::Runtime,
+        visual: &mut gpui::VisualTestContext,
+        page: &Entity<ProvidersPage>,
+    ) -> (Vec<String>, Vec<bool>, String) {
+        click(runtime, visual, "fetch-vendor");
+        settle(runtime, visual, |visual| {
+            page.update(&mut *visual, |page, _| page.fetch_dialog.is_some())
+        });
+        page.update(&mut *visual, |page, cx| {
+            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog opened");
+            (
+                dialog.rows.iter().map(|row| row.id.clone()).collect(),
+                dialog.rows.iter().map(|row| row.source.is_some()).collect(),
+                dialog.rows[dialog.rows.len() - 1]
+                    .name
+                    .read(cx)
+                    .text()
+                    .to_string(),
+            )
+        })
     }
 
-    /// The Reasoning prefill fires only on a catalog that reasons whole —
-    /// and that is wholly in view.
-    #[test]
-    fn the_reasoning_prefill_needs_a_catalog_that_reasons_whole() {
-        let ladder = ["minimal", "low", "medium", "high"];
-        let in_view = Some(0);
-        assert!(template_reasoning(
-            &[listed("acme/acme-1", false, &ladder)],
-            in_view
-        ));
-        // The user's own rows are not evidence about the vendor — with a
-        // ladder or without.
-        assert!(template_reasoning(
-            &[
-                listed("acme/acme-1", false, &ladder),
-                listed("acme/acme-mine", true, &[]),
-            ],
-            in_view
-        ));
-        // A catalog that ships both kinds proves nothing…
-        assert!(!template_reasoning(
-            &[
-                listed("acme/acme-1", false, &ladder),
-                listed("acme/acme-plain", false, &[]),
-            ],
-            in_view
-        ));
-        // …nor does a provider with no catalog rows at all.
-        assert!(!template_reasoning(&[], in_view));
-        assert!(!template_reasoning(
-            &[listed("acme/acme-mine", true, &ladder)],
-            in_view
-        ));
-        // A hidden row is a catalog model the listing leaves out — it may
-        // be the ladder-less one — and a hidden list still loading knows
-        // nothing: both leave the flag off.
-        let whole = [listed("acme/acme-1", false, &ladder)];
-        assert!(!template_reasoning(&whole, Some(1)));
-        assert!(!template_reasoning(&whole, None));
+    /// The reported scenario end to end on a real engine: the gateway's
+    /// listing names `gpt-5.4`, whose row comes with the catalog's numbers
+    /// and needs nothing typed, and `acme-1`, which the catalog has never
+    /// heard of. Add files both in one commit — the first with the 1,050K
+    /// window and the ladder without `minimal`, where the old dialog's
+    /// shared 200,000 / generic four used to land.
+    #[gpui::test]
+    fn a_fetched_listing_lists_with_each_model_s_own_facts_through_the_real_engine(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_fixture, engine, _vendor) =
+            gateway_over(&runtime, br#"{"data":[{"id":"gpt-5.4"},{"id":"acme-1"}]}"#);
+        over_gateway(&runtime, cx, engine.clone(), |visual, page| {
+            let (ids, adopted, last_name) = open_over(&runtime, visual, page);
+            assert_eq!(ids, vec!["gpt-5.4".to_string(), "acme-1".to_string()]);
+            assert_eq!(adopted, vec![true, false]);
+            // The new row's name is written the model list's way, not left
+            // as the lowercase id.
+            assert_eq!(last_name, "Acme-1");
+            assert!(
+                visual.debug_bounds("fetch-level-1-low").is_some(),
+                "the new row's levels are switches"
+            );
+            assert!(
+                visual.debug_bounds("fetch-level-0-low").is_none(),
+                "the catalog's levels are read-only"
+            );
+            click(&runtime, visual, "save-fetch");
+            settle(&runtime, visual, |visual| {
+                page.update(&mut *visual, |page, _| page.fetch_dialog.is_none())
+            });
+        });
+
+        let rows = runtime.block_on(listed_over(&engine, "gw"));
+        assert_eq!(rows.len(), 2, "both fetched ids list");
+        let gpt = rows.iter().find(|row| row["id"] == "gw/gpt-5.4").unwrap();
+        assert_eq!(gpt["label"], "GPT-5.4");
+        assert_eq!(gpt["contextWindow"], 1_050_000);
+        assert_eq!(
+            gpt["reasoningLevels"],
+            serde_json::json!(["low", "medium", "high", "xhigh"])
+        );
+        let acme = rows.iter().find(|row| row["id"] == "gw/acme-1").unwrap();
+        assert_eq!(acme["label"], "Acme-1");
+        assert_eq!(acme["contextWindow"], 200_000);
+    }
+
+    /// A model nobody knows yet, on a real engine: its levels are whatever
+    /// the switches say, and the chat's picker offers exactly those.
+    #[gpui::test]
+    fn a_new_model_s_levels_are_the_switches_through_the_real_engine(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (_fixture, engine, _vendor) = gateway_over(&runtime, br#"{"data":[{"id":"glm-9"}]}"#);
+        over_gateway(&runtime, cx, engine.clone(), |visual, page| {
+            let (_, adopted, _) = open_over(&runtime, visual, page);
+            assert_eq!(adopted, vec![false]);
+            // A blank gateway reasons nothing by default: no level is on.
+            click(&runtime, visual, "fetch-level-0-low");
+            click(&runtime, visual, "fetch-level-0-max");
+            click(&runtime, visual, "save-fetch");
+            settle(&runtime, visual, |visual| {
+                page.update(&mut *visual, |page, _| page.fetch_dialog.is_none())
+            });
+        });
+
+        let rows = runtime.block_on(listed_over(&engine, "gw"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["label"], "GLM-9");
+        assert_eq!(
+            rows[0]["reasoningLevels"],
+            serde_json::json!(["low", "max"])
+        );
     }
 
     /// The key row's Test button: one ProbeProvider call, verdict rendered.
@@ -1893,5 +3141,110 @@ mod tests {
             harness.visual.debug_bounds("probe-status").is_some(),
             "the verdict line renders"
         );
+    }
+
+    /// The form opened on an existing row carries everything the row does:
+    /// its numbers, its flags, and — in the advanced JSON — the ladder the
+    /// form has no field for, so a corrected price saved under the same id
+    /// does not drop it.
+    #[gpui::test]
+    fn the_record_form_opens_on_a_row_with_everything_it_carries(cx: &mut gpui::TestAppContext) {
+        let harness = providers_harness(cx);
+        harness
+            .engine
+            .records_served
+            .lock()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": "acme-custom",
+                "name": "Acme custom",
+                "api": "openai-completions",
+                "provider": "acme",
+                "baseUrl": "https://acme.example/v1",
+                "reasoning": true,
+                "thinkingLevelMap": {
+                    "minimal": null, "low": "low", "medium": "medium",
+                    "high": "high", "xhigh": "xhigh", "max": null
+                },
+                "input": ["text", "image"],
+                "cost": { "input": 2.5, "output": 15, "cacheRead": 0.25, "cacheWrite": 0 },
+                "contextWindow": 1050000,
+                "maxTokens": 128000,
+            }));
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.edit_model("acme".into(), "acme/acme-custom".into(), cx)
+        });
+        harness.pump();
+
+        let texts = harness.page.update(&mut *harness.visual, |page, cx| {
+            let form = page
+                .record_form
+                .as_ref()
+                .expect("the form opened on the row");
+            assert!(form.editing);
+            assert_eq!(form.api, "openai-completions");
+            assert!(form.reasoning && form.image);
+            form.inputs
+                .iter()
+                .map(|(key, input)| (key.clone(), input.read(cx).text().to_string()))
+                .collect::<HashMap<_, _>>()
+        });
+        for (key, expected) in [
+            ("id", "acme-custom"),
+            ("name", "Acme custom"),
+            ("contextWindow", "1050000"),
+            ("maxTokens", "128000"),
+            ("inputCost", "2.5"),
+            ("outputCost", "15"),
+            ("cacheReadCost", "0.25"),
+            ("cacheWriteCost", "0"),
+        ] {
+            assert_eq!(texts[key], expected, "{key} prefills from the row");
+        }
+        let advanced: serde_json::Value = serde_json::from_str(&texts["advanced"]).unwrap();
+        assert_eq!(advanced["thinkingLevelMap"]["xhigh"], "xhigh");
+        assert_eq!(
+            advanced["thinkingLevelMap"]["minimal"],
+            serde_json::Value::Null
+        );
+        assert_eq!(advanced["baseUrl"], "https://acme.example/v1");
+        assert!(
+            advanced.get("cost").is_none(),
+            "the form's own fields stay out"
+        );
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.record_form.as_ref().unwrap().inputs["inputCost"]
+                .update(cx, |input, cx| input.set_text("1.25", cx));
+            page.save_record(cx);
+        });
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1);
+        let record = &records[0]["record"];
+        assert_eq!(record["cost"]["input"].as_f64(), Some(1.25));
+        assert_eq!(record["cost"]["output"].as_f64(), Some(15.0));
+        assert_eq!(record["thinkingLevelMap"]["xhigh"], "xhigh");
+        assert_eq!(record["input"], serde_json::json!(["text", "image"]));
+        assert_eq!(record["contextWindow"], 1_050_000);
+    }
+
+    /// The form a row never filled: opened for a new record, it is empty.
+    #[gpui::test]
+    fn the_record_form_opens_empty_for_a_new_record(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("toggle-record-form");
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let form = page.record_form.as_ref().expect("the form opened");
+            assert!(!form.editing);
+            assert_eq!(form.inputs["id"].read(cx).text(), "");
+            assert_eq!(form.inputs["advanced"].read(cx).text(), "");
+        });
     }
 }

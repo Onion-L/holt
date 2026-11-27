@@ -301,10 +301,9 @@ fn is_released_boot_snapshot(envelope: &FileEnvelope, released: &[ReleasedBootSn
     })
 }
 
-/// The digest input of a set of entries: the parsed JSON with every object's
-/// keys sorted, so a file's formatting and key order never decide a match —
-/// only what it says.
-fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+/// A digest input: the parsed JSON with every object's keys sorted, so a
+/// file's formatting and key order never decide a match — only what it says.
+pub(crate) fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();

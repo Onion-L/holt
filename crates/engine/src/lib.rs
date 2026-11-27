@@ -44,6 +44,7 @@ pub mod instance_lock;
 mod local_fs;
 mod mcp;
 mod mode_default;
+mod model_adoption;
 mod output_log;
 mod path_search;
 mod plan_mode;

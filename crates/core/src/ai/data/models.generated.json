@@ -43543,5 +43543,44 @@
 			}
 		}
 	},
-	"generatedAt": "2026-11-27T03:00:32.191Z"
+	"generatedAt": "2026-11-27T03:00:32.191Z",
+	"modelVendors": {
+		"ant-ling": [],
+		"anthropic": [],
+		"deepseek": [],
+		"google": [],
+		"google-vertex": [],
+		"kimi-coding": [
+			"kimi"
+		],
+		"minimax": [],
+		"minimax-cn": [],
+		"mistral": [],
+		"moonshotai": [],
+		"moonshotai-cn": [],
+		"openai": [],
+		"qwen-token-plan": [
+			"qvq",
+			"qwen",
+			"qwq"
+		],
+		"qwen-token-plan-cn": [
+			"qvq",
+			"qwen",
+			"qwq"
+		],
+		"qwen-token-plan-individual": [
+			"qvq",
+			"qwen",
+			"qwq"
+		],
+		"xai": [],
+		"xiaomi": [],
+		"zai": [
+			"glm"
+		],
+		"zai-coding-cn": [
+			"glm"
+		]
+	}
 }

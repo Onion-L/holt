@@ -240,15 +240,44 @@ pub(super) fn provider_model_list(
                                             .text_color(row_theme.text_muted)
                                             .child(SharedString::from(raw_id.to_string())),
                                     );
-                                // Only user-added rows are deletable; builtin
-                                // catalog rows get the hide action instead —
-                                // hiding is reversible, deleting a catalog
-                                // entry is not expressible.
+                                // Only user-added rows are editable and deletable;
+                                // builtin catalog rows get the hide action
+                                // instead — hiding is reversible, deleting a
+                                // catalog entry is not expressible.
                                 if model.custom {
-                                    let provider = provider_for_removal.clone();
-                                    let model_id = model.id.clone();
                                     let idle_icon = row_theme.text_muted;
                                     let hover_icon = row_theme.text;
+                                    let edit_provider = provider_for_removal.clone();
+                                    let edit_model = model.id.clone();
+                                    list_row = list_row.child(
+                                        widgets::ghost_action(&row_theme)
+                                            .id((
+                                                gpui::ElementId::from(("edit-model", index)),
+                                                raw_id.to_string(),
+                                            ))
+                                            .flex_none()
+                                            .px(px(6.0))
+                                            .py(px(4.0))
+                                            .opacity(0.0)
+                                            .group_hover(group.clone(), |s| s.opacity(1.0))
+                                            .on_click(cx.listener(move |page, _, _, cx| {
+                                                page.edit_model(
+                                                    edit_provider.clone(),
+                                                    edit_model.clone(),
+                                                    cx,
+                                                )
+                                            }))
+                                            .child(
+                                                crate::icons::icon(crate::icons::PEN)
+                                                    .size(px(12.0))
+                                                    .text_color(idle_icon)
+                                                    .hover(move |style| {
+                                                        style.text_color(hover_icon)
+                                                    }),
+                                            ),
+                                    );
+                                    let provider = provider_for_removal.clone();
+                                    let model_id = model.id.clone();
                                     list_row = list_row.child(
                                         widgets::ghost_action(&row_theme)
                                             .id((
@@ -905,7 +934,10 @@ impl ProvidersPage {
                         .unwrap_or_else(|error| Loadable::Error(error.to_string())),
                     Err(error) => Loadable::Error(error.to_string()),
                 };
-                page.models.insert(slot_provider, models);
+                page.models.insert(slot_provider.clone(), models);
+                // A fetch dialog that opened before this list landed learns
+                // now which ids the provider already offers.
+                page.fetch_models_loaded(&slot_provider, cx);
                 cx.notify();
             })
             .ok();

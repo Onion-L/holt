@@ -73,6 +73,26 @@ pub mod methods {
     pub const SET_PROVIDER_LOGO: &str = "SetProviderLogo";
     pub const REMOVE_PROVIDER_LOGO: &str = "RemoveProviderLogo";
     pub const SAVE_MODEL_RECORD: &str = "SaveModelRecord";
+    /// The record the engine serves for `{providerId, modelId}`, whole —
+    /// ladder, `compat`, prices — as a form needs it to replace a row
+    /// without dropping what it does not show.
+    pub const GET_MODEL_RECORD: &str = "GetModelRecord";
+    /// What a vendor listing's ids become under the provider
+    /// (ADR-fetched-models-adopt-the-catalogs-record). Params
+    /// `{providerId, modelIds}`; the reply carries one row per id, in
+    /// listing order — `name`, `contextWindow`, `maxTokens`,
+    /// `reasoningLevels`, `canTurnOff`, `input`, `cost`, and where the row
+    /// stands: `source` (the catalog's `provider/model` an adopted id
+    /// takes), `startsFrom` (the sibling a new id starts from),
+    /// `levelsEstimated` with `estimatedFrom`. Saves nothing: the fetch
+    /// dialog shows each row its facts first.
+    pub const PREVIEW_FETCHED_MODELS: &str = "PreviewFetchedModels";
+    /// Files those rows under the provider: params
+    /// `{providerId, models: [{id, name?, thinkingLevels?, canTurnOff?,
+    /// contextWindow?, maxTokens?, cost?, image?, startsFrom?}]}`. An id
+    /// the catalog carries needs only what the user changed; any other needs
+    /// its numbers. One commit, or an error with nothing written.
+    pub const SAVE_FETCHED_MODELS: &str = "SaveFetchedModels";
     pub const REMOVE_MODEL_RECORD: &str = "RemoveModelRecord";
     pub const SET_HIDDEN_MODELS: &str = "SetHiddenModels";
     /// Drops every user-written catalog entry for one provider — or for all

@@ -253,5 +253,48 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertIn("glm-5.2", refreshed)
 
 
+class VendorListTests(unittest.TestCase):
+    def test_the_generator_writes_the_vendor_list(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / "catalog.json"
+            source_path = Path(directory) / "source.json"
+            document = {"models": {}, "imageModels": {}, "generatedAt": "2026-01-01T00:00:00.000Z"}
+            catalog_path.write_text(json.dumps(document), encoding="utf-8")
+            source_path.write_text(json.dumps({}), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = update_model_catalog.main(
+                    ["--source", str(source_path), "--catalog", str(catalog_path)]
+                )
+            self.assertEqual(result, 0)
+            document = json.loads(catalog_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(document["modelVendors"], update_model_catalog.model_vendors())
+
+    def test_the_committed_catalog_carries_the_vendors(self) -> None:
+        # The engine adopts a listing's id from the first vendor that carries
+        # it, reading the list off the catalog: the committed file must hold
+        # exactly what the generator would write, over providers it carries.
+        document = json.loads(update_model_catalog.CATALOG.read_text(encoding="utf-8"))
+        vendors = update_model_catalog.model_vendors()
+
+        self.assertEqual(document["modelVendors"], vendors)
+        for vendor, prefixes in vendors.items():
+            self.assertIn(vendor, document["models"])
+            for prefix in prefixes:
+                self.assertEqual(prefix, prefix.lower())
+
+    def test_a_plan_is_a_vendor_only_for_its_own_family(self) -> None:
+        # The Qwen token plans serve GLM, Kimi and DeepSeek beside Qwen: a
+        # GLM id must not take its facts from their copy of it.
+        vendors = update_model_catalog.model_vendors()
+
+        self.assertEqual(vendors["qwen-token-plan"], ["qvq", "qwen", "qwq"])
+        self.assertEqual(vendors["zai-coding-cn"], ["glm"])
+        self.assertEqual(vendors["kimi-coding"], ["kimi"])
+        self.assertEqual(vendors["openai"], [])
+        for host in update_model_catalog.HOSTS:
+            self.assertNotIn(host, vendors)
+
+
 if __name__ == "__main__":
     unittest.main()

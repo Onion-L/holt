@@ -54,6 +54,16 @@ two catalog providers (the Alibaba token plan and its individual variant
 share one listing) adds nothing to either, since the script cannot tell
 which of the two serves a new model; REFRESH_ONLY providers take refreshes
 only.
+
+The document also carries `modelVendors`: the providers whose listing is
+where a model lives — the makers, not the inference hosts that serve other
+makers' models under limits of their own — each with the id prefixes of the
+models that are its own, since a maker's plan also serves other makers'
+models. When a listing under a provider the catalog does not know offers an
+id the catalog carries elsewhere, the engine adopts that maker's record for
+it, never a gateway's, whose rows carry partial ladders and their own
+transport quirks. The list is written with the catalog so the engine reads
+it rather than a copy of it.
 """
 
 from __future__ import annotations
@@ -147,6 +157,40 @@ KEEP_UNLISTED = {
     ("google-vertex", "gemini-flash-latest"),
     ("google-vertex", "gemini-flash-lite-latest"),
 }
+# The providers whose listing is where a model lives, written with the catalog
+# as `modelVendors` — a provider and the id prefixes of the models that are
+# its own: the makers (the own-catalog providers minus the inference hosts,
+# whose listings are all their own), plus the makers' plans. A plan also
+# serves other makers' models — the Qwen token plans carry GLM, Kimi and
+# DeepSeek — so it is where a model lives only under its own family's names.
+# A model adopted from another provider's listing takes the first of these
+# that carries its id; a host's copy of it is not where it lives.
+HOSTS = {
+    "baseten",
+    "cerebras",
+    "cloudflare-workers-ai",
+    "fireworks",
+    "groq",
+    "huggingface",
+    "nvidia",
+    "together",
+}
+MAKER_PLANS = {
+    "kimi-coding": ("kimi",),
+    "qwen-token-plan": ("qwen", "qvq", "qwq"),
+    "qwen-token-plan-cn": ("qwen", "qvq", "qwq"),
+    "qwen-token-plan-individual": ("qwen", "qvq", "qwq"),
+    "zai": ("glm",),
+    "zai-coding-cn": ("glm",),
+}
+
+
+def model_vendors() -> dict[str, list[str]]:
+    """`modelVendors` as the catalog carries it: provider id → the lowercase
+    id prefixes of the models that are its own, empty when all of them are."""
+    vendors = {provider: [] for provider in RETIRE_UNLISTED - HOSTS}
+    vendors.update({provider: sorted(prefixes) for provider, prefixes in MAKER_PLANS.items()})
+    return dict(sorted(vendors.items()))
 
 
 def normalize_url(url: object) -> str:
@@ -578,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     now = datetime.now(timezone.utc)
     document["generatedAt"] = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    document["modelVendors"] = model_vendors()
     text = json.dumps(integral_floats(document), indent="\t", ensure_ascii=False) + "\n"
     args.catalog.write_text(text, encoding="utf-8")
     print(f"wrote {args.catalog}")

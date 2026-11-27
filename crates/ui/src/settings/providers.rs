@@ -75,28 +75,124 @@ pub(super) enum ProbeState {
     Done(ProbeOutcome),
 }
 
-/// The fetch-from-vendor dialog: a ProbeProvider listing minus the ids the
-/// provider already offers, checkboxes over what to add, a per-row
-/// display-name field, and the fields a servable record needs that the
-/// vendor listing carries none of — the two numbers, and the Reasoning /
-/// Image input flags every added record shares.
+/// One row of a vendor listing as the engine would file it
+/// (ADR-fetched-models-adopt-the-catalogs-record): `PreviewFetchedModels`'s
+/// reply. An id the catalog carries comes adopted; any other comes with the
+/// numbers it starts from — a sibling's, or the plain defaults.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FetchedFacts {
+    pub(super) id: String,
+    pub(super) name: String,
+    /// The catalog's `provider/model` an adopted id takes.
+    #[serde(default)]
+    pub(super) source: Option<String>,
+    /// The `provider/model` a new id starts from.
+    #[serde(default)]
+    pub(super) starts_from: Option<String>,
+    /// The catalog names no levels for this model: the row's are its
+    /// family's, and the user's to correct.
+    #[serde(default)]
+    pub(super) levels_estimated: bool,
+    #[serde(default)]
+    pub(super) estimated_from: Option<String>,
+    #[serde(default = "default_true")]
+    pub(super) can_turn_off: bool,
+    pub(super) context_window: u64,
+    pub(super) max_tokens: u64,
+    #[serde(default)]
+    pub(super) reasoning_levels: Vec<String>,
+    #[serde(default)]
+    pub(super) input: Vec<String>,
+    pub(super) cost: FetchedCost,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FetchedCost {
+    pub(super) input: f64,
+    pub(super) output: f64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The thinking levels a row's chips offer, lowest first.
+pub(super) const THINKING_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// A row's numbers as the dialog reads them, whether it lets them be edited
+/// or only shows them.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FetchNumbers {
+    pub(super) context_window: u64,
+    pub(super) max_tokens: u64,
+    pub(super) input_cost: f64,
+    pub(super) output_cost: f64,
+}
+
+/// One row of the fetch dialog.
+pub(super) struct FetchRow {
+    pub(super) id: String,
+    /// The catalog's `provider/model` this id is adopted from; `None` for a
+    /// new one.
+    pub(super) source: Option<String>,
+    /// A new id: the `provider/model` it starts from, when a sibling gave it
+    /// its numbers.
+    pub(super) starts_from: Option<String>,
+    /// The provider already offers this id: shown, never selectable.
+    pub(super) added: bool,
+    /// The name as saved; blank leaves the default to the engine.
+    pub(super) name: Entity<ComposerInput>,
+    /// A new row's numbers, edited in place; `None` where they are only read.
+    pub(super) inputs: Option<FetchInputs>,
+    /// Read-only numbers, for an adopted or already-added row.
+    pub(super) numbers: Option<FetchNumbers>,
+    /// The levels the row offers, as saved.
+    pub(super) levels: Vec<String>,
+    /// The levels as the row opened, when they can be edited: saving sends
+    /// them only once they differ.
+    pub(super) opening_levels: Option<Vec<String>>,
+    /// The levels are an estimate, so the chips are switches.
+    pub(super) estimated: bool,
+    pub(super) estimated_from: Option<String>,
+    pub(super) can_turn_off: bool,
+    /// Image input, for a new row; read from the facts otherwise.
+    pub(super) image: bool,
+}
+
+/// A new row's editable numbers.
+#[derive(Clone)]
+pub(super) struct FetchInputs {
+    pub(super) context_window: Entity<ComposerInput>,
+    pub(super) max_tokens: Entity<ComposerInput>,
+    pub(super) input_cost: Entity<ComposerInput>,
+    pub(super) output_cost: Entity<ComposerInput>,
+}
+
+/// One set of numbers for every new row at once, offered when the listing
+/// brings several: a long gateway listing starts uniform, and a row that
+/// differs is corrected on its own.
+pub(super) struct FetchBulk {
+    pub(super) context_window: Entity<ComposerInput>,
+    pub(super) max_tokens: Entity<ComposerInput>,
+    pub(super) levels: Vec<String>,
+    pub(super) image: bool,
+}
+
+/// The fetch dialog: a ProbeProvider listing as a table — one row per id,
+/// its name over its id, its context window, max output, thinking levels,
+/// and price, and where each comes from. An id the catalog carries keeps the
+/// catalog's numbers; a new one opens with a sibling's or the plain defaults
+/// and is edited in place; one the provider already offers is shown but not
+/// offered again.
 pub(super) struct FetchDialog {
-    provider: String,
-    dialect: String,
-    ids: Vec<String>,
-    checked: HashSet<String>,
-    inputs: HashMap<String, Entity<ComposerInput>>,
-    /// Per-id display-name inputs, prefilled with the id; empty falls back
-    /// to the id, like the manual record form.
-    names: HashMap<String, Entity<ComposerInput>>,
-    /// Shared by every record the dialog adds, like the manual form's
-    /// flags. Reasoning prefills from the provider's catalog (see
-    /// `record_form`'s `template_reasoning`); image input never prefills
-    /// on — a wrongly ticked record sends images to a text-only model.
-    reasoning: bool,
-    image: bool,
-    saving: bool,
-    error: Option<String>,
+    pub(super) provider: String,
+    pub(super) rows: Vec<FetchRow>,
+    pub(super) checked: HashSet<String>,
+    pub(super) bulk: Option<FetchBulk>,
+    pub(super) saving: bool,
+    pub(super) error: Option<String>,
 }
 
 impl EventEmitter<ProvidersPageEvent> for ProvidersPage {}
@@ -344,7 +440,7 @@ impl Render for ProvidersPage {
                                         .py(px(2.0))
                                         .hover(|style| style.bg(crate::theme::ink(0.04)))
                                         .on_click(cx.listener(move |page, _, _, cx| {
-                                            page.open_record_form(add_record_id.clone(), cx);
+                                            page.open_record_form(add_record_id.clone(), None, cx);
                                         }))
                                         .child(
                                             crate::icons::icon(crate::icons::PLUS)

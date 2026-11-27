@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) · [provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot) · [released-boot-snapshots-are-pinned-by-content](#released-boot-snapshots-are-pinned-by-content) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) · [provider-overlay-carries-overrides-not-a-snapshot](#provider-overlay-carries-overrides-not-a-snapshot) · [released-boot-snapshots-are-pinned-by-content](#released-boot-snapshots-are-pinned-by-content) · [fetched-models-adopt-the-catalogs-record](#fetched-models-adopt-the-catalogs-record) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -1017,6 +1017,11 @@ model-facing surface.
 
 ## fetched-models-carry-the-dialogs-reasoning-flag
 
+Superseded by
+[fetched-models-adopt-the-catalogs-record](#fetched-models-adopt-the-catalogs-record):
+the fetch dialog has no shared flags any more — levels are each row's — and
+the prefill rule below survives there only as a new row's last resort.
+
 `37bda2e`, `9ba9859`. A model added from a vendor listing takes its
 Reasoning and Image input flags from the fetch dialog — one shared flag
 row over the batch, the manual record form's own fields — and Reasoning
@@ -1244,3 +1249,92 @@ catalog to compare against (about a megabyte per shape, to carry a fact a
 64-character digest holds); leaving released copies in place with a warning
 (it lands in a log the user never reads, and the manual step is what the
 overlay entry set out to remove).
+
+## fetched-models-adopt-the-catalogs-record
+
+Partially supersedes
+[fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag),
+which rejected inferring a fetched model's facts "from a same-id entry
+elsewhere in the catalog (a guess about a model the vendor may serve
+differently)". A company gateway's listing names `gpt-5.4`,
+`claude-opus-4-7`, and `glm-5.3` and nothing else; all three are in the
+catalog, and the dialog filed each with the shared 200,000 / 8,192, a
+blank price, and — once the one Reasoning flag was ticked — the generic
+Minimal/Low/Medium/High ladder. That is not "not guessing": the usage ring
+divided by a fifth of the real window, Claude was offered a `minimal` it
+has no tier for, GLM's `max` was missing, and a paid gateway billed $0. A
+wrong default is a guess too, and the worse one.
+
+A listing's id the catalog carries elsewhere now takes the catalog's
+record for it — matched on the bare id after the last `/`, so a gateway's
+`openai/gpt-5.4` counts. The record is the maker's own listing
+(`modelVendors`, which the generator writes: the own-catalog providers minus
+the inference hosts, plus the makers' plans under their own family's names —
+a plan also serves other makers' models, the Qwen token plans GLM and Kimi
+beside Qwen), ahead of a host's copy or a gateway's row: Workers AI serves
+GLM-5.3 as `@cf/zai-org/glm-5.3` with a copy's limits, Cloudflare's gateway
+row for Claude Opus 4.7 records two of its five levels, and Copilot's adds a
+`minimal` it lacks. What carries over depends on the dialect the provider
+speaks. A maker's record in the same dialect is taken whole — its ladder's
+wire values and `compat` are the model's own protocol, which is what a relay
+forwards to. Anything else, and any other dialect, takes the facts (whether
+it reasons, which levels it has and lacks, the windows, the modalities, the
+list price) in the dialect's default encoding: a gateway's switches say how
+to talk to that gateway.
+
+Where the catalog falls short it estimates, and says so. A record that
+reasons but names no levels takes the levels of the nearest sibling in its
+maker's listings — by version, GLM-5.1 taking GLM-5.2's rather than
+GLM-5.3's, a tie broken by name because the index is a hash map. An id the
+catalog does not carry starts from the nearest sibling in sight: a row
+already on the provider, or one the same listing adopts, matching on the
+run before the id's first digit (`glm-4.5`, `GLM-5.1`, and `glm-5` are one
+family; `gpt-oss-120b` is not `gpt-5.4`'s) and then the closest version. It
+takes that row's numbers and, when the row is the provider's own in this
+dialect, the protocol it speaks — a new GLM on `zai-coding-cn` talks like
+its siblings — but never its price or its identity. With no sibling, the
+plain defaults every blank record used to get, with levels only when every
+model the provider lists exposes a ladder: the old dialog's one Reasoning
+flag, kept as the last resort and no more than that.
+
+The dialog is a table, one row per listed id — its name over its id,
+context window, max output, thinking levels, price, and where the numbers
+come from — chosen over the checkbox list after ten rows of it proved
+unreadable (user screenshot). An adopted row is read-only. An estimate and
+a new row show all six levels as switches, amber and dashed where they are
+a guess; a new row's numbers are edited in place; when a listing brings
+several new rows, one set applies to all of them at once. A row's name is
+the catalog's, or else the id written the model list's way (`GLM-5.2
+Highspeed`, `Claude Opus 4.7`, `GPT-5.4 (2026-11-01)`) by one rule in the
+engine. An id the provider already offers stays in view, dimmed and
+unselectable, and `SaveFetchedModels` refuses it: the dialog used to drop
+those ids by reading the panel's model list as it opened, so a click
+before that list landed offered the provider's own models back, and Add
+filed a blank record over the catalog's — a `glm-5.4` with max output
+8,192 over Z.AI's 131,072 (user screenshot).
+
+Levels chosen by hand — an estimate corrected, a new row's switches — make
+the row the user's: it is filed whole with no adoption marker, so nothing
+regenerates over the choice, and the rest of its facts stay as adopted. An
+estimate left alone stays the catalog's and is regenerated with it. The
+record form opened on an existing row carries the row whole, ladder and
+`compat` in its advanced JSON, so correcting a price no longer files a
+ladder-less record over an adopted one. Provider Mode's own proposals are
+untouched.
+
+Rejected: keeping the blind defaults (above); the old dialog's shared
+numbers and one Reasoning flag (ten identical text boxes and one ladder
+for ten models); a name input always visible on every row (the id twice
+over per row, lowercase against the list's `GLM-5.2 Highspeed`); hiding the
+ids the provider already offers (the user cannot tell why an id is
+missing, and a late model list made the drop unreliable — shown dimmed
+instead, and the engine refuses the overwrite); levels as a text field (the
+six known levels are a closed set); an estimate left unmarked (a guess that
+reads as the catalog's word is the blind default again); adopting a dated
+snapshot as its alias (`gpt-5.4-2026-11-01` is not `gpt-5.4` — it starts
+from it, visibly); asking for the facts per row from scratch (a gateway's
+listing is long and the catalog already knows); a reference in place of a
+whole record (it stops resolving the day the catalog retires its source);
+copying the facts with no digest (the next refresh stands behind a
+snapshot again, the thing the overlay entry removed); taking any
+same-dialect record whole (a gateway's `compat` is its own protocol).
