@@ -38,12 +38,13 @@ on the INHERIT_DOMINANT gateways, whose general-purpose transport serves any
 vendor. Deprecated source models are not added, and neither are non-chat rows
 (image, video, embedding, speech), date-stamped snapshots (the picker hides
 them behind the moving alias), or the few ids in SKIP_ADDITIONS the catalog
-keeps out on purpose. Models absent from the source are never removed: a
-model the source no longer lists may still be served (models.dev is
-incomplete about regional and plan-specific variants), and the user can hide
-it. An entry the source marks as realtime is removed: its provider's own row
-decides when it has one, and a model the provider no longer lists goes when
-any provider's row marks that id realtime.
+keeps out on purpose. An existing entry leaves when the source retires it:
+its provider's row typed realtime or marked deprecated, or a model the
+provider no longer lists — where that listing is the provider's own catalog
+(RETIRE_UNLISTED; a moving alias in KEEP_UNLISTED stays) or where any
+provider's row marks that id realtime. Gateways, regional catalogs and plans
+keep their other unlisted models — models.dev is incomplete about regional
+and plan-specific variants — and hiding them is the user's call.
 
 Providers match the source by baseUrl against its `api` first — what is
 actually called wins over a shared name: Holt's `zai` is the coding
@@ -113,6 +114,38 @@ SKIP_ADDITIONS = {
     ("xai", "grok-4.20-0309-reasoning"),
     ("xai", "grok-4.20-0309-non-reasoning"),
     ("xai", "grok-4.20-multi-agent-0309"),
+}
+# Providers whose models.dev listing is the provider's own catalog: a model it
+# no longer lists is retired there. Gateways, regional catalogs and plans are
+# not — models.dev is incomplete about what they serve, and a plan's listing
+# lags: a model it marks deprecated on one plan is merely absent from another.
+RETIRE_UNLISTED = {
+    "anthropic",
+    "ant-ling",
+    "baseten",
+    "cerebras",
+    "cloudflare-workers-ai",
+    "deepseek",
+    "fireworks",
+    "google",
+    "google-vertex",
+    "groq",
+    "huggingface",
+    "minimax",
+    "minimax-cn",
+    "mistral",
+    "moonshotai",
+    "moonshotai-cn",
+    "nvidia",
+    "openai",
+    "together",
+    "xai",
+    "xiaomi",
+}
+# Moving aliases the source lists only under another provider's row.
+KEEP_UNLISTED = {
+    ("google-vertex", "gemini-flash-latest"),
+    ("google-vertex", "gemini-flash-lite-latest"),
 }
 
 
@@ -251,6 +284,29 @@ def realtime_ids(source: dict) -> set[str]:
         for model_id, model in (provider.get("models") or {}).items()
         if model.get("type") in REMOVE_EXISTING_TYPES
     }
+
+
+def removal_reason(
+    provider_id: str, model_id: str, model: dict | None, realtime_anywhere: set[str]
+) -> str | None:
+    """Why an existing entry leaves the catalog, or None when it stays.
+
+    The provider's own row decides when it has one: realtime or deprecated.
+    A model the provider no longer lists goes when any provider marks that id
+    realtime, and where the source's listing is the provider's own catalog —
+    a moving alias in KEEP_UNLISTED stays.
+    """
+    if model is not None:
+        if model.get("type") in REMOVE_EXISTING_TYPES:
+            return "realtime (removed)"
+        if model.get("status") == "deprecated":
+            return "deprecated (removed)"
+        return None
+    if bare_id(model_id) in realtime_anywhere:
+        return "realtime (removed)"
+    if provider_id in RETIRE_UNLISTED and (provider_id, model_id) not in KEEP_UNLISTED:
+        return "unlisted (removed)"
+    return None
 
 
 def input_from_source(model: dict) -> list[str] | None:
@@ -471,15 +527,10 @@ def main(argv: list[str] | None = None) -> int:
         changes: Counter = Counter()
         for model_id, entry in list(provider_models.items()):
             model = source_models.get(model_id)
-            # The provider's own row decides when it has one; a model it no
-            # longer lists goes when any provider marks that id realtime.
-            if model is not None:
-                realtime = model.get("type") in REMOVE_EXISTING_TYPES
-            else:
-                realtime = bare_id(model_id) in realtime_anywhere
-            if realtime:
+            reason = removal_reason(provider_id, model_id, model, realtime_anywhere)
+            if reason is not None:
                 del provider_models[model_id]
-                changes["realtime (removed)"] += 1
+                changes[reason] += 1
                 continue
             if model is None:
                 changes["not in source (kept)"] += 1

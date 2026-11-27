@@ -166,7 +166,7 @@ async fn openrouter_preserves_cache_write_usage() {
         },
         ..Default::default()
     };
-    let model = get_model_or_panic("openrouter", "google/gemini-2.5-flash");
+    let model = get_model_or_panic("openrouter", "google/gemini-3.8-flash");
     let first = complete_simple(&model, &request_context, Some(options.clone())).await;
     assert_eq!(
         first.stop_reason,

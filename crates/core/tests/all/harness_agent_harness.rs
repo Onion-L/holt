@@ -14,7 +14,6 @@ use holt_core::agent::harness::session::types::{LaneRecord, OperationIntent, Ses
 use holt_core::agent::harness::tools::write::create_write_tool;
 use holt_core::agent::harness::types::{PromptTemplate, Skill};
 use holt_core::agent::types::{QueueMode, ThinkingLevel};
-use holt_core::ai::compat::get_model;
 use holt_core::ai::models::Models;
 use holt_core::ai::utils::retry::RetryPolicy;
 
@@ -34,7 +33,11 @@ async fn create_harness_with(session: Session) -> Arc<AgentHarness> {
     AgentHarness::create(AgentHarnessOptions {
         session,
         models: Arc::new(Models::new(Default::default())),
-        model: get_model("google", "gemini-2.5-flash").expect("catalog model"),
+        model: holt_core::ai::providers::builtin::get_builtin_model(
+            "google",
+            "gemini-2.5-flash-lite",
+        )
+        .expect("catalog model"),
         thinking_level: None,
         active_tool_names: None,
         tools: None,
@@ -79,7 +82,11 @@ async fn opens_only_record_free_sessions_before_restore_is_implemented() {
     let (harness, suspended) = AgentHarness::create(AgentHarnessOptions {
         session,
         models: Arc::new(Models::new(Default::default())),
-        model: get_model("google", "gemini-2.5-flash").expect("catalog model"),
+        model: holt_core::ai::providers::builtin::get_builtin_model(
+            "google",
+            "gemini-2.5-flash-lite",
+        )
+        .expect("catalog model"),
         thinking_level: None,
         active_tool_names: None,
         tools: None,
@@ -115,7 +122,11 @@ async fn opens_only_record_free_sessions_before_restore_is_implemented() {
     let result = AgentHarness::create(AgentHarnessOptions {
         session: recorded,
         models: Arc::new(Models::new(Default::default())),
-        model: get_model("google", "gemini-2.5-flash").expect("catalog model"),
+        model: holt_core::ai::providers::builtin::get_builtin_model(
+            "google",
+            "gemini-2.5-flash-lite",
+        )
+        .expect("catalog model"),
         thinking_level: None,
         active_tool_names: None,
         tools: None,
@@ -149,7 +160,9 @@ async fn opens_only_record_free_sessions_before_restore_is_implemented() {
 #[tokio::test]
 async fn keeps_scaffold_safe_configuration_as_defensive_copies() {
     let harness = create_harness().await;
-    let model = get_model("anthropic", "claude-sonnet-4-5").expect("catalog model");
+    let model =
+        holt_core::ai::providers::builtin::get_builtin_model("anthropic", "claude-haiku-4-5")
+            .expect("catalog model");
     harness.set_model(model.clone()).await;
     assert_eq!(harness.get_model().await, model);
 

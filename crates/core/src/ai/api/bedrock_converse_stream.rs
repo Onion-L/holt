@@ -1642,7 +1642,7 @@ mod tests {
 
     #[test]
     fn assigns_eu_central_1_runtime_urls_to_builtin_eu_inference_profiles() {
-        let model = bedrock_model("eu.anthropic.claude-sonnet-4-5-20250929-v1:0");
+        let model = bedrock_model("eu.anthropic.claude-haiku-4-5-20251001-v1:0");
         assert_eq!(
             model.base_url,
             "https://bedrock-runtime.eu-central-1.amazonaws.com"
@@ -1666,7 +1666,7 @@ mod tests {
         remove_env("AWS_REGION");
         remove_env("AWS_DEFAULT_REGION");
         remove_env("AWS_PROFILE");
-        let model = bedrock_model("eu.anthropic.claude-sonnet-4-5-20250929-v1:0");
+        let model = bedrock_model("eu.anthropic.claude-haiku-4-5-20251001-v1:0");
         let config = dispatch_config(&model, base_options());
         assert_eq!(
             config.endpoint.as_deref(),
@@ -1681,7 +1681,7 @@ mod tests {
         remove_env("AWS_REGION");
         remove_env("AWS_DEFAULT_REGION");
         remove_env("AWS_PROFILE");
-        let model = bedrock_model("eu.anthropic.claude-sonnet-4-5-20250929-v1:0");
+        let model = bedrock_model("eu.anthropic.claude-haiku-4-5-20251001-v1:0");
 
         let options = BedrockOptions {
             profile: Some("bedrock-profile".to_string()),

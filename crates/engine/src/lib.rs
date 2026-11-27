@@ -1469,7 +1469,7 @@ mod tests {
                     "request": {
                         "prompt": "hello",
                         "provider": "minimax",
-                        "model": "minimax/MiniMax-M2.7",
+                        "model": "minimax/MiniMax-M3.1-Flash",
                         "reasoning": null,
                         "modelOptions": {},
                         "cwd": dir.path(),

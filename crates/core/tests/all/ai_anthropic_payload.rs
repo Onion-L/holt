@@ -463,7 +463,7 @@ async fn thinking_payload(
 
 #[tokio::test]
 async fn sends_thinking_type_disabled_for_budget_based_reasoning_models_when_thinking_is_off() {
-    let payload = thinking_payload("anthropic", "claude-sonnet-4-5", None).await;
+    let payload = thinking_payload("anthropic", "claude-haiku-4-5", None).await;
 
     assert_eq!(payload["thinking"], json!({ "type": "disabled" }));
     assert!(payload.get("output_config").is_none());

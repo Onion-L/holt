@@ -202,6 +202,56 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertEqual(refreshed["k3.1-pro"]["compat"], k3["compat"])
         self.assertNotIn("k4-pro", refreshed)
 
+    def test_deprecated_source_models_are_removed(self) -> None:
+        sibling = catalog_entry("vendor/current")
+        old = catalog_entry("vendor/old")
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [sibling, old]},
+            {
+                "vendor/current": source_model("vendor/current"),
+                "vendor/old": {**source_model("vendor/old"), "status": "deprecated"},
+            },
+        )
+
+        self.assertNotIn("vendor/old", refreshed)
+        self.assertIn("vendor/current", refreshed)
+
+    def test_unlisted_models_leave_where_the_source_lists_the_provider(self) -> None:
+        current = catalog_entry("k3")
+        retired = catalog_entry("k1")
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [current, retired]},
+            {"k3": source_model("k3")},
+            provider_id="moonshotai",
+        )
+
+        self.assertNotIn("k1", refreshed)
+        self.assertIn("k3", refreshed)
+
+    def test_a_moving_alias_stays_where_the_source_lists_it_elsewhere(self) -> None:
+        current = catalog_entry("gemini-4-neon")
+        alias = catalog_entry("gemini-flash-latest")
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [current, alias]},
+            {"gemini-4-neon": source_model("gemini-4-neon")},
+            provider_id="google-vertex",
+        )
+
+        self.assertIn("gemini-flash-latest", refreshed)
+
+    def test_plan_providers_keep_their_unlisted_models(self) -> None:
+        # A plan's models.dev listing lags what the plan still serves; only an
+        # explicit deprecated or realtime row retires a plan model.
+        current = catalog_entry("glm-5.4")
+        unlisted = catalog_entry("glm-5.2")
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [current, unlisted]},
+            {"glm-5.4": source_model("glm-5.4")},
+            provider_id="zai-coding-cn",
+        )
+
+        self.assertIn("glm-5.2", refreshed)
+
 
 if __name__ == "__main__":
     unittest.main()

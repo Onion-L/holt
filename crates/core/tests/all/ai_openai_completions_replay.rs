@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 use holt_core::ai::api::openai_completions::{
     OpenAICompletionsOptions, ResolvedCompletionsCompat, convert_messages, stream, stream_simple,
 };
-use holt_core::ai::providers::builtin::get_builtin_model;
 use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, CacheControlFormat,
     ChatTemplateKwargs, Context, ImageContent, MaxTokensField, Message, Model, ModelCompat,
@@ -222,8 +221,8 @@ fn text_block(text: &str) -> AssistantContent {
 /// The TS `getModel(provider, id)` with `compat` stripped and the API forced
 /// to `openai-completions` (`const { compat: _compat, ...baseModel } = ...`).
 fn openai_builtin(provider: &str, id: &str) -> Model {
-    let mut model =
-        get_builtin_model(provider, id).unwrap_or_else(|| panic!("missing model {provider}/{id}"));
+    let mut model = holt_core::ai::providers::builtin::get_builtin_model(provider, id)
+        .unwrap_or_else(|| panic!("missing model {provider}/{id}"));
     model.api = "openai-completions".to_string();
     model.compat = None;
     model
@@ -813,7 +812,7 @@ fn tool_result_images_resolved_compat() -> ResolvedCompletionsCompat {
 }
 
 fn image_tool_result_model() -> Model {
-    let mut model = openai_builtin("openai", "gpt-4o-mini");
+    let mut model = openai_builtin("openai", "gpt-5.4-mini");
     model.input = vec![ModelInput::Text, ModelInput::Image];
     model
 }
@@ -860,7 +859,7 @@ fn batches_tool_result_images_after_consecutive_tool_results() {
         ],
         api: "openai-completions".to_string(),
         provider: "openai".to_string(),
-        model: "gpt-4o-mini".to_string(),
+        model: "gpt-5.4-mini".to_string(),
         usage: empty_usage(),
         stop_reason: StopReason::ToolUse,
         timestamp: now,
@@ -912,7 +911,7 @@ fn uses_no_tool_output_placeholder_for_empty_tool_results_without_images() {
         })],
         api: "openai-completions".to_string(),
         provider: "openai".to_string(),
-        model: "gpt-4o-mini".to_string(),
+        model: "gpt-5.4-mini".to_string(),
         usage: empty_usage(),
         stop_reason: StopReason::ToolUse,
         timestamp: now,
@@ -1119,7 +1118,7 @@ async fn ignores_null_stream_chunks_from_openai_compatible_providers() {
         }),
     ])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Reply with exactly OK", 0)],
         ..Default::default()
@@ -1148,7 +1147,7 @@ async fn errors_when_a_stream_ends_after_only_null_finish_reason_chunks() {
         }),
     ])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Reply with a longer sentence", 0)],
         ..Default::default()
@@ -1171,7 +1170,7 @@ async fn accepts_streams_without_finish_reason_when_compat_disables_it() {
         "choices": [{"delta": {"content": "complete answer"}, "finish_reason": null}],
     })])]);
 
-    let mut model = openai_builtin("openai", "gpt-4o-mini");
+    let mut model = openai_builtin("openai", "gpt-5.4-mini");
     model.compat = Some(ModelCompat {
         supports_finish_reason: Some(false),
         ..Default::default()
@@ -1207,7 +1206,7 @@ async fn ignores_empty_custom_objects_on_function_tool_call_deltas() {
         }],
     })])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Read README.md", 0)],
         tools: Some(vec![read_tool()]),
@@ -1281,7 +1280,7 @@ async fn coalesces_tool_call_deltas_by_stable_index_when_provider_mutates_ids_mi
         }),
     ])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Read README.md", 0)],
         tools: Some(vec![read_tool()]),
@@ -1412,7 +1411,7 @@ async fn accumulates_mixed_content_reasoning_and_parallel_tool_call_deltas_indep
         }),
     ])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let tool_fixtures: [(&str, &str, Value, Vec<&str>); 4] = [
         (
             "read",
@@ -1597,8 +1596,11 @@ async fn accumulates_mixed_content_reasoning_and_parallel_tool_call_deltas_indep
 
 #[tokio::test]
 async fn uses_system_messages_for_non_openai_anthropic_openrouter_reasoning_model_instructions() {
-    let model = get_builtin_model("openrouter", "deepseek/deepseek-v4-pro")
-        .expect("openrouter deepseek model");
+    let model = holt_core::ai::providers::builtin::get_builtin_model(
+        "openrouter",
+        "deepseek/deepseek-v4-pro",
+    )
+    .expect("openrouter deepseek model");
     let context = Context {
         system_prompt: Some("Follow instructions.".to_string()),
         messages: vec![user_message("Hi", 0)],
@@ -1613,8 +1615,8 @@ async fn uses_system_messages_for_non_openai_anthropic_openrouter_reasoning_mode
 async fn keeps_developer_messages_for_openai_and_anthropic_openrouter_reasoning_model_instructions()
 {
     for model_id in ["openai/gpt-5.2-codex", "anthropic/claude-sonnet-4.5"] {
-        let model =
-            get_builtin_model("openrouter", model_id).unwrap_or_else(|| panic!("{model_id}"));
+        let model = holt_core::ai::providers::builtin::get_builtin_model("openrouter", model_id)
+            .unwrap_or_else(|| panic!("{model_id}"));
         let context = Context {
             system_prompt: Some("Follow instructions.".to_string()),
             messages: vec![user_message("Hi", 0)],
@@ -1646,8 +1648,9 @@ async fn keeps_developer_messages_for_openai_reasoning_model_instructions() {
 
 #[test]
 fn stores_openrouter_kimi_k2_6_reasoning_replay_compat_in_built_in_metadata() {
-    let model = get_builtin_model("openrouter", "moonshotai/kimi-k2.6")
-        .expect("openrouter kimi-k2.6 model");
+    let model =
+        holt_core::ai::providers::builtin::get_builtin_model("openrouter", "moonshotai/kimi-k2.6")
+            .expect("openrouter kimi-k2.6 model");
     let compat = model.compat.as_ref().expect("compat");
     assert_eq!(compat.supports_developer_role, Some(false));
     assert_eq!(
@@ -1664,8 +1667,8 @@ fn stores_xiaomi_mimo_reasoning_replay_compat_in_built_in_metadata() {
         "xiaomi-token-plan-ams",
         "xiaomi-token-plan-sgp",
     ] {
-        let model =
-            get_builtin_model(provider, "mimo-v2.5-pro").unwrap_or_else(|| panic!("{provider}"));
+        let model = holt_core::ai::providers::builtin::get_builtin_model(provider, "mimo-v2.6-pro")
+            .unwrap_or_else(|| panic!("{provider}"));
         let compat = model.compat.as_ref().expect("compat");
         assert_eq!(
             compat.requires_reasoning_content_on_assistant_messages,
@@ -1689,8 +1692,8 @@ fn stores_qwen_token_plan_reasoning_replay_compat_in_built_in_metadata() {
         "qwen-token-plan-cn",
         "qwen-token-plan-individual",
     ] {
-        let model =
-            get_builtin_model(provider, "qwen3.7-max").unwrap_or_else(|| panic!("{provider}"));
+        let model = holt_core::ai::providers::builtin::get_builtin_model(provider, "qwen3.7-max")
+            .unwrap_or_else(|| panic!("{provider}"));
         let compat = model.compat.as_ref().expect("compat");
         assert_eq!(
             compat.thinking_format,
@@ -1711,7 +1714,8 @@ fn stores_qwen_token_plan_reasoning_replay_compat_in_built_in_metadata() {
 #[tokio::test]
 async fn replays_xiaomi_mimo_assistant_tool_calls_with_empty_reasoning_content_when_thinking_is_missing()
  {
-    let model = get_builtin_model("xiaomi", "mimo-v2.5-pro").expect("xiaomi mimo model");
+    let model = holt_core::ai::providers::builtin::get_builtin_model("xiaomi", "mimo-v2.6-pro")
+        .expect("xiaomi mimo model");
     let assistant = AssistantMessage {
         content: vec![AssistantContent::ToolCall(ToolCall {
             id: "call_1".to_string(),
@@ -1721,7 +1725,7 @@ async fn replays_xiaomi_mimo_assistant_tool_calls_with_empty_reasoning_content_w
         })],
         api: "openai-completions".to_string(),
         provider: "xiaomi".to_string(),
-        model: "mimo-v2.5-pro".to_string(),
+        model: "mimo-v2.6-pro".to_string(),
         usage: empty_usage(),
         stop_reason: StopReason::ToolUse,
         timestamp: 0,
@@ -1803,7 +1807,7 @@ async fn keeps_non_opencode_go_reasoning_deltas_on_the_original_reasoning_field(
         "choices": [{"delta": {"reasoning": "think"}, "finish_reason": "stop"}],
     })])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Use reasoning.", 0)],
         ..Default::default()
@@ -1897,7 +1901,8 @@ fn replays_opencode_go_reasoning_thinking_blocks_as_reasoning_content() {
 
 #[tokio::test]
 async fn sends_thinking_disabled_for_opencode_go_kimi_k2_6_when_thinking_is_off() {
-    let model = get_builtin_model("opencode-go", "kimi-k2.6").expect("opencode-go model");
+    let model = holt_core::ai::providers::builtin::get_builtin_model("opencode-go", "kimi-k2.6")
+        .expect("opencode-go model");
     let context = Context {
         messages: vec![user_message("Hi", 0)],
         ..Default::default()
@@ -1910,7 +1915,8 @@ async fn sends_thinking_disabled_for_opencode_go_kimi_k2_6_when_thinking_is_off(
 
 #[tokio::test]
 async fn sends_thinking_enabled_for_opencode_go_kimi_k2_6_when_thinking_is_enabled() {
-    let model = get_builtin_model("opencode-go", "kimi-k2.6").expect("opencode-go model");
+    let model = holt_core::ai::providers::builtin::get_builtin_model("opencode-go", "kimi-k2.6")
+        .expect("opencode-go model");
     let context = Context {
         messages: vec![user_message("Hi", 0)],
         ..Default::default()
@@ -1930,10 +1936,10 @@ async fn sends_thinking_enabled_for_opencode_go_kimi_k2_6_when_thinking_is_enabl
 }
 
 #[tokio::test]
-async fn omits_disabled_thinking_for_moonshot_kimi_k2_7_code_models() {
+async fn omits_disabled_thinking_for_moonshot_models_that_cannot_turn_thinking_off() {
     for provider in ["moonshotai", "moonshotai-cn"] {
-        let model =
-            get_builtin_model(provider, "kimi-k2.7-code").unwrap_or_else(|| panic!("{provider}"));
+        let model = holt_core::ai::providers::builtin::get_builtin_model(provider, "kimi-k3.1-pro")
+            .unwrap_or_else(|| panic!("{provider}"));
         let context = Context {
             messages: vec![user_message("Hi", 0)],
             ..Default::default()
@@ -1946,9 +1952,31 @@ async fn omits_disabled_thinking_for_moonshot_kimi_k2_7_code_models() {
     }
 }
 
+/// A Moonshot record in the Deepseek thinking format, as Moonshot's Kimi K2.6
+/// was. The compiled Kimi models use the OpenAI format now; a user-defined
+/// record can still carry this one.
+fn moonshot_model_in_deepseek_thinking_format() -> Model {
+    let mut model =
+        holt_core::ai::providers::builtin::get_builtin_model("moonshotai-cn", "kimi-k3")
+            .expect("moonshot kimi-k3");
+    model.id = "kimi-custom-record".to_string();
+    model.thinking_level_map = None;
+    model.compat = Some(ModelCompat {
+        supports_store: Some(false),
+        supports_developer_role: Some(false),
+        supports_reasoning_effort: Some(false),
+        max_tokens_field: Some(MaxTokensField::MaxTokens),
+        supports_strict_mode: Some(false),
+        thinking_format: Some(ThinkingFormat::Deepseek),
+        ..Default::default()
+    });
+    model
+}
+
 #[tokio::test]
-async fn keeps_disabled_thinking_for_moonshot_kimi_k2_6_when_thinking_is_off() {
-    let model = get_builtin_model("moonshotai-cn", "kimi-k2.6").expect("moonshot kimi-k2.6");
+async fn sends_thinking_disabled_for_moonshot_models_in_the_deepseek_thinking_format_when_thinking_is_off()
+ {
+    let model = moonshot_model_in_deepseek_thinking_format();
     let context = Context {
         messages: vec![user_message("Hi", 0)],
         ..Default::default()
@@ -1972,7 +2000,7 @@ async fn does_not_double_count_reasoning_tokens_in_completion_usage() {
         },
     })])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Use reasoning.", 0)],
         ..Default::default()
@@ -2005,7 +2033,7 @@ async fn preserves_prompt_tokens_details_cache_read_write_fields_from_chunk_usag
         }),
     ])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Reply with exactly OK", 0)],
         ..Default::default()
@@ -2043,7 +2071,7 @@ async fn preserves_prompt_tokens_details_cache_read_write_fields_from_choice_usa
         }),
     ])]);
 
-    let model = openai_builtin("openai", "gpt-4o-mini");
+    let model = openai_builtin("openai", "gpt-5.4-mini");
     let context = Context {
         messages: vec![user_message("Reply with exactly OK", 0)],
         ..Default::default()

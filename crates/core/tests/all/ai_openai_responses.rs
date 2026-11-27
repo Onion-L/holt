@@ -422,12 +422,9 @@ async fn sets_strict_mode_explicitly_for_cloudflare_openai_responses_tools() {
 #[tokio::test]
 async fn sends_none_reasoning_effort_for_openai_models_when_no_reasoning_is_requested() {
     let model_ids = [
-        "gpt-5.1",
         "gpt-5.2",
-        "gpt-5.3-codex",
         "gpt-5.4",
         "gpt-5.4-mini",
-        "gpt-5.4-nano",
         "gpt-5.5",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
@@ -449,15 +446,7 @@ async fn sends_none_reasoning_effort_for_openai_models_when_no_reasoning_is_requ
 
 #[tokio::test]
 async fn omits_reasoning_effort_for_openai_models_when_off_is_unsupported() {
-    let model_ids = [
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-5-nano",
-        "gpt-5-pro",
-        "gpt-5.2-pro",
-        "gpt-5.4-pro",
-        "gpt-5.5-pro",
-    ];
+    let model_ids = ["gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro"];
     for model_id in model_ids {
         let model = builtin("openai", model_id);
         let (request, _result) =
@@ -721,7 +710,7 @@ async fn applies_gpt_5_5_flex_service_tier_cost_multiplier() {
 
 #[tokio::test]
 async fn uses_no_tool_output_placeholder_for_empty_tool_results_without_images() {
-    let model = builtin("openai", "gpt-4o-mini");
+    let model = builtin("openai", "gpt-5.4-mini");
     let assistant = assistant_message(
         vec![AssistantContent::ToolCall(ToolCall {
             content_type: Default::default(),
@@ -1692,7 +1681,7 @@ async fn capture_retention_payload(model: &Model, options: OpenAIResponsesOption
 async fn does_not_set_prompt_cache_retention_when_pi_cache_retention_is_not_set() {
     // The TS case is live-gated (`skipIf(!OPENAI_API_KEY)`); the offline Rust
     // port injects an empty scoped env and the mock transport.
-    let model = builtin("openai", "gpt-4o-mini");
+    let model = builtin("openai", "gpt-5.4-mini");
     let payload = capture_retention_payload(
         &model,
         retention_options(Some(ProviderEnv::new()), None, None),
@@ -1706,7 +1695,7 @@ async fn does_not_set_prompt_cache_retention_when_pi_cache_retention_is_not_set(
 async fn sets_prompt_cache_retention_to_24h_when_pi_cache_retention_is_long() {
     // The TS case is live-gated (`skipIf(!OPENAI_API_KEY)`); the offline Rust
     // port injects the scoped env the TS test set on process.env.
-    let model = builtin("openai", "gpt-4o-mini");
+    let model = builtin("openai", "gpt-5.4-mini");
     let payload = capture_retention_payload(
         &model,
         retention_options(
@@ -1722,7 +1711,7 @@ async fn sets_prompt_cache_retention_to_24h_when_pi_cache_retention_is_long() {
 
 #[tokio::test]
 async fn sets_prompt_cache_retention_for_non_api_openai_com_baseurl_by_default() {
-    let mut proxy_model = builtin("openai", "gpt-4o-mini");
+    let mut proxy_model = builtin("openai", "gpt-5.4-mini");
     proxy_model.base_url = "https://my-proxy.example.com/v1".to_string();
     let payload = capture_retention_payload(
         &proxy_model,
@@ -1739,7 +1728,7 @@ async fn sets_prompt_cache_retention_for_non_api_openai_com_baseurl_by_default()
 
 #[tokio::test]
 async fn omits_prompt_cache_retention_when_supports_long_cache_retention_is_false() {
-    let mut model = builtin("openai", "gpt-4o-mini");
+    let mut model = builtin("openai", "gpt-5.4-mini");
     model.compat = Some(ModelCompat {
         supports_long_cache_retention: Some(false),
         ..Default::default()
@@ -1776,7 +1765,7 @@ async fn omits_prompt_cache_key_and_disables_implicit_writes_when_cache_retentio
 
 #[tokio::test]
 async fn omits_prompt_cache_options_for_models_that_reject_it() {
-    let model = builtin("openai", "gpt-4o-mini");
+    let model = builtin("openai", "gpt-5.4-mini");
     let payload = capture_retention_payload(
         &model,
         retention_options(None, Some(CacheRetention::None), Some("session-1")),
@@ -1789,7 +1778,7 @@ async fn omits_prompt_cache_options_for_models_that_reject_it() {
 
 #[tokio::test]
 async fn sets_prompt_cache_retention_when_cache_retention_is_long() {
-    let model = builtin("openai", "gpt-4o-mini");
+    let model = builtin("openai", "gpt-5.4-mini");
     let payload = capture_retention_payload(
         &model,
         retention_options(None, Some(CacheRetention::Long), Some("session-2")),

@@ -24,7 +24,7 @@ in the same commit.
 | [run-loop](subsystems/run-loop.md) | [turn-completion-is-an-engine-owned-event](#turn-completion-is-an-engine-owned-event) · [agent-core-is-a-holt-owned-workspace-crate](#agent-core-is-a-holt-owned-workspace-crate) · [foreign-thinking-is-dropped-not-replayed-as-text](#foreign-thinking-is-dropped-not-replayed-as-text) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [context-report-captures-the-main-request](#context-report-captures-the-main-request) · [context-report-falls-back-to-a-next-request-preview](#context-report-falls-back-to-a-next-request-preview) · [context-preview-loads-mcp-independently](#context-preview-loads-mcp-independently) · [context-preview-targets-the-queue-head](#context-preview-targets-the-queue-head) · [mcp-connections-are-per-server-single-flight](#mcp-connections-are-per-server-single-flight) |
 | [persistence](subsystems/persistence.md) | [history-is-a-separate-persisted-record](#history-is-a-separate-persisted-record) · [transcript-append-only-log-per-chat-lock](#transcript-append-only-log-per-chat-lock) · [turns-resume-from-an-intent-journal](#turns-resume-from-an-intent-journal) · [step-checkpoints-in-a-chat-owned-object-store](#step-checkpoints-in-a-chat-owned-object-store) |
 | [toolset-mechanics](subsystems/toolset-mechanics.md) | [in-process-ripgrep-for-content-search](#in-process-ripgrep-for-content-search) · [web-tools-full-text-ungated-pluggable-search](#web-tools-full-text-ungated-pluggable-search) · [agents-read-chats-through-validated-chat-links](#agents-read-chats-through-validated-chat-links) · [mcp-servers-join-as-engine-clients-behind-the-gate](#mcp-servers-join-as-engine-clients-behind-the-gate) · [mcp-tool-schemas-defer-through-a-loader](#mcp-tool-schemas-defer-through-a-loader) · [todo-card-is-the-record](#todo-card-is-the-record) · [agent-commands-run-under-git-bash-on-windows](#agent-commands-run-under-git-bash-on-windows) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
-| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) |
+| [provider-transport](subsystems/provider-transport.md) | [three-layer-provider-catalog](#three-layer-provider-catalog) · [custom-providers-accept-plaintext-http](#custom-providers-accept-plaintext-http) · [fetched-models-carry-the-dialogs-reasoning-flag](#fetched-models-carry-the-dialogs-reasoning-flag) · [compiled-model-catalog-refreshes-from-models-dev](#compiled-model-catalog-refreshes-from-models-dev) · [retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog) |
 | [subagents](subsystems/subagents.md) | [subagents-use-independent-history-and-foreground-results](#subagents-use-independent-history-and-foreground-results) · [agent-fan-out-is-one-call-with-display-only-item-parts](#agent-fan-out-is-one-call-with-display-only-item-parts) · [subagent-spend-is-visible-not-bounded](#subagent-spend-is-visible-not-bounded) · [workflows-run-scripts-in-the-background-and-report-by-continuation](#workflows-run-scripts-in-the-background-and-report-by-continuation) · [workflow-runs-declare-their-plan-up-front](#workflow-runs-declare-their-plan-up-front) |
 | [prompts-skills](subsystems/prompts-skills.md) | [skills-referenced-in-place-from-standard-roots](#skills-referenced-in-place-from-standard-roots) · [metadata-only-skill-advertising](#metadata-only-skill-advertising) · [skill-invocation-is-an-inline-mention](#skill-invocation-is-an-inline-mention) · [skill-listing-scales-with-context-window](#skill-listing-scales-with-context-window) |
 | [permission-gate](subsystems/permission-gate.md) | [permission-modes-gate-mutations-no-os-sandbox](#permission-modes-gate-mutations-no-os-sandbox) · [addressed-path-vocabulary](#addressed-path-vocabulary) |
@@ -1129,6 +1129,9 @@ the replay rule deliberately dropped).
 
 ## compiled-model-catalog-refreshes-from-models-dev
 
+Partially superseded for removal by
+[retired-models-leave-the-compiled-catalog](#retired-models-leave-the-compiled-catalog).
+
 The compiled catalog (`crates/core/src/ai/data/models.generated.json`) is
 refreshed from models.dev by `scripts/update-model-catalog.py`, run by hand
 and committed: the pi generator behind the embedded snapshot was never
@@ -1160,3 +1163,25 @@ decision); porting pi's generator (its per-model gateway routing lives
 nowhere but the snapshot, so the script reads the routing back out of the
 snapshot instead); hand-editing the JSON (the port's own instruction —
 three months of nothing moved).
+
+## retired-models-leave-the-compiled-catalog
+
+A catalog entry leaves when the source retires it: a row its own
+provider's listing marks deprecated, a model that listing no longer
+carries where it is the provider's own catalog (the generator's
+RETIRE_UNLISTED — OpenAI, Anthropic, Google, Mistral, Moonshot and the
+hosting vendors; not OpenRouter, Bedrock, Azure, Copilot or a plan, where
+models.dev is incomplete about regional and plan-specific variants — a
+plan's listing lags, marking deprecated on one plan what it merely omits
+on another), or, for a model its own listing no longer carries, an id any
+provider marks realtime. A moving alias the source tracks under
+another provider's row (`gemini-flash-latest` on Vertex) stays. Rejected:
+keeping everything the source dropped for the user to hide (the 2026-11
+refresh would have shipped GPT-4 and 4o beside GPT-6, and nothing in the
+pickers pushes a retired model out of the way); flagging deprecated
+entries and hiding them behind a picker toggle (a new field on the model
+record, an RPC row and UI for a state the source has already settled).
+The cost is accepted: a chat configured on a retired model stops
+resolving after the upgrade and asks for a model again, and a test that
+used a retired entry moves to a current model of the same provider, or
+builds one from it with the property under test overridden.

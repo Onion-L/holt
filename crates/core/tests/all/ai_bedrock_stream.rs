@@ -193,9 +193,9 @@ async fn uses_adaptive_thinking_and_native_levels_for_claude_haiku_55() {
 
 #[tokio::test]
 async fn omits_display_for_govcloud_model_ids_on_non_adaptive_claude_thinking() {
-    let mut model = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
-    model.id = "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string();
-    model.name = "Claude Sonnet 4.5 (GovCloud)".to_string();
+    let mut model = base_model("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    model.id = "us-gov.anthropic.claude-haiku-4-5-20251001-v1:0".to_string();
+    model.name = "Claude Haiku 4.5 (GovCloud)".to_string();
 
     let fields = additional_fields(&model, reasoning_options(ThinkingLevel::High)).await;
     assert_eq!(
@@ -288,10 +288,10 @@ async fn injects_cache_points_when_model_name_identifies_a_supported_claude_mode
 
 #[tokio::test]
 async fn falls_back_to_fixed_budget_thinking_for_non_adaptive_claude_via_model_name() {
-    let mut model = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    let mut model = base_model("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     model.id = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/my-profile"
         .to_string();
-    model.name = "Claude Sonnet 4.5".to_string();
+    model.name = "Claude Haiku 4.5".to_string();
 
     let fields = additional_fields(&model, reasoning_options(ThinkingLevel::High)).await;
     assert_eq!(fields["thinking"]["type"], json!("enabled"));
@@ -1031,7 +1031,7 @@ fn lookup_tool(strict: &str) -> Tool {
 
 #[tokio::test]
 async fn gates_native_strict_tool_use_by_model_capability() {
-    let model = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    let model = base_model("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     let context = Context {
         messages: vec![user_message("Use the tool")],
         tools: Some(vec![lookup_tool("require")]),
@@ -1043,7 +1043,7 @@ async fn gates_native_strict_tool_use_by_model_capability() {
         json!(true)
     );
 
-    let mut nova = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    let mut nova = base_model("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     nova.id = "amazon.nova-lite-v1:0".to_string();
     nova.name = "Nova Lite".to_string();
     nova.reasoning = false;
@@ -1063,7 +1063,7 @@ async fn gates_native_strict_tool_use_by_model_capability() {
 
 #[tokio::test]
 async fn preserves_empty_property_names_in_streamed_tool_arguments() {
-    let model = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    let model = base_model("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     let items = vec![
         json!({ "messageStart": { "role": "assistant" } }),
         json!({
@@ -1114,7 +1114,7 @@ async fn converted_messages(context: Context, model: &Model) -> Vec<Value> {
 
 #[tokio::test]
 async fn replaces_user_messages_with_only_unknown_or_blank_content_with_a_placeholder() {
-    let model = base_model("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+    let model = base_model("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     // Blank string content.
     let messages = converted_messages(
         Context {

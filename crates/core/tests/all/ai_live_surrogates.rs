@@ -291,18 +291,18 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Google Provider",
             provider: "google",
-            model: "gemini-2.5-flash",
+            model: "gemini-3.8-flash",
             env: "GEMINI_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
             oauth: None,
         },
         SurrogateSuite {
-            // TS uses getModel("openai", "gpt-4o-mini") without the
-            // completions api override here (openai-responses api).
+            // A current OpenAI chat model on the responses api; the TS suite
+            // ran gpt-4o-mini here without the completions override.
             label: "OpenAI Completions Provider",
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "OPENAI_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -311,7 +311,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "OpenAI Responses Provider",
             provider: "openai",
-            model: "gpt-5-mini",
+            model: "gpt-5.2",
             env: "OPENAI_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -320,7 +320,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Azure OpenAI Responses Provider",
             provider: "azure-openai-responses",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -365,7 +365,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Cloudflare Workers AI Provider",
             provider: "cloudflare-workers-ai",
-            model: "@cf/moonshotai/kimi-k2.6",
+            model: "@cf/zai-org/glm-5.3",
             env: "CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -383,7 +383,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Hugging Face Provider",
             provider: "huggingface",
-            model: "moonshotai/Kimi-K2.5",
+            model: "moonshotai/Kimi-K3",
             env: "HF_TOKEN",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -392,7 +392,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Together AI Provider",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             reasoning_effort_high: true,
             openai_completions_api: false,
@@ -410,7 +410,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "zAI Provider",
             provider: "zai",
-            model: "glm-5.2",
+            model: "glm-5.3",
             env: "ZAI_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -419,7 +419,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Mistral Provider",
             provider: "mistral",
-            model: "devstral-medium-latest",
+            model: "codestral-latest",
             env: "MISTRAL_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -428,7 +428,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "MiniMax Provider",
             provider: "minimax",
-            model: "MiniMax-M2.7",
+            model: "MiniMax-M3.1-Flash",
             env: "MINIMAX_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -437,7 +437,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Xiaomi MiMo (API billing) Provider",
             provider: "xiaomi",
-            model: "mimo-v2.5-pro",
+            model: "mimo-v2.6-pro",
             env: "XIAOMI_API_KEY",
             reasoning_effort_high: false,
             openai_completions_api: false,
@@ -518,7 +518,7 @@ async fn unicode_surrogate_env_provider_matrix() {
         SurrogateSuite {
             label: "Amazon Bedrock Provider",
             provider: "amazon-bedrock",
-            model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            model: "global.anthropic.claude-sonnet-4-6",
             env: "AWS_PROFILE | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY | AWS_BEARER_TOKEN_BEDROCK",
             reasoning_effort_high: false,
             openai_completions_api: false,

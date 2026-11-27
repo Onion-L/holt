@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 // ---------------------------------------------------------------------------
 
 fn generative_ai_model() -> Model {
-    holt_core::ai::providers::builtin::get_builtin_model("google", "gemini-2.5-flash")
+    holt_core::ai::providers::builtin::get_builtin_model("google", "gemini-2.5-flash-lite")
         .expect("catalog model google/gemini-2.5-flash")
 }
 

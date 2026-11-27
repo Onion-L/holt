@@ -58,7 +58,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Anthropic
     ProviderModelPair {
         provider: "anthropic",
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-6",
         label: "anthropic-claude-sonnet-4-5",
         api_override: None,
         upstream_api_key_env: None,
@@ -74,21 +74,21 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // OpenAI
     ProviderModelPair {
         provider: "openai",
-        model: "gpt-4o-mini",
+        model: "gpt-5.4-mini",
         label: "openai-completions-gpt-4o-mini",
         api_override: Some("openai-completions"),
         upstream_api_key_env: None,
     },
     ProviderModelPair {
         provider: "openai",
-        model: "gpt-5-mini",
+        model: "gpt-5.2",
         label: "openai-responses-gpt-5-mini",
         api_override: None,
         upstream_api_key_env: None,
     },
     ProviderModelPair {
         provider: "azure-openai-responses",
-        model: "gpt-4o-mini",
+        model: "gpt-5.4-mini",
         label: "azure-openai-responses-gpt-4o-mini",
         api_override: None,
         upstream_api_key_env: None,
@@ -133,7 +133,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Amazon Bedrock
     ProviderModelPair {
         provider: "amazon-bedrock",
-        model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        model: "global.anthropic.claude-sonnet-4-6",
         label: "bedrock-claude-sonnet-4-5",
         api_override: None,
         upstream_api_key_env: None,
@@ -157,7 +157,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Cloudflare Workers AI
     ProviderModelPair {
         provider: "cloudflare-workers-ai",
-        model: "@cf/moonshotai/kimi-k2.6",
+        model: "@cf/zai-org/glm-5.3",
         label: "cloudflare-kimi-k2.6",
         api_override: None,
         upstream_api_key_env: None,
@@ -195,7 +195,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Hugging Face
     ProviderModelPair {
         provider: "huggingface",
-        model: "moonshotai/Kimi-K2.5",
+        model: "moonshotai/Kimi-K3",
         label: "huggingface-kimi-k2.5",
         api_override: None,
         upstream_api_key_env: None,
@@ -203,7 +203,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Together AI
     ProviderModelPair {
         provider: "together",
-        model: "moonshotai/Kimi-K2.6",
+        model: "moonshotai/Kimi-K3",
         label: "together-kimi-k2.6",
         api_override: None,
         upstream_api_key_env: None,
@@ -227,7 +227,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Mistral
     ProviderModelPair {
         provider: "mistral",
-        model: "devstral-medium-latest",
+        model: "codestral-latest",
         label: "mistral-devstral-medium",
         api_override: None,
         upstream_api_key_env: None,
@@ -237,14 +237,14 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // suites, so the second fixture overwrites the first in the context map.
     ProviderModelPair {
         provider: "minimax",
-        model: "MiniMax-M2.7",
+        model: "MiniMax-M3.1-Flash",
         label: "minimax-m2.7",
         api_override: None,
         upstream_api_key_env: None,
     },
     ProviderModelPair {
         provider: "minimax-cn",
-        model: "MiniMax-M2.7",
+        model: "MiniMax-M3.1-Flash",
         label: "minimax-m2.7",
         api_override: None,
         upstream_api_key_env: None,
@@ -266,7 +266,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     },
     ProviderModelPair {
         provider: "opencode",
-        model: "gemini-3-flash",
+        model: "gemini-3.5-flash",
         label: "zen-gemini-3-flash",
         api_override: None,
         upstream_api_key_env: None,
@@ -310,7 +310,7 @@ const PROVIDER_MODEL_PAIRS: &[ProviderModelPair] = &[
     // Xiaomi MiMo
     ProviderModelPair {
         provider: "xiaomi",
-        model: "mimo-v2.5-pro",
+        model: "mimo-v2.6-pro",
         label: "xiaomi-mimo-v2.5-pro",
         api_override: None,
         upstream_api_key_env: None,

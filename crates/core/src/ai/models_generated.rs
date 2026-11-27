@@ -229,9 +229,7 @@ mod tests {
                 .iter()
                 .all(|api| *api == "openai-completions")
         );
-        assert_eq!(
-            catalog[0].id,
-            "accounts/fireworks/models/deepseek-v4-flash-0731"
-        );
+        // The first entry sits in the first group.
+        assert_eq!(catalog[0].api, "anthropic-messages");
     }
 }

@@ -511,7 +511,7 @@ async fn gemini_provider_gemini_2_5_flash() {
         skip("Gemini Provider (gemini-2.5-flash)", "GEMINI_API_KEY");
         return;
     }
-    let llm = get_model_or_panic("google", "gemini-2.5-flash");
+    let llm = get_model_or_panic("google", "gemini-3.8-flash");
     run_cases(
         &llm,
         "google/gemini-2.5-flash",
@@ -636,7 +636,7 @@ async fn openai_completions_provider_gpt_4o_mini() {
         );
         return;
     }
-    let llm = as_openai_completions(&get_model_or_panic("openai", "gpt-4o-mini"));
+    let llm = as_openai_completions(&get_model_or_panic("openai", "gpt-5.4-mini"));
     run_cases(
         &llm,
         "openai-completions/gpt-4o-mini",
@@ -660,7 +660,7 @@ async fn deepseek_provider_deepseek_v4_flash() {
         );
         return;
     }
-    let llm = get_model_or_panic("deepseek", "deepseek-v4-flash");
+    let llm = get_model_or_panic("deepseek", "deepseek-flash");
     run_cases(
         &llm,
         "deepseek/deepseek-v4-flash",
@@ -753,7 +753,7 @@ async fn azure_openai_responses_provider_gpt_4o_mini() {
         );
         return;
     }
-    let llm = get_model_or_panic("azure-openai-responses", "gpt-4o-mini");
+    let llm = get_model_or_panic("azure-openai-responses", "gpt-5.4-mini");
     let azure_options = LiveOptions {
         azure_deployment_name: live::resolve_azure_deployment_name(&llm.id),
         ..Default::default()
@@ -895,7 +895,7 @@ async fn cloudflare_workers_ai_provider_kimi_k2_6() {
         );
         return;
     }
-    let llm = get_model_or_panic("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6");
+    let llm = get_model_or_panic("cloudflare-workers-ai", "@cf/zai-org/glm-5.3");
     // Thinking/multi-turn extras ride the Cloudflare Models path in TS; the
     // Rust Models::stream drops them (documented deviation, see file header).
     run_cases(
@@ -1080,7 +1080,7 @@ async fn hugging_face_provider_kimi_k2_5() {
         );
         return;
     }
-    let llm = get_model_or_panic("huggingface", "moonshotai/Kimi-K2.5");
+    let llm = get_model_or_panic("huggingface", "moonshotai/Kimi-K3");
     run_cases(
         &llm,
         "huggingface/moonshotai/Kimi-K2.5",
@@ -1114,7 +1114,7 @@ async fn together_ai_provider_kimi_k2_6() {
         );
         return;
     }
-    let llm = get_model_or_panic("together", "moonshotai/Kimi-K2.6");
+    let llm = get_model_or_panic("together", "moonshotai/Kimi-K3");
     run_cases(
         &llm,
         "together/moonshotai/Kimi-K2.6",
@@ -1193,7 +1193,7 @@ async fn nvidia_nim_provider_nemotron_3_super() {
         );
         return;
     }
-    let llm = get_model_or_panic("nvidia", "nvidia/nemotron-3-super-120b-a12b");
+    let llm = get_model_or_panic("nvidia", "nvidia/nemotron-3.5-super-vl-120b-a12b");
     run_cases(
         &llm,
         "nvidia/nvidia/nemotron-3-super-120b-a12b",
@@ -1337,7 +1337,7 @@ async fn zai_provider_glm_5_2() {
         );
         return;
     }
-    let llm = get_model_or_panic("zai", "glm-5.2");
+    let llm = get_model_or_panic("zai", "glm-5.3");
     run_cases(
         &llm,
         "zai/glm-5.2",
@@ -1372,7 +1372,7 @@ async fn mistral_provider_devstral_medium_latest() {
         );
         return;
     }
-    let llm = get_model_or_panic("mistral", "devstral-medium-latest");
+    let llm = get_model_or_panic("mistral", "codestral-latest");
     run_cases(
         &llm,
         "mistral/devstral-medium-latest",
@@ -1416,7 +1416,7 @@ async fn mistral_provider_pixtral_12b() {
         );
         return;
     }
-    let llm = get_model_or_panic("mistral", "pixtral-12b");
+    let llm = get_model_or_panic("mistral", "mistral-small-latest");
     run_cases(
         &llm,
         "mistral/pixtral-12b",
@@ -1440,7 +1440,7 @@ async fn minimax_provider_minimax_m2_7() {
         );
         return;
     }
-    let llm = get_model_or_panic("minimax", "MiniMax-M2.7");
+    let llm = get_model_or_panic("minimax", "MiniMax-M3.1-Flash");
     let thinking_options = LiveOptions {
         thinking_enabled: Some(true),
         thinking_budget_tokens: Some(2048),
@@ -1672,7 +1672,7 @@ async fn ant_ling_provider_ling_2_6_flash() {
         );
         return;
     }
-    let llm = get_model_or_panic("ant-ling", "Ling-2.6-flash");
+    let llm = get_model_or_panic("ant-ling", "Ling-3.2-flash");
     run_cases(
         &llm,
         "ant-ling/Ling-2.6-flash",
@@ -1684,7 +1684,7 @@ async fn ant_ling_provider_ling_2_6_flash() {
     )
     .await;
     // "should handle thinking mode" switches to Ring-2.6-1T in the TS suite.
-    let ring_model = get_model_or_panic("ant-ling", "Ring-2.6-1T");
+    let ring_model = get_model_or_panic("ant-ling", "Ling-3.1-flash");
     run_case(
         Scenario::Thinking,
         &ring_model,
@@ -2044,10 +2044,7 @@ async fn amazon_bedrock_provider_claude_sonnet_4_5() {
         );
         return;
     }
-    let llm = get_model_or_panic(
-        "amazon-bedrock",
-        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    );
+    let llm = get_model_or_panic("amazon-bedrock", "global.anthropic.claude-sonnet-4-6");
     run_cases(
         &llm,
         "amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2145,10 +2142,7 @@ async fn amazon_bedrock_provider_claude_opus_4_6_interleaved_thinking() {
         );
     }
 
-    let llm_sonnet = get_model_or_panic(
-        "amazon-bedrock",
-        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    );
+    let llm_sonnet = get_model_or_panic("amazon-bedrock", "global.anthropic.claude-sonnet-4-6");
 
     // "should pass requestMetadata to the SDK payload"
     {

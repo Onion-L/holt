@@ -486,7 +486,7 @@ async fn assert_interleaved(model: &Model) {
 async fn interleaved_thinking_bedrock_and_anthropic() {
     if common::live::has_bedrock_credentials() {
         for id in [
-            "global.anthropic.claude-opus-4-5-20251101-v1:0",
+            "global.anthropic.claude-opus-5",
             "global.anthropic.claude-opus-4-6-v1",
         ] {
             assert_interleaved(&get_model_or_panic("amazon-bedrock", id)).await;
@@ -495,7 +495,7 @@ async fn interleaved_thinking_bedrock_and_anthropic() {
         skip("Amazon Bedrock interleaved thinking", "AWS credentials");
     }
     if live_api_key("anthropic").is_some() {
-        for id in ["claude-opus-4-5", "claude-opus-4-6"] {
+        for id in ["claude-opus-5", "claude-opus-4-6"] {
             assert_interleaved(&get_model_or_panic("anthropic", id)).await;
         }
     } else {

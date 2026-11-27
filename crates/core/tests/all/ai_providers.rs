@@ -352,19 +352,6 @@ async fn builtin_models_registers_every_builtin_provider_with_models() {
 #[test]
 fn stores_native_constrained_sampling_capabilities_in_model_metadata() {
     use holt_core::ai::providers::builtin::get_builtin_model;
-    let gpt4o = get_builtin_model("openai", "gpt-4o").unwrap();
-    assert_eq!(
-        gpt4o.compat.as_ref().unwrap().supports_strict_mode,
-        Some(true)
-    );
-    assert_eq!(
-        gpt4o
-            .compat
-            .as_ref()
-            .unwrap()
-            .supports_open_ai_grammar_tools,
-        None
-    );
     let gpt54 = get_builtin_model("openai", "gpt-5.4").unwrap();
     let compat = gpt54.compat.as_ref().unwrap();
     assert_eq!(compat.supports_strict_mode, Some(true));

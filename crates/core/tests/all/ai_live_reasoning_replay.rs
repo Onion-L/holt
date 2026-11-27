@@ -77,7 +77,7 @@ async fn openai_responses_reasoning_replay_e2e() {
     };
     let user_message = user("Use the double_number tool to double 21.");
     let tools = Some(vec![tool()]);
-    let model_a = get_model_or_panic("openai", "gpt-5-mini");
+    let model_a = get_model_or_panic("openai", "gpt-5.2");
 
     let mut aborted_source = live_complete(
         &model_a,
@@ -177,7 +177,7 @@ async fn openai_responses_reasoning_replay_e2e() {
             .is_some_and(|payload| payload["input"].is_array())
     );
 
-    let anthropic_model = get_model_or_panic("anthropic", "claude-sonnet-4-5");
+    let anthropic_model = get_model_or_panic("anthropic", "claude-sonnet-4-6");
     let anthropic_response = live_complete(
         &anthropic_model,
         &Context {

@@ -91,7 +91,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Google Provider Empty Messages",
         provider: "google",
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         gate: Gate::Env("GEMINI_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -100,7 +100,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "OpenAI Completions Provider Empty Messages",
         provider: "openai",
-        model: "gpt-4o-mini",
+        model: "gpt-5.4-mini",
         gate: Gate::Env("OPENAI_API_KEY"),
         openai_completions_api: true,
         azure: false,
@@ -109,7 +109,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "OpenAI Responses Provider Empty Messages",
         provider: "openai",
-        model: "gpt-5-mini",
+        model: "gpt-5.2",
         gate: Gate::Env("OPENAI_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -118,7 +118,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Azure OpenAI Responses Provider Empty Messages",
         provider: "azure-openai-responses",
-        model: "gpt-4o-mini",
+        model: "gpt-5.4-mini",
         gate: Gate::Azure,
         openai_completions_api: false,
         azure: true,
@@ -163,7 +163,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Cloudflare Workers AI Provider Empty Messages",
         provider: "cloudflare-workers-ai",
-        model: "@cf/moonshotai/kimi-k2.6",
+        model: "@cf/zai-org/glm-5.3",
         gate: Gate::CloudflareWorkersAi,
         openai_completions_api: false,
         azure: false,
@@ -181,7 +181,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Hugging Face Provider Empty Messages",
         provider: "huggingface",
-        model: "moonshotai/Kimi-K2.5",
+        model: "moonshotai/Kimi-K3",
         gate: Gate::Env("HF_TOKEN"),
         openai_completions_api: false,
         azure: false,
@@ -190,7 +190,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Together AI Provider Empty Messages",
         provider: "together",
-        model: "moonshotai/Kimi-K2.6",
+        model: "moonshotai/Kimi-K3",
         gate: Gate::Env("TOGETHER_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -208,7 +208,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "zAI Provider Empty Messages",
         provider: "zai",
-        model: "glm-5.2",
+        model: "glm-5.3",
         gate: Gate::Env("ZAI_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -217,7 +217,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Mistral Provider Empty Messages",
         provider: "mistral",
-        model: "devstral-medium-latest",
+        model: "codestral-latest",
         gate: Gate::Env("MISTRAL_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -226,7 +226,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "MiniMax Provider Empty Messages",
         provider: "minimax",
-        model: "MiniMax-M2.7",
+        model: "MiniMax-M3.1-Flash",
         gate: Gate::Env("MINIMAX_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -235,7 +235,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Xiaomi MiMo (API billing) Provider Empty Messages",
         provider: "xiaomi",
-        model: "mimo-v2.5-pro",
+        model: "mimo-v2.6-pro",
         gate: Gate::Env("XIAOMI_API_KEY"),
         openai_completions_api: false,
         azure: false,
@@ -316,7 +316,7 @@ const EMPTY_SUITES: &[EmptySuite] = &[
     EmptySuite {
         name: "Amazon Bedrock Provider Empty Messages",
         provider: "amazon-bedrock",
-        model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        model: "global.anthropic.claude-sonnet-4-6",
         gate: Gate::Bedrock,
         openai_completions_api: false,
         azure: false,

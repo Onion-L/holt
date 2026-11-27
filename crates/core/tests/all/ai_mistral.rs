@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 
 use holt_core::ai::api::mistral_conversations::{MistralOptions, stream, stream_simple};
 use holt_core::ai::compat;
-use holt_core::ai::providers::builtin::get_builtin_model;
 use holt_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, CacheRetention, ConstrainedSamplingConfig,
     ConstrainedSamplingStrict, Context, ImageContent, Message, Model, ModelCost, ModelInput,
@@ -163,7 +162,8 @@ impl HttpFetch for MistralFetch {
 }
 
 fn builtin(id: &str) -> Model {
-    get_builtin_model("mistral", id).unwrap_or_else(|| panic!("missing mistral model {id}"))
+    holt_core::ai::providers::builtin::get_builtin_model("mistral", id)
+        .unwrap_or_else(|| panic!("missing mistral model {id}"))
 }
 
 fn user_message(text: &str, timestamp: i64) -> Message {
@@ -708,7 +708,7 @@ async fn preserves_http_status_and_response_bodies_in_errors() {
 // ---------------------------------------------------------------------------
 
 fn raw_stop_reason_model() -> Model {
-    builtin("devstral-medium-latest")
+    builtin("codestral-latest")
 }
 
 fn raw_stop_reason_context() -> Context {
@@ -850,9 +850,9 @@ async fn omits_reasoning_controls_for_mistral_small_4_when_thinking_is_off() {
 }
 
 #[tokio::test]
-async fn uses_prompt_mode_for_magistral_reasoning_models() {
+async fn uses_prompt_mode_for_reasoning_models_without_effort_support() {
     let payload = capture_reasoning_payload(
-        &builtin("magistral-medium-latest"),
+        &builtin("mistral-large-latest"),
         SimpleStreamOptions {
             reasoning: Some(ThinkingLevel::Medium),
             ..Default::default()
@@ -864,10 +864,23 @@ async fn uses_prompt_mode_for_magistral_reasoning_models() {
     assert!(payload.get("reasoningEffort").is_none());
 }
 
+/// The `mistral-medium-3.5` record the catalog retired; a user-defined
+/// record with that id still rides the transport's reasoning-effort path.
+fn mistral_medium_3_5() -> Model {
+    Model {
+        id: "mistral-medium-3.5".to_string(),
+        api: "mistral-conversations".to_string(),
+        provider: "mistral".to_string(),
+        base_url: "https://api.mistral.ai".to_string(),
+        reasoning: true,
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn uses_reasoning_effort_for_mistral_medium_3_5() {
     let payload = capture_reasoning_payload(
-        &builtin("mistral-medium-3.5"),
+        &mistral_medium_3_5(),
         SimpleStreamOptions {
             reasoning: Some(ThinkingLevel::Medium),
             ..Default::default()
@@ -881,11 +894,8 @@ async fn uses_reasoning_effort_for_mistral_medium_3_5() {
 
 #[tokio::test]
 async fn omits_reasoning_controls_for_mistral_medium_3_5_when_thinking_is_off() {
-    let payload = capture_reasoning_payload(
-        &builtin("mistral-medium-3.5"),
-        SimpleStreamOptions::default(),
-    )
-    .await;
+    let payload =
+        capture_reasoning_payload(&mistral_medium_3_5(), SimpleStreamOptions::default()).await;
 
     assert!(payload.get("reasoningEffort").is_none());
     assert!(payload.get("promptMode").is_none());
@@ -932,7 +942,7 @@ async fn omits_prompt_cache_key_when_cache_retention_is_disabled() {
 
 #[tokio::test]
 async fn strips_internal_schema_keys_before_the_sdk_validates_tool_schemas() {
-    let mut model = builtin("devstral-medium-latest");
+    let mut model = builtin("codestral-latest");
     model.base_url = "http://127.0.0.1:9".to_string();
     let context = Context {
         messages: vec![user_message("Hi", 0)],

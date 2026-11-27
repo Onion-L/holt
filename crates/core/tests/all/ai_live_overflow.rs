@@ -249,7 +249,7 @@ async fn overflow_openai_completions() {
         skip("OpenAI Completions gpt-4o-mini overflow", "OPENAI_API_KEY");
         return;
     };
-    let model = as_openai_completions(&get_model_or_panic("openai", "gpt-4o-mini"));
+    let model = as_openai_completions(&get_model_or_panic("openai", "gpt-5.4-mini"));
     run_overflow_case(
         &model,
         &key,
@@ -266,7 +266,7 @@ async fn overflow_openai_responses() {
         skip("OpenAI Responses gpt-4o overflow", "OPENAI_API_KEY");
         return;
     };
-    let model = get_model_or_panic("openai", "gpt-4o");
+    let model = get_model_or_panic("openai", "gpt-5.4");
     run_overflow_case(
         &model,
         &key,
@@ -286,7 +286,7 @@ async fn overflow_azure_openai_responses() {
         );
         return;
     }
-    let model = get_model_or_panic("azure-openai-responses", "gpt-4o-mini");
+    let model = get_model_or_panic("azure-openai-responses", "gpt-5.4-mini");
     let key = live_env("AZURE_OPENAI_API_KEY").unwrap_or_default();
     run_overflow_case(
         &model,
@@ -304,7 +304,7 @@ async fn overflow_google() {
         skip("Google gemini-2.5-flash overflow", "GEMINI_API_KEY");
         return;
     };
-    let model = get_model_or_panic("google", "gemini-2.5-flash");
+    let model = get_model_or_panic("google", "gemini-3.8-flash");
     run_overflow_case(
         &model,
         &key,
@@ -344,10 +344,7 @@ async fn overflow_amazon_bedrock() {
         );
         return;
     }
-    let model = get_model_or_panic(
-        "amazon-bedrock",
-        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    );
+    let model = get_model_or_panic("amazon-bedrock", "global.anthropic.claude-sonnet-4-6");
     run_overflow_case(
         &model,
         "",
@@ -378,42 +375,42 @@ async fn overflow_env_provider_matrix() {
         OverflowSuite {
             case: "Groq: llama-3.3-70b-versatile - should detect overflow via isContextOverflow",
             provider: "groq",
-            model: "llama-3.3-70b-versatile",
+            model: "qwen/qwen3.8-27b",
             env: "GROQ_API_KEY",
             expect: Expect::Error(r"(?i)reduce the length of the messages"),
         },
         OverflowSuite {
             case: "Hugging Face: Kimi-K2.5 - should detect overflow via isContextOverflow",
             provider: "huggingface",
-            model: "moonshotai/Kimi-K2.5",
+            model: "moonshotai/Kimi-K3",
             env: "HF_TOKEN",
             expect: Expect::ErrorOnly,
         },
         OverflowSuite {
             case: "Together AI: Kimi-K2.6 - should detect overflow via isContextOverflow",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             expect: Expect::ErrorOnly,
         },
         OverflowSuite {
             case: "Mistral: devstral-medium-latest - should detect overflow via isContextOverflow",
             provider: "mistral",
-            model: "devstral-medium-latest",
+            model: "codestral-latest",
             env: "MISTRAL_API_KEY",
             expect: Expect::Error(r"(?i)too large for model with \d+ maximum context length"),
         },
         OverflowSuite {
             case: "MiniMax: MiniMax-M2.7 - should detect overflow via isContextOverflow",
             provider: "minimax",
-            model: "MiniMax-M2.7",
+            model: "MiniMax-M3.1-Flash",
             env: "MINIMAX_API_KEY",
             expect: Expect::ErrorOnly,
         },
         OverflowSuite {
             case: "Xiaomi MiMo (API billing): mimo-v2.5-pro - should detect overflow via isContextOverflow",
             provider: "xiaomi",
-            model: "mimo-v2.5-pro",
+            model: "mimo-v2.6-pro",
             env: "XIAOMI_API_KEY",
             expect: Expect::XiaomiLength,
         },
@@ -521,7 +518,7 @@ async fn overflow_zai() {
         skip("z.ai glm-5.2 overflow", "ZAI_API_KEY");
         return;
     };
-    let model = get_model_or_panic("zai", "glm-5.2");
+    let model = get_model_or_panic("zai", "glm-5.3");
     let result = test_context_overflow(&model, &key).await;
     log_result(&result);
     let case = "z.ai: glm-5.2 - should detect overflow via isContextOverflow when z.ai reports it";

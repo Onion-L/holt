@@ -398,7 +398,7 @@ fn env_gated(provider: &str, env: &str) -> bool {
 
 fn resolve_model(provider: &str, model_id: &str) -> Model {
     let model = get_model_or_panic(provider, model_id);
-    if provider == "openai" && model_id == "gpt-4o-mini" {
+    if provider == "openai" && model_id == "gpt-5.4-mini" {
         as_openai_completions(&model)
     } else {
         model
@@ -411,28 +411,28 @@ async fn tool_call_without_result_env_provider_matrix() {
         WithoutResultSuite {
             case: "Google Provider",
             provider: "google",
-            model: "gemini-2.5-flash",
+            model: "gemini-3.8-flash",
             env: "GEMINI_API_KEY",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "OpenAI Completions Provider",
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "OPENAI_API_KEY",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "OpenAI Responses Provider",
             provider: "openai",
-            model: "gpt-5-mini",
+            model: "gpt-5.2",
             env: "OPENAI_API_KEY",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "Azure OpenAI Responses Provider",
             provider: "azure-openai-responses",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
             reasoning_effort_high: false,
         },
@@ -467,7 +467,7 @@ async fn tool_call_without_result_env_provider_matrix() {
         WithoutResultSuite {
             case: "Cloudflare Workers AI Provider",
             provider: "cloudflare-workers-ai",
-            model: "@cf/moonshotai/kimi-k2.6",
+            model: "@cf/zai-org/glm-5.3",
             env: "CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID",
             reasoning_effort_high: false,
         },
@@ -481,14 +481,14 @@ async fn tool_call_without_result_env_provider_matrix() {
         WithoutResultSuite {
             case: "Hugging Face Provider",
             provider: "huggingface",
-            model: "moonshotai/Kimi-K2.5",
+            model: "moonshotai/Kimi-K3",
             env: "HF_TOKEN",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "Together AI Provider",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             reasoning_effort_high: true,
         },
@@ -502,28 +502,28 @@ async fn tool_call_without_result_env_provider_matrix() {
         WithoutResultSuite {
             case: "zAI Provider",
             provider: "zai",
-            model: "glm-5.2",
+            model: "glm-5.3",
             env: "ZAI_API_KEY",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "Mistral Provider",
             provider: "mistral",
-            model: "devstral-medium-latest",
+            model: "codestral-latest",
             env: "MISTRAL_API_KEY",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "MiniMax Provider",
             provider: "minimax",
-            model: "MiniMax-M2.7",
+            model: "MiniMax-M3.1-Flash",
             env: "MINIMAX_API_KEY",
             reasoning_effort_high: false,
         },
         WithoutResultSuite {
             case: "Xiaomi MiMo (API billing) Provider",
             provider: "xiaomi",
-            model: "mimo-v2.5-pro",
+            model: "mimo-v2.6-pro",
             env: "XIAOMI_API_KEY",
             reasoning_effort_high: false,
         },
@@ -586,7 +586,7 @@ async fn tool_call_without_result_env_provider_matrix() {
         WithoutResultSuite {
             case: "Amazon Bedrock Provider",
             provider: "amazon-bedrock",
-            model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            model: "global.anthropic.claude-sonnet-4-6",
             env: "AWS_PROFILE | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY | AWS_BEARER_TOKEN_BEDROCK",
             reasoning_effort_high: false,
         },
@@ -735,28 +735,28 @@ async fn image_tool_result_env_provider_matrix() {
         ImageResultSuite {
             case: "Google Provider (gemini-2.5-flash)",
             provider: "google",
-            model: "gemini-2.5-flash",
+            model: "gemini-3.8-flash",
             env: "GEMINI_API_KEY",
             reasoning_effort_high: false,
         },
         ImageResultSuite {
             case: "OpenAI Completions Provider (gpt-4o-mini)",
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "OPENAI_API_KEY",
             reasoning_effort_high: false,
         },
         ImageResultSuite {
             case: "OpenAI Responses Provider (gpt-5-mini)",
             provider: "openai",
-            model: "gpt-5-mini",
+            model: "gpt-5.2",
             env: "OPENAI_API_KEY",
             reasoning_effort_high: false,
         },
         ImageResultSuite {
             case: "Azure OpenAI Responses Provider (gpt-4o-mini)",
             provider: "azure-openai-responses",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
             reasoning_effort_high: false,
         },
@@ -777,21 +777,21 @@ async fn image_tool_result_env_provider_matrix() {
         ImageResultSuite {
             case: "Mistral Provider (pixtral-12b)",
             provider: "mistral",
-            model: "pixtral-12b",
+            model: "mistral-small-latest",
             env: "MISTRAL_API_KEY",
             reasoning_effort_high: false,
         },
         ImageResultSuite {
             case: "Together AI Provider (Kimi-K2.6)",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             reasoning_effort_high: true,
         },
         ImageResultSuite {
             case: "Baseten Provider (Kimi-K2.6)",
             provider: "baseten",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3.1-Pro",
             env: "BASETEN_API_KEY",
             reasoning_effort_high: true,
         },
@@ -833,7 +833,7 @@ async fn image_tool_result_env_provider_matrix() {
         ImageResultSuite {
             case: "Amazon Bedrock Provider (claude-sonnet-4-5)",
             provider: "amazon-bedrock",
-            model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            model: "global.anthropic.claude-sonnet-4-6",
             env: "AWS_PROFILE | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY | AWS_BEARER_TOKEN_BEDROCK",
             reasoning_effort_high: false,
         },
@@ -880,7 +880,7 @@ async fn image_tool_result_oauth_providers() {
             "~/.holt/live-auth.json anthropic credentials",
         );
     } else {
-        let model = get_model_or_panic("anthropic", "claude-sonnet-4-5");
+        let model = get_model_or_panic("anthropic", "claude-sonnet-4-6");
         let options = LiveOptions::with_api_key(anthropic_token.as_deref().unwrap_or_default());
         handle_tool_with_image_result(
             &model,
