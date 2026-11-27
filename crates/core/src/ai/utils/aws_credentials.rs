@@ -422,11 +422,13 @@ mod tests {
     }
 
     fn write_token_file(contents: &str) -> String {
+        // The suffix is a counter, not the clock: two tests calling within
+        // one tick shared one path, and the first to finish deleted the
+        // other's token before it was read.
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
-            std::env::temp_dir().join(format!("holt-aws-web-identity-{}", std::process::id()));
-        let mut unique = path.into_os_string();
-        unique.push(format!("-{:?}", std::time::SystemTime::now()));
-        let path = std::path::PathBuf::from(unique);
+            std::env::temp_dir().join(format!("holt-aws-web-identity-{}-{id}", std::process::id()));
         std::fs::write(&path, contents).expect("write token file");
         path.to_string_lossy().to_string()
     }
