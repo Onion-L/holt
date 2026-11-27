@@ -1300,18 +1300,20 @@ flag, kept as the last resort and no more than that.
 The dialog is a table, one row per listed id — its name over its id,
 context window, max output, thinking levels, price, and where the numbers
 come from — chosen over the checkbox list after ten rows of it proved
-unreadable (user screenshot). An adopted row is read-only. An estimate and
+unreadable (user screenshot). An adopted row's numbers read; only its
+name is typed over, as every row's is — the name is the row's own, outside
+the adoption digest, and a blank one leaves the engine's. An estimate and
 a new row show all six levels as switches, amber and dashed where they are
 a guess; a new row's numbers are edited in place; when a listing brings
-several new rows, one set applies to all of them at once. A row's name is
-the catalog's, or else the id written the model list's way (`GLM-5.2
-Highspeed`, `Claude Opus 4.7`, `GPT-5.4 (2026-11-01)`) by one rule in the
-engine. An id the provider already offers stays in view, dimmed and
-unselectable, and `SaveFetchedModels` refuses it: the dialog used to drop
-those ids by reading the panel's model list as it opened, so a click
-before that list landed offered the provider's own models back, and Add
-filed a blank record over the catalog's — a `glm-5.4` with max output
-8,192 over Z.AI's 131,072 (user screenshot).
+several new rows, one set applies to all of them at once. A row's name
+opens as the catalog's, or else the id written the model list's way
+(`GLM-5.2 Highspeed`, `Claude Opus 4.7`, `GPT-5.4 (2026-11-01)`) by one
+rule in the engine. An id the provider already offers stays in view,
+dimmed and unselectable, and `SaveFetchedModels` refuses it: the dialog
+used to drop those ids by reading the panel's model list as it opened, so
+a click before that list landed offered the provider's own models back,
+and Add filed a blank record over the catalog's — a `glm-5.4` with max
+output 8,192 over Z.AI's 131,072 (user screenshot).
 
 Levels chosen by hand — an estimate corrected, a new row's switches — make
 the row the user's: it is filed whole with no adoption marker, so nothing
@@ -1324,8 +1326,9 @@ untouched.
 
 Rejected: keeping the blind defaults (above); the old dialog's shared
 numbers and one Reasoning flag (ten identical text boxes and one ladder
-for ten models); a name input always visible on every row (the id twice
-over per row, lowercase against the list's `GLM-5.2 Highspeed`); hiding the
+for ten models); a name input carrying the bare id (the id twice
+over per row, lowercase against the list's `GLM-5.2 Highspeed` — the
+engine derives the name the input opens on); hiding the
 ids the provider already offers (the user cannot tell why an id is
 missing, and a late model list made the drop unreliable — shown dimmed
 instead, and the engine refuses the overwrite); levels as a text field (the
