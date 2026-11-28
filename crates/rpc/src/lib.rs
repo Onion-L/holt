@@ -86,14 +86,14 @@ pub mod methods {
     /// params `{chatId, proposalId}`. Nothing is written.
     pub const DISCARD_MODEL_PROPOSAL: &str = "DiscardModelProposal";
     /// Settles the pending Key request (ADR-api-keys-collected-through-key-requests): params
-    /// `{chatId, providerId, destination, key?}`. The provider and destination
-    /// identify the displayed card; a mismatch with the current pending request
-    /// refuses the settle without saving or dismissing it. With `key` the value
+    /// `{chatId, cardId, providerId, destination, key?}`. The card, provider
+    /// and destination identify the displayed card; a mismatch with the current
+    /// pending request refuses the settle without saving or dismissing it. With `key` the value
     /// is saved to the credential store (never the chat) and a fixed "API key
     /// saved for …" notice is queued as an ordinary user message; without it a
     /// dismissal notice is queued and no credential is written. Either way the
     /// request clears and the reply is `{settled: "saved" | "dismissed",
-    /// providerId, destination}`.
+    /// cardId, providerId, destination}`.
     pub const SETTLE_PROVIDER_KEY_REQUEST: &str = "SettleProviderKeyRequest";
     /// Settles a provider-choice card (ADR-provider-mode-is-a-chat-mode): params `{chatId, cardId,
     /// providerId}`. The card must be pending and offer the id; the card

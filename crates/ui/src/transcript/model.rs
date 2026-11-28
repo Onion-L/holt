@@ -519,6 +519,7 @@ pub enum RowKind {
     /// one destination it goes to. The masked input is a Transcript-owned
     /// entity keyed by row id — the key never enters the row.
     KeyRequest {
+        card_id: SharedString,
         provider_id: SharedString,
         provider_name: SharedString,
         destination: SharedString,
@@ -1467,6 +1468,7 @@ pub fn rows_for_entry(
                             version: fnv1a(format!("{state:?}\0{destination}").as_bytes()),
                             turn_start: false,
                             kind: RowKind::KeyRequest {
+                                card_id: part_id.clone().into(),
                                 provider_id: provider_id.clone().into(),
                                 provider_name: provider_name.clone().into(),
                                 destination: destination.clone().into(),

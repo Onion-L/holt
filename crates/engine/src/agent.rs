@@ -184,7 +184,11 @@ pub(crate) struct ChatRuntime {
         Arc<Mutex<std::collections::VecDeque<crate::tools::model_setup::StoredProposal>>>,
     /// The chat's pending Key request (ADR-api-keys-collected-through-key-requests): raised by the
     /// `request_provider_key` tool, settled by the transcript card.
+    /// The latest Key request, kept in place even while its settle is in
+    /// flight so a concurrent settle or restart cannot lose it.
     pub(crate) key_request: Arc<Mutex<Option<crate::tools::model_setup::PendingKeyRequest>>>,
+    /// The card whose settle is currently in flight, in memory only.
+    pub(crate) key_request_settling: Arc<Mutex<Option<String>>>,
     /// The destinations a settled Key request approved on this chat
     /// (ADR-api-keys-collected-through-key-requests, chat-scoped by ADR-provider-mode-is-a-chat-mode): (provider, baseUrl) pairs. A
     /// planned-target probe may carry the stored key only against an
@@ -263,6 +267,7 @@ impl ChatRuntime {
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             proposals: Arc::new(Mutex::new(Default::default())),
             key_request: Arc::new(Mutex::new(None)),
+            key_request_settling: Arc::new(Mutex::new(None)),
             approved_key_destinations: Arc::new(Mutex::new(Default::default())),
             child: None,
             usage: Mutex::new(Default::default()),
@@ -564,6 +569,7 @@ impl ChatRuntime {
             removed: std::sync::atomic::AtomicBool::new(false),
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             proposals: Arc::new(Mutex::new(provider_mode.proposals)),
+            key_request_settling: Arc::new(Mutex::new(None)),
             key_request: Arc::new(Mutex::new(provider_mode.key_request)),
             approved_key_destinations: Arc::new(Mutex::new(
                 provider_mode.approved_key_destinations,
@@ -2714,6 +2720,7 @@ mod tests {
         );
         let chat = runtime.chat("chat-1");
         let request = crate::tools::model_setup::PendingKeyRequest {
+            card_id: "call-acme-card".into(),
             provider_id: "acme".into(),
             provider_name: "Acme".into(),
             destination: "https://api.acme.dev/v1".into(),

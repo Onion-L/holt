@@ -310,10 +310,9 @@ pub(crate) fn supersede_orphan_proposal_cards(chat: &ChatRuntime) {
     });
 }
 
-/// Retire every pending key card: a newer request does — at most one is
-/// pending per chat — and so does a settle that finds no request at all. A
-/// settle that acted on a request stamps that request's card alone
-/// ([`stamp_key_card`]).
+/// Retire every pending key card when a newer request lands. A settle that
+/// acted on a request stamps only that card ([`stamp_key_card`]); a stale
+/// click with no current request uses [`supersede_key_card`] instead.
 pub(crate) fn stamp_key_cards(chat: &ChatRuntime, to: KeyCardState) {
     stamp_cards(chat, |part| match part {
         MessagePart::KeyRequest { state, .. } if *state == KeyCardState::Pending => {
@@ -324,49 +323,181 @@ pub(crate) fn stamp_key_cards(chat: &ChatRuntime, to: KeyCardState) {
     });
 }
 
-/// Settle the pending key card of one request — its provider and
-/// destination — and only that one: the oldest still pending under the
-/// target, which is the card the settle acted on. A request that landed
-/// while the settle was in flight has a card of its own, still pending and
-/// still the chat's to answer.
-pub(crate) fn stamp_key_card(chat: &ChatRuntime, request: &PendingKeyRequest, to: KeyCardState) {
-    let mut settled = false;
-    stamp_cards(chat, |part| {
-        if settled {
-            return false;
-        }
+/// Install the newest request. It stays in the slot while its settle is
+/// in flight, so another settle and a restart still see it.
+pub(crate) fn install_key_request(chat: &ChatRuntime, request: PendingKeyRequest) {
+    *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+}
+
+/// Why a card's settle could not claim its request.
+#[derive(Debug)]
+pub(crate) enum KeyRequestClaimError {
+    NoPending,
+    Replaced,
+    InFlight,
+}
+
+/// The current pending card for a legacy request that has no card id yet.
+/// There is at most one by the key-request invariant; a stale click must
+/// never supply the identity for it.
+fn pending_card_id(chat: &ChatRuntime, request: &PendingKeyRequest) -> Option<String> {
+    let mut found = None;
+    for part in chat
+        .transcript
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .flat_map(|entry| entry.parts.iter())
+    {
         let MessagePart::KeyRequest {
+            id,
             provider_id,
             destination,
             state,
             ..
         } = part
         else {
+            continue;
+        };
+        if *state == KeyCardState::Pending
+            && *provider_id == request.provider_id
+            && *destination == request.destination
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(id.clone());
+        }
+    }
+    found
+}
+
+/// Claim the displayed card's current request without taking it out of the
+/// slot. Another card may settle concurrently; the same card may not.
+pub(crate) fn claim_key_request(
+    chat: &ChatRuntime,
+    card_id: &str,
+    provider_id: &str,
+    destination: &str,
+) -> Result<PendingKeyRequest, KeyRequestClaimError> {
+    let (mut pending, legacy) = {
+        let current = chat.key_request.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(pending) = current.clone() else {
+            let settling = chat
+                .key_request_settling
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            return if settling.as_deref() == Some(card_id) {
+                Err(KeyRequestClaimError::InFlight)
+            } else {
+                Err(KeyRequestClaimError::NoPending)
+            };
+        };
+        let legacy = pending.card_id.is_empty();
+        (pending, legacy)
+    };
+    if chat
+        .key_request_settling
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_deref()
+        == Some(card_id)
+    {
+        return Err(KeyRequestClaimError::InFlight);
+    }
+    if pending.provider_id != provider_id || pending.destination != destination {
+        return Err(KeyRequestClaimError::Replaced);
+    }
+    if legacy {
+        let actual = pending_card_id(chat, &pending).ok_or(KeyRequestClaimError::Replaced)?;
+        if actual != card_id {
+            return Err(KeyRequestClaimError::Replaced);
+        }
+        pending.card_id = actual;
+    }
+    if pending.card_id != card_id {
+        return Err(KeyRequestClaimError::Replaced);
+    }
+
+    // Revalidate after resolving a legacy id: a replacement may have landed
+    // while the transcript was unlocked.
+    let mut current = chat.key_request.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(current_request) = current.as_mut() else {
+        return Err(KeyRequestClaimError::NoPending);
+    };
+    if current_request.provider_id != pending.provider_id
+        || current_request.destination != pending.destination
+        || (!current_request.card_id.is_empty() && current_request.card_id != pending.card_id)
+    {
+        return Err(KeyRequestClaimError::Replaced);
+    }
+    current_request.card_id = pending.card_id.clone();
+    let mut settling = chat
+        .key_request_settling
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if settling.as_deref() == Some(card_id) {
+        return Err(KeyRequestClaimError::InFlight);
+    }
+    *settling = Some(card_id.to_string());
+    Ok(pending)
+}
+
+/// Finish one card's settle. Only that request is consumed; a replacement
+/// stays pending. A failure merely releases the in-flight marker, leaving
+/// the request and its card available for retry.
+pub(crate) fn finish_key_request_settle(chat: &ChatRuntime, card_id: &str, succeeded: bool) {
+    let mut key_request = chat.key_request.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settling = chat
+        .key_request_settling
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if settling.as_deref() == Some(card_id) {
+        *settling = None;
+    }
+    if succeeded
+        && key_request
+            .as_ref()
+            .is_some_and(|request| request.card_id == card_id)
+    {
+        *key_request = None;
+    }
+}
+
+/// Supersede only a card that proved to have no current request. Other
+/// pending cards, including one whose settle is in flight, are untouched.
+pub(crate) fn supersede_key_card(chat: &ChatRuntime, card_id: &str) {
+    stamp_cards(chat, |part| match part {
+        MessagePart::KeyRequest { id, state, .. }
+            if id == card_id && *state == KeyCardState::Pending =>
+        {
+            *state = KeyCardState::Superseded;
+            true
+        }
+        _ => false,
+    });
+}
+
+/// Settle only the card that carried this request. A replacement may have
+/// superseded it while its settle was in flight; that does not make the
+/// replacement the card to stamp, even when both targets are identical.
+pub(crate) fn stamp_key_card(chat: &ChatRuntime, request: &PendingKeyRequest, to: KeyCardState) {
+    let mut settled = false;
+    stamp_cards(chat, |part| {
+        if settled {
+            return false;
+        }
+        let MessagePart::KeyRequest { id, state, .. } = part else {
             return false;
         };
-        let mine = *state == KeyCardState::Pending
-            && *provider_id == request.provider_id
-            && *destination == request.destination;
+        let mine = id == &request.card_id
+            && matches!(*state, KeyCardState::Pending | KeyCardState::Superseded);
         if mine {
             *state = to;
             settled = true;
         }
         mine
     });
-}
-
-/// Put a request back after a settle failed on it — only into a slot still
-/// vacant. A request that landed while the settle was in flight is the
-/// chat's now: the failed one stays out, and its card's next click is
-/// refused as stale.
-pub(crate) fn restore_key_request(chat: &ChatRuntime, request: &PendingKeyRequest) {
-    let mut key_request = chat
-        .key_request
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if key_request.is_none() {
-        *key_request = Some(request.clone());
-    }
 }
 
 /// Retire every pending provider-choice card: a newer choice, or any new
@@ -489,7 +620,12 @@ mod tests {
     use holt_doc::{MessageRole, SessionMessageEntry};
 
     fn request(provider_id: &str, destination: &str) -> PendingKeyRequest {
+        request_for(provider_id, provider_id, destination)
+    }
+
+    fn request_for(card_id: &str, provider_id: &str, destination: &str) -> PendingKeyRequest {
         PendingKeyRequest {
+            card_id: card_id.to_string(),
             provider_id: provider_id.to_string(),
             provider_name: provider_id.to_string(),
             destination: destination.to_string(),
@@ -545,7 +681,7 @@ mod tests {
     fn a_settle_stamps_its_own_card_and_leaves_a_later_request_s_pending() {
         // Card B's request landed while card A's settle was out.
         let chat = chat_with(vec![card("a", "zai", ZAI), card("b", "openai", OPENAI)]);
-        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Saved);
+        stamp_key_card(&chat, &request_for("a", "zai", ZAI), KeyCardState::Saved);
         assert_eq!(
             states(&chat),
             vec![KeyCardState::Saved, KeyCardState::Pending]
@@ -553,11 +689,22 @@ mod tests {
     }
 
     #[test]
-    fn a_settle_stamps_the_oldest_card_of_its_target_only() {
-        // Two asks for the same key: the first is the one this settle
-        // answered, and the second still starts its own Turn.
+    fn a_settle_stamps_its_own_card_when_the_same_target_lands_mid_settle() {
+        // A's replacement has landed: the append superseded A before B
+        // became pending. Stamping A must not settle B by target alone.
         let chat = chat_with(vec![card("a", "zai", ZAI), card("b", "zai", ZAI)]);
-        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Dismissed);
+        stamp_key_cards(&chat, KeyCardState::Superseded);
+        let mut transcript = chat.transcript.write().unwrap();
+        let MessagePart::KeyRequest { state, .. } = &mut transcript[1].parts[0] else {
+            panic!("key card");
+        };
+        *state = KeyCardState::Pending;
+        drop(transcript);
+        stamp_key_card(
+            &chat,
+            &request_for("a", "zai", ZAI),
+            KeyCardState::Dismissed,
+        );
         assert_eq!(
             states(&chat),
             vec![KeyCardState::Dismissed, KeyCardState::Pending]
@@ -567,8 +714,12 @@ mod tests {
     #[test]
     fn a_settled_card_is_not_stamped_again() {
         let chat = chat_with(vec![card("a", "zai", ZAI)]);
-        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Saved);
-        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Dismissed);
+        stamp_key_card(&chat, &request_for("a", "zai", ZAI), KeyCardState::Saved);
+        stamp_key_card(
+            &chat,
+            &request_for("a", "zai", ZAI),
+            KeyCardState::Dismissed,
+        );
         assert_eq!(states(&chat), vec![KeyCardState::Saved]);
     }
 
@@ -583,21 +734,98 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_settle_returns_its_request_only_into_a_vacant_slot() {
+    fn a_finish_consumes_only_its_own_request_and_failure_keeps_it() {
+        // With no replacement, failure leaves the request retryable.
         let vacant = ChatRuntime::new();
-        restore_key_request(&vacant, &request("zai", ZAI));
+        install_key_request(&vacant, request("zai", ZAI));
+        *vacant.key_request_settling.lock().unwrap() = Some("zai".into());
+        finish_key_request_settle(&vacant, "zai", false);
         assert_eq!(
             *vacant.key_request.lock().unwrap(),
             Some(request("zai", ZAI))
         );
+        assert_eq!(*vacant.key_request_settling.lock().unwrap(), None);
 
-        // A request that landed while the settle was out is the chat's now.
-        let occupied = ChatRuntime::new();
-        *occupied.key_request.lock().unwrap() = Some(request("openai", OPENAI));
-        restore_key_request(&occupied, &request("zai", ZAI));
+        // B has landed and its own settle is in flight. A's completion
+        // consumes nothing; B's failure leaves B; only B's success consumes it.
+        let in_flight = ChatRuntime::new();
+        install_key_request(&in_flight, request("zai", ZAI));
+        *in_flight.key_request_settling.lock().unwrap() = Some("zai".into());
+        install_key_request(&in_flight, request("openai", OPENAI));
+        *in_flight.key_request_settling.lock().unwrap() = Some("openai".into());
+        finish_key_request_settle(&in_flight, "zai", true);
         assert_eq!(
-            *occupied.key_request.lock().unwrap(),
+            *in_flight.key_request.lock().unwrap(),
             Some(request("openai", OPENAI))
         );
+        finish_key_request_settle(&in_flight, "openai", false);
+        assert_eq!(
+            *in_flight.key_request.lock().unwrap(),
+            Some(request("openai", OPENAI))
+        );
+        finish_key_request_settle(&in_flight, "openai", true);
+        assert_eq!(*in_flight.key_request.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn a_legacy_settle_reads_the_actual_pending_card_not_the_clicked_id() {
+        let chat = chat_with(vec![card("a", "zai", ZAI), card("b", "zai", ZAI)]);
+        stamp_key_cards(&chat, KeyCardState::Superseded);
+        let mut transcript = chat.transcript.write().unwrap();
+        let MessagePart::KeyRequest { state, .. } = &mut transcript[1].parts[0] else {
+            panic!("key card");
+        };
+        *state = KeyCardState::Pending;
+        drop(transcript);
+        let mut legacy = request_for("b", "zai", ZAI);
+        legacy.card_id.clear();
+        install_key_request(&chat, legacy);
+
+        assert!(matches!(
+            claim_key_request(&chat, "a", "zai", ZAI),
+            Err(KeyRequestClaimError::Replaced)
+        ));
+        let claimed = claim_key_request(&chat, "b", "zai", ZAI).unwrap();
+        assert_eq!(claimed.card_id, "b");
+        assert_eq!(
+            chat.key_request.lock().unwrap().as_ref().unwrap().card_id,
+            "b"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_settle_changes_neither_the_request_nor_its_card() {
+        let chat = chat_with(vec![card("b", "openai", OPENAI)]);
+        install_key_request(&chat, request_for("b", "openai", OPENAI));
+        *chat.key_request_settling.lock().unwrap() = Some("b".into());
+        assert!(matches!(
+            claim_key_request(&chat, "b", "openai", OPENAI),
+            Err(KeyRequestClaimError::InFlight)
+        ));
+        assert_eq!(states(&chat), vec![KeyCardState::Pending]);
+        finish_key_request_settle(&chat, "b", false);
+        assert_eq!(states(&chat), vec![KeyCardState::Pending]);
+        assert!(
+            claim_key_request(&chat, "b", "openai", OPENAI).is_ok(),
+            "the failed request can be settled again"
+        );
+    }
+
+    #[test]
+    fn an_in_flight_settle_stays_durable_and_retryable() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut chat = chat_with(vec![card("b", "openai", OPENAI)]);
+        chat.data_dir = directory.path().to_path_buf();
+        chat.chat_id = "chat-1".into();
+        install_key_request(&chat, request_for("b", "openai", OPENAI));
+        claim_key_request(&chat, "b", "openai", OPENAI).unwrap();
+        chat.save_provider_mode();
+
+        let restored = ChatRuntime::load(directory.path(), "chat-1", "dev");
+        assert_eq!(
+            *restored.key_request.lock().unwrap(),
+            Some(request_for("b", "openai", OPENAI))
+        );
+        assert_eq!(*restored.key_request_settling.lock().unwrap(), None);
     }
 }

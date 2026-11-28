@@ -262,12 +262,13 @@ impl EngineService {
     // key (never the chat), queue the fixed notice, clear the card. A request that
     // lands while this one is out — the model asks again, a Turn the user
     // started — stays as it landed: its card keeps pending, and neither the
-    // stamp nor a failed settle's restore writes over it.
+    // stamp nor a failed settle consumes it.
     pub(super) async fn settle_provider_key_request(
         &self,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
+        let card_id = required_string(&params, "cardId")?;
         let provider_id = required_string(&params, "providerId")?;
         let destination = required_string(&params, "destination")?;
         if !crate::store::id_is_path_safe(chat_id) {
@@ -277,39 +278,31 @@ impl EngineService {
         if chat.is_removed() {
             return Err(RpcError::Failed("chat was deleted".into()));
         }
-        // Take (not clone) the request: a second concurrent settle
-        // finds none, and any failure below puts it back — into a slot a
-        // newer request has not taken meanwhile — so the card stays and a
-        // retry is idempotent.
-        let pending = {
-            let mut key_request = chat.key_request.lock().unwrap_or_else(|e| e.into_inner());
-            let pending = key_request.take();
-            let Some(pending) = pending else {
-                drop(key_request);
-                // A card left Pending past its request (a newer one
-                // replaced it) must not keep offering Save.
-                crate::provider_mode::stamp_key_cards(
-                    &chat,
-                    holt_doc::parts::KeyCardState::Superseded,
-                );
-                return Err(RpcError::Failed(
-                    "no pending key request on this chat".into(),
-                ));
+        // Claim without taking: the current request stays durable while
+        // this settle is out, and a failed settle only releases its marker.
+        let pending =
+            match crate::provider_mode::claim_key_request(&chat, card_id, provider_id, destination)
+            {
+                Ok(pending) => pending,
+                Err(crate::provider_mode::KeyRequestClaimError::NoPending) => {
+                    crate::provider_mode::supersede_key_card(&chat, card_id);
+                    return Err(RpcError::Failed(
+                        "no pending key request on this chat".into(),
+                    ));
+                }
+                Err(crate::provider_mode::KeyRequestClaimError::Replaced) => {
+                    return Err(RpcError::Failed(
+                        "this key request was replaced; use the latest card".into(),
+                    ));
+                }
+                Err(crate::provider_mode::KeyRequestClaimError::InFlight) => {
+                    return Err(RpcError::Failed(
+                        "this key request is already being settled".into(),
+                    ));
+                }
             };
-            // The click approves the card the user saw, never a request that
-            // replaced it while the click was in flight.
-            if pending.provider_id != provider_id || pending.destination != destination {
-                *key_request = Some(pending);
-                return Err(RpcError::Failed(
-                    "this key request was replaced; use the latest card".into(),
-                ));
-            }
-            pending
-        };
-        // Back only into a slot still vacant: a request that landed while
-        // this settle was out is the chat's now, not something to write over.
-        let restore = || {
-            crate::provider_mode::restore_key_request(&chat, &pending);
+        let fail = || {
+            crate::provider_mode::finish_key_request_settle(&chat, card_id, false);
             chat.save_provider_mode();
         };
         let saved = if let Some(key) = params
@@ -324,7 +317,7 @@ impl EngineService {
                 .save_key(&pending.provider_id, key)
                 .await
             {
-                restore();
+                fail();
                 return Err(RpcError::Failed(error.to_string()));
             }
             // The entry approves the destination the card showed
@@ -337,7 +330,7 @@ impl EngineService {
             chat.save_provider_mode();
             true
         } else if params.get("key").is_some() {
-            restore();
+            fail();
             return Err(RpcError::BadParams("key must not be empty".into()));
         } else {
             false
@@ -353,7 +346,7 @@ impl EngineService {
         let (config, cwd) = match self.chat_run_target(chat_id) {
             Ok(target) => target,
             Err(error) => {
-                restore();
+                fail();
                 return Err(error);
             }
         };
@@ -363,9 +356,10 @@ impl EngineService {
             Self::queued_run_request(&config, &notice, cwd),
             message_id,
         ) {
-            restore();
+            fail();
             return Err(error);
         }
+        crate::provider_mode::finish_key_request_settle(&chat, card_id, true);
         chat.save_provider_mode();
         // This request's card, not every pending one: a request that landed
         // while the settle was out has a card of its own, still to answer.
@@ -380,6 +374,7 @@ impl EngineService {
         );
         RpcReply::value(&serde_json::json!({
             "settled": if saved { "saved" } else { "dismissed" },
+            "cardId": pending.card_id,
             "providerId": pending.provider_id,
             "destination": pending.destination,
         }))
