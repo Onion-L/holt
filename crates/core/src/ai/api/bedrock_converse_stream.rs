@@ -338,6 +338,7 @@ fn supports_prompt_caching(model: &Model, env: Option<&ProviderEnv>) -> bool {
         s.contains("fable-5")
             || s.contains("opus-5")
             || s.contains("sonnet-5")
+            || s.contains("haiku-5-5")
             || s.contains("-4-")
             || s.contains("claude-3-7-sonnet")
             || s.contains("claude-3-5-haiku")
@@ -1647,6 +1648,19 @@ mod tests {
             model.base_url,
             "https://bedrock-runtime.eu-central-1.amazonaws.com"
         );
+    }
+
+    /// Haiku 5.5 prompt-caches like the rest of the family. The refresh
+    /// taught the transport its adaptive thinking and left it off this list,
+    /// so a record that carries cache prices was billed without a cache.
+    #[test]
+    fn claude_haiku_5_5_gets_a_cache_point_by_default() {
+        let model = bedrock_model("anthropic.claude-haiku-5-5");
+        assert!(supports_adaptive_thinking(&model.id, Some(&model.name)));
+        assert!(supports_prompt_caching(&model, None));
+        let retention = resolve_cache_retention(None, None);
+        let system = build_system_prompt(Some("You are Holt."), &model, retention, None).unwrap();
+        assert_eq!(system.last(), Some(&cache_point_block(retention)));
     }
 
     #[test]
