@@ -1146,13 +1146,16 @@ and committed: the pi generator behind the embedded snapshot was never
 ported, and the snapshot (2026-09-05, 1,353 models, 509 reasoning models
 without a ladder) had not moved since the merge. The source owns the facts
 — `reasoning`, the ladder while it names effort levels, windows, modalities,
-prices, names — and the catalog keeps what the source does not know: the
-transport shape (`api`, `baseUrl`, `compat`, `headers`), a level mapped to
-another value (`minimal` → `low` on Copilot Claude), the `off` entry, tiered
-prices, and any non-zero price the source zeroes unless the id explicitly
-names a free variant (a subscription is not a measured zero; the usage
-display reads the catalog's reference price). Explicitly free variants keep
-the source's zero price and drop paid tiers. A new model inherits its
+prices, names, and tiered prices: a long context costs more and the source
+says by how much (`tiers`, each over a context size, or `context_over_200k`
+where a row predates them) — and the catalog keeps what the source does not
+know: the transport shape (`api`, `baseUrl`, `compat`, `headers`), a level
+mapped to another value (`minimal` → `low` on Copilot Claude), the `off`
+entry, any non-zero price the source zeroes unless the id explicitly names
+a free variant (a subscription is not a measured zero; the usage display
+reads the catalog's reference price), and tiers a row already holds — kept
+by hand, or read off a source row that no longer names them. Explicitly
+free variants keep the source's zero price and drop paid tiers. A new model inherits its
 transport from the same-prefix model it most resembles, or from the family
 under a version bump in that prefix (`k3.1-pro` after `k3`); a prefix the
 catalog splits across transports is skipped and noted, never guessed,
