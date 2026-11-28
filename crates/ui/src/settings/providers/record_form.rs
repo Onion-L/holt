@@ -1450,10 +1450,12 @@ pub(super) fn build_record_json(
 impl ProvidersPage {
     /// The Models header's "Fetch models": a fresh ProbeProvider call; the
     /// dialog opens only on `ok` — the status line carries the failure
-    /// verdict. The engine's preview comes back on the same call and says
-    /// which ids the provider already offers; the panel's model list is
-    /// asked for as well — the fallback for a row the engine did not answer
-    /// for — and again when that list lands
+    /// verdict, as it does a preview the engine could not answer. The
+    /// engine's preview comes back on the same call and says which ids the
+    /// provider already offers; the panel's model list is asked for as well
+    /// — it also names an id the engine's exact test misses, a listing that
+    /// gives it provider-qualified, and stands in for a row the engine did
+    /// not answer for — and again when that list lands
     /// ([`Self::fetch_models_loaded`]): a listing opened before the list
     /// did used to offer the provider's own models back, and Add filed blank
     /// records over the catalog's.
@@ -1477,30 +1479,32 @@ impl ProvidersPage {
                         .map_err(|error| error.to_string())
                 });
             // What the engine would file for the listing rides the same
-            // task: the dialog opens with both or neither. An engine that
-            // cannot answer leaves every row on the plain defaults.
-            let facts: Vec<FetchedFacts> = match &probed {
-                Ok(outcome) if outcome.ok && outcome.dialect.is_some() => {
-                    match engine
-                        .client()
-                        .call(
-                            methods::PREVIEW_FETCHED_MODELS,
-                            serde_json::json!({
-                                "providerId": provider,
-                                "modelIds": outcome.model_ids,
-                            }),
-                        )
-                        .await
-                    {
-                        Ok(value) => serde_json::from_value(value).unwrap_or_default(),
-                        Err(_) => Vec::new(),
-                    }
-                }
-                _ => Vec::new(),
+            // task: the dialog opens with the rows or not at all. A row the
+            // engine did not answer for would open on the plain defaults,
+            // and Add would file those over the catalog's facts — the thing
+            // this dialog exists to stop — so a preview that fails fails the
+            // fetch.
+            let facts: Result<Vec<FetchedFacts>, String> = match &probed {
+                Ok(outcome) if outcome.ok && outcome.dialect.is_some() => engine
+                    .client()
+                    .call(
+                        methods::PREVIEW_FETCHED_MODELS,
+                        serde_json::json!({
+                            "providerId": provider,
+                            "modelIds": outcome.model_ids,
+                        }),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| {
+                        serde_json::from_value(value).map_err(|error| error.to_string())
+                    }),
+                // A probe that did not open a dialog has nothing to preview.
+                _ => Ok(Vec::new()),
             };
             this.update(cx, |page, cx| {
-                match probed {
-                    Ok(outcome) => {
+                match (probed, facts) {
+                    (Ok(outcome), Ok(facts)) => {
                         let ok = outcome.ok;
                         let has_transport = outcome.dialect.is_some();
                         let ids = outcome.model_ids.clone();
@@ -1521,7 +1525,13 @@ impl ProvidersPage {
                             page.fail(problem, cx);
                         }
                     }
-                    Err(error) => {
+                    // The listing came back and its rows did not: nothing
+                    // opens, and there is nothing for Add to file.
+                    (Ok(outcome), Err(error)) => {
+                        page.probes.insert(provider.clone(), ProbeState::Done(outcome));
+                        page.fail(error, cx);
+                    }
+                    (Err(error), _) => {
                         page.probes.remove(&provider);
                         page.fail(error, cx);
                     }
@@ -2885,6 +2895,49 @@ mod tests {
                 .page
                 .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_none())
         );
+    }
+
+    /// A preview the engine cannot answer fails the fetch. A row with no
+    /// facts used to open on the plain defaults, and Add filed those over
+    /// the catalog's — for an id the catalog carries, at zero price and no
+    /// longer following the catalog.
+    #[gpui::test]
+    fn a_failed_preview_opens_no_dialog_and_saves_nothing(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        *harness.engine.preview_error.lock().unwrap() =
+            Some("provider acme has no transport to file models under".to_string());
+        // The shell's error modal is the page's only report of a failure.
+        let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = errors.clone();
+        let page = harness.page.clone();
+        let _listener = harness.visual.update(|_window, cx| {
+            cx.new(|cx| {
+                cx.subscribe(&page, move |_, _, event, _| {
+                    let ProvidersPageEvent::Error(message) = event;
+                    sink.lock().unwrap().push(message.to_string());
+                })
+                .detach();
+            })
+        });
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let open = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_some());
+        assert!(
+            !open,
+            "the dialog does not open on rows the engine did not answer for"
+        );
+        assert_eq!(
+            *errors.lock().unwrap(),
+            vec!["provider acme has no transport to file models under".to_string()],
+            "the failure reaches the error modal"
+        );
+        assert!(harness.engine.fetched_saves.lock().unwrap().is_empty());
     }
 
     /// When the listing holds nothing the provider does not already offer,

@@ -35,6 +35,8 @@ pub(super) struct FakeProvidersEngine {
     pub(super) fetched_saves: std::sync::Mutex<Vec<serde_json::Value>>,
     /// GetModelRecord's canned records, whole.
     pub(super) records_served: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// When set, `PreviewFetchedModels` fails with this message.
+    pub(super) preview_error: std::sync::Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -101,6 +103,9 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
                 RpcReply::value(&serde_json::json!({}))
             }
             methods::PREVIEW_FETCHED_MODELS => {
+                if let Some(error) = self.preview_error.lock().unwrap().clone() {
+                    return Err(RpcError::Failed(error));
+                }
                 let canned = self.preview_rows.lock().unwrap().clone();
                 let rows = params["modelIds"]
                     .as_array()
@@ -285,6 +290,7 @@ pub(super) fn providers_harness<'a>(cx: &'a mut gpui::TestAppContext) -> Provide
         preview_rows: std::sync::Mutex::new(Vec::new()),
         fetched_saves: std::sync::Mutex::new(Vec::new()),
         records_served: std::sync::Mutex::new(Vec::new()),
+        preview_error: std::sync::Mutex::new(None),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
