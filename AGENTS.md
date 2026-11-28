@@ -81,6 +81,12 @@ does not run.
 - Test: `cargo test --workspace`; focus with `-p`. `crates/core` live
   provider suites skip unless `HOLT_TEST_LIVE=1`. CI (macOS, Linux,
   Windows) gates on `cargo test --workspace` only.
+- Model catalog: `python3 scripts/update-model-catalog.py` refreshes
+  `crates/core/src/ai/data/models.generated.json` from models.dev — run by
+  hand before a release; review with `git diff --patience`, move the
+  allowlists in `crates/core/tests/all/ai_model_catalogs.rs`, then run
+  `python3 scripts/test_update_model_catalog.py` and
+  `cargo test -p holt-core`.
 
 ## Facts with no other home
 

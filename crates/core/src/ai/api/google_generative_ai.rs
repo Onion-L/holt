@@ -61,6 +61,12 @@ fn is_gemma4_model(model: &Model) -> bool {
     id.contains("gemma-4") || id.contains("gemma4")
 }
 
+/// Gemini 4 uses native effort levels rather than token budgets.
+fn is_gemini4_model(model: &Model) -> bool {
+    let id = model.id.to_lowercase();
+    id.starts_with("gemini-4") || id.starts_with("gemini4")
+}
+
 /// Simple matcher for the `gemini-3(?:\.\d+)?-` prefix shared by the
 /// pro/flash checks.
 fn gemini3_variant_suffix(id: &str, prefix: &str) -> bool {
@@ -109,6 +115,9 @@ fn get_disabled_thinking_config(model: &Model) -> Value {
     if is_gemini3_flash_model(model) {
         return json!({ "thinkingLevel": "MINIMAL" });
     }
+    if is_gemini4_model(model) {
+        return json!({ "thinkingLevel": "LOW" });
+    }
     if is_gemma4_model(model) {
         return json!({ "thinkingLevel": "MINIMAL" });
     }
@@ -118,6 +127,14 @@ fn get_disabled_thinking_config(model: &Model) -> Value {
 
 /// Port of `getThinkingLevel`.
 fn get_thinking_level(effort: ThinkingLevel, model: &Model) -> &'static str {
+    if is_gemini4_model(model) {
+        return match effort {
+            ThinkingLevel::Minimal | ThinkingLevel::Low => "LOW",
+            ThinkingLevel::Medium => "MEDIUM",
+            ThinkingLevel::High => "HIGH",
+            ThinkingLevel::Xhigh | ThinkingLevel::Max => "XHIGH",
+        };
+    }
     if is_gemini3_pro_model(model) {
         return match effort {
             ThinkingLevel::Minimal | ThinkingLevel::Low => "LOW",
@@ -834,7 +851,11 @@ pub fn stream_simple_with_transport(
         Err(error) => return crate::ai::api::openai_completions::error_stream(model, &error),
     };
 
-    if is_gemini3_pro_model(model) || is_gemini3_flash_model(model) || is_gemma4_model(model) {
+    if is_gemini3_pro_model(model)
+        || is_gemini3_flash_model(model)
+        || is_gemma4_model(model)
+        || is_gemini4_model(model)
+    {
         return stream_with_transport(
             model,
             context,

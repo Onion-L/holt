@@ -625,6 +625,17 @@ where
 
 /// Configure the provider key and create the chat the runs target.
 pub async fn setup_chat(engine: &LocalEngine, chat_id: &str) {
+    setup_chat_with(engine, chat_id, true).await;
+}
+
+/// [`setup_chat`] without the test model pinned, for the suites that test the
+/// catalog layers themselves: a live record sits above the overlay, so a
+/// pinned model would mask the overlay entry under test.
+pub async fn setup_chat_unpinned(engine: &LocalEngine, chat_id: &str) {
+    setup_chat_with(engine, chat_id, false).await;
+}
+
+async fn setup_chat_with(engine: &LocalEngine, chat_id: &str, pin_model: bool) {
     engine
         .handle(
             methods::SAVE_PROVIDER_KEY,
@@ -632,10 +643,71 @@ pub async fn setup_chat(engine: &LocalEngine, chat_id: &str) {
         )
         .await
         .unwrap();
+    if pin_model {
+        pin_test_model(engine).await;
+    }
     engine
         .handle(
             methods::MUTATE,
             serde_json::json!({ "op": "createChat", "chatId": chat_id }),
+        )
+        .await
+        .unwrap();
+}
+
+/// The model the runs target, with its context window pinned to the 272K the
+/// compaction, usage and overflow suites are written against: the compiled
+/// catalog's figure for `gpt-5.4` follows models.dev (1,050K since the
+/// 2026-11 refresh), and a record replaces the catalog entry outright. The
+/// rest of the record is the catalog's own shape.
+async fn pin_test_model(engine: &LocalEngine) {
+    engine
+        .handle(
+            methods::SAVE_MODEL_RECORD,
+            serde_json::json!({
+                "providerId": "openai",
+                "record": {
+                    "id": "gpt-5.4",
+                    "name": "GPT-5.4",
+                    "api": "openai-responses",
+                    "provider": "openai",
+                    "baseUrl": "https://api.openai.com/v1",
+                    "reasoning": true,
+                    "thinkingLevelMap": {
+                        "off": "none",
+                        "minimal": null,
+                        "low": "low",
+                        "medium": "medium",
+                        "high": "high",
+                        "xhigh": "xhigh",
+                        "max": null
+                    },
+                    "input": ["text", "image"],
+                    "cost": {
+                        "input": 2.5,
+                        "output": 15,
+                        "cacheRead": 0.25,
+                        "cacheWrite": 0,
+                        "tiers": [
+                            {
+                                "inputTokensAbove": 272_000,
+                                "input": 5,
+                                "output": 22.5,
+                                "cacheRead": 0.5,
+                                "cacheWrite": 0
+                            }
+                        ]
+                    },
+                    "compat": {
+                        "supportsStrictMode": true,
+                        "supportsOpenAIGrammarTools": true,
+                        "supportsAdditionalTools": true,
+                        "supportsToolSearch": true
+                    },
+                    "contextWindow": 272_000,
+                    "maxTokens": 128_000
+                }
+            }),
         )
         .await
         .unwrap();

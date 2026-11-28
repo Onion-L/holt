@@ -2,12 +2,16 @@
 //! records, logos, proposals, and the settle cards.
 
 use holt_core::ai::auth::types::CredentialStore;
-use holt_core::ai::types::Model as CoreModel;
+use holt_core::ai::models::get_supported_thinking_levels;
+use holt_core::ai::types::{Model as CoreModel, ModelThinkingLevel};
 use holt_proto::RunOutcome;
 use holt_rpc::{RpcError, RpcReply};
 
 use super::{optional_string, required_string, required_string_list};
-use crate::EngineService;
+use crate::{
+    EngineService,
+    model_adoption::{FetchedSave, levels},
+};
 
 impl EngineService {
     /// Re-seed every open chat's occupancy windows after a catalog write:
@@ -569,6 +573,115 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    /// The record the engine serves, whole — what the record form needs to
+    /// replace a row without dropping the ladder and `compat` it cannot show.
+    pub(super) fn get_model_record(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let provider = required_string(&params, "providerId")?;
+        let model = required_string(&params, "modelId")?;
+        let record = self
+            .providers
+            .model_record(provider, model)
+            .ok_or_else(|| RpcError::BadParams(format!("unknown model for {provider}: {model}")))?;
+        let record =
+            serde_json::to_value(record).map_err(|error| RpcError::Failed(error.to_string()))?;
+        RpcReply::value(&record)
+    }
+
+    /// What a listing's ids become under the provider
+    /// (ADR-fetched-models-adopt-the-catalogs-record): one row per id, in
+    /// listing order. Saves nothing.
+    pub(super) fn preview_fetched_models(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let provider = required_string(&params, "providerId")?;
+        let ids = required_string_list(&params, "modelIds")?;
+        self.require_known_provider(provider)?;
+        let fetched = self
+            .providers
+            .preview_fetched(provider, &ids)
+            .map_err(RpcError::Failed)?;
+        let rows: Vec<serde_json::Value> = fetched
+            .into_iter()
+            .map(|row| {
+                let model = row.model;
+                serde_json::json!({
+                    "id": row.id,
+                    "source": row.source,
+                    "startsFrom": row.starts_from,
+                    "levelsEstimated": row.levels_estimated,
+                    "estimatedFrom": row.estimated_from,
+                    // The provider already offers the id, by the test
+                    // `SaveFetchedModels` refuses on.
+                    "offered": row.offered,
+                    // The picker's ladder, as `ListModels` projects it: `off`
+                    // has no tier of its own.
+                    "canTurnOff": get_supported_thinking_levels(&model)
+                        .contains(&ModelThinkingLevel::Off),
+                    "name": model.name,
+                    "contextWindow": model.context_window,
+                    "maxTokens": model.max_tokens,
+                    "reasoningLevels": levels(&model),
+                    "input": model.input,
+                    "cost": model.cost,
+                })
+            })
+            .collect();
+        RpcReply::value(&rows)
+    }
+
+    /// Files a listing's rows under the provider in one commit.
+    pub(super) fn save_fetched_models(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let provider = required_string(&params, "providerId")?;
+        let rows = params
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| RpcError::BadParams("models must be an array".into()))?;
+        let saves = rows
+            .iter()
+            .map(|row| {
+                Ok(FetchedSave {
+                    id: required_string(row, "id")?.to_string(),
+                    name: row
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    levels: optional(row, "thinkingLevels", "thinkingLevels must be level names")?,
+                    can_turn_off: row
+                        .get("canTurnOff")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true),
+                    context_window: row.get("contextWindow").and_then(serde_json::Value::as_u64),
+                    max_tokens: row.get("maxTokens").and_then(serde_json::Value::as_u64),
+                    cost: optional(row, "cost", "cost must be a model cost")?,
+                    image: row.get("image").and_then(serde_json::Value::as_bool),
+                    starts_from: row
+                        .get("startsFrom")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                })
+            })
+            .collect::<Result<Vec<_>, RpcError>>()?;
+        self.require_known_provider(provider)?;
+        self.providers
+            .save_fetched(provider, &saves)
+            .map_err(RpcError::BadParams)?;
+        self.refresh_catalog_windows();
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// The provider must be one the engine addresses, as the probe requires.
+    fn require_known_provider(&self, provider: &str) -> Result<(), RpcError> {
+        if !self.providers.provider_known(provider) {
+            return Err(RpcError::BadParams("unknown provider".into()));
+        }
+        Ok(())
+    }
+
     pub(super) fn remove_model_record(
         &self,
         params: serde_json::Value,
@@ -642,6 +755,21 @@ impl EngineService {
         }
         self.refresh_catalog_windows();
         RpcReply::value(&serde_json::json!({}))
+    }
+}
+
+/// A fetched row's optional field: absent or `null` is `None`, and anything
+/// that does not parse is the caller's to name.
+fn optional<T: serde::de::DeserializeOwned>(
+    row: &serde_json::Value,
+    key: &str,
+    problem: &str,
+) -> Result<Option<T>, RpcError> {
+    match row.get(key).filter(|value| !value.is_null()) {
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|_| RpcError::BadParams(problem.to_string())),
+        None => Ok(None),
     }
 }
 

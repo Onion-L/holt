@@ -305,7 +305,7 @@ settings_providers_usage:
       save_record:
         zh-CN: 保存记录
       fetch_title:
-        zh-CN: "从 %{provider} 拉取模型"
+        zh-CN: "从 %{provider} 添加模型"
       add_one:
         zh-CN: "添加 %{count} 个模型"
       add_other:
@@ -326,8 +326,62 @@ settings_providers_usage:
         zh-CN: 高级 JSON 必须是对象
       error_no_transport:
         zh-CN: 探测未能确定传输方式
+      error_preview_mismatch:
+        zh-CN: 模型预览与探测到的模型 ID 不一致，未添加任何模型
       error_nothing_new:
         zh-CN: 厂商列表中没有该提供商尚未提供的模型
+      edit_title:
+        zh-CN: "编辑模型记录"
+      fetch_col_model:
+        zh-CN: "模型"
+      fetch_col_context:
+        zh-CN: "上下文"
+      fetch_col_max_output:
+        zh-CN: "最大输出"
+      fetch_col_levels:
+        zh-CN: "思考等级"
+      fetch_col_price:
+        zh-CN: "每百万 token 价格（输入 · 输出）"
+      fetch_col_source:
+        zh-CN: "来源"
+      fetch_tag_catalog:
+        zh-CN: "catalog"
+      fetch_tag_estimated:
+        zh-CN: "catalog · 估算"
+      fetch_tag_new:
+        zh-CN: "新"
+      fetch_tag_added:
+        zh-CN: "已添加"
+      fetch_count_catalog:
+        zh-CN: "catalog 里有：%{count} 个"
+      fetch_count_new:
+        zh-CN: "新模型：%{count} 个"
+      fetch_count_added:
+        zh-CN: "已添加：%{count} 个"
+      fetch_foot_none:
+        zh-CN: "没有选中任何模型"
+      fetch_foot_catalog:
+        zh-CN: "沿用 catalog 数值：%{count} 个"
+      fetch_foot_new:
+        zh-CN: "新模型（起始值来自%{from}）：%{count} 个"
+      fetch_from_sibling:
+        zh-CN: "同 provider 的兄弟模型"
+      fetch_from_defaults:
+        zh-CN: "通用默认值"
+      fetch_no_thinking:
+        zh-CN: "不思考"
+      fetch_estimated_from:
+        zh-CN: "估算自 %{source}"
+      fetch_estimated_default:
+        zh-CN: "估算：默认四档"
+      fetch_starts_from:
+        zh-CN: "沿用 %{source}"
+      fetch_image_short:
+        zh-CN: "图片"
+      fetch_bulk_title:
+        zh-CN: "新模型的起始值"
+      fetch_apply_all:
+        zh-CN: "应用到 %{count} 个新模型"
   skills:
     page_title:
       zh-CN: 技能

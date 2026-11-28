@@ -966,11 +966,6 @@ async fn uses_the_normal_tool_list_for_unsupported_openai_model_gpt_5_2() {
 }
 
 #[tokio::test]
-async fn uses_the_normal_tool_list_for_unsupported_openai_model_gpt_5_4_nano() {
-    assert_normal_openai_tool_list(&get_model("openai", "gpt-5.4-nano")).await;
-}
-
-#[tokio::test]
 async fn uses_the_normal_tool_list_for_unsupported_openai_model_gpt_5_5_pro() {
     assert_normal_openai_tool_list(&get_model("openai", "gpt-5.5-pro")).await;
 }
@@ -1046,7 +1041,7 @@ async fn selects_additional_tools_tool_search_or_top_level_tools_for_codex_model
 async fn leaves_providers_without_deferred_loading_unchanged() {
     let context = make_context(&[make_tool("base_tool"), make_tool("late_tool")]);
     let payload = capture_payload(
-        &get_model("groq", "llama-3.3-70b-versatile"),
+        &get_model("groq", "openai/gpt-oss-120b"),
         &context,
         "fake-key",
     )

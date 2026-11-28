@@ -1013,18 +1013,13 @@ fn parse_model_listing(body: &serde_json::Value) -> Vec<String> {
     ids
 }
 
-/// A provider's probe target: its transport base URL and dialect, from the
-/// definition (custom) or the first resolvable model (built-in).
+/// A provider's probe target: its transport base URL and dialect — the
+/// adapter's one definition of where a provider is spoken and how.
 pub(crate) fn probe_target(
     providers: &ProviderAdapter,
     provider_id: &str,
 ) -> Option<(String, String)> {
-    if let Some(provider) = providers.custom_provider(provider_id) {
-        return Some((provider.base_url, provider.default_api));
-    }
-    let first = providers.models_for(provider_id).first()?.clone();
-    let model = providers.resolve_model(provider_id, &first.id).ok()?;
-    Some((model.base_url, model.api))
+    providers.transport_target(provider_id)
 }
 
 /// A tool call's `provider` draft: a definition the model resolved from

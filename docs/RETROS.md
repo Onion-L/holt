@@ -93,6 +93,29 @@ intuition — three strikes is the only gate.
   value (its opening frame), not only its next change
   (`crates/engine/tests/all/common/mod.rs`, `wait_for_chat_status`).
   Seen 1× (2026-10-23).
+- A refresh of shipped data is verified on an install that booted before,
+  never only on an empty data dir. Boot wrote its own copy of the catalog
+  into `provider-store.json`, and that copy stood in front of every later
+  catalog — yet every fixture starts empty, so the copy was the catalog and
+  no test could see the shadow: the 2026-11 models.dev refresh passed three
+  reviews while the OpenAI picker still listed GPT-4 beside GPT-6 (user
+  report; ADR-provider-overlay-carries-overrides-not-a-snapshot).
+  Seen 1× (2026-11-27).
+- A filter over state that is still loading is verified with it on its way,
+  never only once it has landed. The fetch dialog "drops the ids the
+  provider already offers" by reading the panel's model list as it opens:
+  clicked before the list landed, it offered the provider's own models
+  back, and Add filed a blank record over the catalog's — a `glm-5.4` with
+  max output 8,192 over Z.AI's 131,072 — while every test opened the
+  dialog from a settled list (user screenshot;
+  ADR-fetched-models-adopt-the-catalogs-record).
+  Seen 1× (2026-11-27).
+- A content-sized layout must be verified on the rendered surface before it
+  gets a fixed cache frame; element bounds and interaction tests alone do not
+  catch overflowing glyphs. The fetch dialog's 56px cached rows painted over
+  one another while the full UI suite passed; their natural height was 60px,
+  so the fixed frame and the cache were removed (user screenshot).
+  Seen 1× (2026-11-27).
 
 ## Moved
 

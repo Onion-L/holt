@@ -978,7 +978,7 @@ impl HttpFetch for PayloadCapturedFetch {
 
 async fn capture_google_payload(
     model: &Model,
-    reasoning: ThinkingLevel,
+    reasoning: impl Into<Option<ThinkingLevel>>,
     thinking_budgets: Option<ThinkingBudgets>,
 ) -> Value {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
@@ -999,7 +999,7 @@ async fn capture_google_payload(
             },
             ..Default::default()
         },
-        reasoning: Some(reasoning),
+        reasoning: reasoning.into(),
         thinking_budgets,
         ..Default::default()
     };
@@ -1024,7 +1024,7 @@ async fn capture_google_payload(
 
 async fn capture_vertex_payload(
     model: &Model,
-    reasoning: ThinkingLevel,
+    reasoning: impl Into<Option<ThinkingLevel>>,
     thinking_budgets: Option<ThinkingBudgets>,
 ) -> Value {
     let captured: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
@@ -1045,7 +1045,7 @@ async fn capture_vertex_payload(
             },
             ..Default::default()
         },
-        reasoning: Some(reasoning),
+        reasoning: reasoning.into(),
         thinking_budgets,
         ..Default::default()
     };
@@ -1160,6 +1160,53 @@ async fn maps_google_generative_ai_xhigh_to_a_supported_level() {
     assert_eq!(
         payload["config"]["thinkingConfig"],
         json!({ "includeThoughts": true, "thinkingLevel": "HIGH" })
+    );
+}
+
+#[tokio::test]
+async fn uses_native_gemini4_levels_for_google_and_vertex() {
+    let map = [
+        (ModelThinkingLevel::Medium, Some("medium".to_string())),
+        (ModelThinkingLevel::Xhigh, Some("xhigh".to_string())),
+    ]
+    .into_iter()
+    .collect::<ThinkingLevelMap>();
+
+    for (level, expected) in [
+        (ThinkingLevel::Medium, "MEDIUM"),
+        (ThinkingLevel::Xhigh, "XHIGH"),
+    ] {
+        let google_payload =
+            capture_google_payload(&google_model("gemini-4-neon", map.clone()), level, None).await;
+        assert_eq!(
+            google_payload["config"]["thinkingConfig"],
+            json!({ "includeThoughts": true, "thinkingLevel": expected })
+        );
+
+        let vertex_payload =
+            capture_vertex_payload(&vertex_model("gemini-4-neon", map.clone()), level, None).await;
+        assert_eq!(
+            vertex_payload["config"]["thinkingConfig"],
+            json!({ "includeThoughts": true, "thinkingLevel": expected })
+        );
+    }
+}
+
+#[tokio::test]
+async fn uses_the_lowest_native_level_when_gemini4_thinking_cannot_be_disabled() {
+    let map = ThinkingLevelMap::new();
+    let google_payload =
+        capture_google_payload(&google_model("gemini-4-neon", map.clone()), None, None).await;
+    assert_eq!(
+        google_payload["config"]["thinkingConfig"],
+        json!({ "thinkingLevel": "LOW" })
+    );
+
+    let vertex_payload =
+        capture_vertex_payload(&vertex_model("gemini-4-neon", map), None, None).await;
+    assert_eq!(
+        vertex_payload["config"]["thinkingConfig"],
+        json!({ "thinkingLevel": "LOW" })
     );
 }
 

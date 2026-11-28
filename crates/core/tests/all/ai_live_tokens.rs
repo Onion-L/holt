@@ -140,14 +140,14 @@ async fn tokens_on_abort_env_provider_matrix() {
         TokenSuite {
             case: "Google Provider: should include token stats when aborted mid-stream",
             provider: "google",
-            model: "gemini-2.5-flash",
+            model: "gemini-3.8-flash",
             env: "GEMINI_API_KEY",
             options: google_thinking,
         },
         TokenSuite {
             case: "OpenAI Completions Provider: should include token stats when aborted mid-stream",
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "OPENAI_API_KEY",
             options: default.clone(),
         },
@@ -164,10 +164,10 @@ async fn tokens_on_abort_env_provider_matrix() {
         TokenSuite {
             case: "Azure OpenAI Responses Provider: should include token stats when aborted mid-stream",
             provider: "azure-openai-responses",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
             options: LiveOptions {
-                azure_deployment_name: live::resolve_azure_deployment_name("gpt-4o-mini"),
+                azure_deployment_name: live::resolve_azure_deployment_name("gpt-5.4-mini"),
                 ..Default::default()
             },
         },
@@ -195,7 +195,7 @@ async fn tokens_on_abort_env_provider_matrix() {
         TokenSuite {
             case: "Cloudflare Workers AI Provider: should include token stats when aborted mid-stream",
             provider: "cloudflare-workers-ai",
-            model: "@cf/moonshotai/kimi-k2.6",
+            model: "@cf/zai-org/glm-5.3",
             env: "CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID",
             options: default.clone(),
         },
@@ -209,14 +209,14 @@ async fn tokens_on_abort_env_provider_matrix() {
         TokenSuite {
             case: "Hugging Face Provider: should include token stats when aborted mid-stream",
             provider: "huggingface",
-            model: "moonshotai/Kimi-K2.5",
+            model: "moonshotai/Kimi-K3",
             env: "HF_TOKEN",
             options: default.clone(),
         },
         TokenSuite {
             case: "Together AI Provider: should include token stats when aborted mid-stream",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             options: default.clone(),
         },
@@ -233,21 +233,21 @@ async fn tokens_on_abort_env_provider_matrix() {
         TokenSuite {
             case: "zAI Provider: should include token stats when aborted mid-stream",
             provider: "zai",
-            model: "glm-5.2",
+            model: "glm-5.3",
             env: "ZAI_API_KEY",
             options: default.clone(),
         },
         TokenSuite {
             case: "Mistral Provider: should include token stats when aborted mid-stream",
             provider: "mistral",
-            model: "devstral-medium-latest",
+            model: "codestral-latest",
             env: "MISTRAL_API_KEY",
             options: default.clone(),
         },
         TokenSuite {
             case: "MiniMax Provider: should include token stats when aborted mid-stream",
             provider: "minimax",
-            model: "MiniMax-M2.7",
+            model: "MiniMax-M3.1-Flash",
             env: "MINIMAX_API_KEY",
             options: default.clone(),
         },
@@ -289,7 +289,7 @@ async fn tokens_on_abort_env_provider_matrix() {
         TokenSuite {
             case: "Amazon Bedrock Provider: should include token stats when aborted mid-stream",
             provider: "amazon-bedrock",
-            model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            model: "global.anthropic.claude-sonnet-4-6",
             env: "AWS_PROFILE | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY | AWS_BEARER_TOKEN_BEDROCK",
             options: default,
         },
@@ -312,7 +312,7 @@ async fn tokens_on_abort_env_provider_matrix() {
             continue;
         }
         let model = get_model_or_panic(suite.provider, suite.model);
-        let model = if suite.provider == "openai" && suite.model == "gpt-4o-mini" {
+        let model = if suite.provider == "openai" && suite.model == "gpt-5.4-mini" {
             as_openai_completions(&model)
         } else {
             model
@@ -528,7 +528,7 @@ async fn run_total_token_suite(suite: TotalTokenSuite) {
         return;
     }
     let model = get_model_or_panic(suite.provider, suite.model);
-    let model = if suite.provider == "openai" && suite.model == "gpt-4o-mini" {
+    let model = if suite.provider == "openai" && suite.model == "gpt-5.4-mini" {
         as_openai_completions(&model)
     } else {
         model
@@ -560,7 +560,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Anthropic (API Key): claude-sonnet-4-5 - should return totalTokens equal to sum of components",
             provider: "anthropic",
-            model: "claude-sonnet-4-5",
+            model: "claude-sonnet-4-6",
             env: "ANTHROPIC_API_KEY",
             explicit_key_env: Some("ANTHROPIC_API_KEY"),
             reasoning_effort_high: false,
@@ -569,7 +569,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "OpenAI Completions: gpt-4o-mini - should return totalTokens equal to sum of components",
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "OPENAI_API_KEY",
             explicit_key_env: None,
             reasoning_effort_high: false,
@@ -578,7 +578,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "OpenAI Responses: gpt-4o - should return totalTokens equal to sum of components",
             provider: "openai",
-            model: "gpt-4o",
+            model: "gpt-5.4",
             env: "OPENAI_API_KEY",
             explicit_key_env: None,
             reasoning_effort_high: false,
@@ -587,7 +587,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Azure OpenAI Responses: gpt-4o-mini - should return totalTokens equal to sum of components",
             provider: "azure-openai-responses",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
             explicit_key_env: None,
             reasoning_effort_high: false,
@@ -596,7 +596,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Google: gemini-2.5-flash - should return totalTokens equal to sum of components",
             provider: "google",
-            model: "gemini-2.5-flash",
+            model: "gemini-3.8-flash",
             env: "GEMINI_API_KEY",
             explicit_key_env: None,
             reasoning_effort_high: false,
@@ -632,7 +632,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Cloudflare Workers AI: @cf/moonshotai/kimi-k2.6 - should return totalTokens equal to sum of components",
             provider: "cloudflare-workers-ai",
-            model: "@cf/moonshotai/kimi-k2.6",
+            model: "@cf/zai-org/glm-5.3",
             env: "CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID",
             explicit_key_env: Some("CLOUDFLARE_API_KEY"),
             reasoning_effort_high: false,
@@ -650,7 +650,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Hugging Face: Kimi-K2.5 - should return totalTokens equal to sum of components",
             provider: "huggingface",
-            model: "moonshotai/Kimi-K2.5",
+            model: "moonshotai/Kimi-K3",
             env: "HF_TOKEN",
             explicit_key_env: Some("HF_TOKEN"),
             reasoning_effort_high: false,
@@ -659,7 +659,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Together AI: Kimi-K2.6 - should return totalTokens equal to sum of components",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             explicit_key_env: Some("TOGETHER_API_KEY"),
             reasoning_effort_high: true,
@@ -677,7 +677,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "z.ai: glm-5.2 - should return totalTokens equal to sum of components",
             provider: "zai",
-            model: "glm-5.2",
+            model: "glm-5.3",
             env: "ZAI_API_KEY",
             explicit_key_env: Some("ZAI_API_KEY"),
             reasoning_effort_high: false,
@@ -686,7 +686,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Mistral: devstral-medium-latest - should return totalTokens equal to sum of components",
             provider: "mistral",
-            model: "devstral-medium-latest",
+            model: "codestral-latest",
             env: "MISTRAL_API_KEY",
             explicit_key_env: Some("MISTRAL_API_KEY"),
             reasoning_effort_high: false,
@@ -695,7 +695,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "MiniMax: MiniMax-M2.7 - should return totalTokens equal to sum of components",
             provider: "minimax",
-            model: "MiniMax-M2.7",
+            model: "MiniMax-M3.1-Flash",
             env: "MINIMAX_API_KEY",
             explicit_key_env: Some("MINIMAX_API_KEY"),
             reasoning_effort_high: false,
@@ -704,7 +704,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Xiaomi MiMo (API billing): mimo-v2.5-pro - should return totalTokens equal to sum of components",
             provider: "xiaomi",
-            model: "mimo-v2.5-pro",
+            model: "mimo-v2.6-pro",
             env: "XIAOMI_API_KEY",
             explicit_key_env: Some("XIAOMI_API_KEY"),
             reasoning_effort_high: false,
@@ -785,7 +785,7 @@ async fn total_tokens_env_provider_matrix() {
         TotalTokenSuite {
             case: "Amazon Bedrock: claude-sonnet-4-5 - should return totalTokens equal to sum of components",
             provider: "amazon-bedrock",
-            model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            model: "global.anthropic.claude-sonnet-4-6",
             env: "AWS_PROFILE | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY | AWS_BEARER_TOKEN_BEDROCK",
             explicit_key_env: None,
             reasoning_effort_high: false,

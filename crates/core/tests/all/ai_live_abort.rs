@@ -254,7 +254,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "Google Provider Abort",
             provider: "google",
-            model: "gemini-2.5-flash",
+            model: "gemini-3.8-flash",
             env: "GEMINI_API_KEY",
             openai_completions_api: false,
             azure: false,
@@ -264,7 +264,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "OpenAI Completions Provider Abort",
             provider: "openai",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "OPENAI_API_KEY",
             openai_completions_api: true,
             azure: false,
@@ -274,7 +274,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "OpenAI Responses Provider Abort",
             provider: "openai",
-            model: "gpt-5-mini",
+            model: "gpt-5.2",
             env: "OPENAI_API_KEY",
             openai_completions_api: false,
             azure: false,
@@ -284,7 +284,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "Azure OpenAI Responses Provider Abort",
             provider: "azure-openai-responses",
-            model: "gpt-4o-mini",
+            model: "gpt-5.4-mini",
             env: "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
             openai_completions_api: false,
             azure: true,
@@ -306,7 +306,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "Mistral Provider Abort",
             provider: "mistral",
-            model: "devstral-medium-latest",
+            model: "codestral-latest",
             env: "MISTRAL_API_KEY",
             openai_completions_api: false,
             azure: false,
@@ -316,7 +316,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "Together AI Provider Abort",
             provider: "together",
-            model: "moonshotai/Kimi-K2.6",
+            model: "moonshotai/Kimi-K3",
             env: "TOGETHER_API_KEY",
             openai_completions_api: false,
             azure: false,
@@ -342,7 +342,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "MiniMax Provider Abort",
             provider: "minimax",
-            model: "MiniMax-M2.7",
+            model: "MiniMax-M3.1-Flash",
             env: "MINIMAX_API_KEY",
             openai_completions_api: false,
             azure: false,
@@ -352,7 +352,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "Xiaomi MiMo (API billing) Provider Abort",
             provider: "xiaomi",
-            model: "mimo-v2.5-pro",
+            model: "mimo-v2.6-pro",
             env: "XIAOMI_API_KEY",
             openai_completions_api: false,
             azure: false,
@@ -442,7 +442,7 @@ async fn abort_env_provider_matrix() {
         AbortSuite {
             name: "Amazon Bedrock Provider Abort",
             provider: "amazon-bedrock",
-            model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            model: "global.anthropic.claude-sonnet-4-6",
             env: "AWS_PROFILE | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY | AWS_BEARER_TOKEN_BEDROCK",
             openai_completions_api: false,
             azure: false,

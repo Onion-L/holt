@@ -197,7 +197,7 @@ async fn unknown_custom_models_attempt_images_and_report_rejections_without_retr
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::tool_call("view", "read", json!({"path":"image.png"})),
-        ScriptedReply::text("Context summary"),
+        // The second run request carries the image and is rejected.
         ScriptedReply::Failed("This model rejects image input".into()),
     ]);
     std::fs::write(fixture.project_dir.path().join("image.png"), png(4, 2)).unwrap();
@@ -283,6 +283,29 @@ async fn nonvisual_models_accept_paths_but_image_reads_fail_and_text_reads_work(
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
+    // No compiled OpenAI model is text-only any more; a live record carries
+    // the nonvisual shape.
+    engine
+        .handle(
+            methods::SAVE_MODEL_RECORD,
+            json!({
+                "providerId": "openai",
+                "record": {
+                    "id": "text-only-model",
+                    "name": "Text-only",
+                    "api": "openai-responses",
+                    "provider": "openai",
+                    "baseUrl": "https://api.openai.com/v1",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                    "contextWindow": 128_000,
+                    "maxTokens": 8_000
+                }
+            }),
+        )
+        .await
+        .unwrap();
     let models = value(
         &engine,
         methods::LIST_MODELS,
@@ -294,7 +317,7 @@ async fn nonvisual_models_accept_paths_but_image_reads_fail_and_text_reads_work(
         .unwrap()
         .iter()
         .find(|m| m["imageCapability"] == "unsupported")
-        .expect("nonvisual catalog model")["id"]
+        .expect("nonvisual model")["id"]
         .as_str()
         .unwrap();
     run_model(

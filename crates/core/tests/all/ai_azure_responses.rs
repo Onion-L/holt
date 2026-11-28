@@ -36,7 +36,6 @@ use holt_core::ai::api::openai_responses_shared::{
     convert_responses_messages, process_responses_stream,
 };
 use holt_core::ai::auth::resolve::now_millis;
-use holt_core::ai::providers::builtin::get_builtin_model;
 use holt_core::ai::session_resources::get_user_agent;
 use holt_core::ai::types::{
     AssistantMessage, ConstrainedSamplingConfig, ConstrainedSamplingStrict, Context, Message,
@@ -51,9 +50,9 @@ use serde_json::{Value, json};
 // ---------------------------------------------------------------------------
 // Shared fixtures (azure-openai-base-url.test.ts context/model helpers)
 
-fn gpt_4o_mini() -> Model {
-    get_builtin_model("azure-openai-responses", "gpt-4o-mini")
-        .expect("builtin azure-openai-responses/gpt-4o-mini model")
+fn gpt_5_4_mini() -> Model {
+    holt_core::ai::providers::builtin::get_builtin_model("azure-openai-responses", "gpt-5.4-mini")
+        .expect("builtin azure-openai-responses/gpt-5.4-mini model")
 }
 
 fn hello_context() -> Context {
@@ -171,7 +170,7 @@ async fn capture_client_base_url(base_url: &str) -> String {
         Some(scoped_env(&[("AZURE_OPENAI_BASE_URL", base_url)])),
         fetch.clone(),
     );
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
     client_base_url(&fetch.sole_request())
@@ -201,7 +200,7 @@ async fn capture_client_headers(headers: Option<Vec<(String, String)>>) -> Vec<(
         azure_base_url: Some("https://my-resource.openai.azure.com".to_string()),
         ..Default::default()
     };
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
     fetch.sole_request().headers
@@ -296,7 +295,7 @@ async fn throws_on_invalid_urls() {
         Some(scoped_env(&[("AZURE_OPENAI_BASE_URL", "not-a-url")])),
         fetch.clone(),
     );
-    let result = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let result = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
 
@@ -318,7 +317,7 @@ async fn clamps_prompt_cache_key_to_openais_64_character_limit() {
     options.azure_base_url = Some("https://my-resource.openai.azure.com".to_string());
     options.base.session_id = Some("x".repeat(67));
 
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
 
@@ -335,7 +334,7 @@ async fn disables_server_side_response_storage() {
     let mut options = azure_options(None, fetch.clone());
     options.azure_base_url = Some("https://my-resource.openai.azure.com".to_string());
 
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
 
@@ -345,7 +344,7 @@ async fn disables_server_side_response_storage() {
 
 #[tokio::test]
 async fn honors_supports_strict_mode_false() {
-    let mut model = gpt_4o_mini();
+    let mut model = gpt_5_4_mini();
     model.compat = Some(ModelCompat {
         supports_strict_mode: Some(false),
         ..Default::default()
@@ -388,7 +387,7 @@ async fn builds_correct_default_url_from_azure_openai_resource_name() {
         Some(scoped_env(&[("AZURE_OPENAI_RESOURCE_NAME", "my-resource")])),
         fetch.clone(),
     );
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
     let request = fetch.sole_request();
@@ -675,11 +674,11 @@ fn deployment_map_is_empty_without_a_value() {
 #[test]
 fn deployment_map_parses_trims_and_skips_malformed_entries() {
     let map = parse_deployment_name_map(Some(
-        " gpt-4o-mini = mini-deploy ,gpt-5=gpt5, bad, =x, y=, ,gpt-4=gpt4 ",
+        " gpt-5.4-mini = mini-deploy ,gpt-5=gpt5, bad, =x, y=, ,gpt-4=gpt4 ",
     ));
 
     assert_eq!(
-        map.get("gpt-4o-mini").map(String::as_str),
+        map.get("gpt-5.4-mini").map(String::as_str),
         Some("mini-deploy")
     );
     assert_eq!(map.get("gpt-5").map(String::as_str), Some("gpt5"));
@@ -719,12 +718,12 @@ fn resolve_deployment_name_prefers_the_explicit_option() {
     let options = deployment_options(
         Some(scoped_env(&[(
             "AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
-            "gpt-4o-mini=mapped-deployment",
+            "gpt-5.4-mini=mapped-deployment",
         )])),
         Some("explicit-deployment"),
     );
     assert_eq!(
-        resolve_deployment_name(&gpt_4o_mini(), Some(&options)),
+        resolve_deployment_name(&gpt_5_4_mini(), Some(&options)),
         "explicit-deployment"
     );
 }
@@ -734,12 +733,12 @@ fn resolve_deployment_name_uses_the_scoped_env_map() {
     let options = deployment_options(
         Some(scoped_env(&[(
             "AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
-            "gpt-4o-mini=mapped-deployment, gpt-5=gpt5-deployment",
+            "gpt-5.4-mini=mapped-deployment, gpt-5=gpt5-deployment",
         )])),
         None,
     );
     assert_eq!(
-        resolve_deployment_name(&gpt_4o_mini(), Some(&options)),
+        resolve_deployment_name(&gpt_5_4_mini(), Some(&options)),
         "mapped-deployment"
     );
 }
@@ -754,10 +753,13 @@ fn resolve_deployment_name_falls_back_to_the_model_id() {
         None,
     );
     assert_eq!(
-        resolve_deployment_name(&gpt_4o_mini(), Some(&options)),
-        "gpt-4o-mini"
+        resolve_deployment_name(&gpt_5_4_mini(), Some(&options)),
+        "gpt-5.4-mini"
     );
-    assert_eq!(resolve_deployment_name(&gpt_4o_mini(), None), "gpt-4o-mini");
+    assert_eq!(
+        resolve_deployment_name(&gpt_5_4_mini(), None),
+        "gpt-5.4-mini"
+    );
 }
 
 #[test]
@@ -765,18 +767,18 @@ fn resolve_deployment_name_treats_empty_strings_as_unset_like_typescript() {
     // An empty-string explicit option is falsy in TS, so the map wins; and
     // `mappedDeployment || model.id` treats a whitespace-only deployment
     // value (which trims to "") as unset.
-    let map = scoped_env(&[("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", "gpt-4o-mini=  ")]);
+    let map = scoped_env(&[("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", "gpt-5.4-mini=  ")]);
 
     let options = deployment_options(None, Some(""));
     assert_eq!(
-        resolve_deployment_name(&gpt_4o_mini(), Some(&options)),
-        "gpt-4o-mini"
+        resolve_deployment_name(&gpt_5_4_mini(), Some(&options)),
+        "gpt-5.4-mini"
     );
 
     let options = deployment_options(Some(map), None);
     assert_eq!(
-        resolve_deployment_name(&gpt_4o_mini(), Some(&options)),
-        "gpt-4o-mini"
+        resolve_deployment_name(&gpt_5_4_mini(), Some(&options)),
+        "gpt-5.4-mini"
     );
 }
 
@@ -791,7 +793,7 @@ async fn empty_string_azure_options_fall_through_like_typescript() {
         fetch.clone(),
     );
     options.azure_resource_name = Some(String::new());
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
     assert_eq!(
@@ -803,7 +805,7 @@ async fn empty_string_azure_options_fall_through_like_typescript() {
     let mut options = azure_options(None, fetch.clone());
     options.azure_base_url = Some("https://my-resource.openai.azure.com".to_string());
     options.azure_api_version = Some(String::new());
-    let _ = stream_azure(&gpt_4o_mini(), &hello_context(), Some(&options))
+    let _ = stream_azure(&gpt_5_4_mini(), &hello_context(), Some(&options))
         .result()
         .await;
     let request = fetch.sole_request();

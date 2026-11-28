@@ -62,8 +62,8 @@ fn includes_xhigh_and_max_but_not_off_for_anthropic_claude_fable_5_on_anthropic_
 }
 
 #[test]
-fn does_not_include_xhigh_or_max_for_claude_sonnet_4_5() {
-    let levels = levels("anthropic", "claude-sonnet-4-5");
+fn does_not_include_xhigh_or_max_for_claude_haiku_4_5() {
+    let levels = levels("anthropic", "claude-haiku-4-5");
     assert!(!levels.contains(&ModelThinkingLevel::Xhigh));
     assert!(!levels.contains(&ModelThinkingLevel::Max));
 }
@@ -130,9 +130,9 @@ fn includes_only_medium_high_xhigh_for_openrouter_gpt_5_5_pro() {
 }
 
 #[test]
-fn includes_low_high_max_plus_off_for_deepseek_v4_flash_on_the_deepseek_provider() {
+fn includes_low_high_max_plus_off_for_deepseek_flash_on_the_deepseek_provider() {
     assert_eq!(
-        levels("deepseek", "deepseek-v4-flash"),
+        levels("deepseek", "deepseek-flash"),
         vec![
             ModelThinkingLevel::Off,
             ModelThinkingLevel::Low,
@@ -161,26 +161,6 @@ fn includes_only_high_plus_off_for_opencode_go_kimi_k2_6() {
         levels("opencode-go", "kimi-k2.6"),
         vec![ModelThinkingLevel::Off, ModelThinkingLevel::High]
     );
-}
-
-#[test]
-fn excludes_thinking_off_for_moonshot_kimi_k2_7_code_models() {
-    let cases = [
-        catalog_model("moonshotai", "kimi-k2.7-code"),
-        catalog_model("moonshotai-cn", "kimi-k2.7-code"),
-    ];
-
-    for model in &cases {
-        assert_eq!(
-            get_supported_thinking_levels(model),
-            vec![
-                ModelThinkingLevel::Minimal,
-                ModelThinkingLevel::Low,
-                ModelThinkingLevel::Medium,
-                ModelThinkingLevel::High,
-            ]
-        );
-    }
 }
 
 #[test]

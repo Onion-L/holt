@@ -53,6 +53,7 @@ pub fn resolve_google_thinking_level(
         "low" => Ok(ThinkingLevel::Low),
         "medium" => Ok(ThinkingLevel::Medium),
         "high" => Ok(ThinkingLevel::High),
+        "xhigh" => Ok(ThinkingLevel::Xhigh),
         _ => Err(format!(
             "Unsupported Google thinking level mapping for {}/{}: {} -> {}",
             model.provider,

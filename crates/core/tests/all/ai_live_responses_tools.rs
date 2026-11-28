@@ -146,7 +146,7 @@ async fn verify_tool_result_image(model: &Model, options: LiveOptions) {
 async fn responses_tool_result_images_provider_matrix() {
     if live_env("OPENAI_API_KEY").is_some() {
         verify_tool_result_image(
-            &get_model_or_panic("openai", "gpt-5-mini"),
+            &get_model_or_panic("openai", "gpt-5.2"),
             LiveOptions {
                 reasoning_effort: Some(LiveEffort::Low),
                 ..Default::default()
@@ -158,7 +158,7 @@ async fn responses_tool_result_images_provider_matrix() {
     }
 
     if common::live::has_azure_openai_credentials() {
-        let model = get_model_or_panic("azure-openai-responses", "gpt-4o-mini");
+        let model = get_model_or_panic("azure-openai-responses", "gpt-5.4-mini");
         verify_tool_result_image(
             &model,
             LiveOptions {

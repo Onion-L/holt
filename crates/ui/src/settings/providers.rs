@@ -75,28 +75,128 @@ pub(super) enum ProbeState {
     Done(ProbeOutcome),
 }
 
-/// The fetch-from-vendor dialog: a ProbeProvider listing minus the ids the
-/// provider already offers, checkboxes over what to add, a per-row
-/// display-name field, and the fields a servable record needs that the
-/// vendor listing carries none of — the two numbers, and the Reasoning /
-/// Image input flags every added record shares.
+/// One row of a vendor listing as the engine would file it
+/// (ADR-fetched-models-adopt-the-catalogs-record): `PreviewFetchedModels`'s
+/// reply. An id the catalog carries comes adopted; any other comes with the
+/// numbers it starts from — a sibling's, or the plain defaults.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FetchedFacts {
+    pub(super) id: String,
+    /// The provider already offers this id, by the test `SaveFetchedModels`
+    /// refuses on — whatever the panel's listing hides of it.
+    #[serde(default)]
+    pub(super) offered: bool,
+    pub(super) name: String,
+    /// The catalog's `provider/model` an adopted id takes.
+    #[serde(default)]
+    pub(super) source: Option<String>,
+    /// The `provider/model` a new id starts from.
+    #[serde(default)]
+    pub(super) starts_from: Option<String>,
+    /// The catalog names no levels for this model: the row's are its
+    /// family's, and the user's to correct.
+    #[serde(default)]
+    pub(super) levels_estimated: bool,
+    #[serde(default)]
+    pub(super) estimated_from: Option<String>,
+    #[serde(default = "default_true")]
+    pub(super) can_turn_off: bool,
+    pub(super) context_window: u64,
+    pub(super) max_tokens: u64,
+    #[serde(default)]
+    pub(super) reasoning_levels: Vec<String>,
+    #[serde(default)]
+    pub(super) input: Vec<String>,
+    pub(super) cost: FetchedCost,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FetchedCost {
+    pub(super) input: f64,
+    pub(super) output: f64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The thinking levels a row's chips offer, lowest first.
+pub(super) const THINKING_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// A row's numbers as the dialog reads them, whether it lets them be edited
+/// or only shows them.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FetchNumbers {
+    pub(super) context_window: u64,
+    pub(super) max_tokens: u64,
+    pub(super) input_cost: f64,
+    pub(super) output_cost: f64,
+}
+
+/// One row of the fetch dialog.
+pub(super) struct FetchRow {
+    pub(super) id: String,
+    /// The catalog's `provider/model` this id is adopted from; `None` for a
+    /// new one.
+    pub(super) source: Option<String>,
+    /// A new id: the `provider/model` it starts from, when a sibling gave it
+    /// its numbers.
+    pub(super) starts_from: Option<String>,
+    /// The provider already offers this id: shown, never selectable.
+    pub(super) added: bool,
+    /// The name as saved; blank leaves the default to the engine.
+    pub(super) name: Entity<ComposerInput>,
+    /// A new row's numbers, edited in place; `None` where they are only read.
+    pub(super) inputs: Option<FetchInputs>,
+    /// Read-only numbers, for an adopted or already-added row.
+    pub(super) numbers: Option<FetchNumbers>,
+    /// The levels the row offers, as saved.
+    pub(super) levels: Vec<String>,
+    /// The levels as the row opened, when they can be edited: saving sends
+    /// them only once they differ.
+    pub(super) opening_levels: Option<Vec<String>>,
+    /// The levels are an estimate, so the chips are switches.
+    pub(super) estimated: bool,
+    pub(super) estimated_from: Option<String>,
+    pub(super) can_turn_off: bool,
+    /// Image input, for a new row; read from the facts otherwise.
+    pub(super) image: bool,
+}
+
+/// A new row's editable numbers.
+#[derive(Clone)]
+pub(super) struct FetchInputs {
+    pub(super) context_window: Entity<ComposerInput>,
+    pub(super) max_tokens: Entity<ComposerInput>,
+    pub(super) input_cost: Entity<ComposerInput>,
+    pub(super) output_cost: Entity<ComposerInput>,
+}
+
+/// One set of numbers for every new row at once, offered when the listing
+/// brings several: a long gateway listing starts uniform, and a row that
+/// differs is corrected on its own.
+pub(super) struct FetchBulk {
+    pub(super) context_window: Entity<ComposerInput>,
+    pub(super) max_tokens: Entity<ComposerInput>,
+    pub(super) levels: Vec<String>,
+    pub(super) image: bool,
+}
+
+/// The fetch dialog: a ProbeProvider listing as a table — one row per id,
+/// its name over its id, its context window, max output, thinking levels,
+/// and price, and where each comes from. An id the catalog carries keeps the
+/// catalog's numbers; a new one opens with a sibling's or the plain defaults
+/// and is edited in place; one the provider already offers is shown but not
+/// offered again.
 pub(super) struct FetchDialog {
-    provider: String,
-    dialect: String,
-    ids: Vec<String>,
-    checked: HashSet<String>,
-    inputs: HashMap<String, Entity<ComposerInput>>,
-    /// Per-id display-name inputs, prefilled with the id; empty falls back
-    /// to the id, like the manual record form.
-    names: HashMap<String, Entity<ComposerInput>>,
-    /// Shared by every record the dialog adds, like the manual form's
-    /// flags. Reasoning prefills from the provider's catalog (see
-    /// `record_form`'s `template_reasoning`); image input never prefills
-    /// on — a wrongly ticked record sends images to a text-only model.
-    reasoning: bool,
-    image: bool,
-    saving: bool,
-    error: Option<String>,
+    pub(super) provider: String,
+    pub(super) rows: Vec<FetchRow>,
+    pub(super) checked: HashSet<String>,
+    pub(super) bulk: Option<FetchBulk>,
+    pub(super) saving: bool,
+    pub(super) error: Option<String>,
 }
 
 impl EventEmitter<ProvidersPageEvent> for ProvidersPage {}
@@ -132,6 +232,10 @@ pub struct ProvidersPage {
     /// The mounted model-record form, targeting the expanded panel's active
     /// variant (ADR-model-setup-applies-stored-proposals's manual half of the write path).
     record_form: Option<RecordForm>,
+    /// Bumped whenever the record form is (re)opened: a row's record still
+    /// on its way from an earlier form must not replace what the user
+    /// opened since.
+    record_form_epoch: u64,
     /// ProbeProvider results per variant (the Test button's status line;
     /// the fetch dialog opens from a fresh probe's `ok`).
     probes: HashMap<String, ProbeState>,
@@ -160,22 +264,79 @@ pub struct ProvidersPage {
     /// The global reset's confirm dialog is open.
     confirm_reset_all: bool,
     task: Option<Task<()>>,
+    /// The `Fetch models` probe and its preview: a slot of its own, so a row's
+    /// pencil (which spawns into `task`) does not cancel a listing already on
+    /// its way.
+    probe_task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
     /// A provider to open on once the list loads ("Open in Settings" on a
     /// written proposal card).
     focus: Option<String>,
 }
 
+fn configured_first(providers: &mut [Provider]) -> usize {
+    providers.sort_by_key(|provider| !provider.configured);
+    providers
+        .iter()
+        .take_while(|provider| provider.configured)
+        .count()
+}
+
+fn provider_section(
+    theme: &Theme,
+    configured: bool,
+    separated: bool,
+    rows: Vec<AnyElement>,
+) -> AnyElement {
+    if rows.is_empty() {
+        return div().into_any_element();
+    }
+    let count = rows.len();
+    let (label, selector) = if configured {
+        (
+            t!("settings_providers_usage.providers.status_configured"),
+            "providers-configured",
+        )
+    } else {
+        (
+            t!("settings_providers_usage.providers.status_not_configured"),
+            "providers-not-configured",
+        )
+    };
+    div()
+        .debug_selector(move || selector.into())
+        .mt(px(if separated { 24.0 } else { 18.0 }))
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .child(widgets::section_label(theme, label))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_faint)
+                        .child(count.to_string()),
+                )
+                .child(div().flex_1().h(px(1.0)).bg(theme.border.opacity(0.6))),
+        )
+        .child(div().flex().flex_col().gap(px(2.0)).children(rows))
+        .into_any_element()
+}
+
 impl Render for ProvidersPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let rows = self
-            .providers
-            .ready()
-            .cloned()
-            .unwrap_or_default()
+        let mut providers = self.providers.ready().cloned().unwrap_or_default();
+        let configured_count = configured_first(&mut providers);
+        let rows = providers
             .into_iter()
             .enumerate()
+            // Element ids follow the grouped display order.
             .map(|(index, provider)| {
                 let id = provider.id.to_string();
                 let brand_mark = match crate::pickers::provider_brand_icon(&provider.id) {
@@ -344,7 +505,7 @@ impl Render for ProvidersPage {
                                         .py(px(2.0))
                                         .hover(|style| style.bg(crate::theme::ink(0.04)))
                                         .on_click(cx.listener(move |page, _, _, cx| {
-                                            page.open_record_form(add_record_id.clone(), cx);
+                                            page.open_record_form(add_record_id.clone(), None, cx);
                                         }))
                                         .child(
                                             crate::icons::icon(crate::icons::PLUS)
@@ -547,14 +708,18 @@ impl Render for ProvidersPage {
             Loadable::Ready(_) => {
                 // Materialized first: the row builder borrows `cx` lazily,
                 // and the action row needs it mutably next.
-                let rows: Vec<AnyElement> = rows.collect();
+                let mut rows: Vec<AnyElement> = rows.collect();
+                let unconfigured = rows.split_off(configured_count.min(rows.len()));
+                let configured = rows;
+                let separated = !configured.is_empty();
                 div()
                     .mt(px(18.0))
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
                     .child(top_action_row(&theme, cx))
-                    .children(rows)
+                    .child(provider_section(&theme, true, false, configured))
+                    .child(provider_section(&theme, false, separated, unconfigured))
                     .into_any_element()
             }
         };
@@ -747,6 +912,7 @@ impl ProvidersPage {
             new_provider_error: None,
             new_provider_logo: None,
             record_form: None,
+            record_form_epoch: 0,
             probes: HashMap::new(),
             fetch_dialog: None,
             record_api_menu: Popup::default(),
@@ -758,6 +924,7 @@ impl ProvidersPage {
             logo_dialog: None,
             confirm_reset_all: false,
             task: None,
+            probe_task: None,
             collapse_task: None,
             focus: None,
         };
@@ -784,5 +951,64 @@ impl ProvidersPage {
     fn fail(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         cx.emit(ProvidersPageEvent::Error(message.into()));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::providers::test_support::*;
+
+    fn provider(id: &str, configured: bool) -> Provider {
+        Provider {
+            id: id.into(),
+            name: id.into(),
+            abbreviation: id[..2].to_ascii_uppercase(),
+            configured,
+            variants: Vec::new(),
+            custom: false,
+            logo: None,
+        }
+    }
+
+    #[test]
+    fn configured_first_preserves_the_order_within_each_group() {
+        let mut rows = vec![
+            provider("plain-a", false),
+            provider("ready-a", true),
+            provider("plain-b", false),
+            provider("ready-b", true),
+        ];
+        assert_eq!(configured_first(&mut rows), 2);
+        let ids: Vec<_> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, ["ready-a", "ready-b", "plain-a", "plain-b"]);
+    }
+
+    #[gpui::test]
+    fn configured_and_unconfigured_providers_have_separate_sections(cx: &mut gpui::TestAppContext) {
+        let harness = providers_harness(cx);
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.providers = Loadable::Ready(vec![
+                provider("plain-a", false),
+                provider("ready-a", true),
+                provider("plain-b", false),
+                provider("ready-b", true),
+            ]);
+            cx.notify();
+        });
+        harness.pump();
+
+        let configured = harness.visual.debug_bounds("providers-configured").unwrap();
+        let first = harness.visual.debug_bounds("provider-row-0").unwrap();
+        let second = harness.visual.debug_bounds("provider-row-1").unwrap();
+        let unconfigured = harness
+            .visual
+            .debug_bounds("providers-not-configured")
+            .unwrap();
+        let third = harness.visual.debug_bounds("provider-row-2").unwrap();
+        assert!(configured.top() < first.top());
+        assert!(first.bottom() <= second.top());
+        assert!(second.bottom() <= unconfigured.top());
+        assert!(unconfigured.top() < third.top());
     }
 }

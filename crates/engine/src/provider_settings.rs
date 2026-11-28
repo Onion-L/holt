@@ -278,16 +278,29 @@ impl ProviderSettingsStore {
         provider_id: &str,
         record: CoreModel,
     ) -> Result<(), EngineError> {
+        self.upsert_model_records(provider_id, [record])
+    }
+
+    /// Saves a batch of records under one provider in one commit: an
+    /// adoption files several rows at once, and half of a batch on disk is
+    /// a listing with nothing to explain it.
+    pub fn upsert_model_records(
+        &self,
+        provider_id: &str,
+        records: impl IntoIterator<Item = CoreModel>,
+    ) -> Result<(), EngineError> {
         let mut settings = self
             .settings
             .write()
             .unwrap_or_else(|error| error.into_inner());
         let previous = settings.clone();
-        settings
+        let slot = settings
             .model_records
             .entry(provider_id.to_string())
-            .or_default()
-            .insert(record.id.clone(), record);
+            .or_default();
+        for record in records {
+            slot.insert(record.id.clone(), record);
+        }
         self.commit(settings, previous)
     }
 

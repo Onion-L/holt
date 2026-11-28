@@ -16,7 +16,6 @@ use holt_core::agent::types::{
     AgentEvent, AgentLoopTurnUpdate, AgentMessage, AgentTool, AgentToolResult,
     AgentToolUpdateCallback, CustomAgentMessage, StreamFn, ThinkingLevel,
 };
-use holt_core::ai::compat::get_model;
 use holt_core::ai::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, DoneReason,
     ErrorReason, Model, RoleAssistant, RoleUser, SimpleStreamOptions, StopReason, TextContent,
@@ -238,7 +237,9 @@ async fn creates_an_agent_instance_with_default_state() {
 
 #[tokio::test]
 async fn creates_an_agent_instance_with_custom_initial_state() {
-    let custom_model = get_model("openai", "gpt-4o-mini").expect("catalog model");
+    let custom_model =
+        holt_core::ai::providers::builtin::get_builtin_model("openai", "gpt-5.4-mini")
+            .expect("catalog model");
     let agent = Agent::new(AgentOptions {
         stream_fn: Some(unused_stream_fn()),
         initial_state: Some(AgentInitialState {
@@ -743,7 +744,9 @@ async fn updates_state_with_mutators() {
     agent.set_system_prompt("Custom prompt");
     assert_eq!(agent.system_prompt(), "Custom prompt");
 
-    let new_model = get_model("google", "gemini-2.5-flash").expect("catalog model");
+    let new_model =
+        holt_core::ai::providers::builtin::get_builtin_model("google", "gemini-2.5-flash-lite")
+            .expect("catalog model");
     agent.set_model(new_model.clone());
     assert_eq!(agent.model(), new_model);
 

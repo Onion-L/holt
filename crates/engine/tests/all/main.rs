@@ -27,6 +27,7 @@ mod mcp_lifecycle_rpc;
 mod mcp_settings_rpc;
 mod mcp_stdio_rpc;
 mod message_queue_rpc;
+mod model_adoption_rpc;
 mod overflow_rpc;
 mod path_references_rpc;
 mod permission_gate_rpc;

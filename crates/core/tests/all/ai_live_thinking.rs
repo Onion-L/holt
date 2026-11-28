@@ -253,8 +253,8 @@ async fn xhigh_reasoning_support_and_rejection() {
     );
 
     for model in [
-        get_model_or_panic("openai", "gpt-5-mini"),
-        as_openai_completions(&get_model_or_panic("openai", "gpt-5-mini")),
+        get_model_or_panic("openai", "gpt-5.2"),
+        as_openai_completions(&get_model_or_panic("openai", "gpt-5.2")),
     ] {
         let (_, response) = drain_xhigh(&model).await;
         assert_eq!(response.stop_reason, StopReason::Error);

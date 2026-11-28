@@ -133,6 +133,12 @@ fn is_version_segment(segment: &str) -> bool {
         || (remainder.starts_with("beta") && remainder[4..].chars().all(|ch| ch.is_ascii_digit()))
 }
 
+/// Gemini 4 uses native effort levels rather than token budgets.
+fn is_gemini4_model(model: &Model) -> bool {
+    let id = model.id.to_lowercase();
+    id.starts_with("gemini-4") || id.starts_with("gemini4")
+}
+
 /// Port of the model matchers (shared with generative-ai but defined there
 /// privately; duplicate the two-character logic).
 fn is_gemini3_pro_model(model: &Model) -> bool {
@@ -188,11 +194,22 @@ fn get_disabled_thinking_config(model: &Model) -> Value {
     if is_gemini3_flash_model(model) {
         return json!({ "thinkingLevel": "MINIMAL" });
     }
+    if is_gemini4_model(model) {
+        return json!({ "thinkingLevel": "LOW" });
+    }
     json!({ "thinkingBudget": 0 })
 }
 
-/// Port of `getGemini3ThinkingLevel`.
-fn get_gemini3_thinking_level(effort: ThinkingLevel, model: &Model) -> &'static str {
+/// Maps resolved reasoning effort to the provider's native thinking level.
+fn get_thinking_level(effort: ThinkingLevel, model: &Model) -> &'static str {
+    if is_gemini4_model(model) {
+        return match effort {
+            ThinkingLevel::Minimal | ThinkingLevel::Low => "LOW",
+            ThinkingLevel::Medium => "MEDIUM",
+            ThinkingLevel::High => "HIGH",
+            ThinkingLevel::Xhigh | ThinkingLevel::Max => "XHIGH",
+        };
+    }
     if is_gemini3_pro_model(model) {
         return match effort {
             ThinkingLevel::Minimal | ThinkingLevel::Low => "LOW",
@@ -936,7 +953,7 @@ pub fn stream_simple_with_transport(
         Err(error) => return crate::ai::api::openai_completions::error_stream(model, &error),
     };
 
-    if is_gemini3_pro_model(model) || is_gemini3_flash_model(model) {
+    if is_gemini3_pro_model(model) || is_gemini3_flash_model(model) || is_gemini4_model(model) {
         return stream_with_transport(
             model,
             context,
@@ -945,7 +962,7 @@ pub fn stream_simple_with_transport(
                 thinking: Some(GoogleThinkingConfig {
                     enabled: true,
                     budget_tokens: None,
-                    level: Some(get_gemini3_thinking_level(resolved_level, model).to_string()),
+                    level: Some(get_thinking_level(resolved_level, model).to_string()),
                 }),
                 ..Default::default()
             }),

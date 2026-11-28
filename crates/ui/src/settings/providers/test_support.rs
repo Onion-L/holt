@@ -18,7 +18,7 @@ pub(super) struct FakeProvidersEngine {
     /// ProbeProvider params, in call order.
     pub(super) probes: std::sync::Mutex<Vec<serde_json::Value>>,
     /// The canned ProbeProvider listing (bare ids, one already offered).
-    pub(super) probe_ids: Vec<String>,
+    pub(super) probe_ids: std::sync::Mutex<Vec<String>>,
     /// The provider-qualified ids `ListHiddenModels` reports.
     pub(super) hidden_ids: std::sync::Mutex<Vec<String>>,
     /// SetProviderLogo / RemoveProviderLogo calls: (method, params).
@@ -27,6 +27,18 @@ pub(super) struct FakeProvidersEngine {
     pub(super) removed: std::sync::Mutex<Vec<serde_json::Value>>,
     /// The store RevealProviderKey reads (provider → key).
     pub(super) keys: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Canned `PreviewFetchedModels` rows by id; an id without one gets the
+    /// plain defaults the real engine answers for a model it has never
+    /// heard of.
+    pub(super) preview_rows: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// A complete raw `PreviewFetchedModels` reply, replacing the canned rows.
+    pub(super) preview_reply: std::sync::Mutex<Option<serde_json::Value>>,
+    /// SaveFetchedModels params, in call order.
+    pub(super) fetched_saves: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// GetModelRecord's canned records, whole.
+    pub(super) records_served: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// When set, `PreviewFetchedModels` fails with this message.
+    pub(super) preview_error: std::sync::Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -92,6 +104,75 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
                 self.records.lock().unwrap().push(params.clone());
                 RpcReply::value(&serde_json::json!({}))
             }
+            methods::PREVIEW_FETCHED_MODELS => {
+                if let Some(error) = self.preview_error.lock().unwrap().clone() {
+                    return Err(RpcError::Failed(error));
+                }
+                if let Some(reply) = self.preview_reply.lock().unwrap().clone() {
+                    return RpcReply::value(&reply);
+                }
+                let canned = self.preview_rows.lock().unwrap().clone();
+                let rows = params["modelIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|id| {
+                        canned
+                            .iter()
+                            .find(|row| row["id"] == *id)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                let id = id.as_str().unwrap_or_default();
+                                serde_json::json!({
+                                    "id": id,
+                                    "name": match id.chars().next() {
+                                        Some(first) => first.to_uppercase().collect::<String>() + &id[1..],
+                                        None => String::new(),
+                                    },
+                                    "source": null,
+                                    "startsFrom": null,
+                                    "levelsEstimated": false,
+                                    "estimatedFrom": null,
+                                    "offered": false,
+                                    "canTurnOff": true,
+                                    "contextWindow": 200000,
+                                    "maxTokens": 8192,
+                                    "reasoningLevels": [],
+                                    "input": ["text"],
+                                    "cost": { "input": 0.0, "output": 0.0 },
+                                })
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                RpcReply::value(&serde_json::Value::Array(rows))
+            }
+            methods::SAVE_FETCHED_MODELS => {
+                self.fetched_saves.lock().unwrap().push(params.clone());
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::GET_MODEL_RECORD => {
+                let provider = params["providerId"].as_str().unwrap_or_default();
+                let model = params["modelId"].as_str().unwrap_or_default();
+                let served = self
+                    .records_served
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|record| {
+                        record["provider"] == provider
+                            && (record["id"] == model
+                                || format!(
+                                    "{}/{}",
+                                    record["provider"].as_str().unwrap_or_default(),
+                                    record["id"].as_str().unwrap_or_default()
+                                ) == model)
+                    })
+                    .cloned();
+                match served {
+                    Some(record) => RpcReply::value(&record),
+                    None => Err(RpcError::BadParams(format!("unknown model for {provider}"))),
+                }
+            }
             methods::LIST_HIDDEN_MODELS => {
                 let rows: Vec<serde_json::Value> = self
                     .hidden_ids
@@ -144,7 +225,7 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
                     "ok": true,
                     "status": "ok",
                     "latencyMs": 5,
-                    "modelIds": self.probe_ids.clone(),
+                    "modelIds": self.probe_ids.lock().unwrap().clone(),
                     "dialect": "openai-completions",
                     "error": serde_json::Value::Null,
                 }))
@@ -206,11 +287,16 @@ pub(super) fn providers_harness<'a>(cx: &'a mut gpui::TestAppContext) -> Provide
         custom_saves: std::sync::Mutex::new(Vec::new()),
         saved_keys: std::sync::Mutex::new(Vec::new()),
         probes: std::sync::Mutex::new(Vec::new()),
-        probe_ids: vec!["acme-9".to_string(), "acme-1".to_string()],
+        probe_ids: std::sync::Mutex::new(vec!["acme-9".to_string(), "acme-1".to_string()]),
         hidden_ids: std::sync::Mutex::new(Vec::new()),
         keys: std::sync::Mutex::new(Default::default()),
         logo_calls: std::sync::Mutex::new(Vec::new()),
         removed: std::sync::Mutex::new(Vec::new()),
+        preview_rows: std::sync::Mutex::new(Vec::new()),
+        preview_reply: std::sync::Mutex::new(None),
+        fetched_saves: std::sync::Mutex::new(Vec::new()),
+        records_served: std::sync::Mutex::new(Vec::new()),
+        preview_error: std::sync::Mutex::new(None),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

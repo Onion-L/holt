@@ -51,37 +51,37 @@ async fn response_id_env_provider_matrix() {
         (
             "Google Provider: should expose responseId",
             "google",
-            "gemini-2.5-flash",
+            "gemini-3.8-flash",
             "GEMINI_API_KEY",
         ),
         (
             "OpenAI Completions Provider: should expose responseId",
             "openai",
-            "gpt-4o-mini",
+            "gpt-5.4-mini",
             "OPENAI_API_KEY",
         ),
         (
             "OpenAI Responses Provider: should expose responseId",
             "openai",
-            "gpt-5-mini",
+            "gpt-5.2",
             "OPENAI_API_KEY",
         ),
         (
             "Anthropic Provider: should expose responseId",
             "anthropic",
-            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
             "ANTHROPIC_API_KEY",
         ),
         (
             "Azure OpenAI Responses Provider: should expose responseId",
             "azure-openai-responses",
-            "gpt-4o-mini",
+            "gpt-5.4-mini",
             "AZURE_OPENAI_API_KEY + AZURE_OPENAI_BASE_URL|AZURE_OPENAI_RESOURCE_NAME",
         ),
         (
             "Mistral Provider: should expose responseId",
             "mistral",
-            "devstral-medium-latest",
+            "codestral-latest",
             "MISTRAL_API_KEY",
         ),
     ];
@@ -97,7 +97,7 @@ async fn response_id_env_provider_matrix() {
             continue;
         }
         let model = get_model_or_panic(provider, model_id);
-        let model = if provider == "openai" && model_id == "gpt-4o-mini" {
+        let model = if provider == "openai" && model_id == "gpt-5.4-mini" {
             as_openai_completions(&model)
         } else {
             model

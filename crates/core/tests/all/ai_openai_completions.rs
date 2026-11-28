@@ -28,9 +28,10 @@ use holt_core::ai::compat::stream_simple as compat_stream_simple;
 use holt_core::ai::types::{
     AssistantContent, AssistantMessage, CacheControlFormat, CacheRetention, ChatTemplateKwargValue,
     ChatTemplateKwargs, Context, MaxTokensField, Message, Model, ModelCompat, ModelInput,
-    ProviderEnv, ProviderHeaders, ProviderRequestOptions, SessionAffinityFormat,
-    SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets, ThinkingFormat, ThinkingLevel,
-    ThinkingTokenBudgetField, ThinkingVariable, Tool, ToolCall, UserContent, UserMessage,
+    ModelThinkingLevel, ProviderEnv, ProviderHeaders, ProviderRequestOptions,
+    SessionAffinityFormat, SimpleStreamOptions, StopReason, StreamOptions, ThinkingBudgets,
+    ThinkingFormat, ThinkingLevel, ThinkingTokenBudgetField, ThinkingVariable, Tool, ToolCall,
+    UserContent, UserMessage,
 };
 use holt_core::ai::utils::http::{HttpBody, HttpFetch, HttpFetchError, HttpRequest, HttpResponse};
 use serde_json::{Value, json};
@@ -677,7 +678,7 @@ async fn omits_anthropic_style_cache_markers_when_cache_retention_is_none() {
 /// TS `createModel`: the catalog compat is stripped so detection applies,
 /// then explicit overrides are layered on top.
 fn prompt_cache_model() -> Model {
-    let mut model = builtin("openai", "gpt-4o-mini");
+    let mut model = builtin("openai", "gpt-5.4-mini");
     model.compat = None;
     model
 }
@@ -783,8 +784,8 @@ async fn sends_known_session_affinity_headers_when_compat_enables_them() {
 #[tokio::test]
 async fn sends_fireworks_session_affinity_for_glm_models() {
     for id in [
-        "accounts/fireworks/models/glm-5p2",
-        "accounts/fireworks/routers/glm-5p2-fast",
+        "accounts/fireworks/models/glm-5p3",
+        "accounts/fireworks/models/glm-5p3-flash",
     ] {
         let model = builtin("fireworks", id);
         let mut options = direct_options();
@@ -1215,8 +1216,8 @@ async fn omits_strict_when_compat_disables_strict_mode() {
 }
 
 #[tokio::test]
-async fn maps_groq_qwen_reasoning_levels_to_default_reasoning_effort() {
-    let model = builtin("groq", "qwen/qwen3.6-27b");
+async fn maps_groq_qwen_reasoning_levels_to_reasoning_effort() {
+    let model = builtin("groq", "qwen/qwen3.8-27b");
     let mut options = simple_test_options();
     options.reasoning = Some(ThinkingLevel::Medium);
 
@@ -1230,7 +1231,7 @@ async fn maps_groq_qwen_reasoning_levels_to_default_reasoning_effort() {
     )
     .await;
 
-    assert_eq!(body["reasoning_effort"], json!("default"));
+    assert_eq!(body["reasoning_effort"], json!("medium"));
 }
 
 #[tokio::test]
@@ -1254,7 +1255,7 @@ async fn keeps_normal_reasoning_effort_for_groq_models_without_compat_mapping() 
 
 #[tokio::test]
 async fn enables_tool_stream_for_supported_zai_models_with_tools() {
-    let model = builtin("zai", "glm-5.2");
+    let model = builtin("zai", "glm-5.3");
     let context = Context {
         messages: vec![user_message("Call ping with ok=true")],
         tools: Some(vec![ping_tool()]),
@@ -1268,7 +1269,7 @@ async fn enables_tool_stream_for_supported_zai_models_with_tools() {
 
 #[test]
 fn stores_zai_tool_stream_support_in_model_compat_metadata() {
-    for id in ["glm-4.7", "glm-5-turbo", "glm-5.2"] {
+    for id in ["glm-5.3", "glm-5.3-flash", "glm-5.4"] {
         let model = builtin("zai", id);
         assert_eq!(
             model
@@ -1282,14 +1283,14 @@ fn stores_zai_tool_stream_support_in_model_compat_metadata() {
 }
 
 #[tokio::test]
-async fn maps_zai_glm_5_2_thinking_levels_to_reasoning_effort() {
-    let model = builtin("zai", "glm-5.2");
+async fn maps_zai_glm_5_3_thinking_levels_to_reasoning_effort() {
+    let model = builtin("zai", "glm-5.3");
     let context = Context {
         messages: vec![user_message("Hi")],
         ..Default::default()
     };
     let cases = [
-        (ThinkingLevel::Low, "high"),
+        (ThinkingLevel::Low, "low"),
         (ThinkingLevel::Medium, "high"),
         (ThinkingLevel::High, "high"),
         (ThinkingLevel::Max, "max"),
@@ -1308,9 +1309,26 @@ async fn maps_zai_glm_5_2_thinking_levels_to_reasoning_effort() {
     }
 }
 
+/// A ZAI record whose ladder can turn thinking off. No compiled ZAI model
+/// offers that any more (as `glm-5.2` did); a user-defined record still can.
+fn zai_model_that_allows_thinking_off() -> Model {
+    let mut model = builtin("zai", "glm-5.3");
+    model.id = "glm-custom-record".to_string();
+    model.thinking_level_map = Some(
+        [
+            (ModelThinkingLevel::Off, Some("none".to_string())),
+            (ModelThinkingLevel::High, Some("high".to_string())),
+            (ModelThinkingLevel::Max, Some("max".to_string())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    model
+}
+
 #[tokio::test]
-async fn omits_zai_glm_5_2_reasoning_effort_when_thinking_is_off() {
-    let model = builtin("zai", "glm-5.2");
+async fn sends_thinking_disabled_for_zai_models_that_allow_it_when_thinking_is_off() {
+    let model = zai_model_that_allows_thinking_off();
     let body = capture_simple_body(
         &model,
         &Context {
@@ -1327,7 +1345,7 @@ async fn omits_zai_glm_5_2_reasoning_effort_when_thinking_is_off() {
 
 #[tokio::test]
 async fn respects_explicit_zai_tool_stream_compat_override() {
-    let mut model = builtin("zai", "glm-5.2");
+    let mut model = builtin("zai", "glm-5.3");
     let compat = model.compat.clone().unwrap_or_default();
     model.compat = Some(ModelCompat {
         zai_tool_stream: Some(true),
@@ -1346,7 +1364,7 @@ async fn respects_explicit_zai_tool_stream_compat_override() {
 
 #[tokio::test]
 async fn omits_tool_stream_when_no_tools_are_provided() {
-    let model = builtin("zai", "glm-5.2");
+    let model = builtin("zai", "glm-5.3");
     let body = capture_simple_body(
         &model,
         &Context {
@@ -1362,8 +1380,8 @@ async fn omits_tool_stream_when_no_tools_are_provided() {
 
 #[tokio::test]
 async fn sends_max_tokens_for_opencode_completions_models() {
-    for provider in ["opencode-go", "opencode"] {
-        let model = builtin(provider, "kimi-k2.6");
+    for (provider, id) in [("opencode-go", "kimi-k2.6"), ("opencode", "kimi-k3")] {
+        let model = builtin(provider, id);
         assert_eq!(
             model
                 .compat
@@ -1405,7 +1423,7 @@ async fn sends_max_tokens_for_builtin_and_custom_deepseek_api_models() {
         "https://API.DeepSeek.COM",
     );
     let models = [
-        builtin("deepseek", "deepseek-v4-flash"),
+        builtin("deepseek", "deepseek-flash"),
         builtin("deepseek", "deepseek-v4-pro"),
         custom,
         custom_uppercase,
@@ -1440,7 +1458,7 @@ async fn sends_max_tokens_for_builtin_and_custom_deepseek_api_models() {
 
 #[tokio::test]
 async fn sends_max_tokens_for_zai_completions_models() {
-    for id in ["glm-5-turbo", "glm-5.2"] {
+    for id in ["glm-5.3", "glm-5.4"] {
         let model = builtin("zai", id);
         assert_eq!(
             model
@@ -1622,9 +1640,35 @@ async fn uses_configurable_chat_template_effort_kwargs_with_static_kwargs() {
     assert!(body.get("reasoning_effort").is_none());
 }
 
+/// An Ant-Ling reasoning model whose ladder names `high` and `xhigh`. The
+/// compiled Ant-Ling entries carry no effort levels, so a record supplies the
+/// shape this path needs.
+fn ant_ling_reasoning_model() -> Model {
+    let mut model = builtin("ant-ling", "Ling-3.2-flash");
+    model.id = "ant-ling-reasoning-record".to_string();
+    model.thinking_level_map = Some(
+        [
+            (ModelThinkingLevel::High, Some("high".to_string())),
+            (ModelThinkingLevel::Xhigh, Some("xhigh".to_string())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    model
+}
+
+/// An Ant-Ling model that does not reason.
+fn ant_ling_non_reasoning_model() -> Model {
+    let mut model = builtin("ant-ling", "Ling-3.2-flash");
+    model.id = "ant-ling-chat-record".to_string();
+    model.reasoning = false;
+    model.thinking_level_map = None;
+    model
+}
+
 #[tokio::test]
 async fn uses_ant_ling_compatibility_metadata() {
-    let model = builtin("ant-ling", "Ring-2.6-1T");
+    let model = ant_ling_reasoning_model();
     let compat = model.compat.as_ref().expect("compat");
     assert_eq!(compat.supports_store, Some(false));
     assert_eq!(compat.supports_developer_role, Some(false));
@@ -1667,11 +1711,11 @@ async fn uses_ant_ling_compatibility_metadata() {
 
 #[tokio::test]
 async fn omits_ant_ling_reasoning_for_unmapped_efforts_and_non_reasoning_models() {
-    let ring = builtin("ant-ling", "Ring-2.6-1T");
+    let reasoning = ant_ling_reasoning_model();
     let mut options = direct_options();
     options.reasoning_effort = Some(ThinkingLevel::Medium);
     let body = capture_direct_body(
-        &ring,
+        &reasoning,
         &Context {
             messages: vec![user_message("Hi")],
             ..Default::default()
@@ -1681,11 +1725,11 @@ async fn omits_ant_ling_reasoning_for_unmapped_efforts_and_non_reasoning_models(
     .await;
     assert!(body.get("reasoning").is_none());
 
-    let ling = builtin("ant-ling", "Ling-2.6-flash");
+    let chat = ant_ling_non_reasoning_model();
     let mut simple = simple_test_options();
     simple.reasoning = Some(ThinkingLevel::High);
     let body = capture_simple_body(
-        &ling,
+        &chat,
         &Context {
             messages: vec![user_message("Hi")],
             ..Default::default()
@@ -2364,10 +2408,8 @@ async fn omits_prompt_cache_retention_when_supports_long_cache_retention_is_fals
 #[tokio::test]
 async fn omits_long_cache_retention_for_opencode_models() {
     let cases = [
-        ("opencode", "deepseek-v4-flash"),
+        ("opencode", "deepseek-v4.1-flash"),
         ("opencode", "deepseek-v4-pro"),
-        ("opencode", "kimi-k2.5"),
-        ("opencode", "kimi-k2.6"),
         ("opencode", "minimax-m2.7"),
         ("opencode-go", "kimi-k2.6"),
     ];

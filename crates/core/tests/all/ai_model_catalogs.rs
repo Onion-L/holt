@@ -217,17 +217,17 @@ fn registers_glm_5_2_as_the_default_openai_compatible_reasoning_model() {
         Some(level_map(&[
             (ModelThinkingLevel::Off, Some("none")),
             (ModelThinkingLevel::Minimal, None),
-            (ModelThinkingLevel::Low, None),
+            (ModelThinkingLevel::Low, Some("low")),
             (ModelThinkingLevel::Medium, None),
             (ModelThinkingLevel::High, Some("high")),
             (ModelThinkingLevel::Xhigh, None),
             (ModelThinkingLevel::Max, Some("max")),
         ]))
     );
-    assert_eq!(model.input, vec![ModelInput::Text]);
+    assert_eq!(model.input, vec![ModelInput::Text, ModelInput::Image]);
     assert_eq!(model.context_window, 1_048_576);
     assert_eq!(model.max_tokens, 262_144);
-    assert_eq!(model.cost, cost(1.4, 4.4, 0.3, 0.0));
+    assert_eq!(model.cost, cost(1.4, 4.4, 0.14, 0.0));
 
     // The TS `toMatchObject` checks this compat subset.
     let compat = model.compat.expect("baseten GLM-5.2 compat");
@@ -249,8 +249,8 @@ fn registers_glm_5_2_as_the_default_openai_compatible_reasoning_model() {
 }
 
 #[test]
-fn models_kimi_k2_6_reasoning_as_an_explicit_off_on_toggle() {
-    let model = get_model("baseten", "moonshotai/Kimi-K2.6");
+fn models_nemotron_3_ultra_reasoning_as_an_explicit_off_on_toggle() {
+    let model = get_model("baseten", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B");
 
     assert_eq!(
         model.thinking_level_map,
@@ -264,7 +264,10 @@ fn models_kimi_k2_6_reasoning_as_an_explicit_off_on_toggle() {
             (ModelThinkingLevel::Max, None),
         ]))
     );
-    let compat = model.compat.clone().expect("baseten Kimi K2.6 compat");
+    let compat = model
+        .compat
+        .clone()
+        .expect("baseten Nemotron 3 Ultra compat");
     assert_eq!(compat.supports_reasoning_effort, Some(false));
     assert_eq!(compat.thinking_format, Some(ThinkingFormat::Baseten));
     assert_eq!(
@@ -302,36 +305,11 @@ fn resolves_baseten_api_key_from_the_environment() {
 // Fireworks models (fireworks-models.test.ts, catalog cases)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn registers_the_default_kimi_k2_6_model_via_anthropic_compatible_messages_api() {
-    let model = get_model("fireworks", "accounts/fireworks/models/kimi-k2p6");
-
-    assert_eq!(model.api, "anthropic-messages");
-    assert_eq!(model.provider, "fireworks");
-    assert_eq!(model.base_url, "https://api.fireworks.ai/inference");
-    assert!(model.reasoning);
-    assert_eq!(model.input, vec![ModelInput::Text, ModelInput::Image]);
-    assert_eq!(model.context_window, 262_000);
-    assert_eq!(model.max_tokens, 262_000);
-    assert_eq!(model.cost, cost(0.95, 4.0, 0.16, 0.0));
-}
-
-#[test]
-fn aligns_glm_5_2_fast_with_glm_5_2s_openai_compatible_config() {
-    let base = get_model("fireworks", "accounts/fireworks/models/glm-5p2");
-    let fast = get_model("fireworks", "accounts/fireworks/routers/glm-5p2-fast");
-
-    assert_eq!(fast.api, base.api);
-    assert_eq!(fast.base_url, base.base_url);
-    assert_eq!(fast.compat, base.compat);
-    assert_eq!(fast.thinking_level_map, base.thinking_level_map);
-}
-
 #[tokio::test]
-async fn omits_unsupported_long_cache_retention_for_glm_5p2() {
+async fn omits_unsupported_long_cache_retention_for_kimi_k3() {
     for model_id in [
-        "accounts/fireworks/models/glm-5p2",
-        "accounts/fireworks/routers/glm-5p2-fast",
+        "accounts/fireworks/models/kimi-k3",
+        "accounts/fireworks/routers/kimi-k3-fast",
     ] {
         let model = get_model("fireworks", model_id);
         let payload = capture_simple_payload(
@@ -421,24 +399,13 @@ fn resolves_fireworks_api_key_from_the_environment() {
     );
 }
 
-#[test]
-fn sets_fireworks_specific_compat_for_session_affinity_and_unsupported_tool_fields() {
-    let model = get_model("fireworks", "accounts/fireworks/models/kimi-k2p6");
-
-    let compat = model.compat.expect("fireworks kimi-k2p6 compat");
-    assert_eq!(compat.send_session_affinity_headers, Some(true));
-    assert_eq!(compat.supports_eager_tool_input_streaming, Some(false));
-    assert_eq!(compat.supports_cache_control_on_tools, Some(false));
-    assert_eq!(compat.supports_long_cache_retention, Some(false));
-}
-
 // ---------------------------------------------------------------------------
 // Together models (together-models.test.ts)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn registers_the_default_kimi_k2_6_model_via_openai_compatible_chat_completions_api() {
-    let model = get_model("together", "moonshotai/Kimi-K2.6");
+fn registers_kimi_k3_via_openai_compatible_chat_completions_api() {
+    let model = get_model("together", "moonshotai/Kimi-K3");
 
     assert_eq!(model.api, "openai-completions");
     assert_eq!(model.provider, "together");
@@ -447,15 +414,19 @@ fn registers_the_default_kimi_k2_6_model_via_openai_compatible_chat_completions_
     assert_eq!(
         model.thinking_level_map,
         Some(level_map(&[
+            (ModelThinkingLevel::Off, Some("none")),
             (ModelThinkingLevel::Minimal, None),
-            (ModelThinkingLevel::Low, None),
+            (ModelThinkingLevel::Low, Some("low")),
             (ModelThinkingLevel::Medium, None),
+            (ModelThinkingLevel::High, Some("high")),
+            (ModelThinkingLevel::Xhigh, None),
+            (ModelThinkingLevel::Max, Some("max")),
         ]))
     );
     assert_eq!(model.input, vec![ModelInput::Text, ModelInput::Image]);
-    assert_eq!(model.context_window, 262_144);
-    assert_eq!(model.max_tokens, 131_000);
-    assert_eq!(model.cost, cost(1.2, 4.5, 0.2, 0.0));
+    assert_eq!(model.context_window, 1_048_576);
+    assert_eq!(model.max_tokens, 1_048_576);
+    assert_eq!(model.cost, cost(3.0, 15.0, 0.3, 0.0));
     assert_eq!(
         model.compat,
         Some(ModelCompat {
@@ -473,52 +444,37 @@ fn registers_the_default_kimi_k2_6_model_via_openai_compatible_chat_completions_
 
 #[test]
 fn models_together_reasoning_controls_from_the_together_api_surface() {
-    let gpt_oss = get_model("together", "openai/gpt-oss-120b");
+    let kimi = get_model("together", "moonshotai/Kimi-K3");
     assert_eq!(
-        gpt_oss.thinking_level_map,
+        kimi.thinking_level_map,
+        Some(level_map(&[
+            (ModelThinkingLevel::Off, Some("none")),
+            (ModelThinkingLevel::Minimal, None),
+            (ModelThinkingLevel::Low, Some("low")),
+            (ModelThinkingLevel::Medium, None),
+            (ModelThinkingLevel::High, Some("high")),
+            (ModelThinkingLevel::Xhigh, None),
+            (ModelThinkingLevel::Max, Some("max")),
+        ]))
+    );
+    let kimi_compat = kimi.compat.expect("Kimi-K3 compat");
+    assert_eq!(kimi_compat.supports_reasoning_effort, Some(false));
+    assert_eq!(kimi_compat.thinking_format, Some(ThinkingFormat::Together));
+
+    let minimax = get_model("together", "MiniMaxAI/MiniMax-M3.1-Flash");
+    assert_eq!(
+        minimax.thinking_level_map,
         Some(level_map(&[
             (ModelThinkingLevel::Off, None),
             (ModelThinkingLevel::Minimal, None),
             (ModelThinkingLevel::Low, Some("low")),
             (ModelThinkingLevel::Medium, Some("medium")),
             (ModelThinkingLevel::High, Some("high")),
-            (ModelThinkingLevel::Max, None),
-            (ModelThinkingLevel::Xhigh, None),
+            (ModelThinkingLevel::Xhigh, Some("xhigh")),
+            (ModelThinkingLevel::Max, Some("max")),
         ]))
     );
-    let gpt_oss_compat = gpt_oss.compat.expect("gpt-oss-120b compat");
-    assert_eq!(gpt_oss_compat.supports_reasoning_effort, Some(true));
-    assert_eq!(gpt_oss_compat.thinking_format, Some(ThinkingFormat::Openai));
-
-    let deep_seek_v4 = get_model("together", "deepseek-ai/DeepSeek-V4-Pro");
-    assert_eq!(
-        deep_seek_v4.thinking_level_map,
-        Some(level_map(&[
-            (ModelThinkingLevel::Minimal, None),
-            (ModelThinkingLevel::Low, None),
-            (ModelThinkingLevel::Medium, None),
-            (ModelThinkingLevel::High, Some("high")),
-            (ModelThinkingLevel::Xhigh, None),
-        ]))
-    );
-    let deep_seek_compat = deep_seek_v4.compat.expect("DeepSeek-V4-Pro compat");
-    assert_eq!(deep_seek_compat.supports_reasoning_effort, Some(true));
-    assert_eq!(
-        deep_seek_compat.thinking_format,
-        Some(ThinkingFormat::Together)
-    );
-
-    let minimax = get_model("together", "MiniMaxAI/MiniMax-M2.7");
-    assert_eq!(
-        minimax.thinking_level_map,
-        Some(level_map(&[
-            (ModelThinkingLevel::Off, None),
-            (ModelThinkingLevel::Minimal, None),
-            (ModelThinkingLevel::Low, None),
-            (ModelThinkingLevel::Medium, None),
-        ]))
-    );
-    let minimax_compat = minimax.compat.expect("MiniMax-M2.7 compat");
+    let minimax_compat = minimax.compat.expect("MiniMax-M3.1-Flash compat");
     assert_eq!(minimax_compat.thinking_format, None);
     assert_eq!(minimax_compat.supports_reasoning_effort, Some(false));
 }
@@ -548,7 +504,7 @@ const XIAOMI_PROVIDERS: [&str; 4] = [
     "xiaomi-token-plan-sgp",
 ];
 const DEPRECATED_MODEL_IDS: [&str; 3] = ["mimo-v2-flash", "mimo-v2-omni", "mimo-v2-pro"];
-const REPLACEMENT_MODEL_IDS: [&str; 2] = ["mimo-v2.5", "mimo-v2.5-pro"];
+const REPLACEMENT_MODEL_IDS: [&str; 2] = ["mimo-v2.6-flash", "mimo-v2.6-pro"];
 
 #[test]
 fn omits_deprecated_models_from_xiaomi_catalogs() {
@@ -583,11 +539,11 @@ fn keeps_replacement_models_on_xiaomi_catalogs() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn exposes_glm_4_6v_on_the_china_coding_plan_catalog() {
-    let model = get_model("zai-coding-cn", "glm-4.6v");
+fn exposes_glm_5_4_on_the_china_coding_plan_catalog() {
+    let model = get_model("zai-coding-cn", "glm-5.4");
 
     // The TS `toMatchObject` checks this subset.
-    assert_eq!(model.id, "glm-4.6v");
+    assert_eq!(model.id, "glm-5.4");
     assert_eq!(model.provider, "zai-coding-cn");
     assert_eq!(model.api, "openai-completions");
     assert_eq!(
@@ -596,10 +552,10 @@ fn exposes_glm_4_6v_on_the_china_coding_plan_catalog() {
     );
     assert!(model.reasoning);
     assert_eq!(model.input, vec![ModelInput::Text, ModelInput::Image]);
-    assert_eq!(model.cost, cost(0.3, 0.9, 0.0, 0.0));
-    assert_eq!(model.context_window, 128_000);
-    assert_eq!(model.max_tokens, 32_768);
-    let compat = model.compat.expect("glm-4.6v compat");
+    assert_eq!(model.cost, cost(1.4, 4.4, 0.26, 0.0));
+    assert_eq!(model.context_window, 1_000_000);
+    assert_eq!(model.max_tokens, 131_072);
+    let compat = model.compat.expect("glm-5.4 compat");
     assert_eq!(compat.max_tokens_field, Some(MaxTokensField::MaxTokens));
     assert_eq!(compat.thinking_format, Some(ThinkingFormat::Zai));
     assert_eq!(compat.zai_tool_stream, Some(true));
@@ -607,35 +563,25 @@ fn exposes_glm_4_6v_on_the_china_coding_plan_catalog() {
 
 #[test]
 fn uses_api_equivalent_reference_costs_for_coding_plan_models() {
-    assert_eq!(get_model("zai", "glm-5.2").cost, cost(1.4, 4.4, 0.26, 0.0));
-    assert_eq!(
-        get_model("zai-coding-cn", "glm-5.1").cost,
-        cost(1.4, 4.4, 0.26, 0.0)
-    );
-    assert_eq!(
-        get_model("zai-coding-cn", "glm-5v-turbo").cost,
-        cost(1.2, 4.0, 0.24, 0.0)
-    );
     for provider in ["zai", "zai-coding-cn"] {
-        assert_eq!(
-            get_model(provider, "glm-5.3").cost,
-            cost(1.4, 4.4, 0.26, 0.0),
-            "{provider} glm-5.3 cost"
-        );
+        for model_id in ["glm-5.3", "glm-5.4"] {
+            assert_eq!(
+                get_model(provider, model_id).cost,
+                cost(1.4, 4.4, 0.26, 0.0),
+                "{provider} {model_id} cost"
+            );
+        }
     }
 }
 
 #[test]
 fn keeps_zero_costs_for_coding_plan_models_without_a_matching_api_price() {
-    let zero_cost = cost(0.0, 0.0, 0.0, 0.0);
-
-    for provider in ["zai", "zai-coding-cn"] {
-        assert_eq!(
-            get_model(provider, "glm-5.2-highspeed").cost,
-            zero_cost,
-            "{provider} glm-5.2-highspeed cost"
-        );
-    }
+    // The international plan retired `glm-5.2-highspeed`; the China plan's
+    // listing in models.dev merely omits it, so the plan keeps the model.
+    assert_eq!(
+        get_model("zai-coding-cn", "glm-5.2-highspeed").cost,
+        cost(0.0, 0.0, 0.0, 0.0)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -825,13 +771,153 @@ fn embedded_catalog_models_match_their_group() {
     }
 }
 
+#[test]
+fn embedded_catalog_excludes_realtime_models() {
+    for (provider, model_id) in [
+        ("google", "gemini-3.1-flash-live-preview"),
+        ("vercel-ai-gateway", "google/gemini-3.8-live"),
+        (
+            "vercel-ai-gateway",
+            "google/gemini-3.8-live-extended-thinking",
+        ),
+        ("vercel-ai-gateway", "openai/gpt-realtime-1.5"),
+        ("vercel-ai-gateway", "openai/gpt-realtime-2"),
+        ("vercel-ai-gateway", "openai/gpt-realtime-2.1"),
+        ("vercel-ai-gateway", "openai/gpt-realtime-mini"),
+        // Realtime on another provider's source row; their own lists nothing.
+        ("azure-openai-responses", "gpt-realtime-2.1"),
+        ("openai", "gpt-realtime-2.1"),
+    ] {
+        assert!(
+            !get_models(provider)
+                .iter()
+                .any(|model| model.id == model_id),
+            "realtime model {provider}/{model_id} must not use a chat transport"
+        );
+    }
+}
+
+#[test]
+fn embedded_catalog_drops_retired_models() {
+    // Deprecated on the source's row, or unlisted where the source's listing
+    // is the provider's own catalog.
+    for (provider, model_id) in [
+        ("openai", "gpt-4"),
+        ("openai", "gpt-4o"),
+        ("anthropic", "claude-sonnet-4-5"),
+        ("google", "gemini-2.5-pro"),
+        ("moonshotai", "kimi-k2.6"),
+        (
+            "amazon-bedrock",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        ),
+    ] {
+        assert!(
+            get_models(provider)
+                .iter()
+                .all(|model| model.id != model_id),
+            "retired model {provider}/{model_id} must have left the catalog"
+        );
+    }
+    // A moving alias the source lists under `google` only.
+    assert!(
+        get_models("google-vertex")
+            .iter()
+            .any(|model| model.id == "gemini-flash-latest")
+    );
+}
+
+#[test]
+fn embedded_catalog_prices_explicitly_free_variants_as_zero() {
+    for (provider, model_id) in [
+        ("opencode", "deepseek-v4.1-flash-free"),
+        ("opencode-go", "hy4-flash-free"),
+        ("openrouter", "baidu/ernie-5.5-flash-preview:free"),
+        ("openrouter", "recursive/flint-v1.0:free"),
+        ("openrouter", "particle-ai/particle-1:free"),
+        ("vercel-ai-gateway", "nvidia/nemotron-3.5-lightning-free"),
+    ] {
+        assert_eq!(
+            get_model(provider, model_id).cost,
+            cost(0.0, 0.0, 0.0, 0.0),
+            "{provider}/{model_id}"
+        );
+    }
+}
+
+/// The refresh carries models.dev's tiered prices into the catalog: a row
+/// whose source prices a long context higher says so, and the usage cost
+/// reads it. Every number comes off the catalog's own row.
+#[test]
+fn embedded_catalog_carries_the_source_s_tiered_prices() {
+    let model = get_model("anthropic", "claude-haiku-5-5");
+    let tier = model
+        .cost
+        .tiers
+        .as_ref()
+        .and_then(|tiers| tiers.first())
+        .expect("the source prices Haiku 5.5 higher over a long context");
+    assert!(tier.rates.input.0 > model.cost.rates.input.0);
+    let threshold = tier.input_tokens_above;
+    assert!(threshold < model.context_window);
+
+    let input_cost = |input: u64| {
+        let mut usage = holt_core::ai::types::Usage {
+            input,
+            ..Default::default()
+        };
+        holt_core::ai::models::calculate_cost(&model, &mut usage)
+            .input
+            .0
+    };
+    let base = model.cost.rates.input.0 * threshold as f64 / 1_000_000.0;
+    assert!((input_cost(threshold) - base).abs() < 1e-9);
+    let over = tier.rates.input.0 * (threshold + 1) as f64 / 1_000_000.0;
+    assert!((input_cost(threshold + 1) - over).abs() < 1e-9);
+
+    // The refresh filled the rows that had none; these three providers
+    // carried none but OpenAI's before it.
+    let tiered = ["anthropic", "amazon-bedrock", "openai"]
+        .into_iter()
+        .flat_map(get_models)
+        .filter(|model| {
+            model
+                .cost
+                .tiers
+                .as_ref()
+                .is_some_and(|tiers| !tiers.is_empty())
+        })
+        .count();
+    assert!(tiered >= 40, "rows priced by context size: {tiered}");
+}
+
+/// models.dev omits `cache_write` from these tiers because it is unchanged
+/// from the base rate; the generated tier must carry that base rate, not zero.
+#[test]
+fn embedded_catalog_tiers_inherit_an_omitted_cache_write_rate() {
+    for (model_id, cache_write) in [
+        ("google/gemini-2.5-pro-preview", 0.375),
+        ("google/gemini-3.1-pro-preview", 0.375),
+        ("google/gemini-3.1-pro-preview-customtools", 0.375),
+        ("~google/gemini-pro-latest", 0.1875),
+    ] {
+        let model = get_model("openrouter", model_id);
+        assert_eq!(model.cost.rates.cache_write.0, cache_write, "{model_id}");
+        let tier = model
+            .cost
+            .tiers
+            .as_ref()
+            .and_then(|tiers| tiers.first())
+            .unwrap_or_else(|| panic!("missing long-context tier for {model_id}"));
+        assert_eq!(tier.rates.cache_write.0, cache_write, "{model_id}");
+    }
+}
+
 /// Port of the exact generated allowlist assertions (`assertExactModelIds`):
-/// the pinned id sets the generator enforces for representative providers.
+/// the pinned id sets for representative providers, updated with every
+/// `scripts/update-model-catalog.py` run so an id-set change is explicit.
 #[test]
 fn embedded_catalog_matches_exact_generated_allowlists() {
-    // qwen-token-plan-individual is pinned by QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS
-    // in scripts/generate-models.ts (asserted via assertExactModelIds in
-    // strict mode); xiaomi and zai-coding-cn pin the suites above.
     let allowlists = [
         (
             "qwen-token-plan-individual",
@@ -849,12 +935,15 @@ fn embedded_catalog_matches_exact_generated_allowlists() {
         ),
         (
             "xiaomi",
-            vec!["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.5-pro-ultraspeed"],
+            vec![
+                "mimo-v2.6-flash",
+                "mimo-v2.6-pro",
+                "mimo-v2.6-pro-ultraspeed",
+            ],
         ),
         (
             "zai-coding-cn",
             vec![
-                "glm-4.6v",
                 "glm-4.7",
                 "glm-5-turbo",
                 "glm-5.1",
@@ -862,7 +951,7 @@ fn embedded_catalog_matches_exact_generated_allowlists() {
                 "glm-5.2-highspeed",
                 "glm-5.3",
                 "glm-5.3-flash",
-                "glm-5.3-highspeed",
+                "glm-5.4",
                 "glm-5v-turbo",
             ],
         ),

@@ -44,6 +44,7 @@ pub mod instance_lock;
 mod local_fs;
 mod mcp;
 mod mode_default;
+mod model_adoption;
 mod output_log;
 mod path_search;
 mod plan_mode;
@@ -308,12 +309,13 @@ impl LocalEngine {
             runtime.remove_chat(chat_id);
         }
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
-        // The provider store is read once per boot: the file is written only
-        // when missing, then overlaid on the compiled catalog. Provider
-        // listing, model listing, resolution, and the request path all answer
-        // from the merge, so a file edit needs a restart. The settings load
-        // reads it too: a stored definition shadowing a catalog id is dropped
-        // before it can grant the plaintext-http allowance on the way in.
+        // The provider store is read once per boot: the file is written when
+        // missing and when an upgrade replaces a boot snapshot, then overlaid
+        // on the compiled catalog. Provider listing, model listing,
+        // resolution, and the request path all answer from the merge, so a
+        // file edit needs a restart. The settings load reads it too: a stored
+        // definition shadowing a catalog id is dropped before it can grant
+        // the plaintext-http allowance on the way in.
         let catalog = provider_store::load(&config.data_dir);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir, &catalog)?);
         let providers = Arc::new(ProviderAdapter::new(
@@ -711,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_store_snapshot_appears_on_boot() {
+    fn provider_store_template_appears_on_boot() {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
@@ -725,21 +727,9 @@ mod tests {
         let store: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.path().join("provider-store.json")).unwrap())
                 .unwrap();
-        assert_eq!(store["version"], 1);
-        assert!(store["writtenAt"].as_i64().unwrap() > 1_000_000_000_000);
-        assert_eq!(
-            store["sourceGeneratedAt"],
-            serde_json::json!(
-                holt_core::ai::providers::builtin::get_builtin_model_data_generated_at()
-            )
-        );
-        assert!(
-            store["providers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|provider| provider["id"] == "openai")
-        );
+        // The template overrides nothing, so nothing in it can shadow a
+        // later catalog.
+        assert_eq!(store, serde_json::json!({ "version": 1, "providers": [] }));
         drop(engine);
     }
 
@@ -758,24 +748,22 @@ mod tests {
         drop(engine);
 
         // A user edit is the file's content now: assembly reads it and never
-        // rewrites it, across any number of restarts.
+        // rewrites it, across any number of restarts. The entry is a whole
+        // record, as the file's schema requires.
         let path = dir.path().join("provider-store.json");
-        let mut store: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let openai = store["providers"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|provider| provider["id"] == "openai")
-            .unwrap();
-        openai["baseUrl"] = "https://user-edited.example/v1".into();
-        let gpt = openai["models"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|model| model["id"] == "gpt-5.4")
-            .unwrap();
+        let mut gpt = serde_json::to_value(
+            holt_core::ai::providers::builtin::get_builtin_model("openai", "gpt-5.4").unwrap(),
+        )
+        .unwrap();
         gpt["contextWindow"] = 123_456.into();
+        let store = serde_json::json!({
+            "version": 1,
+            "providers": [{
+                "id": "openai",
+                "baseUrl": "https://user-edited.example/v1",
+                "models": [gpt],
+            }],
+        });
         std::fs::write(&path, serde_json::to_vec_pretty(&store).unwrap()).unwrap();
         let edited = std::fs::read(&path).unwrap();
 
@@ -1469,7 +1457,7 @@ mod tests {
                     "request": {
                         "prompt": "hello",
                         "provider": "minimax",
-                        "model": "minimax/MiniMax-M2.7",
+                        "model": "minimax/MiniMax-M3.1-Flash",
                         "reasoning": null,
                         "modelOptions": {},
                         "cwd": dir.path(),
