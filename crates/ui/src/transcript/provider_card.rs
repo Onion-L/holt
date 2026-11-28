@@ -510,12 +510,13 @@ impl Transcript {
     pub(super) fn render_key_request_card(
         &mut self,
         row_id: &SharedString,
-        provider_name: &SharedString,
+        card: (&SharedString, &SharedString, &SharedString),
         destination: &SharedString,
         state: KeyCardState,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (card_id, provider_id, provider_name) = card;
         let pending = state == KeyCardState::Pending;
         // Settled cards lose their input in `sync`, rendered or not.
         if pending
@@ -531,9 +532,19 @@ impl Transcript {
                 )
             });
             let submit_row = row_id.clone();
+            let submit_card_id = card_id.clone();
+            let submit_provider = provider_id.clone();
+            let submit_destination = destination.clone();
             let events = cx.subscribe(&input, move |this, _, event, cx| match event {
                 ComposerInputEvent::Edited => cx.notify(),
-                ComposerInputEvent::Submitted => this.settle_key(submit_row.clone(), true, cx),
+                ComposerInputEvent::Submitted => this.settle_key(
+                    submit_row.clone(),
+                    submit_card_id.clone(),
+                    submit_provider.clone(),
+                    submit_destination.clone(),
+                    true,
+                    cx,
+                ),
                 _ => {}
             });
             let ui = self.provider_cards.entry(row_id.clone()).or_default();
@@ -572,7 +583,13 @@ impl Transcript {
         card = match state {
             KeyCardState::Pending => {
                 let save_row = row_id.clone();
+                let save_card_id = card_id.clone();
+                let save_provider = provider_id.clone();
+                let save_destination = destination.clone();
                 let dismiss_row = row_id.clone();
+                let dismiss_card_id = card_id.clone();
+                let dismiss_provider = provider_id.clone();
+                let dismiss_destination = destination.clone();
                 let enabled = typed && !busy;
                 card.child(
                     div()
@@ -606,7 +623,14 @@ impl Transcript {
                                 .when(!enabled, |button| button.opacity(0.35))
                                 .when(enabled, |button| {
                                     button.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.settle_key(save_row.clone(), true, cx)
+                                        this.settle_key(
+                                            save_row.clone(),
+                                            save_card_id.clone(),
+                                            save_provider.clone(),
+                                            save_destination.clone(),
+                                            true,
+                                            cx,
+                                        )
                                     }))
                                 })
                                 .child(t!("conversation_transcript.provider.save_key")),
@@ -621,7 +645,14 @@ impl Transcript {
                                 .hover(move |style| widgets::ghost_hover(theme, style))
                                 .when(!busy, |button| {
                                     button.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.settle_key(dismiss_row.clone(), false, cx)
+                                        this.settle_key(
+                                            dismiss_row.clone(),
+                                            dismiss_card_id.clone(),
+                                            dismiss_provider.clone(),
+                                            dismiss_destination.clone(),
+                                            false,
+                                            cx,
+                                        )
                                     }))
                                 })
                                 .child(t!("conversation_transcript.provider.dismiss")),
@@ -769,7 +800,15 @@ impl Transcript {
 
     /// Save (with the typed key) or Dismiss the chat's pending key request
     /// (ADR-api-keys-collected-through-key-requests). The key goes from the input straight into the RPC.
-    fn settle_key(&mut self, row_id: SharedString, save: bool, cx: &mut Context<Self>) {
+    fn settle_key(
+        &mut self,
+        row_id: SharedString,
+        card_id: SharedString,
+        provider_id: SharedString,
+        destination: SharedString,
+        save: bool,
+        cx: &mut Context<Self>,
+    ) {
         let (Some(chat_id), Some(engine)) =
             (self.chat_id.clone(), self.state.read(cx).engine().cloned())
         else {
@@ -781,7 +820,12 @@ impl Transcript {
         if ui.busy {
             return;
         }
-        let mut params = serde_json::json!({ "chatId": chat_id });
+        let mut params = serde_json::json!({
+            "chatId": chat_id,
+            "cardId": card_id.as_ref(),
+            "providerId": provider_id.as_ref(),
+            "destination": destination.as_ref(),
+        });
         if save {
             let key = ui
                 .key_input
@@ -1097,7 +1141,13 @@ mod tests {
                 ),
                 (
                     methods::SETTLE_PROVIDER_KEY_REQUEST.to_string(),
-                    serde_json::json!({ "chatId": "chat-1", "key": "sk-beta-secret" }),
+                    serde_json::json!({
+                        "chatId": "chat-1",
+                        "cardId": "k1",
+                        "providerId": "beta",
+                        "destination": "https://api.beta.example/v1",
+                        "key": "sk-beta-secret",
+                    }),
                 ),
             ]
         );

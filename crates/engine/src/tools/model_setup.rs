@@ -1686,6 +1686,10 @@ pub(crate) fn create_model_proposal_tool(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingKeyRequest {
+    /// The transcript card this request belongs to. Older persisted
+    /// requests adopt the displayed card's id on their first settle.
+    #[serde(default)]
+    pub(crate) card_id: String,
     pub(crate) provider_id: String,
     pub(crate) provider_name: String,
     /// The base URL the key would be sent to when probing — the string
@@ -1726,6 +1730,7 @@ async fn key_request_target(
         ));
     }
     Ok(PendingKeyRequest {
+        card_id: String::new(),
         provider_id: draft.id,
         provider_name: draft.name,
         destination: draft.base_url,
@@ -1739,6 +1744,7 @@ async fn known_key_target(
 ) -> Option<PendingKeyRequest> {
     if let Some(provider) = providers.custom_provider(provider_id) {
         return Some(PendingKeyRequest {
+            card_id: String::new(),
             provider_id: provider_id.to_string(),
             provider_name: provider.name,
             destination: provider.base_url,
@@ -1757,6 +1763,7 @@ async fn known_key_target(
     };
     if let Some(provider) = planned {
         return Some(PendingKeyRequest {
+            card_id: String::new(),
             provider_id: provider_id.to_string(),
             provider_name: provider.name,
             destination: provider.base_url,
@@ -1775,6 +1782,7 @@ async fn known_key_target(
         .map(|variant| variant.name.clone())
         .unwrap_or_else(|| provider_id.to_string());
     Some(PendingKeyRequest {
+        card_id: String::new(),
         provider_id: provider_id.to_string(),
         provider_name,
         destination: base_url,
@@ -1858,13 +1866,14 @@ pub(crate) fn create_request_provider_key_tool(
         prepare_arguments: None,
         execution_mode: None,
         execute: Arc::new(
-            move |_tool_call_id: &str,
+            move |tool_call_id: &str,
                   params: &serde_json::Value,
                   _signal: Option<&CancellationToken>,
                   _on_update: Option<&AgentToolUpdateCallback>| {
                 let providers = providers.clone();
                 let chat = chat.clone();
                 let params = params.clone();
+                let card_id = format!("{tool_call_id}-card");
                 Box::pin(async move {
                     let provider_id = params
                         .get("providerId")
@@ -1874,11 +1883,12 @@ pub(crate) fn create_request_provider_key_tool(
                         .ok_or_else(|| "\"providerId\" is required".to_string())?
                         .to_string();
                     let draft = parse_draft(&params)?;
-                    let request =
+                    let mut request =
                         key_request_target(&providers, &chat, &provider_id, draft).await?;
+                    request.card_id = card_id;
                     let destination = request.destination.clone();
                     let provider_name = request.provider_name.clone();
-                    *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+                    crate::provider_mode::install_key_request(&chat, request);
                     chat.save_provider_mode();
                     text_result(
                         format!(
