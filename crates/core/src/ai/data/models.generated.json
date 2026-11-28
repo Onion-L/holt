@@ -1010,7 +1010,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -1039,7 +1048,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -1068,7 +1086,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -1543,7 +1570,16 @@
 					"input": 0.22,
 					"output": 1.32,
 					"cacheRead": 0.022,
-					"cacheWrite": 0.275
+					"cacheWrite": 0.275,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.44,
+							"output": 1.98,
+							"cacheRead": 0.044,
+							"cacheWrite": 0.55
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -1575,7 +1611,16 @@
 					"input": 4.4,
 					"output": 22,
 					"cacheRead": 0.44,
-					"cacheWrite": 5.5
+					"cacheWrite": 5.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8.8,
+							"output": 33,
+							"cacheRead": 0.88,
+							"cacheWrite": 11
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -1607,7 +1652,16 @@
 					"input": 2.2,
 					"output": 13.2,
 					"cacheRead": 0.22,
-					"cacheWrite": 2.75
+					"cacheWrite": 2.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4.4,
+							"output": 19.8,
+							"cacheRead": 0.44,
+							"cacheWrite": 5.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -2318,7 +2372,16 @@
 					"input": 2.2,
 					"output": 11,
 					"cacheRead": 0.22,
-					"cacheWrite": 2.75
+					"cacheWrite": 2.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4.4,
+							"output": 16.5,
+							"cacheRead": 0.44,
+							"cacheWrite": 5.5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -2379,7 +2442,16 @@
 					"input": 0.11,
 					"output": 0.55,
 					"cacheRead": 0.011,
-					"cacheWrite": 0.1375
+					"cacheWrite": 0.1375,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.22,
+							"output": 0.825,
+							"cacheRead": 0.022,
+							"cacheWrite": 0.275
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -2410,7 +2482,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -2467,7 +2548,16 @@
 					"input": 2.2,
 					"output": 11,
 					"cacheRead": 0.11,
-					"cacheWrite": 2.75
+					"cacheWrite": 2.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4.4,
+							"output": 16.5,
+							"cacheRead": 0.22,
+							"cacheWrite": 5.5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -2499,7 +2589,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -2588,7 +2687,16 @@
 					"input": 0.11,
 					"output": 0.55,
 					"cacheRead": 0.011,
-					"cacheWrite": 0.1375
+					"cacheWrite": 0.1375,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.55,
+							"output": 2.75,
+							"cacheRead": 0.055,
+							"cacheWrite": 0.6875
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -2706,7 +2814,16 @@
 					"input": 0.11,
 					"output": 0.55,
 					"cacheRead": 0.011,
-					"cacheWrite": 0.1375
+					"cacheWrite": 0.1375,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.55,
+							"output": 2.75,
+							"cacheRead": 0.055,
+							"cacheWrite": 0.6875
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -2763,7 +2880,16 @@
 					"input": 0.11,
 					"output": 0.55,
 					"cacheRead": 0.011,
-					"cacheWrite": 0.1375
+					"cacheWrite": 0.1375,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.55,
+							"output": 2.75,
+							"cacheRead": 0.055,
+							"cacheWrite": 0.6875
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -2823,7 +2949,16 @@
 					"input": 0.11,
 					"output": 0.55,
 					"cacheRead": 0.011,
-					"cacheWrite": 0.1375
+					"cacheWrite": 0.1375,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.55,
+							"output": 2.75,
+							"cacheRead": 0.055,
+							"cacheWrite": 0.6875
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -2881,7 +3016,16 @@
 					"input": 1.1,
 					"output": 5.5,
 					"cacheRead": 0.055,
-					"cacheWrite": 1.375
+					"cacheWrite": 1.375,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 2.2,
+							"output": 8.25,
+							"cacheRead": 0.11,
+							"cacheWrite": 2.75
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -2913,7 +3057,16 @@
 					"input": 11,
 					"output": 55,
 					"cacheRead": 1.1,
-					"cacheWrite": 13.75
+					"cacheWrite": 13.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 22,
+							"output": 82.5,
+							"cacheRead": 2.2,
+							"cacheWrite": 27.5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -2974,7 +3127,16 @@
 					"input": 1,
 					"output": 5,
 					"cacheRead": 0.05,
-					"cacheWrite": 1.25
+					"cacheWrite": 1.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 2,
+							"output": 7.5,
+							"cacheRead": 0.1,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -3003,7 +3165,16 @@
 					"input": 2.2,
 					"output": 11,
 					"cacheRead": 0.11,
-					"cacheWrite": 2.75
+					"cacheWrite": 2.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4.4,
+							"output": 16.5,
+							"cacheRead": 0.22,
+							"cacheWrite": 5.5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -3035,7 +3206,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -3064,7 +3244,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -3156,7 +3345,16 @@
 					"input": 0.11,
 					"output": 0.55,
 					"cacheRead": 0.011,
-					"cacheWrite": 0.1375
+					"cacheWrite": 0.1375,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.55,
+							"output": 2.75,
+							"cacheRead": 0.055,
+							"cacheWrite": 0.6875
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -3214,7 +3412,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -3243,7 +3450,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -3330,7 +3546,16 @@
 					"input": 8.8,
 					"output": 44,
 					"cacheRead": 0.44,
-					"cacheWrite": 11
+					"cacheWrite": 11,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 17.6,
+							"output": 66,
+							"cacheRead": 0.88,
+							"cacheWrite": 22
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true
@@ -3362,7 +3587,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -3892,7 +4126,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"compat": {
 					"forceAdaptiveThinking": true,
@@ -4521,7 +4764,16 @@
 					"input": 2.5,
 					"output": 15,
 					"cacheRead": 0.25,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 5,
+							"output": 22.5,
+							"cacheRead": 0.5,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -4617,7 +4869,16 @@
 					"input": 30,
 					"output": 180,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 60,
+							"output": 270,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -4649,7 +4910,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -4710,7 +4980,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -4742,7 +5021,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -4774,7 +5062,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -4815,7 +5112,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -9107,7 +9413,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"compat": {
 					"forceAdaptiveThinking": true
@@ -9145,7 +9460,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 128000
@@ -9473,7 +9797,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536
@@ -9493,7 +9826,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536
@@ -9591,7 +9933,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -9620,7 +9971,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -9886,7 +10246,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536
@@ -10053,7 +10422,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -10082,7 +10460,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -13048,7 +13435,16 @@
 					"input": 0.3,
 					"output": 1.2,
 					"cacheRead": 0.06,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 512000,
+							"input": 0.6,
+							"output": 2.4,
+							"cacheRead": 0.12,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 524288
@@ -13099,7 +13495,16 @@
 					"input": 0.3137,
 					"output": 1.2549,
 					"cacheRead": 0.0627,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 512000,
+							"input": 0.6275,
+							"output": 2.5098,
+							"cacheRead": 0.1255,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 524288
@@ -14464,7 +14869,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -14507,7 +14921,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14541,7 +14964,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14575,7 +15007,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14611,7 +15052,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14647,7 +15097,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14681,7 +15140,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14717,7 +15185,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14751,7 +15228,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14821,7 +15307,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14855,7 +15350,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14889,7 +15393,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -14925,7 +15438,16 @@
 					"input": 1,
 					"output": 5,
 					"cacheRead": 0.05,
-					"cacheWrite": 1.25
+					"cacheWrite": 1.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 2,
+							"output": 7.5,
+							"cacheRead": 0.1,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"compat": {
 					"supportsStrictMode": true,
@@ -15445,7 +15967,16 @@
 					"input": 3,
 					"output": 15,
 					"cacheRead": 0.3,
-					"cacheWrite": 3.75
+					"cacheWrite": 3.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 6,
+							"output": 22.5,
+							"cacheRead": 0.6,
+							"cacheWrite": 7.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -16327,7 +16858,16 @@
 					"input": 2.5,
 					"output": 15,
 					"cacheRead": 0.25,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 5,
+							"output": 22.5,
+							"cacheRead": 0.5,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16459,7 +16999,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16525,7 +17074,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16558,7 +17116,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16591,7 +17158,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16624,7 +17200,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16657,7 +17242,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.3,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 0.6,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -16689,7 +17283,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -16824,7 +17427,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -16957,7 +17569,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"compat": {
 					"forceAdaptiveThinking": true
@@ -16989,7 +17610,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -17120,7 +17750,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -17182,7 +17821,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -17279,7 +17927,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -17341,7 +17998,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession",
@@ -17374,7 +18040,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.004,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 0.3,
+							"output": 1.5,
+							"cacheRead": 0.012,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -17516,7 +18191,16 @@
 					"input": 0.3,
 					"output": 1.2,
 					"cacheRead": 0.06,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 512000,
+							"input": 0.6,
+							"output": 2.4,
+							"cacheRead": 0.12,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 131072
@@ -17999,7 +18683,16 @@
 					"input": 0.4,
 					"output": 1.6,
 					"cacheRead": 0.04,
-					"cacheWrite": 0.5
+					"cacheWrite": 0.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 1.2,
+							"output": 4.8,
+							"cacheRead": 0.12,
+							"cacheWrite": 1.5
+						}
+					]
 				},
 				"compat": {
 					"supportsStore": false,
@@ -18058,7 +18751,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -18231,7 +18933,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -18372,7 +19083,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"compat": {
 					"sessionAffinityFormat": "openai-nosession"
@@ -18668,7 +19388,16 @@
 					"input": 5,
 					"output": 25,
 					"cacheRead": 0.5,
-					"cacheWrite": 6.25
+					"cacheWrite": 6.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 10,
+							"output": 37.5,
+							"cacheRead": 1,
+							"cacheWrite": 12.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -18700,7 +19429,16 @@
 					"input": 5,
 					"output": 25,
 					"cacheRead": 0.5,
-					"cacheWrite": 6.25
+					"cacheWrite": 6.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 10,
+							"output": 37.5,
+							"cacheRead": 1,
+							"cacheWrite": 12.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -18811,7 +19549,16 @@
 					"input": 3,
 					"output": 15,
 					"cacheRead": 0.3,
-					"cacheWrite": 3.75
+					"cacheWrite": 3.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 6,
+							"output": 22.5,
+							"cacheRead": 0.6,
+							"cacheWrite": 7.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -18840,7 +19587,16 @@
 					"input": 3,
 					"output": 15,
 					"cacheRead": 0.3,
-					"cacheWrite": 3.75
+					"cacheWrite": 3.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 6,
+							"output": 22.5,
+							"cacheRead": 0.6,
+							"cacheWrite": 7.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -19592,7 +20348,16 @@
 					"input": 0.25,
 					"output": 2,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 128000,
+							"input": 0.5,
+							"output": 4,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 262144,
 				"maxTokens": 131072,
@@ -19625,7 +20390,16 @@
 					"input": 0.1,
 					"output": 0.4,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 128000,
+							"input": 0.2,
+							"output": 0.8,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 262144,
 				"maxTokens": 131072,
@@ -20215,7 +20989,16 @@
 					"input": 1.25,
 					"output": 10,
 					"cacheRead": 0.125,
-					"cacheWrite": 0.375
+					"cacheWrite": 0.375,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 2.5,
+							"output": 15,
+							"cacheRead": 0.25,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -20494,7 +21277,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0.375
+					"cacheWrite": 0.375,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -20527,7 +21319,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0.375
+					"cacheWrite": 0.375,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65536,
@@ -23983,7 +24784,16 @@
 					"input": 2.5,
 					"output": 15,
 					"cacheRead": 0.25,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 5,
+							"output": 22.5,
+							"cacheRead": 0.5,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24143,7 +24953,16 @@
 					"input": 30,
 					"output": 180,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 60,
+							"output": 270,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24239,7 +25058,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24271,7 +25099,16 @@
 					"input": 30,
 					"output": 180,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 60,
+							"output": 270,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24367,7 +25204,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24399,7 +25245,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24495,7 +25350,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24527,7 +25391,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24623,7 +25496,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24655,7 +25537,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24783,7 +25674,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -24815,7 +25715,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -25570,7 +26479,16 @@
 					"input": 0.26,
 					"output": 0.78,
 					"cacheRead": 0.052,
-					"cacheWrite": 0.325
+					"cacheWrite": 0.325,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.78,
+							"output": 2.34,
+							"cacheRead": 0.156,
+							"cacheWrite": 0.975
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 32768,
@@ -25875,7 +26793,23 @@
 					"input": 0.195,
 					"output": 0.975,
 					"cacheRead": 0.039,
-					"cacheWrite": 0.24375
+					"cacheWrite": 0.24375,
+					"tiers": [
+						{
+							"inputTokensAbove": 32000,
+							"input": 0.325,
+							"output": 1.625,
+							"cacheRead": 0.065,
+							"cacheWrite": 0.40625
+						},
+						{
+							"inputTokensAbove": 128000,
+							"input": 0.52,
+							"output": 2.6,
+							"cacheRead": 0.104,
+							"cacheWrite": 0.65
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 65536,
@@ -26361,7 +27295,16 @@
 					"input": 0.26,
 					"output": 1.56,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.325,
+							"output": 1.95,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 65536,
@@ -26385,7 +27328,16 @@
 					"input": 0.3,
 					"output": 1.8,
 					"cacheRead": 0,
-					"cacheWrite": 0.375
+					"cacheWrite": 0.375,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.375,
+							"output": 2.25,
+							"cacheRead": 0,
+							"cacheWrite": 0.46875
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 65536,
@@ -26457,7 +27409,16 @@
 					"input": 0.1875,
 					"output": 1.125,
 					"cacheRead": 0,
-					"cacheWrite": 0.234375
+					"cacheWrite": 0.234375,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.75,
+							"output": 3,
+							"cacheRead": 0,
+							"cacheWrite": 0.9375
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 65536,
@@ -26504,7 +27465,16 @@
 					"input": 0.325,
 					"output": 1.95,
 					"cacheRead": 0,
-					"cacheWrite": 0.40625
+					"cacheWrite": 0.40625,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 1.3,
+							"output": 3.9,
+							"cacheRead": 0,
+							"cacheWrite": 1.625
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 65536,
@@ -26528,7 +27498,23 @@
 					"input": 0.03,
 					"output": 0.13,
 					"cacheRead": 0.006,
-					"cacheWrite": 0.038
+					"cacheWrite": 0.038,
+					"tiers": [
+						{
+							"inputTokensAbove": 32000,
+							"input": 0.1,
+							"output": 0.4,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.125
+						},
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.2,
+							"output": 0.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 65536,
@@ -26575,7 +27561,16 @@
 					"input": 0.32,
 					"output": 1.28,
 					"cacheRead": 0.064,
-					"cacheWrite": 0.4
+					"cacheWrite": 0.4,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.96,
+							"output": 3.84,
+							"cacheRead": 0.192,
+							"cacheWrite": 1.2
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 131072,
@@ -26809,7 +27804,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -27320,7 +28324,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 1800000,
@@ -27353,7 +28366,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 30000,
@@ -27419,7 +28441,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.3,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 0.6,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000,
@@ -27452,7 +28483,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000,
@@ -27988,7 +29028,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -28156,7 +29205,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 0.1875
+					"cacheWrite": 0.1875,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 943718,
@@ -28288,7 +29346,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 450000,
@@ -28410,7 +29477,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -28443,7 +29519,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -29344,7 +30429,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29376,7 +30470,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29408,7 +30511,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29440,7 +30552,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29472,7 +30593,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29504,7 +30634,16 @@
 					"input": 1,
 					"output": 5,
 					"cacheRead": 0.05,
-					"cacheWrite": 1.25
+					"cacheWrite": 1.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 2,
+							"output": 7.5,
+							"cacheRead": 0.1,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29536,7 +30675,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29568,7 +30716,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29600,7 +30757,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29632,7 +30798,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29664,7 +30839,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -29696,7 +30880,16 @@
 					"input": 1,
 					"output": 5,
 					"cacheRead": 0.05,
-					"cacheWrite": 1.25
+					"cacheWrite": 1.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 2,
+							"output": 7.5,
+							"cacheRead": 0.1,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"compat": {
 					"thinkingFormat": "openrouter"
@@ -31019,7 +32212,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100000,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"compat": {
 					"forceAdaptiveThinking": true,
@@ -31281,7 +32483,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -31314,7 +32525,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -31347,7 +32567,16 @@
 					"input": 1,
 					"output": 5,
 					"cacheRead": 0.05,
-					"cacheWrite": 1.25
+					"cacheWrite": 1.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 2,
+							"output": 7.5,
+							"cacheRead": 0.1,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -31380,7 +32609,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -32108,7 +33346,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"supportsDeveloperRole": false,
@@ -34588,7 +35835,16 @@
 					"input": 0.4,
 					"output": 2.4,
 					"cacheRead": 0.04,
-					"cacheWrite": 0.5
+					"cacheWrite": 0.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 256001,
+							"input": 0.5,
+							"output": 3,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -34637,7 +35893,16 @@
 					"input": 0.5,
 					"output": 3,
 					"cacheRead": 0.05,
-					"cacheWrite": 0.625
+					"cacheWrite": 0.625,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 2,
+							"output": 6,
+							"cacheRead": 0.2,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -34666,7 +35931,23 @@
 					"input": 0.03,
 					"output": 0.13,
 					"cacheRead": 0.006,
-					"cacheWrite": 0.038
+					"cacheWrite": 0.038,
+					"tiers": [
+						{
+							"inputTokensAbove": 32000,
+							"input": 0.1,
+							"output": 0.4,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.125
+						},
+						{
+							"inputTokensAbove": 256000,
+							"input": 0.2,
+							"output": 0.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"contextWindow": 991000,
 				"maxTokens": 64000
@@ -34723,7 +36004,16 @@
 					"input": 0.4,
 					"output": 1.6,
 					"cacheRead": 0.08,
-					"cacheWrite": 0.5
+					"cacheWrite": 0.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 256000,
+							"input": 1.2,
+							"output": 4.8,
+							"cacheRead": 0.24,
+							"cacheWrite": 1.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -35363,7 +36653,16 @@
 					"input": 3,
 					"output": 15,
 					"cacheRead": 0.3,
-					"cacheWrite": 3.75
+					"cacheWrite": 3.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 6,
+							"output": 22.5,
+							"cacheRead": 0.6,
+							"cacheWrite": 7.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -35383,7 +36682,16 @@
 					"input": 3,
 					"output": 15,
 					"cacheRead": 0.3,
-					"cacheWrite": 3.75
+					"cacheWrite": 3.75,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 6,
+							"output": 22.5,
+							"cacheRead": 0.6,
+							"cacheWrite": 7.5
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -35846,7 +37154,16 @@
 					"input": 1.25,
 					"output": 10,
 					"cacheRead": 0.125,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 15,
+							"cacheRead": 0.25,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1048576,
 				"maxTokens": 65535
@@ -35931,7 +37248,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 64000
@@ -36777,7 +38103,16 @@
 					"input": 0.3,
 					"output": 1.2,
 					"cacheRead": 0.06,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 512000,
+							"input": 1.2,
+							"output": 4.8,
+							"cacheRead": 0.24,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 512000
@@ -38167,7 +39502,16 @@
 					"input": 2.5,
 					"output": 15,
 					"cacheRead": 0.25,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 5,
+							"output": 22.5,
+							"cacheRead": 0.5,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38312,7 +39656,16 @@
 					"input": 30,
 					"output": 180,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 60,
+							"output": 270,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38341,7 +39694,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -38399,7 +39761,16 @@
 					"input": 30,
 					"output": 180,
 					"cacheRead": 0,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 60,
+							"output": 270,
+							"cacheRead": 0,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000,
@@ -38428,7 +39799,16 @@
 					"input": 0.2,
 					"output": 1.2,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.4,
+							"output": 1.8,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38457,7 +39837,16 @@
 					"input": 0.4,
 					"output": 2.4,
 					"cacheRead": 0.04,
-					"cacheWrite": 0.5
+					"cacheWrite": 0.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 0.8,
+							"output": 3.6,
+							"cacheRead": 0.08,
+							"cacheWrite": 1
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38486,7 +39875,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38515,7 +39913,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.8,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 1.6,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38544,7 +39951,16 @@
 					"input": 2,
 					"output": 12,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 4,
+							"output": 18,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38573,7 +39989,16 @@
 					"input": 4,
 					"output": 24,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272000,
+							"input": 8,
+							"output": 36,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000,
@@ -38611,7 +40036,16 @@
 					"input": 10,
 					"output": 50,
 					"cacheRead": 1,
-					"cacheWrite": 12.5
+					"cacheWrite": 12.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 20,
+							"output": 75,
+							"cacheRead": 2,
+							"cacheWrite": 25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -38640,7 +40074,16 @@
 					"input": 20,
 					"output": 100,
 					"cacheRead": 2,
-					"cacheWrite": 25
+					"cacheWrite": 25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 40,
+							"output": 150,
+							"cacheRead": 4,
+							"cacheWrite": 50
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -38926,7 +40369,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 1000000
@@ -39024,7 +40476,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 2000000
@@ -39053,7 +40514,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 2000000
@@ -39073,7 +40543,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 30000
@@ -39093,7 +40572,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.4,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 2000000
@@ -39122,7 +40610,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 30000
@@ -39151,7 +40648,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 2000000,
 				"maxTokens": 2000000
@@ -39180,7 +40686,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 30000
@@ -39209,7 +40724,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.3,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 0.6,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000
@@ -39238,7 +40762,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000
@@ -40261,7 +41794,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200001,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000
@@ -40290,7 +41832,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40319,7 +41870,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.4,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.8,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40348,7 +41908,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40377,7 +41946,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.2,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.4,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40406,7 +41984,16 @@
 					"input": 16,
 					"output": 80,
 					"cacheRead": 0.8,
-					"cacheWrite": 20
+					"cacheWrite": 20,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 32,
+							"output": 120,
+							"cacheRead": 1.6,
+							"cacheWrite": 40
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40435,7 +42022,16 @@
 					"input": 8,
 					"output": 40,
 					"cacheRead": 0.4,
-					"cacheWrite": 10
+					"cacheWrite": 10,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 16,
+							"output": 60,
+							"cacheRead": 0.8,
+							"cacheWrite": 20
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40464,7 +42060,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.2,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.4,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40493,7 +42098,16 @@
 					"input": 2,
 					"output": 10,
 					"cacheRead": 0.1,
-					"cacheWrite": 2.5
+					"cacheWrite": 2.5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 4,
+							"output": 15,
+							"cacheRead": 0.2,
+							"cacheWrite": 5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40522,7 +42136,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 0.2,
+							"output": 0.75,
+							"cacheRead": 0.02,
+							"cacheWrite": 0.25
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40551,7 +42174,16 @@
 					"input": 0.2,
 					"output": 1,
 					"cacheRead": 0.02,
-					"cacheWrite": 0.25
+					"cacheWrite": 0.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 0.4,
+							"output": 1.5,
+							"cacheRead": 0.04,
+							"cacheWrite": 0.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40580,7 +42212,16 @@
 					"input": 4,
 					"output": 20,
 					"cacheRead": 0.2,
-					"cacheWrite": 5
+					"cacheWrite": 5,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 8,
+							"output": 30,
+							"cacheRead": 0.4,
+							"cacheWrite": 10
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40609,7 +42250,16 @@
 					"input": 1,
 					"output": 5,
 					"cacheRead": 0.05,
-					"cacheWrite": 1.25
+					"cacheWrite": 1.25,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 2,
+							"output": 7.5,
+							"cacheRead": 0.1,
+							"cacheWrite": 2.5
+						}
+					]
 				},
 				"contextWindow": 1050000,
 				"maxTokens": 128000
@@ -40873,7 +42523,16 @@
 					"input": 0.1,
 					"output": 0.5,
 					"cacheRead": 0.01,
-					"cacheWrite": 0.125
+					"cacheWrite": 0.125,
+					"tiers": [
+						{
+							"inputTokensAbove": 100001,
+							"input": 0.5,
+							"output": 2.5,
+							"cacheRead": 0.05,
+							"cacheWrite": 0.625
+						}
+					]
 				},
 				"compat": {
 					"forceAdaptiveThinking": true,
@@ -41621,7 +43280,16 @@
 					"input": 5,
 					"output": 30,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 272001,
+							"input": 10,
+							"output": 45,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 128000
@@ -41646,7 +43314,16 @@
 					"input": 1.25,
 					"output": 2.5,
 					"cacheRead": 0.2,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 2.5,
+							"output": 5,
+							"cacheRead": 0.4,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 1000000,
 				"maxTokens": 30000,
@@ -41678,7 +43355,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.3,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 0.6,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000,
@@ -41710,7 +43396,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"contextWindow": 500000,
 				"maxTokens": 500000,
@@ -41748,7 +43443,16 @@
 					"input": 2,
 					"output": 6,
 					"cacheRead": 0.5,
-					"cacheWrite": 0
+					"cacheWrite": 0,
+					"tiers": [
+						{
+							"inputTokensAbove": 200000,
+							"input": 4,
+							"output": 12,
+							"cacheRead": 1,
+							"cacheWrite": 0
+						}
+					]
 				},
 				"compat": {
 					"supportsLongCacheRetention": false
@@ -43543,7 +45247,7 @@
 			}
 		}
 	},
-	"generatedAt": "2026-11-27T03:00:32.191Z",
+	"generatedAt": "2026-11-28T03:21:11.079Z",
 	"modelVendors": {
 		"ant-ling": [],
 		"anthropic": [],

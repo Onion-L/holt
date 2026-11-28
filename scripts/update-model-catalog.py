@@ -216,9 +216,14 @@ def match_providers(catalog: dict, source: dict, notes: list[str]) -> dict[str, 
             by_url[normalize_url(provider["api"])].append(source_id)
     matches: dict[str, str] = {}
     for provider_id, models in catalog.items():
-        if provider_id in SOURCE_OVERRIDE:
-            matches[provider_id] = SOURCE_OVERRIDE[provider_id]
+        override = SOURCE_OVERRIDE.get(provider_id)
+        if override in source:
+            matches[provider_id] = override
             continue
+        if override is not None:
+            # A renamed or retired source provider: the provider is matched
+            # like any other instead of indexed past the source.
+            notes.append(f"{provider_id}: source override {override} is not in the source")
         urls = {normalize_url(model.get("baseUrl")) for model in models.values()}
         hits = sorted({sid for url in urls if url for sid in by_url.get(url, [])})
         if len(hits) > 1:
@@ -363,26 +368,66 @@ def input_from_source(model: dict) -> list[str] | None:
     return inputs
 
 
+def tiers_from_source(cost: dict) -> list[dict] | None:
+    """The source's tiered prices, lowest threshold first: every `tiers`
+    entry that names a context size, or — for a row that predates `tiers` —
+    `context_over_200k` as the one tier at 200K."""
+    tiers = []
+    for tier in cost.get("tiers") or []:
+        size = (tier.get("tier") or {}).get("size")
+        if not isinstance(size, (int, float)):
+            continue
+        tiers.append(
+            {
+                "inputTokensAbove": size,
+                "input": tier.get("input", 0),
+                "output": tier.get("output", 0),
+                "cacheRead": tier.get("cache_read", 0),
+                "cacheWrite": tier.get("cache_write", 0),
+            }
+        )
+    over = cost.get("context_over_200k")
+    if not tiers and isinstance(over, dict):
+        tiers.append(
+            {
+                "inputTokensAbove": 200_000,
+                "input": over.get("input", 0),
+                "output": over.get("output", 0),
+                "cacheRead": over.get("cache_read", 0),
+                "cacheWrite": over.get("cache_write", 0),
+            }
+        )
+    if not tiers:
+        return None
+    return sorted(tiers, key=lambda tier: tier["inputTokensAbove"])
+
+
 def cost_from_source(model: dict) -> dict | None:
+    """The source's prices: four rates, and `tiers` where it names them — a
+    long context costs more, and a rate for every size undercounts it."""
     cost = model.get("cost")
     if not isinstance(cost, dict):
         return None
-    return {
+    priced = {
         "input": cost.get("input", 0),
         "output": cost.get("output", 0),
         "cacheRead": cost.get("cache_read", 0),
         "cacheWrite": cost.get("cache_write", 0),
     }
+    tiers = tiers_from_source(cost)
+    if tiers is not None:
+        priced["tiers"] = tiers
+    return priced
 
 
 def is_zero_cost(cost: dict) -> bool:
-    """Whether every source price is zero."""
-    return not any(cost.values())
+    """Whether every source rate is zero (tiers are not rates)."""
+    return not any(cost.get(key) for key in ("input", "output", "cacheRead", "cacheWrite"))
 
 
 def is_explicitly_free(model_id: str) -> bool:
     """A free variant, not a subscription or unknown price reported as zero."""
-    return model_id.endswith((":free", "-free"))
+    return model_id.endswith((":free", "-free", "/free"))
 
 
 def set_after(entry: dict, anchor: str, key: str, value: object) -> None:
@@ -428,11 +473,14 @@ def refresh_entry(model_id: str, entry: dict, model: dict, changes: Counter) -> 
         if is_zero_cost(cost):
             # An explicitly free variant has no paid tiers. Other all-zero
             # prices mean subscription or unknown and keep the reference cost.
-            merged = cost
+            merged = {key: value for key, value in cost.items() if key != "tiers"}
         else:
-            # A tiered price (`tiers`) is catalog knowledge the source does not
-            # carry and stays.
-            merged = {**entry.get("cost", {}), **cost}
+            existing = entry.get("cost", {})
+            merged = {**existing, **cost}
+            if existing.get("tiers"):
+                # Tiers the catalog already holds stay: they were kept by
+                # hand, or came from a source row that no longer names them.
+                merged["tiers"] = existing["tiers"]
         if merged != entry.get("cost"):
             entry["cost"] = merged
             changes["cost"] += 1
@@ -517,6 +565,9 @@ def build_entry(provider_id: str, model_id: str, model: dict, models: dict) -> d
     cost = cost_from_source(model)
     if not cost or (is_zero_cost(cost) and not is_explicitly_free(model_id)):
         cost = sibling.get("cost") or {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+    elif is_explicitly_free(model_id):
+        # A free variant is free at every size.
+        cost.pop("tiers", None)
     entry["cost"] = cost
     if sibling.get("compat"):
         entry["compat"] = sibling["compat"]

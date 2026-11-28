@@ -845,6 +845,52 @@ fn embedded_catalog_prices_explicitly_free_variants_as_zero() {
     }
 }
 
+/// The refresh carries models.dev's tiered prices into the catalog: a row
+/// whose source prices a long context higher says so, and the usage cost
+/// reads it. Every number comes off the catalog's own row.
+#[test]
+fn embedded_catalog_carries_the_source_s_tiered_prices() {
+    let model = get_model("anthropic", "claude-haiku-5-5");
+    let tier = model
+        .cost
+        .tiers
+        .as_ref()
+        .and_then(|tiers| tiers.first())
+        .expect("the source prices Haiku 5.5 higher over a long context");
+    assert!(tier.rates.input.0 > model.cost.rates.input.0);
+    let threshold = tier.input_tokens_above;
+    assert!(threshold < model.context_window);
+
+    let input_cost = |input: u64| {
+        let mut usage = holt_core::ai::types::Usage {
+            input,
+            ..Default::default()
+        };
+        holt_core::ai::models::calculate_cost(&model, &mut usage)
+            .input
+            .0
+    };
+    let base = model.cost.rates.input.0 * threshold as f64 / 1_000_000.0;
+    assert!((input_cost(threshold) - base).abs() < 1e-9);
+    let over = tier.rates.input.0 * (threshold + 1) as f64 / 1_000_000.0;
+    assert!((input_cost(threshold + 1) - over).abs() < 1e-9);
+
+    // The refresh filled the rows that had none; these three providers
+    // carried none but OpenAI's before it.
+    let tiered = ["anthropic", "amazon-bedrock", "openai"]
+        .into_iter()
+        .flat_map(get_models)
+        .filter(|model| {
+            model
+                .cost
+                .tiers
+                .as_ref()
+                .is_some_and(|tiers| !tiers.is_empty())
+        })
+        .count();
+    assert!(tiered >= 40, "rows priced by context size: {tiered}");
+}
+
 /// Port of the exact generated allowlist assertions (`assertExactModelIds`):
 /// the pinned id sets for representative providers, updated with every
 /// `scripts/update-model-catalog.py` run so an id-set change is explicit.
