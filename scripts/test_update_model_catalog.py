@@ -183,6 +183,91 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertEqual(refreshed["othervendor/unknown"]["cost"], sibling["cost"])
         self.assertEqual(refreshed["subscription/existing"]["cost"], subscription["cost"])
 
+    def test_zero_base_rates_with_a_paid_source_tier_are_a_measured_price(self) -> None:
+        sibling = catalog_entry("openai/gpt-5")
+        sibling["cost"]["tiers"] = [
+            {
+                "inputTokensAbove": 500,
+                "input": 8,
+                "output": 16,
+                "cacheRead": 0.8,
+                "cacheWrite": 1,
+            }
+        ]
+        existing = catalog_entry("openai/gpt-existing")
+        zero_base_with_paid_tier = {
+            **FREE_COST,
+            "tiers": [
+                {
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0.625,
+                    "tier": {"type": "context", "size": 200000},
+                }
+            ],
+        }
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [sibling, existing]},
+            {
+                "openai/gpt-5": source_model("openai/gpt-5"),
+                "openai/gpt-existing": source_model(
+                    "openai/gpt-existing", zero_base_with_paid_tier
+                ),
+                "openai/gpt-new": source_model("openai/gpt-new", zero_base_with_paid_tier),
+            },
+        )
+
+        expected = {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "tiers": [
+                {
+                    "inputTokensAbove": 200000,
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0.625,
+                }
+            ],
+        }
+        # A paid tier is a measured price even when the base is free. The new
+        # row must not take the sibling's paid base price or its tiers.
+        for model_id in ("openai/gpt-existing", "openai/gpt-new"):
+            self.assertEqual(refreshed[model_id]["cost"], expected, model_id)
+
+    def test_zero_base_rates_with_only_zero_tiers_keep_the_zero_price_fallback(self) -> None:
+        sibling = catalog_entry("openai/gpt-5")
+        existing = catalog_entry("openai/gpt-existing")
+        existing_cost = dict(existing["cost"])
+        all_zero = {
+            **FREE_COST,
+            "tiers": [
+                {
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "tier": {"type": "context", "size": 200000},
+                }
+            ],
+        }
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [sibling, existing]},
+            {
+                "openai/gpt-5": source_model("openai/gpt-5"),
+                "openai/gpt-existing": source_model("openai/gpt-existing", all_zero),
+                "openai/gpt-new": source_model("openai/gpt-new", all_zero),
+            },
+        )
+
+        # Unlike a paid tier, tiers that are zero everywhere still mean the
+        # source has no measured price.
+        self.assertEqual(refreshed["openai/gpt-existing"]["cost"], existing_cost)
+        self.assertEqual(refreshed["openai/gpt-new"]["cost"], sibling["cost"])
+
     def test_a_slash_free_id_is_a_free_variant(self) -> None:
         sibling = catalog_entry("openai/gpt-5")
         refreshed = self.run_refresh(
@@ -199,6 +284,47 @@ class CatalogRefreshTests(unittest.TestCase):
             refreshed["openrouter/free"]["cost"],
             {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         )
+
+    def test_modern_tiers_inherit_omitted_cache_rates_from_the_base_cost(self) -> None:
+        existing = catalog_entry("google/gemini-existing")
+        tiered = {
+            "input": 2,
+            "output": 12,
+            "cache_read": 0.2,
+            "cache_write": 0.375,
+            "tiers": [
+                {
+                    "input": 4,
+                    "output": 18,
+                    "tier": {"type": "context", "size": 200000},
+                }
+            ],
+        }
+        refreshed = self.run_refresh(
+            {existing["id"]: existing},
+            {
+                "google/gemini-existing": source_model("google/gemini-existing", tiered),
+                "google/gemini-new": source_model("google/gemini-new", tiered),
+            },
+        )
+
+        expected = {
+            "input": 2,
+            "output": 12,
+            "cacheRead": 0.2,
+            "cacheWrite": 0.375,
+            "tiers": [
+                {
+                    "inputTokensAbove": 200000,
+                    "input": 4,
+                    "output": 18,
+                    "cacheRead": 0.2,
+                    "cacheWrite": 0.375,
+                }
+            ],
+        }
+        for model_id in ("google/gemini-existing", "google/gemini-new"):
+            self.assertEqual(refreshed[model_id]["cost"], expected, model_id)
 
     def test_source_tiers_reach_a_new_entry_and_fill_an_entry_that_has_none(self) -> None:
         sibling = catalog_entry("openai/gpt-5")
@@ -290,25 +416,48 @@ class CatalogRefreshTests(unittest.TestCase):
 
     def test_a_free_variant_gets_no_tiers_whatever_the_source_lists(self) -> None:
         sibling = catalog_entry("openai/gpt-5")
+        existing_free = catalog_entry("openai/gpt-existing-free")
+        existing_free["cost"]["tiers"] = [
+            {
+                "inputTokensAbove": 200000,
+                "input": 3,
+                "output": 6,
+                "cacheRead": 0.3,
+                "cacheWrite": 0.75,
+            }
+        ]
         free_with_tier = {
             "input": 0,
             "output": 0,
             "cache_read": 0,
             "cache_write": 0,
-            "tiers": [{"input": 0, "output": 0, "tier": {"type": "context", "size": 200000}}],
+            "tiers": [
+                {
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0.75,
+                    "tier": {"type": "context", "size": 200000},
+                }
+            ],
         }
         refreshed = self.run_refresh(
-            {sibling["id"]: sibling},
+            {entry["id"]: entry for entry in [sibling, existing_free]},
             {
                 "openai/gpt-5": source_model("openai/gpt-5"),
+                "openai/gpt-existing-free": source_model(
+                    "openai/gpt-existing-free", free_with_tier
+                ),
                 "openai/gpt-free": source_model("openai/gpt-free", free_with_tier),
             },
         )
 
-        self.assertEqual(
-            refreshed["openai/gpt-free"]["cost"],
-            {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-        )
+        for model_id in ("openai/gpt-existing-free", "openai/gpt-free"):
+            self.assertEqual(
+                refreshed[model_id]["cost"],
+                {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                model_id,
+            )
 
     def test_context_over_200k_is_the_tier_when_the_source_names_no_tiers(self) -> None:
         legacy = catalog_entry("google/gemini-3-pro")
@@ -321,10 +470,10 @@ class CatalogRefreshTests(unittest.TestCase):
                         "input": 1.25,
                         "output": 10,
                         "cache_read": 0.125,
+                        "cache_write": 0.375,
                         "context_over_200k": {
                             "input": 2.5,
                             "output": 15,
-                            "cache_read": 0.125,
                         },
                     },
                 ),
@@ -339,7 +488,7 @@ class CatalogRefreshTests(unittest.TestCase):
                     "input": 2.5,
                     "output": 15,
                     "cacheRead": 0.125,
-                    "cacheWrite": 0,
+                    "cacheWrite": 0.375,
                 }
             ],
         )

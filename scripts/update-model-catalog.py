@@ -371,7 +371,8 @@ def input_from_source(model: dict) -> list[str] | None:
 def tiers_from_source(cost: dict) -> list[dict] | None:
     """The source's tiered prices, lowest threshold first: every `tiers`
     entry that names a context size, or — for a row that predates `tiers` —
-    `context_over_200k` as the one tier at 200K."""
+    `context_over_200k` as the one tier at 200K. Omitted cache rates inherit
+    the base cost; an explicit zero stays zero."""
     tiers = []
     for tier in cost.get("tiers") or []:
         size = (tier.get("tier") or {}).get("size")
@@ -382,8 +383,8 @@ def tiers_from_source(cost: dict) -> list[dict] | None:
                 "inputTokensAbove": size,
                 "input": tier.get("input", 0),
                 "output": tier.get("output", 0),
-                "cacheRead": tier.get("cache_read", 0),
-                "cacheWrite": tier.get("cache_write", 0),
+                "cacheRead": tier.get("cache_read", cost.get("cache_read", 0)),
+                "cacheWrite": tier.get("cache_write", cost.get("cache_write", 0)),
             }
         )
     over = cost.get("context_over_200k")
@@ -393,8 +394,8 @@ def tiers_from_source(cost: dict) -> list[dict] | None:
                 "inputTokensAbove": 200_000,
                 "input": over.get("input", 0),
                 "output": over.get("output", 0),
-                "cacheRead": over.get("cache_read", 0),
-                "cacheWrite": over.get("cache_write", 0),
+                "cacheRead": over.get("cache_read", cost.get("cache_read", 0)),
+                "cacheWrite": over.get("cache_write", cost.get("cache_write", 0)),
             }
         )
     if not tiers:
@@ -421,8 +422,11 @@ def cost_from_source(model: dict) -> dict | None:
 
 
 def is_zero_cost(cost: dict) -> bool:
-    """Whether every source rate is zero (tiers are not rates)."""
-    return not any(cost.get(key) for key in ("input", "output", "cacheRead", "cacheWrite"))
+    """Whether every source rate is zero, across the base and every tier."""
+    keys = ("input", "output", "cacheRead", "cacheWrite")
+    return not any(cost.get(key) for key in keys) and not any(
+        tier.get(key) for tier in cost.get("tiers") or [] for key in keys
+    )
 
 
 def is_explicitly_free(model_id: str) -> bool:
@@ -470,9 +474,10 @@ def refresh_entry(model_id: str, entry: dict, model: dict, changes: Counter) -> 
         changes["input"] += 1
     cost = cost_from_source(model)
     if cost and (not is_zero_cost(cost) or is_explicitly_free(model_id)):
-        if is_zero_cost(cost):
-            # An explicitly free variant has no paid tiers. Other all-zero
-            # prices mean subscription or unknown and keep the reference cost.
+        if is_explicitly_free(model_id):
+            # An explicitly free variant has no paid tiers, even if the source
+            # gives it a non-zero tier. Other all-zero prices (including every
+            # tier) mean subscription or unknown and keep the reference cost.
             merged = {key: value for key, value in cost.items() if key != "tiers"}
         else:
             existing = entry.get("cost", {})

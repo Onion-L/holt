@@ -20996,7 +20996,7 @@
 							"input": 2.5,
 							"output": 15,
 							"cacheRead": 0.25,
-							"cacheWrite": 0
+							"cacheWrite": 0.375
 						}
 					]
 				},
@@ -21284,7 +21284,7 @@
 							"input": 4,
 							"output": 18,
 							"cacheRead": 0.4,
-							"cacheWrite": 0
+							"cacheWrite": 0.375
 						}
 					]
 				},
@@ -21326,7 +21326,7 @@
 							"input": 4,
 							"output": 18,
 							"cacheRead": 0.4,
-							"cacheWrite": 0
+							"cacheWrite": 0.375
 						}
 					]
 				},
@@ -29212,7 +29212,7 @@
 							"input": 4,
 							"output": 18,
 							"cacheRead": 0.4,
-							"cacheWrite": 0
+							"cacheWrite": 0.1875
 						}
 					]
 				},
@@ -45247,7 +45247,7 @@
 			}
 		}
 	},
-	"generatedAt": "2026-11-28T03:21:11.079Z",
+	"generatedAt": "2026-11-28T06:43:15.081Z",
 	"modelVendors": {
 		"ant-ling": [],
 		"anthropic": [],

@@ -891,6 +891,28 @@ fn embedded_catalog_carries_the_source_s_tiered_prices() {
     assert!(tiered >= 40, "rows priced by context size: {tiered}");
 }
 
+/// models.dev omits `cache_write` from these tiers because it is unchanged
+/// from the base rate; the generated tier must carry that base rate, not zero.
+#[test]
+fn embedded_catalog_tiers_inherit_an_omitted_cache_write_rate() {
+    for (model_id, cache_write) in [
+        ("google/gemini-2.5-pro-preview", 0.375),
+        ("google/gemini-3.1-pro-preview", 0.375),
+        ("google/gemini-3.1-pro-preview-customtools", 0.375),
+        ("~google/gemini-pro-latest", 0.1875),
+    ] {
+        let model = get_model("openrouter", model_id);
+        assert_eq!(model.cost.rates.cache_write.0, cache_write, "{model_id}");
+        let tier = model
+            .cost
+            .tiers
+            .as_ref()
+            .and_then(|tiers| tiers.first())
+            .unwrap_or_else(|| panic!("missing long-context tier for {model_id}"));
+        assert_eq!(tier.rates.cache_write.0, cache_write, "{model_id}");
+    }
+}
+
 /// Port of the exact generated allowlist assertions (`assertExactModelIds`):
 /// the pinned id sets for representative providers, updated with every
 /// `scripts/update-model-catalog.py` run so an id-set change is explicit.
