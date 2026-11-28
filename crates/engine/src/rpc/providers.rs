@@ -259,7 +259,10 @@ impl EngineService {
     }
 
     // The settle (ADR-api-keys-collected-through-key-requests): one engine-owned operation — save the
-    // key (never the chat), queue the fixed notice, clear the card.
+    // key (never the chat), queue the fixed notice, clear the card. A request that
+    // lands while this one is out — the model asks again, a Turn the user
+    // started — stays as it landed: its card keeps pending, and neither the
+    // stamp nor a failed settle's restore writes over it.
     pub(super) async fn settle_provider_key_request(
         &self,
         params: serde_json::Value,
@@ -275,8 +278,9 @@ impl EngineService {
             return Err(RpcError::Failed("chat was deleted".into()));
         }
         // Take (not clone) the request: a second concurrent settle
-        // finds none, and any failure below puts it back so the
-        // card stays and a retry is idempotent.
+        // finds none, and any failure below puts it back — into a slot a
+        // newer request has not taken meanwhile — so the card stays and a
+        // retry is idempotent.
         let pending = {
             let mut key_request = chat.key_request.lock().unwrap_or_else(|e| e.into_inner());
             let pending = key_request.take();
@@ -302,8 +306,10 @@ impl EngineService {
             }
             pending
         };
+        // Back only into a slot still vacant: a request that landed while
+        // this settle was out is the chat's now, not something to write over.
         let restore = || {
-            *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending.clone());
+            crate::provider_mode::restore_key_request(&chat, &pending);
             chat.save_provider_mode();
         };
         let saved = if let Some(key) = params
@@ -361,8 +367,11 @@ impl EngineService {
             return Err(error);
         }
         chat.save_provider_mode();
-        crate::provider_mode::stamp_key_cards(
+        // This request's card, not every pending one: a request that landed
+        // while the settle was out has a card of its own, still to answer.
+        crate::provider_mode::stamp_key_card(
             &chat,
+            &pending,
             if saved {
                 holt_doc::parts::KeyCardState::Saved
             } else {

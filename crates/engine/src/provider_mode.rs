@@ -310,8 +310,10 @@ pub(crate) fn supersede_orphan_proposal_cards(chat: &ChatRuntime) {
     });
 }
 
-/// Settle every pending key card: at most one Key request is pending per
-/// chat, so a settle or a newer request retires all of them.
+/// Retire every pending key card: a newer request does — at most one is
+/// pending per chat — and so does a settle that finds no request at all. A
+/// settle that acted on a request stamps that request's card alone
+/// ([`stamp_key_card`]).
 pub(crate) fn stamp_key_cards(chat: &ChatRuntime, to: KeyCardState) {
     stamp_cards(chat, |part| match part {
         MessagePart::KeyRequest { state, .. } if *state == KeyCardState::Pending => {
@@ -320,6 +322,51 @@ pub(crate) fn stamp_key_cards(chat: &ChatRuntime, to: KeyCardState) {
         }
         _ => false,
     });
+}
+
+/// Settle the pending key card of one request — its provider and
+/// destination — and only that one: the oldest still pending under the
+/// target, which is the card the settle acted on. A request that landed
+/// while the settle was in flight has a card of its own, still pending and
+/// still the chat's to answer.
+pub(crate) fn stamp_key_card(chat: &ChatRuntime, request: &PendingKeyRequest, to: KeyCardState) {
+    let mut settled = false;
+    stamp_cards(chat, |part| {
+        if settled {
+            return false;
+        }
+        let MessagePart::KeyRequest {
+            provider_id,
+            destination,
+            state,
+            ..
+        } = part
+        else {
+            return false;
+        };
+        let mine = *state == KeyCardState::Pending
+            && *provider_id == request.provider_id
+            && *destination == request.destination;
+        if mine {
+            *state = to;
+            settled = true;
+        }
+        mine
+    });
+}
+
+/// Put a request back after a settle failed on it — only into a slot still
+/// vacant. A request that landed while the settle was in flight is the
+/// chat's now: the failed one stays out, and its card's next click is
+/// refused as stale.
+pub(crate) fn restore_key_request(chat: &ChatRuntime, request: &PendingKeyRequest) {
+    let mut key_request = chat
+        .key_request
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if key_request.is_none() {
+        *key_request = Some(request.clone());
+    }
 }
 
 /// Retire every pending provider-choice card: a newer choice, or any new
@@ -433,5 +480,124 @@ pub(crate) fn carry_card_states(existing: &[MessagePart], parts: &mut [MessagePa
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use holt_doc::{MessageRole, SessionMessageEntry};
+
+    fn request(provider_id: &str, destination: &str) -> PendingKeyRequest {
+        PendingKeyRequest {
+            provider_id: provider_id.to_string(),
+            provider_name: provider_id.to_string(),
+            destination: destination.to_string(),
+        }
+    }
+
+    fn card(id: &str, provider_id: &str, destination: &str) -> MessagePart {
+        MessagePart::KeyRequest {
+            id: id.to_string(),
+            provider_id: provider_id.to_string(),
+            provider_name: provider_id.to_string(),
+            destination: destination.to_string(),
+            state: KeyCardState::Pending,
+        }
+    }
+
+    /// One entry per card, oldest first, as the transcript appends them.
+    fn chat_with(cards: Vec<MessagePart>) -> ChatRuntime {
+        let chat = ChatRuntime::new();
+        *chat.transcript.write().unwrap() = cards
+            .into_iter()
+            .enumerate()
+            .map(|(at, part)| SessionMessageEntry {
+                id: format!("entry-{at}"),
+                role: MessageRole::Assistant,
+                parts: vec![part],
+                created_at: 0,
+                device_id: "dev".to_string(),
+                status: None,
+                continuation_of: None,
+            })
+            .collect();
+        chat
+    }
+
+    fn states(chat: &ChatRuntime) -> Vec<KeyCardState> {
+        chat.transcript
+            .read()
+            .unwrap()
+            .iter()
+            .flat_map(|entry| entry.parts.iter())
+            .filter_map(|part| match part {
+                MessagePart::KeyRequest { state, .. } => Some(*state),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const ZAI: &str = "https://zai.example/v1";
+    const OPENAI: &str = "https://api.openai.example/v1";
+
+    #[test]
+    fn a_settle_stamps_its_own_card_and_leaves_a_later_request_s_pending() {
+        // Card B's request landed while card A's settle was out.
+        let chat = chat_with(vec![card("a", "zai", ZAI), card("b", "openai", OPENAI)]);
+        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Saved);
+        assert_eq!(
+            states(&chat),
+            vec![KeyCardState::Saved, KeyCardState::Pending]
+        );
+    }
+
+    #[test]
+    fn a_settle_stamps_the_oldest_card_of_its_target_only() {
+        // Two asks for the same key: the first is the one this settle
+        // answered, and the second still starts its own Turn.
+        let chat = chat_with(vec![card("a", "zai", ZAI), card("b", "zai", ZAI)]);
+        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Dismissed);
+        assert_eq!(
+            states(&chat),
+            vec![KeyCardState::Dismissed, KeyCardState::Pending]
+        );
+    }
+
+    #[test]
+    fn a_settled_card_is_not_stamped_again() {
+        let chat = chat_with(vec![card("a", "zai", ZAI)]);
+        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Saved);
+        stamp_key_card(&chat, &request("zai", ZAI), KeyCardState::Dismissed);
+        assert_eq!(states(&chat), vec![KeyCardState::Saved]);
+    }
+
+    #[test]
+    fn a_newer_request_still_retires_every_pending_card() {
+        let chat = chat_with(vec![card("a", "zai", ZAI), card("b", "openai", OPENAI)]);
+        stamp_key_cards(&chat, KeyCardState::Superseded);
+        assert_eq!(
+            states(&chat),
+            vec![KeyCardState::Superseded, KeyCardState::Superseded]
+        );
+    }
+
+    #[test]
+    fn a_failed_settle_returns_its_request_only_into_a_vacant_slot() {
+        let vacant = ChatRuntime::new();
+        restore_key_request(&vacant, &request("zai", ZAI));
+        assert_eq!(
+            *vacant.key_request.lock().unwrap(),
+            Some(request("zai", ZAI))
+        );
+
+        // A request that landed while the settle was out is the chat's now.
+        let occupied = ChatRuntime::new();
+        *occupied.key_request.lock().unwrap() = Some(request("openai", OPENAI));
+        restore_key_request(&occupied, &request("zai", ZAI));
+        assert_eq!(
+            *occupied.key_request.lock().unwrap(),
+            Some(request("openai", OPENAI))
+        );
     }
 }
