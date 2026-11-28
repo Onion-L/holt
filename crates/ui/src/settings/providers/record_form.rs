@@ -150,6 +150,9 @@ pub(super) struct RecordForm {
     image: bool,
     /// Opened on a row that already exists: the title says so.
     editing: bool,
+    /// A save is out: the form stays as typed and refuses to close until the
+    /// reply lands.
+    saving: bool,
     error: Option<String>,
 }
 
@@ -304,7 +307,7 @@ pub(super) fn record_form_dialog(
         // rows float outside this card's bounds and must survive the same
         // press that closes the menu.
         .on_mouse_down_out(cx.listener(|page, _, _, cx| {
-            if page.record_api_menu.get().is_none() {
+            if page.record_api_menu.get().is_none() && !record_form_saving(page) {
                 page.record_form = None;
                 cx.notify();
             }
@@ -329,8 +332,10 @@ pub(super) fn record_form_dialog(
                         .id("record-form-close")
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(|page, _, _, cx| {
-                            page.record_form = None;
-                            cx.notify();
+                            if !record_form_saving(page) {
+                                page.record_form = None;
+                                cx.notify();
+                            }
                         }))
                         .child(
                             crate::icons::icon(crate::icons::CLOSE)
@@ -469,8 +474,10 @@ pub(super) fn record_form_dialog(
                         .id("cancel-record")
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
-                            page.record_form = None;
-                            cx.notify();
+                            if !record_form_saving(page) {
+                                page.record_form = None;
+                                cx.notify();
+                            }
                         }))
                         .child(t!("settings_providers_usage.providers.cancel")),
                 ),
@@ -484,6 +491,11 @@ pub(super) fn record_form_dialog(
 const FETCH_WIDTH: f32 = 960.0;
 const FETCH_GAP: f32 = 12.0;
 const FETCH_COLUMNS: [f32; 7] = [22.0, 196.0, 82.0, 82.0, 280.0, 90.0, 68.0];
+
+/// Whether the record form's save is out — a close is refused until it lands.
+fn record_form_saving(page: &ProvidersPage) -> bool {
+    page.record_form.as_ref().is_some_and(|form| form.saving)
+}
 
 /// The fetch dialog: a vendor listing as a table
 /// (ADR-fetched-models-adopt-the-catalogs-record). One row per id — its
@@ -632,6 +644,13 @@ pub(super) fn fetch_models_dialog(
                         .id("fetch-dialog-close")
                         .hover(move |style| widgets::ghost_hover(&hover_theme, style))
                         .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                            if page
+                                .fetch_dialog
+                                .as_ref()
+                                .is_some_and(|dialog| dialog.saving)
+                            {
+                                return;
+                            }
                             page.fetch_dialog = None;
                             cx.notify();
                         }))
@@ -702,6 +721,13 @@ pub(super) fn fetch_models_dialog(
                         .id("cancel-fetch")
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
+                            if page
+                                .fetch_dialog
+                                .as_ref()
+                                .is_some_and(|dialog| dialog.saving)
+                            {
+                                return;
+                            }
                             page.fetch_dialog = None;
                             cx.notify();
                         }))
@@ -1464,7 +1490,7 @@ impl ProvidersPage {
         };
         self.load_models(&provider, false, cx);
         self.probes.insert(provider.clone(), ProbeState::Running);
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.probe_task = Some(cx.spawn(async move |this, cx| {
             let probed = engine
                 .client()
                 .call(
@@ -2070,6 +2096,7 @@ impl ProvidersPage {
                 .as_array()
                 .is_some_and(|input| input.contains(&serde_json::json!("image"))),
             inputs,
+            saving: false,
             error: None,
         });
         cx.notify();
@@ -2082,6 +2109,9 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
+        // Retire every record fetch already in flight: a second pencil must
+        // not open the row clicked first.
+        self.record_form_epoch += 1;
         let epoch = self.record_form_epoch;
         self.task = Some(cx.spawn(async move |this, cx| {
             let record = engine
@@ -2177,6 +2207,9 @@ impl ProvidersPage {
         let Some(form) = self.record_form.as_ref() else {
             return;
         };
+        if form.saving {
+            return;
+        }
         let mut texts = HashMap::new();
         for (key, input) in &form.inputs {
             texts.insert(key.clone(), input.read(cx).text().trim().to_string());
@@ -2193,6 +2226,14 @@ impl ProvidersPage {
                 return;
             }
         };
+        if let Some(form) = self.record_form.as_mut() {
+            form.saving = true;
+            form.error = None;
+        }
+        // The reply may not act on a form opened after this save: `saving`
+        // keeps the form up, and the epoch covers anything that still
+        // replaces it.
+        let epoch = self.record_form_epoch;
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -2205,6 +2246,9 @@ impl ProvidersPage {
                 )
                 .await;
             this.update(cx, |page, cx| {
+                if page.record_form_epoch != epoch {
+                    return;
+                }
                 match result {
                     Ok(_) => {
                         page.record_form = None;
@@ -2214,6 +2258,7 @@ impl ProvidersPage {
                     }
                     Err(error) => {
                         if let Some(form) = page.record_form.as_mut() {
+                            form.saving = false;
                             form.error = Some(error.to_string());
                         }
                     }
@@ -3574,6 +3619,45 @@ mod tests {
                 "the reply did not replace it with the row's record"
             );
             assert_eq!(form.inputs["id"].read(cx).text(), "");
+        });
+    }
+
+    /// The pen's record takes a round trip; a panel collapsed since it was
+    /// asked for does not get its form back.
+    #[gpui::test]
+    fn a_record_reply_that_lands_after_the_panel_closed_opens_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let harness = providers_harness(cx);
+        harness
+            .engine
+            .records_served
+            .lock()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": "acme-custom",
+                "name": "Acme custom",
+                "api": "openai-completions",
+                "provider": "acme",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 321000,
+                "maxTokens": 16384,
+            }));
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            // The pen leaves its request on the next turn of the runtime...
+            page.edit_model("acme".into(), "acme/acme-custom".into(), cx);
+            // ...and before that turn, the panel collapses.
+            page.close_panel_forms();
+        });
+        harness.pump();
+
+        harness.page.update(&mut *harness.visual, |page, _| {
+            assert!(
+                page.record_form.is_none(),
+                "the late reply opened the form over a collapsed panel"
+            );
         });
     }
 }

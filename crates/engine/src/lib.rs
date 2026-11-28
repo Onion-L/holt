@@ -309,12 +309,13 @@ impl LocalEngine {
             runtime.remove_chat(chat_id);
         }
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
-        // The provider store is read once per boot: the file is written only
-        // when missing, then overlaid on the compiled catalog. Provider
-        // listing, model listing, resolution, and the request path all answer
-        // from the merge, so a file edit needs a restart. The settings load
-        // reads it too: a stored definition shadowing a catalog id is dropped
-        // before it can grant the plaintext-http allowance on the way in.
+        // The provider store is read once per boot: the file is written when
+        // missing and when an upgrade replaces a boot snapshot, then overlaid
+        // on the compiled catalog. Provider listing, model listing,
+        // resolution, and the request path all answer from the merge, so a
+        // file edit needs a restart. The settings load reads it too: a stored
+        // definition shadowing a catalog id is dropped before it can grant
+        // the plaintext-http allowance on the way in.
         let catalog = provider_store::load(&config.data_dir);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir, &catalog)?);
         let providers = Arc::new(ProviderAdapter::new(

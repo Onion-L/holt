@@ -871,6 +871,9 @@ impl ProvidersPage {
     /// Retire the per-panel transients: the record form and any armed
     /// reset belong to the variant the panel was showing.
     pub(super) fn close_panel_forms(&mut self) {
+        // A record still on its way must not reopen the form over a panel the
+        // user has collapsed or switched away from.
+        self.record_form_epoch += 1;
         self.record_form = None;
         self.armed_reset = None;
         self.hidden_expanded.clear();

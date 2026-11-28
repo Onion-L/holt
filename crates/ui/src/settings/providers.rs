@@ -264,6 +264,10 @@ pub struct ProvidersPage {
     /// The global reset's confirm dialog is open.
     confirm_reset_all: bool,
     task: Option<Task<()>>,
+    /// The `Fetch models` probe and its preview: a slot of its own, so a row's
+    /// pencil (which spawns into `task`) does not cancel a listing already on
+    /// its way.
+    probe_task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
     /// A provider to open on once the list loads ("Open in Settings" on a
     /// written proposal card).
@@ -920,6 +924,7 @@ impl ProvidersPage {
             logo_dialog: None,
             confirm_reset_all: false,
             task: None,
+            probe_task: None,
             collapse_task: None,
             focus: None,
         };
