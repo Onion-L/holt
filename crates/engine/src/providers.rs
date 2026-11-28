@@ -181,15 +181,20 @@ impl ProviderAdapter {
     }
 
     /// Where the provider is spoken and how: a custom definition's endpoint
-    /// and default dialect, else its first model's. The probe's target, and
-    /// what an adopted record is retargeted to.
+    /// and dialect, else its first model's. The probe's target, and what an
+    /// adopted record is retargeted to. The first model is the first the
+    /// panel lists — and, with every row hidden, the first the provider
+    /// holds: hiding is cosmetic, and must not take its transport away.
     pub(crate) fn transport_target(&self, provider_id: &str) -> Option<(String, String)> {
         if let Some(provider) = self.custom_provider(provider_id) {
             return Some((provider.base_url, provider.default_api));
         }
-        let first = self.models_for(provider_id).first()?.clone();
-        let model = self.resolve_model(provider_id, &first.id).ok()?;
-        Some((model.base_url, model.api))
+        let first = self
+            .models_for(provider_id)
+            .first()
+            .and_then(|model| self.resolve_model(provider_id, &model.id).ok())
+            .or_else(|| self.core_models_for(provider_id).into_iter().next())?;
+        Some((first.base_url, first.api))
     }
 
     /// What a listing's ids become under the provider
@@ -837,6 +842,30 @@ mod tests {
                 .iter()
                 .any(|(id, window)| id == &first.id && window.is_some())
         );
+    }
+
+    #[test]
+    fn a_provider_with_every_row_hidden_keeps_its_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = adapter(dir.path());
+        let shown = adapter.transport_target("openai");
+        assert!(shown.is_some());
+
+        // Hiding is cosmetic: with every row hidden the listing is empty...
+        let hidden = adapter
+            .models_for("openai")
+            .iter()
+            .map(|row| row.id.strip_prefix("openai/").unwrap().to_string())
+            .collect();
+        adapter
+            .settings
+            .set_hidden_models("openai", hidden)
+            .unwrap();
+        assert!(adapter.models_for("openai").is_empty());
+
+        // ...and the provider is still spoken where it was, so its listing
+        // can be fetched and filed.
+        assert_eq!(adapter.transport_target("openai"), shown);
     }
 
     #[test]

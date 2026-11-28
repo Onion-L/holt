@@ -418,6 +418,43 @@ async fn the_preview_marks_an_id_the_provider_already_offers_however_it_is_liste
     assert!(error.contains("already offered"), "{error}");
 }
 
+/// Hiding is cosmetic: a built-in provider with every row hidden keeps its
+/// transport, so its listing can still be previewed and filed — and the rows
+/// it hides are `offered` and refused, as the page says.
+#[tokio::test]
+async fn a_provider_with_every_row_hidden_still_previews_and_files_fetched_models() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    let shown = listed(&engine, "openai").await;
+    assert!(!shown.is_empty());
+    let ids: Vec<&str> = shown.iter().filter_map(|row| row["id"].as_str()).collect();
+    engine
+        .handle(
+            methods::SET_HIDDEN_MODELS,
+            serde_json::json!({ "providerId": "openai", "modelIds": ids }),
+        )
+        .await
+        .unwrap();
+    assert!(listed(&engine, "openai").await.is_empty());
+
+    let rows = preview(&engine, "openai", &["gpt-5.4", "acme-1"]).await;
+    // Hidden from the listing, and still the provider's own row.
+    assert_eq!(row(&rows, "gpt-5.4")["offered"], true);
+    assert_eq!(row(&rows, "acme-1")["offered"], false);
+    let error = save(&engine, "openai", serde_json::json!([{ "id": "gpt-5.4" }]))
+        .await
+        .unwrap_err();
+    assert!(error.contains("already offered"), "{error}");
+    save(
+        &engine,
+        "openai",
+        serde_json::json!([{ "id": "acme-1", "contextWindow": 321_000, "maxTokens": 16_384 }]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(record(&engine, "openai", "acme-1").await["id"], "acme-1");
+}
+
 /// The record form saves what `GetModelRecord` served it, minus the fields
 /// it edits: a cost's tiers, which the form has no field for, come back
 /// whole under the rates.
