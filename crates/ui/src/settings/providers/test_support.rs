@@ -31,6 +31,8 @@ pub(super) struct FakeProvidersEngine {
     /// plain defaults the real engine answers for a model it has never
     /// heard of.
     pub(super) preview_rows: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// A complete raw `PreviewFetchedModels` reply, replacing the canned rows.
+    pub(super) preview_reply: std::sync::Mutex<Option<serde_json::Value>>,
     /// SaveFetchedModels params, in call order.
     pub(super) fetched_saves: std::sync::Mutex<Vec<serde_json::Value>>,
     /// GetModelRecord's canned records, whole.
@@ -105,6 +107,9 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
             methods::PREVIEW_FETCHED_MODELS => {
                 if let Some(error) = self.preview_error.lock().unwrap().clone() {
                     return Err(RpcError::Failed(error));
+                }
+                if let Some(reply) = self.preview_reply.lock().unwrap().clone() {
+                    return RpcReply::value(&reply);
                 }
                 let canned = self.preview_rows.lock().unwrap().clone();
                 let rows = params["modelIds"]
@@ -288,6 +293,7 @@ pub(super) fn providers_harness<'a>(cx: &'a mut gpui::TestAppContext) -> Provide
         logo_calls: std::sync::Mutex::new(Vec::new()),
         removed: std::sync::Mutex::new(Vec::new()),
         preview_rows: std::sync::Mutex::new(Vec::new()),
+        preview_reply: std::sync::Mutex::new(None),
         fetched_saves: std::sync::Mutex::new(Vec::new()),
         records_served: std::sync::Mutex::new(Vec::new()),
         preview_error: std::sync::Mutex::new(None),

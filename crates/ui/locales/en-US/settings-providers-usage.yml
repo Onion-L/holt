@@ -326,6 +326,8 @@ settings_providers_usage:
         en-US: Advanced JSON must be an object
       error_no_transport:
         en-US: the probe did not resolve a transport
+      error_preview_mismatch:
+        en-US: the model preview did not match the probe's model IDs; nothing was added
       error_nothing_new:
         en-US: the vendor's listing has nothing this provider doesn't already offer
       edit_title:

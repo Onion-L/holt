@@ -326,6 +326,8 @@ settings_providers_usage:
         zh-CN: 高级 JSON 必须是对象
       error_no_transport:
         zh-CN: 探测未能确定传输方式
+      error_preview_mismatch:
+        zh-CN: 模型预览与探测到的模型 ID 不一致，未添加任何模型
       error_nothing_new:
         zh-CN: 厂商列表中没有该提供商尚未提供的模型
       edit_title:

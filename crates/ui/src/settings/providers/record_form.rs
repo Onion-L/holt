@@ -1454,8 +1454,7 @@ impl ProvidersPage {
     /// engine's preview comes back on the same call and says which ids the
     /// provider already offers; the panel's model list is asked for as well
     /// — it also names an id the engine's exact test misses, a listing that
-    /// gives it provider-qualified, and stands in for a row the engine did
-    /// not answer for — and again when that list lands
+    /// gives it provider-qualified — and again when that list lands
     /// ([`Self::fetch_models_loaded`]): a listing opened before the list
     /// did used to offer the provider's own models back, and Add filed blank
     /// records over the catalog's.
@@ -1479,11 +1478,10 @@ impl ProvidersPage {
                         .map_err(|error| error.to_string())
                 });
             // What the engine would file for the listing rides the same
-            // task: the dialog opens with the rows or not at all. A row the
-            // engine did not answer for would open on the plain defaults,
-            // and Add would file those over the catalog's facts — the thing
-            // this dialog exists to stop — so a preview that fails fails the
-            // fetch.
+            // task: the dialog opens with a complete, matching set of rows
+            // or not at all. Filing a row on the plain defaults because its
+            // facts were missing would overwrite the catalog's facts — the
+            // thing this dialog exists to stop.
             let facts: Result<Vec<FetchedFacts>, String> = match &probed {
                 Ok(outcome) if outcome.ok && outcome.dialect.is_some() => engine
                     .client()
@@ -1543,12 +1541,14 @@ impl ProvidersPage {
     }
 
     /// Build the dialog from a probed listing: one row per id, in listing
-    /// order. An id the engine answered for opens with those facts; one it
-    /// did not opens on the plain defaults, as every row used to. An id the
-    /// provider already offers stays in view, dimmed and never selected —
-    /// the engine's `offered` says so, where the panel's list hides the row —
-    /// and when that is all the listing holds, the dialog does not open. A
-    /// problem string means the dialog did not open.
+    /// order. The preview must answer exactly those ids, once each and in
+    /// the same order, before any row is built; otherwise the whole dialog
+    /// is refused rather than filling missing facts with plain defaults. An
+    /// id the provider already offers stays in view, dimmed and never
+    /// selected — the engine's `offered` says so, where the panel's list
+    /// hides the row — and when that is all the listing holds (including an
+    /// empty listing), the dialog does not open. A problem string means the
+    /// dialog did not open.
     fn open_fetch_dialog(
         &mut self,
         provider: String,
@@ -1556,16 +1556,24 @@ impl ProvidersPage {
         facts: Vec<FetchedFacts>,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        let mut seen = HashSet::with_capacity(facts.len());
+        if facts.len() != ids.len()
+            || !facts
+                .iter()
+                .zip(&ids)
+                .all(|(facts, id)| facts.id == *id && seen.insert(facts.id.as_str()))
+        {
+            return Some(
+                t!("settings_providers_usage.providers.record_form.error_preview_mismatch")
+                    .into_owned(),
+            );
+        }
         let listed = self
             .models
             .get(&provider)
             .and_then(|models| models.ready())
             .cloned()
             .unwrap_or_default();
-        let by_id: HashMap<&str, &FetchedFacts> = facts
-            .iter()
-            .map(|facts| (facts.id.as_str(), facts))
-            .collect();
         let input = |text: &str, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 let mut input = ComposerInput::new(text, cx);
@@ -1574,58 +1582,31 @@ impl ProvidersPage {
             })
         };
         let mut rows = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let facts = by_id.get(id.as_str()).copied();
+        for (id, facts) in ids.iter().zip(&facts) {
             // The engine's word first — it refuses the save on the same
-            // test — and the panel's list for a row it did not answer for:
+            // test — and the panel's list for its provider-qualified ids:
             // that list hides rows the provider still offers.
-            let added = facts.is_some_and(|facts| facts.offered)
+            let added = facts.offered
                 || listed
                     .iter()
                     .any(|model| model.id == *id || model.id == format!("{provider}/{id}"));
-            let new = added || facts.is_none_or(|facts| facts.source.is_none());
-            let (name, numbers, levels, estimated, estimated_from, starts_from, source) =
-                match facts {
-                    Some(facts) => (
-                        facts.name.clone(),
-                        Some(FetchNumbers {
-                            context_window: facts.context_window,
-                            max_tokens: facts.max_tokens,
-                            input_cost: facts.cost.input,
-                            output_cost: facts.cost.output,
-                        }),
-                        facts.reasoning_levels.clone(),
-                        facts.levels_estimated,
-                        facts.estimated_from.clone(),
-                        facts.starts_from.clone(),
-                        facts.source.clone(),
-                    ),
-                    // Already on the provider, and the engine said nothing
-                    // about it: nothing to show, and nothing to add.
-                    None if added => (id.clone(), None, Vec::new(), false, None, None, None),
-                    None => (
-                        id.clone(),
-                        Some(FetchNumbers {
-                            context_window: 200_000,
-                            max_tokens: 8_192,
-                            input_cost: 0.0,
-                            output_cost: 0.0,
-                        }),
-                        Vec::new(),
-                        false,
-                        None,
-                        None,
-                        None,
-                    ),
-                };
-            let (can_turn_off, image) = facts
-                .map(|facts| {
-                    (
-                        facts.can_turn_off,
-                        facts.input.iter().any(|input| input == "image"),
-                    )
-                })
-                .unwrap_or((true, false));
+            let new = added || facts.source.is_none();
+            let (name, numbers, levels, estimated, estimated_from, starts_from, source) = (
+                facts.name.clone(),
+                Some(FetchNumbers {
+                    context_window: facts.context_window,
+                    max_tokens: facts.max_tokens,
+                    input_cost: facts.cost.input,
+                    output_cost: facts.cost.output,
+                }),
+                facts.reasoning_levels.clone(),
+                facts.levels_estimated,
+                facts.estimated_from.clone(),
+                facts.starts_from.clone(),
+                facts.source.clone(),
+            );
+            let can_turn_off = facts.can_turn_off;
+            let image = facts.input.iter().any(|input| input == "image");
             let opening = numbers.unwrap_or(FetchNumbers {
                 context_window: 0,
                 max_tokens: 0,
@@ -2565,6 +2546,54 @@ mod tests {
         })
     }
 
+    fn capture_errors(
+        harness: &mut ProvidersHarness<'_>,
+    ) -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, Entity<()>) {
+        let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = errors.clone();
+        let page = harness.page.clone();
+        let listener = harness.visual.update(|_window, cx| {
+            cx.new(|cx| {
+                cx.subscribe(&page, move |_, _, event, _| {
+                    let ProvidersPageEvent::Error(message) = event;
+                    sink.lock().unwrap().push(message.to_string());
+                })
+                .detach();
+            })
+        });
+        (errors, listener)
+    }
+
+    fn assert_preview_reply_fails_closed(cx: &mut gpui::TestAppContext, reply: serde_json::Value) {
+        let _locale = crate::i18n::tests::locale_lock();
+        let mut harness = providers_harness(cx);
+        *harness.engine.preview_reply.lock().unwrap() = Some(reply);
+        let (errors, _listener) = capture_errors(&mut harness);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let opened = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_some());
+        let save_rendered = harness.visual.debug_bounds("save-fetch").is_some();
+        if save_rendered {
+            harness.click("save-fetch");
+        }
+        assert!(!opened, "an inconsistent preview opens no dialog");
+        assert!(!save_rendered, "an inconsistent preview offers no Save");
+        assert!(
+            harness.engine.fetched_saves.lock().unwrap().is_empty(),
+            "an inconsistent preview sends no SaveFetchedModels"
+        );
+        assert_eq!(
+            *errors.lock().unwrap(),
+            vec!["the model preview did not match the probe's model IDs; nothing was added"]
+        );
+    }
+
     fn text_of(harness: &mut ProvidersHarness, input: &Entity<ComposerInput>) -> String {
         harness.page.update(&mut *harness.visual, |_, cx| {
             input.read(cx).text().to_string()
@@ -2938,6 +2967,60 @@ mod tests {
             "the failure reaches the error modal"
         );
         assert!(harness.engine.fetched_saves.lock().unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    fn an_empty_preview_reply_fails_closed(cx: &mut gpui::TestAppContext) {
+        assert_preview_reply_fails_closed(cx, serde_json::json!([]));
+    }
+
+    #[gpui::test]
+    fn a_partial_preview_reply_fails_closed(cx: &mut gpui::TestAppContext) {
+        assert_preview_reply_fails_closed(
+            cx,
+            serde_json::Value::Array(vec![preview_row("acme-9")]),
+        );
+    }
+
+    #[gpui::test]
+    fn a_wrong_id_preview_reply_fails_closed(cx: &mut gpui::TestAppContext) {
+        assert_preview_reply_fails_closed(
+            cx,
+            serde_json::Value::Array(vec![preview_row("wrong-id"), preview_row("acme-1")]),
+        );
+    }
+
+    #[gpui::test]
+    fn a_duplicate_preview_reply_fails_closed(cx: &mut gpui::TestAppContext) {
+        assert_preview_reply_fails_closed(
+            cx,
+            serde_json::Value::Array(vec![preview_row("acme-9"), preview_row("acme-9")]),
+        );
+    }
+
+    #[gpui::test]
+    fn an_empty_probe_keeps_the_nothing_new_result(cx: &mut gpui::TestAppContext) {
+        let _locale = crate::i18n::tests::locale_lock();
+        let mut harness = providers_harness(cx);
+        *harness.engine.probe_ids.lock().unwrap() = Vec::new();
+        *harness.engine.preview_reply.lock().unwrap() = Some(serde_json::json!([]));
+        let (errors, _listener) = capture_errors(&mut harness);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        assert!(
+            harness
+                .page
+                .update(&mut *harness.visual, |page, _| page.fetch_dialog.is_none())
+        );
+        assert!(harness.engine.fetched_saves.lock().unwrap().is_empty());
+        assert_eq!(
+            *errors.lock().unwrap(),
+            vec!["the vendor's listing has nothing this provider doesn't already offer"]
+        );
     }
 
     /// When the listing holds nothing the provider does not already offer,
