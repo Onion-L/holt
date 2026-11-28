@@ -681,7 +681,9 @@ pub(crate) fn adoption_digest(model: &CoreModel) -> String {
 /// The record as the engine serves it: an adoption nobody edited since is
 /// regenerated from the catalog as it stands now. `None` for anything else
 /// — no adoption, an edited one, or one whose source the catalog no longer
-/// carries — and the stored record then applies as written.
+/// carries as its own: the row it was adopted from is gone, and another
+/// provider's row under the same bare id does not stand in for it — and the
+/// stored record then applies as written.
 pub(crate) fn following_catalog(
     index: &AdoptionIndex,
     provider_id: &str,
@@ -692,6 +694,10 @@ pub(crate) fn following_catalog(
         return None;
     }
     let source = index.source(&stored.id)?;
+    let adopted_from = format!("{}/{}", source.provider, source.id);
+    if stored.extra.get(ADOPTED_FROM)?.as_str()? != adopted_from {
+        return None;
+    }
     let mut fresh = adopt(
         index,
         source,
@@ -1150,6 +1156,35 @@ mod tests {
         };
 
         assert!(following_catalog(&empty, "gw", &stored).is_none());
+    }
+
+    #[test]
+    fn an_adoption_does_not_follow_another_provider_s_row_under_the_same_id() {
+        let maker = model("openai", "gpt-x", Some(&["low", "high"]));
+        let mut relay = model("relay", "gpt-x", Some(&["low", "high"]));
+        relay.context_window = 999_999;
+        let index = |source: &CoreModel| AdoptionIndex {
+            sources: HashMap::from([("gpt-x".to_string(), source.clone())]),
+        };
+        let as_filed = index(&maker);
+        let stored = adopt(
+            &as_filed,
+            &maker,
+            "gw",
+            "gpt-x",
+            "openai-completions",
+            "https://gw.example/v1",
+        );
+        assert_eq!(stored.extra[ADOPTED_FROM], "openai/gpt-x");
+
+        // The row it was adopted from still stands: it follows.
+        assert!(following_catalog(&as_filed, "gw", &stored).is_some());
+
+        // The next release retires the maker's row while a relay keeps
+        // listing the id. The relay's row is not the source: the record
+        // applies as written instead of taking the relay's facts.
+        let retired = index(&relay);
+        assert!(following_catalog(&retired, "gw", &stored).is_none());
     }
 
     #[test]
