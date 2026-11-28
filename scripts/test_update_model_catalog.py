@@ -183,6 +183,23 @@ class CatalogRefreshTests(unittest.TestCase):
         self.assertEqual(refreshed["othervendor/unknown"]["cost"], sibling["cost"])
         self.assertEqual(refreshed["subscription/existing"]["cost"], subscription["cost"])
 
+    def test_an_omitted_base_rate_keeps_the_catalogs_non_zero_rate(self) -> None:
+        omitted = catalog_entry("openai/gpt-5")
+        explicit_zero = catalog_entry("openai/gpt-5-mini")
+        omitted_source = source_model("openai/gpt-5", dict(PAID_COST))
+        del omitted_source["cost"]["cache_read"]
+        zero_source = source_model("openai/gpt-5-mini", {**PAID_COST, "cache_read": 0})
+        refreshed = self.run_refresh(
+            {entry["id"]: entry for entry in [omitted, explicit_zero]},
+            {"openai/gpt-5": omitted_source, "openai/gpt-5-mini": zero_source},
+        )
+
+        # models.dev omits a rate it does not charge or does not know; that
+        # is not a measured zero, so the catalog's own rate stays.
+        self.assertEqual(refreshed["openai/gpt-5"]["cost"]["cacheRead"], 0.1)
+        # An explicit zero is the source's word and takes the rate over.
+        self.assertEqual(refreshed["openai/gpt-5-mini"]["cost"]["cacheRead"], 0)
+
     def test_zero_base_rates_with_a_paid_source_tier_are_a_measured_price(self) -> None:
         sibling = catalog_entry("openai/gpt-5")
         sibling["cost"]["tiers"] = [

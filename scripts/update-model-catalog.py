@@ -482,6 +482,17 @@ def refresh_entry(model_id: str, entry: dict, model: dict, changes: Counter) -> 
         else:
             existing = entry.get("cost", {})
             merged = {**existing, **cost}
+            # A rate the source omits is no fact, not a free one: like a
+            # tier's omitted cache rate, it must not zero the catalog's own.
+            source_cost = model.get("cost") or {}
+            for key, field in (
+                ("input", "input"),
+                ("output", "output"),
+                ("cacheRead", "cache_read"),
+                ("cacheWrite", "cache_write"),
+            ):
+                if field not in source_cost and existing.get(key):
+                    merged[key] = existing[key]
             if existing.get("tiers"):
                 # Tiers the catalog already holds stay: they were kept by
                 # hand, or came from a source row that no longer names them.
