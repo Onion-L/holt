@@ -1992,13 +1992,16 @@ impl ProvidersPage {
     /// The record form over a row that already exists — its fields, its
     /// dialect, and everything else it carries in the advanced JSON — so a
     /// correction saved under the same id replaces the row without dropping
-    /// what the form cannot show. `None` opens the form empty.
+    /// what the form cannot show. `None` opens the form empty. Opening
+    /// retires every record fetch still in flight
+    /// ([`Self::edit_model`]): none of them may replace this form.
     pub(super) fn open_record_form(
         &mut self,
         provider: String,
         existing: Option<serde_json::Value>,
         cx: &mut Context<Self>,
     ) {
+        self.record_form_epoch += 1;
         let editing = existing.is_some();
         let existing = existing.unwrap_or_else(|| serde_json::json!({}));
         let text = |key: &str, fallback: &str| -> String {
@@ -2082,10 +2085,13 @@ impl ProvidersPage {
     }
 
     /// The row's record as the engine serves it, for the form to open on.
+    /// The reply lands only if no form was opened since the request left:
+    /// an Add clicked meanwhile holds a draft of its own.
     pub(super) fn edit_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
+        let epoch = self.record_form_epoch;
         self.task = Some(cx.spawn(async move |this, cx| {
             let record = engine
                 .client()
@@ -2094,9 +2100,14 @@ impl ProvidersPage {
                     serde_json::json!({ "providerId": provider, "modelId": model }),
                 )
                 .await;
-            this.update(cx, |page, cx| match record {
-                Ok(record) => page.open_record_form(provider, Some(record), cx),
-                Err(error) => page.fail(error.to_string(), cx),
+            this.update(cx, |page, cx| {
+                if page.record_form_epoch != epoch {
+                    return;
+                }
+                match record {
+                    Ok(record) => page.open_record_form(provider, Some(record), cx),
+                    Err(error) => page.fail(error.to_string(), cx),
+                }
             })
             .ok();
         }));
@@ -3386,6 +3397,47 @@ mod tests {
             assert!(!form.editing);
             assert_eq!(form.inputs["id"].read(cx).text(), "");
             assert_eq!(form.inputs["advanced"].read(cx).text(), "");
+        });
+    }
+
+    /// The pen's record takes a round trip; a form opened since it was
+    /// asked for — the Add button's, with a draft in it — stays.
+    #[gpui::test]
+    fn a_record_reply_that_lands_after_a_newer_form_replaces_nothing(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let harness = providers_harness(cx);
+        harness
+            .engine
+            .records_served
+            .lock()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": "acme-custom",
+                "name": "Acme custom",
+                "api": "openai-completions",
+                "provider": "acme",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 321000,
+                "maxTokens": 16384,
+            }));
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            // The pen: its request leaves on the next turn of the runtime...
+            page.edit_model("acme".into(), "acme/acme-custom".into(), cx);
+            // ...and before that turn, the Add button opens a blank form.
+            page.open_record_form("acme".into(), None, cx);
+        });
+        harness.pump();
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let form = page.record_form.as_ref().expect("the Add form stays");
+            assert!(
+                !form.editing,
+                "the reply did not replace it with the row's record"
+            );
+            assert_eq!(form.inputs["id"].read(cx).text(), "");
         });
     }
 }

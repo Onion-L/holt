@@ -232,6 +232,10 @@ pub struct ProvidersPage {
     /// The mounted model-record form, targeting the expanded panel's active
     /// variant (ADR-model-setup-applies-stored-proposals's manual half of the write path).
     record_form: Option<RecordForm>,
+    /// Bumped whenever the record form is (re)opened: a row's record still
+    /// on its way from an earlier form must not replace what the user
+    /// opened since.
+    record_form_epoch: u64,
     /// ProbeProvider results per variant (the Test button's status line;
     /// the fetch dialog opens from a fresh probe's `ok`).
     probes: HashMap<String, ProbeState>,
@@ -904,6 +908,7 @@ impl ProvidersPage {
             new_provider_error: None,
             new_provider_logo: None,
             record_form: None,
+            record_form_epoch: 0,
             probes: HashMap::new(),
             fetch_dialog: None,
             record_api_menu: Popup::default(),
